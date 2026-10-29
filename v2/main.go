@@ -173,16 +173,18 @@ func buildKnowledgeRuntime(ctx context.Context, conf *config.Config) (*knowledge
 		return nil, fmt.Errorf("initialize shared RAG retrieval service: %w", err)
 	}
 	if conf.RagModelConfig.RagRerankEnabled {
-		reranker, rerankErr := rag.NewLocalReranker(
-			conf.RagModelConfig.RagRerankEndpoint,
-			conf.RagModelConfig.RagRerankToken,
-			5*time.Second,
-		)
+		reranker, rerankErr := rag.NewReranker(rag.RerankerOptions{
+			Provider: conf.RagModelConfig.RagRerankProvider,
+			Endpoint: conf.RagModelConfig.RagRerankEndpoint,
+			Model:    conf.RagModelConfig.RagRerankModel,
+			Token:    conf.RagModelConfig.RagRerankToken,
+			Timeout:  conf.RagModelConfig.RagRerankTimeout(),
+		})
 		if rerankErr != nil {
-			return nil, fmt.Errorf("initialize local RAG reranker: %w", rerankErr)
+			return nil, fmt.Errorf("initialize RAG reranker: %w", rerankErr)
 		}
 		if rerankErr = retrievalService.UseReranker(ctx, reranker); rerankErr != nil {
-			return nil, fmt.Errorf("verify local RAG reranker: %w", rerankErr)
+			return nil, fmt.Errorf("verify RAG reranker: %w", rerankErr)
 		}
 	}
 	return &knowledgeRuntime{index: indexWorker, cleanup: cleanupWorker, retrieval: retrievalService, documents: documentService, embedder: embedder}, nil

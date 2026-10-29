@@ -84,7 +84,26 @@ chatModelName = "REPLACE_WITH_CHAT_MODEL_NAME"
 baseUrl = "https://provider.invalid/v1"
 # 与 v2/common/redis/key.go:12 的向量维度一致；改它等于改索引 schema。
 dimension = 1024
-rerankEnabled = false
+
+# 重排（可选，默认关闭）。关闭时行为与不部署重排完全一致。
+#
+# 方式 A（推荐，无需显卡）：远程重排 API。填三行 + 设置环境变量
+# RAG_RERANK_AUTH_TOKEN（密钥，不写进本文件）。详见 README §5.5。
+# rerankEnabled = true
+# rerankProvider = "dashscope"
+# 地址与上面的 chat / embedding 服务同域名，把业务空间 ID 换上去：
+# rerankEndpoint = "https://<业务空间ID>.cn-beijing.maas.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+# rerankModel = "qwen3-rerank"
+#
+# 方式 B：本地模型服务（数据不出本机）。本地服务只认本机地址，
+# 模型与版本由服务自己钉死，rerankModel 不需要填。
+# rerankEnabled = true
+# rerankProvider = "local"
+# rerankEndpoint = "http://127.0.0.1:18083"
+#
+# 单次调用上限（毫秒）。留空即用默认值：远程 15 秒、本地 30 秒。
+# 本地跑 CPU 时请调大，否则重排会超时降级成"看似开启实则没生效"。
+# rerankTimeoutMs = 15000
 
 # agentConfig / voiceServiceConfig 段整段省略：省略即沿用
 # v2/config/config.go:244-289 的原有默认（memoryReadMode=legacy_v2、

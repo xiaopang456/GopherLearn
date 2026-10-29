@@ -1,15 +1,47 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"GopherAI/common/memoryrecall"
 
 	"github.com/BurntSushi/toml"
 )
+
+// Rerank provider names. The value is written in the configuration file as
+// ragModelConfig.rerankProvider and selects which service shape the rerank
+// client speaks.
+//
+// The vocabulary lives here because the configuration file is what names it;
+// the clients that implement these shapes read the same names.
+const (
+	// RerankProviderLocal speaks to a locally served text-embeddings-inference
+	// server: one local HTTP address answering /health, /info and /rerank.
+	RerankProviderLocal = "local"
+	// RerankProviderDashScope speaks to a hosted rerank endpoint that takes a
+	// model name, a query and a document list, and answers with relevance
+	// scores.
+	RerankProviderDashScope = "dashscope"
+)
+
+// Default bounds for one rerank call when the configuration does not set one.
+// A CPU-only local server needs seconds rather than milliseconds: the
+// reference deployment answered a candidate batch in about thirteen seconds
+// on CPU. A hosted endpoint answers in well under that.
+const (
+	defaultLocalRerankTimeout  = 30 * time.Second
+	defaultHostedRerankTimeout = 15 * time.Second
+)
+
+// ErrRerankConfig marks a rerank configuration problem. The message never
+// carries the endpoint, the token or any other configuration value: it names
+// what is wrong and where to fix it.
+var ErrRerankConfig = errors.New("invalid rerank configuration")
 
 type MainConfig struct {
 	Port    int    `toml:"port"`
@@ -75,8 +107,24 @@ type RagModelConfig struct {
 	RagBaseUrl          string `toml:"baseUrl"`
 	RagDimension        int    `toml:"dimension"`
 	RagRerankEnabled    bool   `toml:"rerankEnabled"`
-	RagRerankEndpoint   string `toml:"rerankEndpoint"`
-	RagRerankToken      string `toml:"-"`
+	// RagRerankProvider selects the rerank service shape: RerankProviderLocal
+	// for a locally served cross-encoder, RerankProviderDashScope for a hosted
+	// endpoint. An empty value means the local provider.
+	RagRerankProvider string `toml:"rerankProvider"`
+	// RagRerankEndpoint is the service address. A local provider takes the
+	// root of a text-embeddings-inference server; a hosted provider takes the
+	// full rerank URL.
+	RagRerankEndpoint string `toml:"rerankEndpoint"`
+	// RagRerankModel names the model a hosted provider should serve. The local
+	// provider serves one frozen model and ignores this field.
+	RagRerankModel string `toml:"rerankModel"`
+	// RagRerankTimeoutMs bounds one rerank call. Zero means the provider
+	// default.
+	RagRerankTimeoutMs int `toml:"rerankTimeoutMs"`
+	// RagRerankToken is the bearer credential. It is never read from the
+	// configuration file: it comes from RAG_RERANK_AUTH_TOKEN in the
+	// environment, because it is a secret.
+	RagRerankToken string `toml:"-"`
 }
 
 type VoiceServiceConfig struct {
@@ -280,7 +328,7 @@ func defaultConfig() *Config {
 	}, RagModelConfig: RagModelConfig{
 		RagEmbeddingModel: "qwen3.7-text-embedding", RagEmbeddingBaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
 		RagChatModelName: "qwen3.8-max", RagBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-		RagDimension: 1024, RagRerankEnabled: false, RagRerankEndpoint: "http://host.docker.internal:18081",
+		RagDimension: 1024, RagRerankEnabled: false, RagRerankProvider: RerankProviderLocal, RagRerankEndpoint: "http://host.docker.internal:18081",
 	}, KnowledgeConfig: KnowledgeConfig{
 		StorageDir:          "data/knowledge",
 		MaxFileSizeBytes:    5 * mib,
@@ -436,9 +484,25 @@ func applyRagEnv(c *RagModelConfig) error {
 		}
 		c.RagRerankEndpoint = value
 	}
+	return applyRerankTokenEnv(c)
+}
+
+// applyRerankTokenEnv reads the rerank bearer token from the environment.
+//
+// The token is the one credential that never lives in a configuration file: it
+// is a secret, and the entry that owns the reranker needs it at runtime. Every
+// other rerank setting - whether the reranker runs at all, which provider
+// serves it, where it listens and which model it serves - stays in the
+// configuration file.
+//
+// Validation errors name the variable but never echo its value.
+func applyRerankTokenEnv(c *RagModelConfig) error {
+	if c == nil {
+		return fmt.Errorf("RAG config must not be nil")
+	}
 	if value, ok := os.LookupEnv("RAG_RERANK_AUTH_TOKEN"); ok {
 		if value == "" {
-			return fmt.Errorf("RAG_RERANK_AUTH_TOKEN must not be empty")
+			return fmt.Errorf("RAG_RERANK_AUTH_TOKEN must not be empty; set it in the environment, because the rerank token is never read from the configuration file")
 		}
 		c.RagRerankToken = value
 	}
@@ -456,12 +520,40 @@ func (c RagModelConfig) Validate() error {
 		return nil
 	}
 	if strings.TrimSpace(c.RagRerankEndpoint) == "" {
-		return fmt.Errorf("rerankEndpoint is required when rerank is enabled")
+		return fmt.Errorf("%w: rerankEndpoint is required when rerank is enabled", ErrRerankConfig)
+	}
+	switch strings.TrimSpace(c.RagRerankProvider) {
+	case "", RerankProviderLocal:
+		// A local server serves one frozen model, so the model name is optional.
+	case RerankProviderDashScope:
+		if strings.TrimSpace(c.RagRerankModel) == "" {
+			return fmt.Errorf("%w: rerankModel is required when rerankProvider is %s", ErrRerankConfig, RerankProviderDashScope)
+		}
+	default:
+		return fmt.Errorf("%w: unsupported rerankProvider; supported providers are %s and %s", ErrRerankConfig, RerankProviderLocal, RerankProviderDashScope)
+	}
+	if c.RagRerankTimeoutMs < 0 {
+		return fmt.Errorf("%w: rerankTimeoutMs must not be negative", ErrRerankConfig)
 	}
 	if len([]byte(c.RagRerankToken)) < 32 {
-		return fmt.Errorf("RAG_RERANK_AUTH_TOKEN must contain at least 32 bytes")
+		return fmt.Errorf("%w: RAG_RERANK_AUTH_TOKEN must contain at least 32 bytes; set it in the environment, because the rerank token is never read from the configuration file", ErrRerankConfig)
 	}
 	return nil
+}
+
+// RagRerankTimeout reports the bound for one rerank call.
+//
+// A configured value wins. Otherwise the bound follows the provider: a hosted
+// endpoint answers in seconds, while a local cross-encoder on CPU needs a
+// generous window or every call degrades into a timeout.
+func (c RagModelConfig) RagRerankTimeout() time.Duration {
+	if c.RagRerankTimeoutMs > 0 {
+		return time.Duration(c.RagRerankTimeoutMs) * time.Millisecond
+	}
+	if strings.TrimSpace(c.RagRerankProvider) == RerankProviderDashScope {
+		return defaultHostedRerankTimeout
+	}
+	return defaultLocalRerankTimeout
 }
 
 // applyInfrastructureEnv keeps deploy-time credentials out of the Docker TOML.

@@ -65,7 +65,7 @@ GopherLearn 面向"用自己的资料学习"这件事，提供两种会话形态
 - **检索与判分的普遍质量没有被证明**：只验证过单账号、单个自建文档、一个主题、一次判分。
 - **长期稳定性没有被证明**：本轮只跑了几分钟，没有长时间运行、并发或故障注入的验证。
 - **四类后台行为没有真实执行过**：滚动摘要、记忆抽取、情景记忆投影、dream 归并——本轮真实调用中它们**一次都没有发生**（触发条件不成立或任务未入队），因此不能说它们"可用"。
-- **检索没有重排**：本轮配置为不启用 rerank。
+- **重排默认关闭**：本轮配置为不启用 rerank。**需要时可以在部署里开启**——推荐走远程重排 API（三行配置 + 一个环境变量，无需显卡），步骤见 [§5.5](#55-开启重排可选)。
 - **模型调用消耗部署者配置的 API 额度**。注册用户不消耗你的额度。
 
 ---
@@ -79,6 +79,7 @@ GopherLearn 面向"用自己的资料学习"这件事，提供两种会话形态
 | MySQL | **8.0 或更新** | 需要一个**属于本次部署自己的** schema 与账号 |
 | Redis Stack | 带 **RediSearch** 模块的 Redis | 知识库检索依赖 `FT._LIST` 与向量检索；普通 Redis 没有 RediSearch 模块 |
 | 模型服务 | 一个 OpenAI 兼容的 chat 端点 + 一个 OpenAI 兼容的 embedding 端点 | embedding 的向量维度必须与 `ragModelConfig.dimension` 一致 |
+| 重排服务（**可选**） | 远程重排 API（推荐）：一个 https 地址 + 模型名 + API Key；或本地 `text-embeddings-inference` 容器 | **不用重排就不用装**。开远程重排不需要显卡；开本地重排建议有 NVIDIA 显卡（没有也能跑，只是慢） |
 | SMTP | **可选** | 只用于"邮箱验证码注册"；不配也能跑，已有账号与其它功能不受影响 |
 | Docker | 可选 | 只用 Docker 部署时才需要；本机启动不需要 |
 
@@ -104,6 +105,7 @@ Copy-Item config.integrated.example.toml config.integrated.toml.local   # PowerS
 | `[isolatedEntry]` | `embeddingKey` | **embedding** 服务的密钥 | — |
 | `[ragModelConfig]` | `embeddingModel` / `embeddingBaseUrl` / `dimension` | embedding 的模型名、地址、**向量维度**（必须与模型实际输出一致，且与索引一致） | `dimension = 1024` |
 | `[ragModelConfig]` | `chatModelName` / `baseUrl` | 知识库问答路径使用的 chat 模型 | — |
+| `[ragModelConfig]` | `rerankEnabled` / `rerankProvider` / `rerankEndpoint` / `rerankModel` / `rerankTimeoutMs` | **重排（可选）**：是否开启、服务形态、地址、模型名、单次调用上限 | 默认全部关闭 |
 | `[ordinaryChat]` | `GOPHERLEARN_AI_PROVIDER` / `GOPHERLEARN_OPENAI_BASE_URL` / `GOPHERLEARN_OPENAI_API_KEY` / `GOPHERLEARN_OPENAI_MODEL` | **普通聊天**用的模型：类型必须是 `openai_compatible`，另有地址、密钥、模型名 | — |
 | `[ordinaryChat]` | `GOPHERLEARN_OPENAI_ENABLE_THINKING` / `GOPHERLEARN_OPENAI_TEMPERATURE` / `GOPHERLEARN_OPENAI_MAX_OUTPUT_TOKENS` / `GOPHERLEARN_OPENAI_TIMEOUT` / `GOPHERLEARN_CONTEXT_*` / `GOPHERLEARN_SUMMARY_*` | 普通聊天的可选参数，留空即用默认值 | 注释掉 |
 | `[mysqlConfig]` | `host` / `port` / `user` / `password` / `databaseName` / `charset` | 本次部署自己的 MySQL schema 与账号 | `gopherlearn-integrated-mysql` / `3306` / `gopherlearn_v2_integration` / `utf8mb4` |
@@ -135,9 +137,107 @@ Copy-Item config.integrated.example.toml config.integrated.toml.local   # PowerS
 ### 5.4 配置是从哪里读进来的
 
 - 正式入口**只读 `-config` 指向的那一个 TOML 文件**。它**不读 `.env` 文件，也不读环境变量里的凭据**（`v2/internal/isolated/settings.go` 里写得很直白：`environment credentials are not read`）。
+- **唯一的例外是重排令牌 `RAG_RERANK_AUTH_TOKEN`**：它是密钥，不能写进配置文件，所以开启重排时从环境变量读这一个（见 [§5.5](#55-开启重排可选)）。聊天与 embedding 的密钥仍然只从配置文件读。
 - 因此：**`.env.provider.local` 是历史基线入口的东西，正式入口不会自动读取它**。要让正式入口拿到模型配置，只能写进 `config.integrated.toml.local`。
 - 真实配置请放在 `config.integrated.toml.local`：后缀 `.local` 同时命中 `.gitignore` 与 `.dockerignore` 的 `*.local` 规则，不会被提交，也不会进构建上下文。
 - 模板文件里只有占位符；**任何真实凭据都不要写进模板、日志或报告**。
+
+### 5.5 开启重排（可选）
+
+重排是**第二阶段召回**：先把候选切片按向量相似度取回来，再用交叉编码器对"问题 × 切片"逐对打分重排。**默认关闭**，关闭时行为与现在完全一致。
+
+#### 方式 A · 远程重排 API（推荐，无需显卡）
+
+远程重排是大多数部署应该选的路：**三行配置 + 一个环境变量**，不需要显卡、不需要本地模型、不需要额外容器。
+
+**第 1 步 · 在配置文件里写地址与模型名**
+
+```toml
+[ragModelConfig]
+rerankEnabled = true
+# 服务形态：dashscope = 远程重排 API（阿里云百炼）；local = 本地模型服务
+rerankProvider = "dashscope"
+# 远程服务给出的完整重排地址（不是服务根地址）。
+# 百炼的地址与你的 chat / embedding 服务是同一个域名，把业务空间 ID 换上去即可：
+rerankEndpoint = "https://<你的业务空间ID>.cn-beijing.maas.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+# 要用的重排模型名，例如 qwen3-rerank
+rerankModel = "qwen3-rerank"
+# 单次调用上限（毫秒）。留空即用默认值：远程 15 秒、本地 30 秒
+# rerankTimeoutMs = 15000
+```
+
+> **地址怎么填**：重排地址就是上面那串 `.../api/v1/services/rerank/text-rerank/text-rerank`，
+> **和你 `[ragModelConfig]` 里 chat / embedding 用的域名是同一个**（同一个业务空间、同一把 Key）。
+> 把 `<你的业务空间ID>` 换成你 chat 地址里那一段即可。
+
+**第 2 步 · 把 API Key 放进环境变量**
+
+重排令牌是密钥，**不写进配置文件**。启动前设置：
+
+```bash
+# Bash
+export RAG_RERANK_AUTH_TOKEN='<你的重排服务 API Key>'
+```
+
+```powershell
+# PowerShell
+$env:RAG_RERANK_AUTH_TOKEN = '<你的重排服务 API Key>'
+```
+
+至少 32 字节。**不设这个变量就不会启动**，并会明确告诉你缺它（见下面"启动失败时怎么读提示"）。
+
+**第 3 步 · 照常启动**
+
+```bash
+cd hybrid
+go build -o ..\bin\gopherlearn-integrated.exe .\cmd\gopherlearn-integrated
+..\bin\gopherlearn-integrated.exe -config ..\config.integrated.toml.local
+```
+
+启动时会发**一次**最小重排请求做自检（1 个问题 + 1 条切片）：这一步同时证明密钥、模型名与网络通路都是通的，它消耗部署者的一点额度。
+
+**要知道的两件事**：
+
+- **切片正文会发给这家 provider**。embedding 已经把你的切片发给 embedding provider 了，重排是同一类数据外流——如果你要求数据完全不出本机，请用下面的方式 B。
+- **重排消耗部署者的额度**，和 chat / embedding 是同一笔账；注册用户不消耗你的额度。
+
+#### 方式 B · 本地重排服务（数据不出本机）
+
+本地跑一个 `text-embeddings-inference` 容器，进程只监听本机：
+
+```bash
+docker run -d --name gopherlearn-reranker -p 127.0.0.1:18083:80 \
+  --gpus all \
+  ghcr.io/huggingface/text-embeddings-inference:120-1.9 \
+  --model-id BAAI/bge-reranker-v2-m3 \
+  --revision 953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e \
+  --api-key '<与 RAG_RERANK_AUTH_TOKEN 相同的值>'
+```
+
+```toml
+[ragModelConfig]
+rerankEnabled = true
+rerankProvider = "local"
+rerankEndpoint = "http://127.0.0.1:18083"
+```
+
+- **显卡**：有 NVIDIA 显卡就加 `--gpus all`；没有就**去掉这一行**，服务会退回 CPU 运行——能跑，但慢得多，慢到需要把 `rerankTimeoutMs` 调大（默认 30 秒）。
+- **端口**：容器内是 80，宿主映射成 18083；后端在容器里跑时把地址换成 `http://host.docker.internal:18083`。
+- **令牌**：容器用 `--api-key` 收同一个口令，后端用 `RAG_RERANK_AUTH_TOKEN` 发同一个口令。
+
+#### 启动失败时怎么读提示
+
+开启重排但起不来时，终端会给出**一句话的原因**，而不是笼统的"启动失败"：
+
+| 提示里的关键词 | 意思 | 怎么办 |
+|---|---|---|
+| `the rerank configuration is invalid` | 配置本身有问题：provider 拼错、缺 `rerankModel`、超时为负 | 按 [§5.1](#51-部署者需要配置的字段) 核对 `ragModelConfig` 的重排字段 |
+| `RAG_RERANK_AUTH_TOKEN` | 没设这个环境变量，或它不足 32 字节 | 按上面第 2 步设置环境变量 |
+| `the rerank service refused the credential` | 服务不认这个 Key | 核对 Key 是否用在这个服务上（本地服务要同时配 `--api-key`） |
+| `the rerank service is rate limiting` | 被限流 | 稍后重试，或提高该 provider 的额度 |
+| `the rerank service did not answer inside the configured timeout` | 太慢 | 调大 `rerankTimeoutMs`，或换一个更快的重排服务 |
+| `the rerank service serves a different model` | 本地服务跑的不是钉死的那个模型 | 用上面的 `--model-id` / `--revision` 重启容器 |
+| `the rerank service is unavailable` | 地址不通、服务没起 | 核对地址、端口与服务是否在运行 |
 
 ---
 
