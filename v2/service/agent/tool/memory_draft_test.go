@@ -1,6 +1,7 @@
 package agenttool
 
 import (
+	"GopherAI/internal/testclock"
 	"GopherAI/model"
 	serviceagent "GopherAI/service/agent"
 	memoryservice "GopherAI/service/memory"
@@ -21,6 +22,10 @@ func (f *fakeDraftProposer) ProposeDraft(_ context.Context, request memoryservic
 }
 
 func TestMemoryDraftToolDescriptionProvidesClockForTimeBoundDates(t *testing.T) {
+	// The description renders the clock in the server's local zone. The expected
+	// string is the +08:00 rendering, so the zone has to be pinned before the
+	// registry is built: on a UTC runner the same instant renders as "Z".
+	testclock.PinLocalCST(t)
 	registry, err := NewMemoryDraftRegistry(&fakeDraftProposer{})
 	if err != nil {
 		t.Fatal(err)

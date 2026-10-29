@@ -45,18 +45,7 @@ func (r *Repository) UpsertDesired(ctx context.Context, userID int64, sessionID 
 		// clause.Set preserves assignment order. desired_message_id must be last
 		// because every preceding expression compares the incoming value with the
 		// old database value.
-		updates := clause.Set{
-			{Column: clause.Column{Name: "available_at"}, Value: gorm.Expr("IF(VALUES(desired_message_id) > desired_message_id, VALUES(available_at), available_at)")},
-			{Column: clause.Column{Name: "completed_at"}, Value: gorm.Expr("IF(VALUES(desired_message_id) > desired_message_id AND status <> ?, NULL, completed_at)", model.EpisodeProjectionProcessing)},
-			{Column: clause.Column{Name: "error_code"}, Value: gorm.Expr("IF(VALUES(desired_message_id) > desired_message_id AND status <> ?, '', error_code)", model.EpisodeProjectionProcessing)},
-			{Column: clause.Column{Name: "attempts"}, Value: gorm.Expr("IF(VALUES(desired_message_id) > desired_message_id AND status <> ?, 0, attempts)", model.EpisodeProjectionProcessing)},
-			{Column: clause.Column{Name: "claimed_message_id"}, Value: gorm.Expr("IF(VALUES(desired_message_id) > desired_message_id AND status <> ?, 0, claimed_message_id)", model.EpisodeProjectionProcessing)},
-			{Column: clause.Column{Name: "lease_token"}, Value: gorm.Expr("IF(VALUES(desired_message_id) > desired_message_id AND status <> ?, '', lease_token)", model.EpisodeProjectionProcessing)},
-			{Column: clause.Column{Name: "lease_ends_at"}, Value: gorm.Expr("IF(VALUES(desired_message_id) > desired_message_id AND status <> ?, NULL, lease_ends_at)", model.EpisodeProjectionProcessing)},
-			{Column: clause.Column{Name: "status"}, Value: gorm.Expr("IF(VALUES(desired_message_id) > desired_message_id AND status <> ?, ?, status)", model.EpisodeProjectionProcessing, model.EpisodeProjectionPending)},
-			{Column: clause.Column{Name: "updated_at"}, Value: gorm.Expr("IF(VALUES(desired_message_id) > desired_message_id, VALUES(updated_at), updated_at)")},
-			{Column: clause.Column{Name: "desired_message_id"}, Value: gorm.Expr("GREATEST(desired_message_id, VALUES(desired_message_id))")},
-		}
+		updates := episodeProjectionJobUpsertUpdates(tx.Dialector.Name())
 		if err := tx.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "user_id"}, {Name: "session_id"}},
 			DoUpdates: updates,
@@ -71,6 +60,49 @@ func (r *Repository) UpsertDesired(ctx context.Context, userID int64, sessionID 
 		return nil
 	})
 	return job, err
+}
+
+// episodeProjectionJobUpsertUpdates renders the conflict-update assignments for
+// the active dialect.
+//
+// MySQL keeps the original expressions: IF(VALUES(...)) reads the incoming row
+// through VALUES(), and GREATEST() keeps the higher desired message id. SQLite
+// has neither VALUES() nor IF() nor GREATEST(); its upsert exposes the
+// incoming row as "excluded", so the same three decisions are written with
+// CASE WHEN and MAX(). The semantics are identical in both dialects: a higher
+// desired message id revives a terminal job and postpones a pending one, a
+// live lease is never stolen, and desired_message_id never moves backwards.
+func episodeProjectionJobUpsertUpdates(dialect string) clause.Set {
+	if dialect == "sqlite" {
+		// SQLite evaluates every SET expression against the row that already
+		// exists, so the assignment order does not change the outcome here the
+		// way it does in MySQL. The order is kept identical anyway, so the two
+		// dialects stay comparable and desired_message_id remains last in both.
+		return clause.Set{
+			{Column: clause.Column{Name: "available_at"}, Value: gorm.Expr("CASE WHEN excluded.desired_message_id > desired_message_id THEN excluded.available_at ELSE available_at END")},
+			{Column: clause.Column{Name: "completed_at"}, Value: gorm.Expr("CASE WHEN excluded.desired_message_id > desired_message_id AND status <> ? THEN NULL ELSE completed_at END", model.EpisodeProjectionProcessing)},
+			{Column: clause.Column{Name: "error_code"}, Value: gorm.Expr("CASE WHEN excluded.desired_message_id > desired_message_id AND status <> ? THEN '' ELSE error_code END", model.EpisodeProjectionProcessing)},
+			{Column: clause.Column{Name: "attempts"}, Value: gorm.Expr("CASE WHEN excluded.desired_message_id > desired_message_id AND status <> ? THEN 0 ELSE attempts END", model.EpisodeProjectionProcessing)},
+			{Column: clause.Column{Name: "claimed_message_id"}, Value: gorm.Expr("CASE WHEN excluded.desired_message_id > desired_message_id AND status <> ? THEN 0 ELSE claimed_message_id END", model.EpisodeProjectionProcessing)},
+			{Column: clause.Column{Name: "lease_token"}, Value: gorm.Expr("CASE WHEN excluded.desired_message_id > desired_message_id AND status <> ? THEN '' ELSE lease_token END", model.EpisodeProjectionProcessing)},
+			{Column: clause.Column{Name: "lease_ends_at"}, Value: gorm.Expr("CASE WHEN excluded.desired_message_id > desired_message_id AND status <> ? THEN NULL ELSE lease_ends_at END", model.EpisodeProjectionProcessing)},
+			{Column: clause.Column{Name: "status"}, Value: gorm.Expr("CASE WHEN excluded.desired_message_id > desired_message_id AND status <> ? THEN ? ELSE status END", model.EpisodeProjectionProcessing, model.EpisodeProjectionPending)},
+			{Column: clause.Column{Name: "updated_at"}, Value: gorm.Expr("CASE WHEN excluded.desired_message_id > desired_message_id THEN excluded.updated_at ELSE updated_at END")},
+			{Column: clause.Column{Name: "desired_message_id"}, Value: gorm.Expr("MAX(desired_message_id, excluded.desired_message_id)")},
+		}
+	}
+	return clause.Set{
+		{Column: clause.Column{Name: "available_at"}, Value: gorm.Expr("IF(VALUES(desired_message_id) > desired_message_id, VALUES(available_at), available_at)")},
+		{Column: clause.Column{Name: "completed_at"}, Value: gorm.Expr("IF(VALUES(desired_message_id) > desired_message_id AND status <> ?, NULL, completed_at)", model.EpisodeProjectionProcessing)},
+		{Column: clause.Column{Name: "error_code"}, Value: gorm.Expr("IF(VALUES(desired_message_id) > desired_message_id AND status <> ?, '', error_code)", model.EpisodeProjectionProcessing)},
+		{Column: clause.Column{Name: "attempts"}, Value: gorm.Expr("IF(VALUES(desired_message_id) > desired_message_id AND status <> ?, 0, attempts)", model.EpisodeProjectionProcessing)},
+		{Column: clause.Column{Name: "claimed_message_id"}, Value: gorm.Expr("IF(VALUES(desired_message_id) > desired_message_id AND status <> ?, 0, claimed_message_id)", model.EpisodeProjectionProcessing)},
+		{Column: clause.Column{Name: "lease_token"}, Value: gorm.Expr("IF(VALUES(desired_message_id) > desired_message_id AND status <> ?, '', lease_token)", model.EpisodeProjectionProcessing)},
+		{Column: clause.Column{Name: "lease_ends_at"}, Value: gorm.Expr("IF(VALUES(desired_message_id) > desired_message_id AND status <> ?, NULL, lease_ends_at)", model.EpisodeProjectionProcessing)},
+		{Column: clause.Column{Name: "status"}, Value: gorm.Expr("IF(VALUES(desired_message_id) > desired_message_id AND status <> ?, ?, status)", model.EpisodeProjectionProcessing, model.EpisodeProjectionPending)},
+		{Column: clause.Column{Name: "updated_at"}, Value: gorm.Expr("IF(VALUES(desired_message_id) > desired_message_id, VALUES(updated_at), updated_at)")},
+		{Column: clause.Column{Name: "desired_message_id"}, Value: gorm.Expr("GREATEST(desired_message_id, VALUES(desired_message_id))")},
+	}
 }
 
 func (r *Repository) ListDue(ctx context.Context, limit, maxAttempts int, now time.Time) ([]model.EpisodeProjectionJob, error) {

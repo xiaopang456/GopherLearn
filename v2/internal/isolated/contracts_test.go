@@ -1,6 +1,7 @@
 package isolated
 
 import (
+	"GopherAI/internal/testclock"
 	"GopherAI/model"
 	agentService "GopherAI/service/agent"
 	"context"
@@ -40,6 +41,13 @@ func assertToolContract(t *testing.T, name string, actual []map[string]any) {
 	}
 }
 func TestActualToolSchemasAndOriginalWriteIntentCondition(t *testing.T) {
+	// The recorded contract contains the server clock rendered in the +08:00 zone
+	// the snapshot was captured in. The clock value itself is fixed by the
+	// fixture, but the rendering zone is the machine's local zone, so it has to
+	// be pinned: on a UTC runner the same instant renders as "...Z" and the
+	// comparison would fail for a reason that has nothing to do with the
+	// contract.
+	testclock.PinLocalCST(t)
 	for _, mode := range []string{"legacy_v2", "agent_memory_source_priority_v2"} {
 		for _, intent := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/write=%v", mode, intent), func(t *testing.T) {

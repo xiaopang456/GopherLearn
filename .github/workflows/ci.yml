@@ -46,6 +46,16 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: hybrid/go.mod
+      # The hybrid regressions drive the real Vue client through Node, so the
+      # web dependencies have to be installed before `go test`. Without them the
+      # Node helpers abort with ERR_MODULE_NOT_FOUND.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
       - run: gofmt -l .
       - run: go vet ./...
       - run: go test -count=1 ./...
