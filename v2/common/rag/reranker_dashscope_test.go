@@ -209,6 +209,31 @@ func TestDashScopeHealthProvesTheCredential(t *testing.T) {
 	}
 }
 
+// TestDashScopeHealthUsesANeutralProbe proves the startup probe does not
+// describe the service as local: a hosted service is not local, and the probe
+// text reaches the provider.
+func TestDashScopeHealthUsesANeutralProbe(t *testing.T) {
+	recorder := newHostedServer(t, http.StatusOK, `{"output":{"results":[{"index":0,"relevance_score":0.7}]}}`)
+	reranker, err := NewDashScopeReranker(recorder.server.URL, "qwen3-rerank", hostedToken, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reranker.Health(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	input, ok := recorder.request["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("input = %v", recorder.request["input"])
+	}
+	query, _ := input["query"].(string)
+	if query == "" {
+		t.Fatal("the startup probe sent no query")
+	}
+	if strings.Contains(query, "本地") {
+		t.Fatalf("the startup probe still calls the hosted service local: %q", query)
+	}
+}
+
 func TestDashScopeHealthPassesWhenTheServiceAnswers(t *testing.T) {
 	recorder := newHostedServer(t, http.StatusOK, `{"output":{"results":[{"index":0,"relevance_score":0.7}]}}`)
 	reranker, err := NewDashScopeReranker(recorder.server.URL, "qwen3-rerank", hostedToken, time.Second)

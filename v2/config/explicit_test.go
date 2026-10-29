@@ -126,6 +126,36 @@ rerankEnabled = false
 	}
 }
 
+// TestLoadExplicitForSchemaIgnoresTheReranker proves the schema tool is not
+// gated by the reranker: creating tables needs no rerank credential and no
+// rerank setting, so a deployment that enables the reranker must still be
+// able to create its schema.
+func TestLoadExplicitForSchemaIgnoresTheReranker(t *testing.T) {
+	path := rerankConfiguration(t, "")
+	t.Setenv("RAG_RERANK_AUTH_TOKEN", "")
+	loaded, err := LoadExplicitForSchema(path)
+	if err != nil {
+		t.Fatalf("schema load refused a rerank configuration: %v", err)
+	}
+	if loaded.RagModelConfig.RagRerankEnabled {
+		t.Fatal("the schema loader must not run with the reranker enabled")
+	}
+	// The running entry is the one that checks the reranker.
+	if _, err := LoadExplicit(path); err == nil {
+		t.Fatal("expected the running entry to refuse a missing rerank token")
+	}
+}
+
+// TestLoadExplicitForSchemaIgnoresAnUnknownRerankProvider proves the schema
+// tool validates no rerank setting at all, not even the provider name.
+func TestLoadExplicitForSchemaIgnoresAnUnknownRerankProvider(t *testing.T) {
+	path := rerankConfiguration(t, "")
+	t.Setenv("RAG_RERANK_AUTH_TOKEN", strings.Repeat("k", 32))
+	if _, err := LoadExplicitForSchema(path); err != nil {
+		t.Fatalf("schema load refused an unknown rerank provider: %v", err)
+	}
+}
+
 func TestRerankProviderValidation(t *testing.T) {
 	base := defaultConfig().RagModelConfig
 	base.RagRerankEnabled = true

@@ -8,6 +8,10 @@
 // never drops or rewrites existing rows, so running it against a populated
 // database keeps the data.
 //
+// The reranker is out of scope here: this tool reads no rerank credential and
+// validates no rerank setting, so a deployment that enables the reranker can
+// still create its schema.
+//
 // Usage:
 //
 //	go run ./cmd/schemainit -config ../config.integrated.toml.local
@@ -30,7 +34,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: schemainit -config <configuration file>")
 		os.Exit(2)
 	}
-	loaded, err := config.LoadExplicit(*path)
+	loaded, err := config.LoadExplicitForSchema(*path)
 	if err != nil {
 		log.Fatalf("load configuration: %v", err)
 	}

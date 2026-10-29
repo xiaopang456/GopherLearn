@@ -101,9 +101,9 @@ dimension = 1024
 # rerankProvider = "local"
 # rerankEndpoint = "http://127.0.0.1:18083"
 #
-# 单次调用上限（毫秒）。留空即用默认值：远程 15 秒、本地 30 秒。
-# 本地跑 CPU 时请调大，否则重排会超时降级成"看似开启实则没生效"。
-# rerankTimeoutMs = 15000
+# 单次调用上限（毫秒）。留空即用默认值：远程 5 秒、本地 30 秒。
+# 本地跑 CPU 时请调大（默认 30 秒可能不够），否则重排会超时降级。
+# rerankTimeoutMs = 5000
 
 # agentConfig / voiceServiceConfig 段整段省略：省略即沿用
 # v2/config/config.go:244-289 的原有默认（memoryReadMode=legacy_v2、

@@ -74,7 +74,7 @@ func NewDashScopeReranker(endpoint, model, token string, timeout time.Duration) 
 // model. A hosted endpoint has no health probe, so one synthetic rerank call
 // stands in for it.
 func (r *DashScopeReranker) Health(ctx context.Context) error {
-	if _, err := r.Rerank(ctx, "本地重排序服务健康检查", []string{"本地重排序服务已经就绪。"}); err != nil {
+	if _, err := r.Rerank(ctx, "重排服务健康检查", []string{"重排服务已经就绪。"}); err != nil {
 		return fmt.Errorf("%w: rerank startup check: %w", ErrRerankUnavailable, err)
 	}
 	return nil
