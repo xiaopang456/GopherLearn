@@ -200,7 +200,7 @@ go build -o ..\bin\gopherlearn-integrated.exe .\cmd\gopherlearn-integrated
 ..\bin\gopherlearn-integrated.exe -config ..\config.integrated.toml.local
 ```
 
-启动时会发**一次**最小重排请求做自检（1 个问题 + 1 条切片）：这一步同时证明密钥、模型名与网络通路都是通的，它消耗部署者的一点额度。
+启动时会发**一次**最小重排请求做自检（1 个问题 + 1 条切片）：这一步同时证明密钥、模型名与网络通路都是通的，它消耗部署者的一点额度。**自检失败就不会启动**，具体原因见下面的"启动失败时怎么读提示"。
 
 **要知道的两件事**：
 
