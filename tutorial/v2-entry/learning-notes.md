@@ -67,4 +67,4 @@ snippet 是召回切片，原文读取需要原 SourceReader 核对所有权、�
 
 ## 2026-10-07 history 可见性勘误
 
-负责人撤回旧“无 grant 也静态提供 read_history_message”要求，确认其为协调指令错误。此文上方为 70436c6 交付历史记录；其中静态能力说明与旧工具表已由后续恢复原 Tools 的纠偏替代。装配 registry、本回合 Tools 返回与执行读取授权须分别理解。来源/旧 Schema/机械清单/评估失败不改写，当前工具表、哈希及验证见 [../v2-history-correction/README.md](../v2-history-correction/README.md)。
+负责人撤回旧“无 grant 也静态提供 read_history_message”要求，确认其为协调指令错误。此文上方为 70436c6 交付历史记录；其中静态能力说明与旧工具表已由后续恢复原 Tools 的纠偏替代。装配 registry、本回合 Tools 返回与执行读取授权须分别理解。来源/旧 Schema/机械清单/评估失败不改写，当前工具表以 `v2/service/agent/tool/` 的源码为准，哈希与验证读数见 [../v2-production-entry/README.md](../v2-production-entry/README.md)（那份纠偏记录本身不在本次公开快照内）。
