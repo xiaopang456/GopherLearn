@@ -1,0 +1,9 @@
+{
+  "errors": [
+    {"method":"GET","path":"/api/v1/me","body":"","token":"invalid","status":401,"response":"{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"},
+    {"method":"POST","path":"/api/v1/auth/login","body":"{\"email\":\"learner@invalid.example\",\"password\":\"wrong\"}","token":"","status":401,"response":"{\"data\":null,\"error\":{\"code\":\"invalid_credentials\",\"message\":\"invalid credentials\"}}\n"},
+    {"method":"POST","path":"/api/v1/sessions","body":"{\"mode\":\"unknown\"}","token":"authenticated","status":400,"response":"{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"},
+    {"method":"POST","path":"/api/v1/sessions","body":"{\"mode\":\"chat\",\"user_id\":\"2\"}","token":"authenticated","status":400,"response":"{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"}
+  ],
+  "ordinary_sse":"event: message.started\ndata: {}\n\nevent: message.delta\ndata: {\"delta\":\"回答：golden\"}\n\nevent: message.completed\ndata: {\"content\":\"回答：golden\",\"message_id\":\"2\"}\n\n"
+}

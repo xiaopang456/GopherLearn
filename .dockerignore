@@ -1,0 +1,57 @@
+# Build context hygiene for Phase 8C's images.
+#
+# The Dockerfiles copy narrow paths, so a leaked line here would only matter if a
+# COPY were widened later - which is exactly what this file is for: the context must
+# not contain the things that must never reach an image layer, even by accident.
+#
+# Credentials and local state first: the repo keeps its real values in *.local files,
+# and the examples are documentation for humans, not inputs to a build (no COPY line
+# reads them).
+.git
+.gitignore
+.env
+.env.*
+# Both suffix rules stay: the two documented readings of a pattern without a separator
+# disagree about subdirectories (Docker's table says root only, the matcher moby ships
+# follows .gitignore and matches any depth), and neither reading is relied on. Nothing
+# here is tracked under a *.local name, so these two lines can only exclude local state.
+*.local
+**/*.local
+*.env
+
+# Runtime state that belongs to the host, never to an image.
+data/
+uploads/
+bin/
+coverage.out
+
+# Build leftovers and scratch files from any round.
+*.exe
+*.dll
+*.test
+*.log
+*.tmp
+*.bak
+*.orig
+*.pid
+
+# Sealed evidence and verification records: they describe what was proved, and are not
+# part of the program.
+spec/
+
+# The frontend's own install output and previous build results: the frontend image
+# runs `npm ci` and `vite build` inside its own build stage.
+web/node_modules/
+web/dist/
+web/coverage/
+web/.vite/
+web/test/
+
+# Any directory that came from an earlier project rather than from this build.
+GopherAI-v1/
+GopherAI-v2/
+GopherLearn-v3/
+GopherLearn-v3.1/
+work/
+optimization/
+tutorial/

@@ -1,0 +1,156 @@
+{
+  "redis": {
+    "head": "0d5255587a1afb1fce845b6ad6b43945bec56f85",
+    "manifest_path": "tutorial/v2-redis-gates/deliverable-hashes.json",
+    "manifest_sha256": "0a94922c53a846818ca173838a5d01342f54112b3c990eefc2a860bc4e4fcf0c",
+    "manifest_items": 344,
+    "components": [
+      {
+        "path": "tutorial/v2-redis-gates/redis_gates.py",
+        "blob_sha256": "4ec862643dd6adbf9f1650386a88b025be8f1f9e7ceda04a49660831f66bcdf0",
+        "bytes": 138347
+      },
+      {
+        "path": "tutorial/v2-redis-gates/gate-bootstrap.sh",
+        "blob_sha256": "4c14460074fa6cf528ac923eac2629a77ae787bbd3c8db4e6827b05251d765ad",
+        "bytes": 916
+      },
+      {
+        "path": "tutorial/v2-redis-gates/gate-inject.sh",
+        "blob_sha256": "5c048fd2bc09476c55518ee7882257a50c40c974107cf2bef131d34400effb7c",
+        "bytes": 1240
+      },
+      {
+        "path": "tutorial/v2-redis-gates/gate-mount-watch.sh",
+        "blob_sha256": "590f886094e8a87b2ab4add88f5bdb0f41335db35a0be617aceabc9f9abd7fbe",
+        "bytes": 4788
+      },
+      {
+        "path": "tutorial/v2-redis-gates/gate-secret-shape.sh",
+        "blob_sha256": "8a0803ccc980d73800e745a9ff066cacbf6e4b811b5bd778226bb3d9b29fe27a",
+        "bytes": 1747
+      }
+    ],
+    "contract": {
+      "image": "redis/redis-stack-server:7.4.0-v8@sha256:39adcbb083b240642cd5738a75c4959c0393ef2a40fa545f2e1c7b55798eeda4",
+      "platform": "linux/amd64",
+      "port": "65069",
+      "version": "7.4.7",
+      "verify_rows_running": "9",
+      "verify_rows_at_create": "6",
+      "gate_ping_cap": "20"
+    },
+    "command_caps": {
+      "redis.cli.ping": 20,
+      "redis.cli.info": 1,
+      "redis.cli.dbsize": 1,
+      "redis.cli.unauth": 1,
+      "redis.cli.modules": 1,
+      "redis.cli.searchprobe": 1,
+      "redis.cli.indexlist": 6,
+      "redis.cli.residue": 4,
+      "container.credential.inject": 1,
+      "container.mount.watch": 1,
+      "container.secret.shape": 1,
+      "host.port.check": 1,
+      "docker.image.inspect": 30,
+      "docker.container.inspect": 30,
+      "docker.network.inspect": 30,
+      "docker.network.create": 1,
+      "docker.container.create": 1,
+      "docker.container.start": 1,
+      "docker.container.remove": 1,
+      "docker.network.remove": 1,
+      "docker.container.absent": 2,
+      "docker.network.absent": 2
+    },
+    "provenance": "extracted by seal_reuse.py from commit 0d5255587a1afb1fce845b6ad6b43945bec56f85; the manifest excludes itself, so it is checked by its own sha256 instead"
+  },
+  "joint": {
+    "head": "1845cea181111288534018ea83dab7fba3fa76bc",
+    "directory": "tutorial/v2-j1-knowledge/",
+    "manifest_path": "tutorial/v2-j1-knowledge/deliverable-hashes.json",
+    "manifest_sha256": "a501a6041943aaeafc2a286628c035f0e8e88f587952f0d8889f3a2ce59d29a3",
+    "manifest_items": 65,
+    "components": [
+      {
+        "path": "tutorial/v2-j1-knowledge/j1_gates.py",
+        "blob_sha256": "6cffb5f46bc891d1c63c3bd6fdbb8423be3c17d20d161f11ae961a400c857c4c",
+        "bytes": 87538
+      },
+      {
+        "path": "tutorial/v2-j1-knowledge/j1_mysql.py",
+        "blob_sha256": "ba6ca53471812657f25081f7ad3e2091acb423d77a684a277ac5b4a202218eb0",
+        "bytes": 25164
+      },
+      {
+        "path": "tutorial/v2-j1-knowledge/j1_redis.py",
+        "blob_sha256": "865dd6ee68224d3f3afe534d1f87f1da907d4a96e84d17aa194445ac0ef87a6f",
+        "bytes": 13454
+      },
+      {
+        "path": "tutorial/v2-j1-knowledge/j1_resources.py",
+        "blob_sha256": "76c85faf308be2627f98695c63f1a6f4fb57f4678117669bff855081c6801448",
+        "bytes": 5869
+      },
+      {
+        "path": "tutorial/v2-j1-knowledge/j1_frozen.py",
+        "blob_sha256": "165618de73a9fe2eda5e412a85c703654dbcd3667f62b3c3472d14e8dc4e883d",
+        "bytes": 17653
+      }
+    ],
+    "imported": [
+      "j1_gates.py",
+      "j1_mysql.py",
+      "j1_redis.py",
+      "j1_resources.py",
+      "j1_frozen.py"
+    ],
+    "provenance": "the modules this window imports from the knowledge batch, read as commit objects at 1845cea181111288534018ea83dab7fba3fa76bc; the window itself is never opened for writing"
+  },
+  "mysql": {
+    "lineage_start": "e8fb24a2b568235937c945af1c27f0815fd9b9d5",
+    "accepted_components": [
+      "tutorial/v2-tmpfs-m1a/repository_gates.py",
+      "tutorial/v2-tmpfs-m1g/m1g_gates.py",
+      "tutorial/v2-tmpfs-i0-m0/gates.py",
+      "tutorial/v2-credential-start-experiment/experiment.py",
+      "tutorial/v2-docker-credential-tool/credential_tool.py"
+    ],
+    "note": "the MySQL half is imported in-tree by the accepted layering; its ceilings are re-read from those bytes by episode_gates.episode_mysql_contract(), not retyped here",
+    "episode_sequence": {
+      "identity_reads": [
+        "image.identity",
+        "resource.create.verify",
+        "start.identity",
+        "ready.identity",
+        "gate.i0.identity",
+        "dispatch.identity",
+        "cleanup.verify"
+      ],
+      "image_inspect": 7,
+      "container_inspect": 6,
+      "schema_sql_calls": [
+        "create",
+        "empty-check",
+        "residue-schemas",
+        "residue-accounts"
+      ],
+      "schema_sql": 4,
+      "go_categories": {
+        "go.gate.I0.episode.compile": 1,
+        "go.gate.I0.episode.binary": 1,
+        "go.gate.I0.episode.convert": 1,
+        "go.gate.J1E.episode": 1
+      },
+      "slot": "episode",
+      "prefix": "J1E",
+      "initializer_label": "I0.episode",
+      "gate_label": "J1E.episode",
+      "allowed_index": "gopherai_episode_v2_idx",
+      "allowed_prefix": "gopherai:episode:vec:",
+      "accepted_stage_names_are_closed": true,
+      "derivation": "image_inspect = len(identity_reads); container_inspect = that minus the preflight, which reads an image while no container exists yet"
+    }
+  }
+}

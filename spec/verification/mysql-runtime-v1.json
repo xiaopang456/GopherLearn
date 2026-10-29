@@ -1,0 +1,181 @@
+{
+  "schema": "gopherlearn.mysql-runtime.v1",
+  "phase": "8B.1",
+  "recorded_at_utc": "2026-09-27T04:06:00Z",
+  "purpose": "First verification of this build against a real MySQL server rather than an embedded engine. Records only versions, booleans and counts: no connection string, no account name, no password, no token, no request body, and no digest of learner content.",
+  "environment": {
+    "docker_daemon": "Docker Desktop 4.74.0 (engine 29.4.3, linux/amd64)",
+    "mysql_image_digest": "sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b",
+    "mysql_server_version": "8.0.46",
+    "character_set_server": "utf8mb4",
+    "collation_server": "utf8mb4_0900_ai_ci",
+    "compose_file": "compose.mysql.yml",
+    "compose_services": 1,
+    "application_containerised": false,
+    "backend_started_from": "host",
+    "web_frontend_started_from": "host (unchanged; no web/ file was touched this round)",
+    "published_address": "127.0.0.1:3308",
+    "network_name": "gopherlearn-mysql_default",
+    "volume_name": "gopherlearn-mysql-8b1-data",
+    "healthcheck_required_before_use": true,
+    "redis_in_stack": false,
+    "rabbitmq_in_stack": false,
+    "provider_in_stack": false,
+    "default_storage_mode_still_memory": true,
+    "credentials_source": "uncommitted local env file (.env.mysql.local, ignored by the repo's *.local rule); placeholders only in .env.mysql.example"
+  },
+  "migration": {
+    "core_migrate_ok": true,
+    "knowledge_migrate_ok": true,
+    "migrated_on_first_start_against_empty_schema": true,
+    "tables_created": 14,
+    "table_names": [
+      "users", "sessions", "messages", "message_sources", "session_summaries",
+      "memories", "memory_sources",
+      "learning_sessions", "learning_questions", "learning_attempts", "topic_progress",
+      "knowledge_collections", "knowledge_documents", "knowledge_chunks"
+    ],
+    "unique_indexes_present": [
+      "uniq_learning_open(active_key)",
+      "uniq_learning_submission(user_id,submission_id)",
+      "uniq_learning_question(learning_session_id,ordinal)",
+      "uniq_topic_progress(user_id,topic_key)",
+      "idx_memory_sources(memory_id,position)",
+      "idx_message_sources(message_id,position)",
+      "idx_users_email(email)"
+    ]
+  },
+  "runtime_verification": {
+    "harness": "throwaway host-side script driving the published HTTP API; not committed",
+    "checks_run": 28,
+    "checks_passed": 28,
+    "results": {
+      "registration": true,
+      "login": true,
+      "chat_session_created": true,
+      "learning_agent_session_created": true,
+      "messages_persisted": true,
+      "citation_rows_persisted": true,
+      "citation_order_read_back_matches_write": true,
+      "knowledge_collection_created": true,
+      "document_uploaded_and_chunked": true,
+      "grounded_retrieval_returned_citations": true,
+      "session_summary_row_written_over_http": false,
+      "session_summary_table_and_cas_verified_separately": true,
+      "memory_pending_to_active": true,
+      "memory_active_to_superseded": true,
+      "memory_active_to_archived": true,
+      "memory_sources_position_order_preserved": true,
+      "learning_quiz_three_questions": true,
+      "learning_attempts_persisted": true,
+      "topic_progress_projection_persisted": true,
+      "cjk_learner_text_round_trip": true,
+      "cjk_topic_key_round_trip": true,
+      "long_text_round_trip": true,
+      "submission_id_replay_grades_once": true,
+      "submission_id_replay_response_byte_identical": true,
+      "cross_account_session_indistinguishable_from_missing": true,
+      "cross_account_quiz_indistinguishable_from_missing": true,
+      "cross_account_memories_isolated": true,
+      "quiz_on_plain_chat_still_refused_under_mysql": true
+    },
+    "notes": {
+      "session_summary_row_written_over_http_is_false_because": "the run used provider=echo, where session summaries are disabled by design and no summary model is assembled; the table, the first commit, the version increment and the stale-commit refusal are covered by repository_integration_test instead",
+      "quiz_on_plain_chat_still_refused_under_mysql_is": "400 invalid_request, unchanged from the memory-store contract; the refusal wrote no quiz and called no model",
+      "learner_answer_quality": "the quiz in this run was generated and graded by the scripted local model, so no number here says anything about a real model's questions or judgements"
+    },
+    "row_counts_after_verification": {
+      "users": 2,
+      "sessions": 2,
+      "messages": 4,
+      "message_sources": 4,
+      "session_summaries": 0,
+      "knowledge_collections": 1,
+      "knowledge_documents": 1,
+      "knowledge_chunks": 4,
+      "memories": 2,
+      "memory_sources": 3,
+      "learning_sessions": 1,
+      "learning_questions": 3,
+      "learning_attempts": 3,
+      "topic_progress": 1
+    }
+  },
+  "repository_integration_test": {
+    "file": "internal/repository/gormmysql/mysql_integration_test.go",
+    "env_switch": "GOPHERLEARN_MYSQL_INTEGRATION_DSN",
+    "default_go_test_requires_docker": false,
+    "skips_with_reason_when_switch_unset": true,
+    "schema_strategy": "a throwaway schema per run, created and dropped by the test itself",
+    "assertion_subtests_passed": 90,
+    "assertion_subtests_failed": 0,
+    "shared_suites_run_against_real_mysql": [
+      "repositorytest.Suite",
+      "repositorytest.MemorySuite",
+      "repositorytest.LearningSuite",
+      "knowledgetest.Suite"
+    ],
+    "engine_specific_findings": {
+      "open_quiz_uniqueness_is_a_database_constraint": true,
+      "nullable_active_key_lets_finished_quizzes_release_their_conversation": true,
+      "stale_summary_commit_refused_and_row_unchanged": true,
+      "four_byte_characters_and_long_cjk_text_round_trip": true,
+      "mysql_reports_the_duplicate_as_gorm_errduplicatedkey": "the driver error type alone is not what the repository matches; gorm's TranslateError maps 1062 first, and the production predicate checks both"
+    },
+    "mutation_probe": {
+      "change": "the uniqueIndex tag on active_key was renamed so AutoMigrate built the schema without uniq_learning_open",
+      "result": "the engine-specific case failed with 'a second open quiz on one conversation was stored', then the file was restored byte-identical (sha256 ef592ff7b58b158de55cdcd4d10aaf73b19dac449dda435dc259211a554f45c5)"
+    }
+  },
+  "restart_persistence": {
+    "backend_restarted_volume_kept": true,
+    "backend_restart_used_a_fresh_signing_secret": true,
+    "login_works_after_restart_from_stored_hash": true,
+    "sessions_recovered": true,
+    "messages_recovered": true,
+    "knowledge_document_and_chunks_recovered": true,
+    "memory_states_recovered": true,
+    "memory_provenance_order_recovered": true,
+    "learning_progress_recovered": true,
+    "citation_order_unchanged": true,
+    "sql_fingerprint_identical_after_backend_restart": true,
+    "mysql_container_restarted_volume_kept": true,
+    "sql_fingerprint_identical_after_mysql_restart": true,
+    "reads_repeated_after_mysql_restart": true,
+    "first_request_after_container_restart_status": 500,
+    "recovered_on_attempt": 2,
+    "first_request_failure_observed_times": 2,
+    "first_request_failure_note": "reproduced on both MySQL restarts: a pooled connection torn by the restart surfaced as one 500 while the next request succeeded and no row changed. Cause established from the driver's own stderr line (a torn TCP connection to the published port). Not established: whether this is a torn-idle-connection retry gap in the pool settings or the request racing the server coming back; a production rolling restart was not measured."
+  },
+  "external_usage": {
+    "docker_and_mysql_used": true,
+    "provider_requests": 0,
+    "embedding_requests": 0,
+    "redis_connections": 0,
+    "rabbitmq_connections": 0,
+    "application_images_built": 0,
+    "model_smoke_commands_run": false,
+    "agent_tool_smoke_commands_run": false
+  },
+  "protected_artifacts_unchanged": {
+    "http_contract_golden_sha256": "36da938dc19b7f45c3347a867b7e9b17c9a603bd7382198ce1a1a3e2e8d55e7e",
+    "provider_smoke_v1_sha256": "ee0ba6c4cda0109dde14590b0a80720d75bc04eeca9dbf6713e76495c307aeb8",
+    "agent_tool_smoke_v1_sha256": "3296df13a837da9acd4428d4cd6531a07b59aa12ed300b2f9172ec8e86ab785a",
+    "agent_tool_smoke_v2_sha256": "a3d5d1c6c42c7162fb9e7bd0a5a1a213dc7448e6cdf016052449abc48cd52048"
+  },
+  "not_recorded_by_design": [
+    "connection string",
+    "account names and passwords",
+    "bearer tokens",
+    "request or response bodies",
+    "row identifiers",
+    "any digest of learner content"
+  ],
+  "still_not_proved": [
+    "no real provider was contacted, so nothing here attests question quality, grading quality or answer quality",
+    "memory_search and propose_memory remain unrun against a provider",
+    "no Redis full-text index and no trained embedding model exist in this build",
+    "this is one developer machine with one container: it is not a load test, a failover test or an upgrade test",
+    "MySQL 8.0 only; no MariaDB or 5.7 claim is made"
+  ]
+}

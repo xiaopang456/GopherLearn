@@ -1,0 +1,136 @@
+# 整合入口（gopherlearn-integrated）配置模板。
+#
+# 用法：复制成 `config.integrated.toml.local`（后缀 `.local` 同时命中 .gitignore 与
+# .dockerignore 的 `*.local` 规则——该规则匹配的是**后缀**，写成
+# <stem>.local.toml 这种中缀名就谁都不命中），填占位值，再以 `-config` 显式传给入口。
+# 真实凭据不得进入本文件、Git、构建上下文、日志或报告。
+#
+# 各段对应的读取位置（本轮没有新增配置面，也没有改任何默认值）：
+#   [isolatedEntry]  v2/internal/isolated/settings.go:16-23；migrate 由 hybrid/entry.go:27-29 拒绝
+#   其余 V2 段        v2/config/config.go:217-226 的段名与 toml 键名，未重命名、未合并
+#   [ordinaryChat]   conversation/client.go:13-19 的保留键白名单；白名单外的键在装载期被拒
+#
+# 三类约束要分清（详见 tutorial/v2-production-entry/README.md 的措辞表）：
+#   入口会**拒绝**的：缺 -config、非法 TOML、缺强制字段、isolated=false、migrate=true、
+#                     ordinaryChat 未知键、普通客户端不是 openai_compatible、密钥短于 32 字节。
+#   模板给的**默认值**：下面的库名/库号/目录/端口都是本整合栈的取值，不是入口的强制检查。
+#   **操作人员**必须保证：这些取值指向的是整合栈自己的 schema、Redis 实例与目录，
+#                     不与基线入口共用——入口无法识别"这是旧库"，它只能识别"没显式写"。
+
+[isolatedEntry]
+isolated = true
+migrate = false
+chatKey = "REPLACE_WITH_CHAT_PROVIDER_KEY"
+chatModel = "REPLACE_WITH_CHAT_MODEL_NAME"
+chatBaseURL = "https://provider.invalid/v1"
+embeddingKey = "REPLACE_WITH_EMBEDDING_PROVIDER_KEY"
+
+[mainConfig]
+# 宿主直跑用 127.0.0.1:18082（避开基线后端的 8080）；容器里跑要改成 0.0.0.0:8080，
+# 因为共用的 nginx.frontend.conf 反代到 backend:8080。
+host = "127.0.0.1"
+port = 18082
+
+[mysqlConfig]
+host = "gopherlearn-integrated-mysql"
+port = 3306
+user = "gopherlearn_v2_integration"
+password = "REPLACE_WITH_SCHEMA_ACCOUNT_PASSWORD"
+# 整合栈独占的 schema 名。入口只强制"必须显式写"，写旧库名它不会拦，所以"指向新申请的
+# schema"是部署前置条件，不是代码保证。
+databaseName = "gopherlearn_v2_integration"
+charset = "utf8mb4"
+
+[redisConfig]
+# 独立 Redis Stack 实例（compose.integrated.yml 的 redis 服务），容器 DNS 名即此值。
+host = "gopherlearn-integrated-redis"
+port = 6379
+# 0 号库：验收批（R1/R2、J1、Episode）实际用的就是该实例上的 db 0。隔离靠**独立实例**，
+# 不靠库号；在共用实例上选一个非 0 库不是隔离，也不会被入口发现。
+db = 0
+# 服务端口令来自挂载到 /redis-stack.conf 的 redis.integrated.conf.local（模板
+# redis.integrated.conf.example），此处的值必须与它逐字相同，否则认证失败表现为检索不可用。
+# deploy/redis-stack-preflight.sh 要求服务端那个值至少 32 字节且不是占位串。
+password = "REPLACE_WITH_REDIS_PASSWORD"
+
+[jwtConfig]
+# 至少 32 字节；被撤换的默认值会被 v2/config/config.go:523-538 直接拒绝。
+key = "REPLACE_WITH_A_RANDOM_SECRET_OF_AT_LEAST_32_BYTES"
+expire_duration = 24
+# 整合入口统一用 V2 令牌体系；issuer 取值本身不是隔离判据，入口不校验它是否"新"。
+issuer = "gopherlearn-integrated"
+subject = "gopherlearn-integrated-user"
+
+[knowledgeConfig]
+# 本入口独占的源文件目录。入口只要求显式给出；与基线共用同一目录会争用同一批原文件，
+# 而这一点无法由配置装载发现。容器部署时该路径挂在可写卷上。
+storageDir = "data/gopherlearn-integrated/knowledge"
+
+# 文档处理方式。公开版只提供进程内处理：后端自己的 IndexWorkerPool 解析、切片、
+# embedding 并把向量写入 Redis，文档的问答直接检索这些向量。
+#
+# executionMode 因此没有可选项：省略或 "legacy" 都是同一个进程内处理；写出别的值
+# （例如旧版本遗留的 "candidate"）会在启动时被拒绝，而不是悄悄降级成本地处理。
+# executionMode = "legacy"
+
+# 文档处理状态由文档所有者自己的接口查看：
+# GET /api/v1/knowledge/documents/:id/processing —— 回答 {"mode":"legacy","status":<index_status>}。
+# 没有跨用户的运维接口：/api/v1/ops/document-processing/... 一律 404。
+
+[ragModelConfig]
+embeddingModel = "REPLACE_WITH_EMBEDDING_MODEL_NAME"
+embeddingBaseUrl = "https://embedding.invalid/v1"
+chatModelName = "REPLACE_WITH_CHAT_MODEL_NAME"
+baseUrl = "https://provider.invalid/v1"
+# 与 v2/common/redis/key.go:12 的向量维度一致；改它等于改索引 schema。
+dimension = 1024
+rerankEnabled = false
+
+# agentConfig / voiceServiceConfig 段整段省略：省略即沿用
+# v2/config/config.go:244-289 的原有默认（memoryReadMode=legacy_v2、
+# episodeRecallMode=shadow_only、episode relation off 等）。本轮不调预算、不改默认，
+# 需要覆写时按 v2/config/config.go 的 toml 键名逐键写，不自造键名。
+
+[emailConfig]
+# 发送注册验证码的 SMTP 设置。**只有这一处**用到邮件：注册时发送验证码。
+#
+# 缺这一段会怎样：服务器照常启动，登录、会话、文档、记忆、学习、Agent 全部照常工作，
+# 已存在的账号不受任何影响；只有"新用户注册"这一条路走不通。此时
+# POST /api/v1/user/captcha 会回答业务码 2012「邮件服务未配置，无法发送验证码」，
+# 而不是含糊的「服务繁忙」。启动时也会打印一行同样的提示。
+#
+# email    发件地址（同时用作 SMTP 登录用户名）。留空即视为未配置。
+# authcode 该邮箱的 SMTP 授权码（不是登录密码）。留空即视为未配置。
+# host     SMTP 主机。留空使用历史默认值 smtp.qq.com。
+# port     SMTP 端口。留 0 使用历史默认值 587。
+#
+# 只想在本机验证注册链路时，把 host/port 指向一个本地 SMTP 捕获服务即可，
+# 不需要真的把邮件发出去。
+email = "REPLACE_WITH_THE_SENDER_ADDRESS"
+authcode = "REPLACE_WITH_THE_SMTP_AUTHORIZATION_CODE"
+host = "smtp.qq.com"
+port = 587
+
+[ordinaryChat]
+# 保留的普通聊天：只走 GopherLearn 的 DirectChat，不经 Agent 循环、不接 MQ。
+# 键名沿用原实现的常量名（conversation/client.go:13-19 白名单），值不读环境变量。
+GOPHERLEARN_AI_PROVIDER = "openai_compatible"
+GOPHERLEARN_OPENAI_BASE_URL = "https://provider.invalid/v1"
+GOPHERLEARN_OPENAI_API_KEY = "REPLACE_WITH_ORDINARY_CHAT_PROVIDER_KEY"
+GOPHERLEARN_OPENAI_MODEL = "REPLACE_WITH_ORDINARY_CHAT_MODEL_NAME"
+# 可选项留空即沿用 internal/openai/config.go 与 internal/app/app.go 的原默认值；
+# 需要覆写时取消注释，取值范围由原校验把关（temperature 0..2、timeout 为正 Go duration）。
+# GOPHERLEARN_OPENAI_ENABLE_THINKING = "false"
+# GOPHERLEARN_OPENAI_TEMPERATURE = "0.7"
+# GOPHERLEARN_OPENAI_MAX_OUTPUT_TOKENS = "1024"
+# GOPHERLEARN_OPENAI_TIMEOUT = "60s"
+# GOPHERLEARN_CONTEXT_MAX_MESSAGES = "20"
+# GOPHERLEARN_CONTEXT_MAX_RUNES = "12000"
+# GOPHERLEARN_SUMMARY_TRIGGER_MESSAGES = "12"
+# GOPHERLEARN_SUMMARY_TRIGGER_TOKENS = "6000"
+# GOPHERLEARN_SUMMARY_KEEP_RECENT_MESSAGES = "8"
+# GOPHERLEARN_SUMMARY_MAX_INPUT_TOKENS = "8000"
+# GOPHERLEARN_SUMMARY_MAX_OUTPUT_TOKENS = "800"
+# GOPHERLEARN_SUMMARY_TIMEOUT = "20s"
+# GOPHERLEARN_SUMMARY_STAGE_BUDGET = "8s"
+# GOPHERLEARN_SUMMARY_FAILURE_COOLDOWN = "30s"

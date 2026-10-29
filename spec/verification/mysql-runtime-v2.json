@@ -1,0 +1,88 @@
+{
+  "schema": "gopherlearn.mysql-runtime.v2",
+  "phase": "8B.3",
+  "recorded_at_utc": "2026-09-27T05:22:21Z",
+  "supersedes": "Records the pool idle bound only. spec/verification/mysql-runtime-v1.json is the sealed record of the first real-MySQL run and was neither edited nor overwritten.",
+  "change_under_test": "internal/repository/gormmysql: Options.ConnMaxIdleTime, applied through the production dial path, so a connection the server closed cannot wait in the free list indefinitely",
+  "pool_configuration": {
+    "default_conn_max_idle_time": "90s",
+    "conn_max_lifetime": "30m",
+    "max_open_conns": 25,
+    "max_idle_conns": 25,
+    "lifetime_and_limits_unchanged_from_v1": true,
+    "injected_by_the_test": "300ms",
+    "opt_out": "a negative value passes through to database/sql as no idle limit"
+  },
+  "kill_and_recovery": {
+    "server": "MySQL 8.0.46 (same pinned image digest as v1)",
+    "test": "internal/repository/gormmysql.TestRealMySQLIdleBoundRetiresAKilledConnection",
+    "result": "pass",
+    "duration_seconds": 2.75,
+    "steps_observed": {
+      "pooled_connection_established": true,
+      "killed_server_side": true,
+      "killed_connection_gone_from_processlist": true,
+      "waited_past_injected_idle_bound": true,
+      "next_query_succeeded": true,
+      "recovered_on_a_different_connection_id": true
+    },
+    "negative_control": {
+      "configuration": "idle bound disabled (negative), same sequence, same server",
+      "result": "the next query failed with 'invalid connection'",
+      "goos": "windows",
+      "meaning": "the recovery above is the idle bound working, not the platform noticing the dead socket; the driver's liveness probe is compiled out on Windows"
+    }
+  },
+  "connection_leak": {
+    "observed": false,
+    "open_connections_during_the_test_at_most": 3,
+    "open_connections_after_closing_the_pool": 0
+  },
+  "regression": {
+    "real_mysql_contract_subtests_passed": 90,
+    "real_mysql_contract_subtests_failed": 0,
+    "default_suite_without_docker_packages_ok": 20,
+    "default_suite_requires_docker": false,
+    "gated_tests_skip_without_env_switch": true,
+    "env_switch": "GOPHERLEARN_MYSQL_INTEGRATION_DSN",
+    "gofmt_clean": true,
+    "go_vet_clean": true,
+    "builds": 3
+  },
+  "not_changed": {
+    "automatic_retry_of_writes": false,
+    "per_request_ping": false,
+    "restart_window_errors_masked_as_success": false,
+    "health_or_readiness_route_added": false,
+    "mysql_runtime_v1_edited": false,
+    "web_directory_touched": false,
+    "default_memory_mode_startup_changed": false
+  },
+  "external_usage": {
+    "docker_and_mysql_used": true,
+    "provider_requests": 0,
+    "embedding_requests": 0,
+    "redis_connections": 0,
+    "rabbitmq_connections": 0
+  },
+  "protected_artifacts_unchanged": {
+    "http_contract_golden_sha256": "36da938dc19b7f45c3347a867b7e9b17c9a603bd7382198ce1a1a3e2e8d55e7e",
+    "provider_smoke_v1_sha256": "ee0ba6c4cda0109dde14590b0a80720d75bc04eeca9dbf6713e76495c307aeb8",
+    "agent_tool_smoke_v1_sha256": "3296df13a837da9acd4428d4cd6531a07b59aa12ed300b2f9172ec8e86ab785a",
+    "agent_tool_smoke_v2_sha256": "a3d5d1c6c42c7162fb9e7bd0a5a1a213dc7448e6cdf016052449abc48cd52048",
+    "mysql_runtime_v1_sha256": "97b8f09a6f7f3cc4d722ea2152e28f7995d82e20ccd88555864d65500cc3532a"
+  },
+  "not_recorded_by_design": [
+    "connection string",
+    "account names and passwords",
+    "bearer tokens",
+    "request or response bodies",
+    "row identifiers",
+    "any digest of learner content"
+  ],
+  "limits_of_this_record": [
+    "the bound narrows the window; a connection torn while a request is already in flight still fails, and an unreachable database still returns errors",
+    "single node, one container, one host: nothing here is a high-availability or rolling-restart result",
+    "MySQL 8.0.46 only"
+  ]
+}

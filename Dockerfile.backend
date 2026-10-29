@@ -1,0 +1,47 @@
+# syntax=docker/dockerfile:1
+
+# Build stage. The Go version matches the `go 1.24.0` directive in go.mod, and the tag
+# is pinned to a patch so a rebuild months later uses the same compiler. GO_IMAGE exists so
+# a mirrored or air-gapped network can point the build at its own copy of the same image
+# without editing this file; the default is always the canonical upstream name.
+ARG GO_IMAGE=golang:1.24.10-bookworm
+FROM ${GO_IMAGE} AS build
+
+WORKDIR /src
+
+# Module files first, then the whole source tree: only cmd/ and internal/ are needed to
+# build the server, and nothing else in this repository belongs in the binary - which is
+# also why .dockerignore excludes spec/, the sealed verification records and every *.local
+# credential file from the context in the first place.
+COPY go.mod go.sum ./
+COPY cmd ./cmd
+COPY internal ./internal
+
+# GOCACHE and the module cache are build caches, not image content: they never appear in
+# the final layer. CGO is off, so the binary is static and needs no libc at runtime.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
+    -o /out/gopherlearn ./cmd/gopherlearn
+
+# Runtime stage: scratch, so the image contains the binary and a CA bundle and nothing
+# else - no shell, no package manager, no toolchain, no source, no tests, and no MySQL,
+# Redis or RabbitMQ client to run "just to check".
+FROM scratch
+
+# The CA store is copied from the build stage's own filesystem. The default provider is
+# `echo` and no credential is baked in, but an image that could not verify a TLS peer if
+# an operator later pointed it at an HTTPS endpoint would fail in a confusing way, so the
+# roots are here and nothing else is.
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=build /out/gopherlearn /gopherlearn
+
+# An arbitrary high uid with no /etc/passwd entry: the process is never root, and files it
+# would need to write must be given to it by the operator, which this build does not need.
+USER 65532:65532
+
+EXPOSE 8080
+
+# The program reads every setting from the environment and fails fast when a required one
+# is missing; no entrypoint script, so no shell is needed either.
+ENTRYPOINT ["/gopherlearn"]

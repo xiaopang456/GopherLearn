@@ -1,0 +1,114 @@
+# Phase 8C: the three-service local stack - MySQL (8B.1's service, reused), the Go
+# backend and the web client - behind one command:
+#
+#   docker compose --env-file .env.compose.local \
+#     -f compose.mysql.yml -f compose.app.yml up --build
+#
+# The project name comes from compose.mysql.yml (gopherlearn-mysql) so this file has no
+# name of its own: the two files describe one project, and MySQL can still be started on
+# its own with compose.mysql.yml alone, exactly as in 8B.1.
+#
+# Every credential arrives through `env_file`, never through an interpolated `${VAR}`.
+# That is deliberate: `docker compose config` prints interpolated values, so a secret
+# referenced that way would show up in the resolved output and in anyone's terminal. The
+# one interpolated variable below is a non-secret marker whose only job is to make a
+# stack run with a missing or mis-named env file fail loudly.
+services:
+  mysql:
+    # Its own container name, so `up` on the stack never recreates the stopped 8B.1 container
+    # (gopherlearn-mysql-8b1) that still references the retained 8B.1 volume.
+    container_name: gopherlearn-mysql-8c
+    # compose.mysql.yml lists the four MYSQL_* values as interpolated environment
+    # entries; for the stack they are dropped and the same values come from the shared
+    # local file instead. Without `!override` the two files would merge per key and the
+    # interpolated ones would both print secrets and demand a different env file.
+    environment: !override {}
+    env_file:
+      - ${GOPHERLEARN_STACK_ENV_FILE:-.env.compose.local}
+    # `default` keeps the loopback 127.0.0.1:3308 publishing from 8B.1 working (an
+    # internal-only network cannot publish), and `data` is the network the backend joins.
+    networks: !override [default, data]
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+      # Image names, defaulting to the canonical upstream ones. A mirrored network can
+      # point them at its own copies in .env.compose.local without touching any file here;
+      # these are not secrets, so interpolating them into the resolved config is fine.
+      args:
+        GO_IMAGE: ${GOPHERLEARN_GO_IMAGE:-golang:1.24.10-bookworm}
+    image: gopherlearn-backend:8c
+    restart: unless-stopped
+    # Docker's own default is 10s between SIGTERM and SIGKILL, which is exactly the length of
+    # the backend's drain window - the two would race and a long event stream would be killed
+    # rather than finished. Give the process more room than it needs.
+    stop_grace_period: 30s
+    depends_on:
+      mysql:
+        condition: service_healthy
+    env_file:
+      - ${GOPHERLEARN_STACK_ENV_FILE:-.env.compose.local}
+    environment:
+      # Interpolated, not secret: it fails this run with a named complaint when the
+      # operator points the stack at a file that does not carry the profile marker.
+      GOPHERLEARN_COMPOSE_PROFILE: ${GOPHERLEARN_COMPOSE_PROFILE:?set GOPHERLEARN_COMPOSE_PROFILE in .env.compose.local}
+      # The connection string itself is in the env file (with the service name
+      # `mysql:3306` as its host), because assembling it here would put the password back
+      # into the resolved configuration.
+      GOPHERLEARN_STORAGE: mysql
+      GOPHERLEARN_HTTP_ADDR: 0.0.0.0:8080
+      GOPHERLEARN_AI_PROVIDER: echo
+      GOPHERLEARN_LOCAL_LEARNING_MODEL: deterministic
+    networks:
+      - data
+      - web
+    # Deliberately no port mapping: the only way in from the host is through the
+    # frontend's loopback port. No volume either - the image carries the binary and the
+    # program keeps its state in MySQL.
+    #
+    # There is also no healthcheck and no health route: this build has neither, and adding
+    # one would be an API change, not a deployment one. `depends_on` therefore orders
+    # startup, not readiness - see the README note that the frontend can answer before the
+    # backend is serving.
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        NODE_IMAGE: ${GOPHERLEARN_NODE_IMAGE:-node:22-bookworm-slim}
+        NGINX_IMAGE: ${GOPHERLEARN_NGINX_IMAGE:-nginx:1.27-alpine}
+    image: gopherlearn-frontend:8c
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      # Loopback only, and the only host-visible port this stack adds.
+      - "127.0.0.1:8081:8080"
+    networks:
+      # `web` only. The `data` network being internal is what actually stops this container
+      # from opening MySQL's port; being off the network only stops DNS name resolution.
+      - web
+
+networks:
+  data:
+    name: gopherlearn-app-data
+    # Internal on purpose. Dropping the frontend from this network is NOT what keeps it away
+    # from MySQL: on one Docker host, bridges route to each other, so a container on another
+    # network can still reach a database container's IP directly. An internal network gets no
+    # gateway and no route from outside, which is the property the brief asks for. Measured,
+    # not assumed - see the README note.
+    internal: true
+  web:
+    name: gopherlearn-app-web
+
+volumes:
+  data:
+    # A fresh volume per round, so a regression run starts on an empty schema **and** on a
+    # database whose users were created with the credentials in the env file. Editing
+    # .env.compose.local does not change an already-initialised MySQL user's password - the
+    # old volume would then be unreachable with the new one, and the failure would look like
+    # a broken stack rather than stale server state. Neither this round's nor 8B.1's volume is
+    # deleted by anything in this file.
+    name: gopherlearn-8c1-mysql-data

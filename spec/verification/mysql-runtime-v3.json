@@ -1,0 +1,101 @@
+{
+  "record": "mysql-runtime-v3",
+  "phase": "8C.2",
+  "created_at_utc": "2026-09-27T08:44:30Z",
+  "scope": "One deployment fact: this project's MySQL container had enough time to close itself during `docker compose stop`. No Go code, no image definition and no other service changed.",
+  "runtime_flags": {
+    "docker": true,
+    "mysql": true,
+    "real_provider_calls": false,
+    "embedding_calls": false,
+    "redis": false,
+    "rabbitmq": false,
+    "automatic_retry_added": false,
+    "v3_or_v31_evaluation_line_read": false
+  },
+  "change": {
+    "file": "compose.mysql.yml",
+    "added": "stop_grace_period: 30s on the mysql service",
+    "deliberately_unchanged": [
+      "image digest mysql@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b (8.0.46)",
+      "published port 127.0.0.1:3308->3306",
+      "character-set-server=utf8mb4 and collation-server=utf8mb4_0900_ai_ci",
+      "the mysqladmin ping healthcheck",
+      "volume name gopherlearn-mysql-8b1-data and container name gopherlearn-mysql-8b1",
+      "the standalone start: docker compose --env-file .env.mysql.local -f compose.mysql.yml up -d --wait"
+    ],
+    "standalone_config_still_valid": true
+  },
+  "why_the_number": "Docker's default is 10s between SIGTERM and SIGKILL. Measured in 8C and 8C.1, that produced container exit 137 for this image: the rows were all still there, but the exit status is what an operator reads as a crash, and a killed InnoDB has to do recovery work on the next start that a shut-down one does not.",
+  "static_gate": {
+    "test": "internal/app.TestMySQLContainerIsGivenTimeToCloseItself",
+    "asserts": "stop_grace_period present and >= 30s, and the digest/port/charset/healthcheck/volume/container-name are untouched",
+    "overlay_rule": "compose.app.yml may repeat the window but must never shorten it",
+    "mutations_run": [
+      {"change": "30s -> 5s", "result": "fails naming the window"},
+      {"change": "the key removed", "result": "fails stating the service has no stop_grace_period"}
+    ],
+    "restored_byte_exact": {"compose.mysql.yml": "bf8d5b6c9f5a265ccffecb3d75d46733a93ca167386f8e89845858b93fe2a51c"}
+  },
+  "measured": {
+    "volume_used": "gopherlearn-8c2-mysql-data (created empty for this round, through a throwaway overlay that renamed only the volume and the container)",
+    "migration": "the backend binary migrated 14 tables into a fresh schema on this volume",
+    "writes_before_stop": {"users": 1, "sessions": 1, "messages": 4},
+    "utf8mb4_round_trip": "a 44-rune message containing Chinese, an emoji and a four-byte character round-tripped through the API byte-identically; no replacement characters in those rows",
+    "idle_stop": {
+      "wall_seconds": 1.26,
+      "container_exit_code": 0,
+      "log": "Received SHUTDOWN from user <via user signal>. Shutting down mysqld (Version: 8.0.46). then Shutdown complete",
+      "forced_kill_lines": 0
+    },
+    "stop_with_open_transaction": {
+      "wall_seconds": 3.4,
+      "container_exit_code": 0,
+      "log": "the same SHUTDOWN/Shutdown complete pair, 3rd occurrence across this container's life",
+      "client_observed": "SELECT SLEEP(25) returned interrupted (1) and the session ended with 'Bye' before COMMIT was acknowledged",
+      "rows_inserted_in_transaction": 2,
+      "probe_rows_after_restart": 0,
+      "half_committed_state_observed": false,
+      "interpretation": "the transaction is decided as a whole: rolled back here, and the committed data was never in doubt. A partially applied transaction is not a state this run could produce or observe."
+    },
+    "restart_on_the_same_volume": {
+      "users": 1,
+      "sessions": 1,
+      "messages": 4,
+      "tables": 14,
+      "schema_columns_listed": 134,
+      "schema_fingerprint_identical_to_before_stop": true,
+      "orphan_messages": 0,
+      "orphan_message_sources": 0,
+      "recovery_or_corruption_lines_on_next_start": 0
+    }
+  },
+  "gates": {
+    "go_test_default_without_docker": "20 packages ok; the real-MySQL tests skip with a reason when GOPHERLEARN_MYSQL_INTEGRATION_DSN is unset",
+    "mysql_gated_integration_suite": "250 PASS lines / 0 FAIL against MySQL 8.0.46 on this round's container",
+    "gofmt": "clean",
+    "go_vet": "exit 0",
+    "go_build": "exit 0"
+  },
+  "untouched_records": {
+    "http_contract_golden": "36da938dc19b7f45",
+    "provider_smoke_v1": "ee0ba6c4cda0109d",
+    "agent_tool_smoke_v1": "3296df13a837da9a",
+    "agent_tool_smoke_v2": "a3d5d1c6c42c7162",
+    "mysql_runtime_v1": "97b8f09a6f7f3cc4",
+    "mysql_runtime_v2": "9134db8b126d066a",
+    "docker_stack_v1": "8c0ebcd142f79d50",
+    "docker_stack_v2": "aaa69bcdd68a9be9"
+  },
+  "observations_out_of_scope": [
+    "A request body that is not valid UTF-8 is accepted and stored as replacement characters rather than refused: the first write in this round reached the server through a Git Bash argument in the console codepage and stored U+FFFD runs. That is a client-side transport defect, and the retry from a UTF-8 file round-tripped cleanly - but the server's choice to sanitise rather than reject is a real input-validation question for another round, not something 8C.2 touched.",
+    "This record says nothing about the SSE proxy-buffering question left open in docker-stack-v1.json; that limitation is unchanged."
+  ],
+  "cleanup": {
+    "this_round_container_stopped": true,
+    "this_round_volume": "gopherlearn-8c2-mysql-data kept (it holds synthetic verification rows and nothing else)",
+    "previous_volumes": "gopherlearn-mysql-8b1-data, gopherlearn-8c-mysql-data and gopherlearn-8c1-mysql-data were not mounted, rewritten or deleted by this round",
+    "temporary_files": "throwaway overlay, probe SQL, request bodies, captured logs and the built verification binary were deleted",
+    "credentials": "no password, DSN, JWT or token appears in this file; the local env file was read into shell variables and never printed"
+  }
+}

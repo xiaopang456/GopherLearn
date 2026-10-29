@@ -1,0 +1,78 @@
+# Minimal MySQL for GopherLearn-clean's runtime verification.
+#
+# This file brings up a database and nothing else. The Go backend and the Vite
+# dev server keep running on the host (`go run ./cmd/gopherlearn`,
+# `npm run dev`), so application code is never containerised here. There is no
+# Redis, no RabbitMQ and no provider in this stack - neither is implemented by
+# this build.
+#
+# Credentials are never stored in this file. Compose reads them from a local,
+# uncommitted env file or from exported shell variables:
+#
+#   docker compose --env-file .env.mysql.local -f compose.mysql.yml up -d --wait
+#
+# Copy .env.mysql.example to .env.mysql.local and fill it with generated values;
+# `.env.mysql.local` is ignored through the repo's `*.local` rule.
+#
+# The Go server then points at it from the host:
+#
+#   GOPHERLEARN_STORAGE=mysql GOPHERLEARN_MYSQL_DSN="$DSN" go run ./cmd/gopherlearn
+#
+# Everything is named after this project so a shared Docker host cannot collide
+# with it, and the port is published on the loopback interface only.
+name: gopherlearn-mysql
+
+services:
+  mysql:
+    # mysql:8.0 resolved to a digest so "the version we verified" stays a fact
+    # rather than a moving tag: this digest is MySQL 8.0.46.
+    image: mysql@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
+    container_name: gopherlearn-mysql-8b1
+    restart: unless-stopped
+    # How long the runtime waits after SIGTERM before it sends SIGKILL. The image's own
+    # default (10s) is not enough for InnoDB to flush and close cleanly, and the measured
+    # result of that was a container that exited 137 - killed rather than shut down - even
+    # though every row was still intact. Data safety was never the question; the exit status
+    # was, because "137" is what an operator reads as a crash. Nothing else about this
+    # service changes: same digest, same loopback port, same charset, same healthcheck, same
+    # volume, and `docker compose -f compose.mysql.yml up` still starts exactly the 8B.1
+    # database.
+    stop_grace_period: 30s
+    ports:
+      # Host loopback only: nothing outside this machine can reach the database.
+      - "127.0.0.1:3308:3306"
+    environment:
+      # :? so a missing credential stops the compose run with a named complaint
+      # instead of starting a database with an empty root password.
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?set MYSQL_DATABASE in .env.mysql.local}
+      MYSQL_USER: ${MYSQL_USER:?set MYSQL_USER in .env.mysql.local}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env.mysql.local}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env.mysql.local}
+    volumes:
+      - data:/var/lib/mysql
+    command:
+      # The repository reads and writes Chinese learner content, and the
+      # connection charset the driver forces is utf8mb4 - so the server must
+      # store in it too, or a topic key survives on one path and not another.
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --skip-name-resolve
+    healthcheck:
+      # "started" is not "usable": the image runs a temporary server during
+      # initialisation. The backend may only be pointed at this once a real
+      # connection answers, which is what --wait below waits for.
+      test:
+        [
+          "CMD-SHELL",
+          "mysqladmin ping -h 127.0.0.1 -u root -p\"$$MYSQL_ROOT_PASSWORD\" --silent",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 20s
+
+volumes:
+  data:
+    # An explicit name, so the volume survives a compose project rename and is
+    # recognisable as this project's data on a shared host.
+    name: gopherlearn-mysql-8b1-data

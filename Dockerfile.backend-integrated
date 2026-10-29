@@ -1,0 +1,84 @@
+# syntax=docker/dockerfile:1
+
+# Integrated entry image: the hybrid assembly (original V2 kernel + retained
+# ordinary Chat). This is a separate image from Dockerfile.backend, which still
+# builds the baseline cmd/gopherlearn and its mainline agent loop. One host may
+# run either of them, never both against the same schema, Redis database or
+# knowledge directory - the two write the same table names with incompatible
+# columns, so the deployment files keep the stacks apart by name.
+
+# Build stage. The nested v2/ and hybrid/ modules declare `go 1.25.0`, so this
+# image must carry a compiler at least that new; the root module's `go 1.24.0`
+# is satisfied by the same toolchain. No dependency or lockfile is changed to
+# make an older image work, and GOTOOLCHAIN stays local so the build cannot
+# download a different compiler than the one this image declares.
+#
+# NOT VERIFIED THIS ROUND: no Docker command was allowed, so the tag below was
+# never pulled and this file was never built. It is reviewed statically; the
+# first `docker build` belongs to a deployment authorization.
+ARG GO_IMAGE=golang:1.25-bookworm
+FROM ${GO_IMAGE} AS build
+
+WORKDIR /src
+
+# Module files first, then the source trees, in dependency order: hybrid replaces
+# GopherAI with ../v2 and the root module with .. (hybrid/go.mod:94,96), so all
+# three modules have to sit in the same relative layout for one build to see the
+# hybrid -> V2 -> root chain. Nothing else in the repository belongs in the
+# binary, and .dockerignore already keeps spec/, tutorial/, data/ and every *.local
+# credential file out of the context.
+COPY go.mod go.sum ./
+COPY cmd ./cmd
+COPY internal ./internal
+COPY conversation ./conversation
+COPY v2/go.mod v2/go.sum ./v2/
+COPY v2 ./v2
+COPY hybrid/go.mod hybrid/go.sum ./hybrid/
+COPY hybrid ./hybrid
+
+# GOCACHE and the module cache are build caches, not image content. CGO is off, so
+# the binary is static and needs no libc at runtime. The build runs inside hybrid/
+# because that is the module owning the entry package.
+#
+# Two binaries are produced. The entry is the application; schemainit is the one
+# command that creates the tables. The entry refuses to change a schema, and the
+# stack's MySQL publishes no port, so without a second binary in this image the
+# operator could not create the schema at all and the backend would refuse to
+# start forever. Both are static and need no shell to run.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    cd /src/hybrid && \
+    CGO_ENABLED=0 GOOS=linux GOTOOLCHAIN=local go build -trimpath -ldflags="-s -w" \
+    -o /out/gopherlearn-integrated ./cmd/gopherlearn-integrated && \
+    cd /src/v2 && \
+    CGO_ENABLED=0 GOOS=linux GOTOOLCHAIN=local go build -trimpath -ldflags="-s -w" \
+    -o /out/schemainit ./cmd/schemainit
+
+# Runtime stage: scratch, so the image contains the binary and a CA bundle and
+# nothing else - no shell, no toolchain, no source, no tests, and no configuration
+# file. No timezone database is copied: every timestamp this entry writes to the
+# wire is formatted in UTC, so a missing tzdata cannot silently shift a displayed
+# time.
+FROM scratch
+
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=build /out/gopherlearn-integrated /gopherlearn-integrated
+COPY --from=build /out/schemainit /schemainit
+
+# An arbitrary high uid with no /etc/passwd entry: the process is never root. The
+# knowledge storage directory it writes must be provided by the operator as a
+# mounted volume, which is why there is no VOLUME line inventing a default path.
+USER 65532:65532
+
+# Documentation only: the port the process binds comes from mainConfig.port, so a
+# deployment that changes the file without changing this line still listens where
+# the file says. The shared nginx.frontend.conf proxies to 8080, so the container
+# configuration is expected to set mainConfig.port = 8080.
+EXPOSE 8080
+
+# Unlike the baseline image, this program reads no environment variables for its
+# settings: exactly one explicitly named file is accepted, and it is mounted
+# read-only by the deployment. No entrypoint script, so no shell is needed, and a
+# missing -config makes the container refuse with exit code 2 before any resource
+# is opened.
+ENTRYPOINT ["/gopherlearn-integrated"]

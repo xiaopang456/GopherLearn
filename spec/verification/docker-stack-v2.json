@@ -1,0 +1,110 @@
+{
+  "record": "docker-stack-v2",
+  "phase": "8C.1",
+  "supersedes": "spec/verification/docker-stack-v1.json",
+  "created_at_utc": "2026-09-27T07:49:43Z",
+  "scope": "Delta only. Phase 8C.1 rotated the local credentials, moved the stack onto a round-specific volume, and added graceful shutdown to the backend process. Everything docker-stack-v1.json records that 8C.1 did not touch still stands; the items listed as superseded below do not.",
+  "unchanged_from_v1": {
+    "compose_files_and_layering": true,
+    "backend_image_shape": "golang:1.24.10 -> scratch, non-root 65532:65532, no host port, rootfs entries 16",
+    "frontend_image_shape": "node:22 build -> nginx:1.27-alpine serving dist only, rootfs entries 2216",
+    "internal_data_network": "gopherlearn-app-data stays internal: true; the frontend still cannot reach MySQL's container address",
+    "provider_embedding_redis_rabbitmq_calls": 0,
+    "sealed_records_verified_byte_identical_this_round": {
+      "http_contract_golden": "36da938dc19b7f45",
+      "provider_smoke_v1": "ee0ba6c4cda0109d",
+      "agent_tool_smoke_v1": "3296df13a837da9a",
+      "agent_tool_smoke_v2": "a3d5d1c6c42c7162",
+      "mysql_runtime_v1": "97b8f09a6f7f3cc4",
+      "mysql_runtime_v2": "9134db8b126d066a",
+      "docker_stack_v1": "8c0ebcd142f79d50"
+    }
+  },
+  "credentials": {
+    "rotated": ["MYSQL_ROOT_PASSWORD", "MYSQL_PASSWORD", "GOPHERLEARN_JWT_SECRET", "the password embedded in GOPHERLEARN_MYSQL_DSN"],
+    "why": "docker-stack-v1.json records that the previous values had once appeared in a `docker compose config` invocation without --no-env-resolution. They are rotated rather than argued about.",
+    "method": "Generated from /dev/urandom and written with in-place field edits, so no value was ever printed to a terminal, a log, an artifact or a tool transcript. The example file and the variable names are unchanged.",
+    "stale_values_still_present": 0,
+    "only_file_containing_any_new_value": ".env.compose.local",
+    "git_ignored": "matched by the *.local rule; `git check-ignore -v` reports .gitignore:2",
+    "new_values_found_in": {
+      "backend_image_rootfs": 0,
+      "frontend_image_rootfs": 0,
+      "mysql_container_log_lines": 0,
+      "backend_container_log_lines": 0,
+      "frontend_container_log_lines": 0,
+      "compose_config_no_env_resolution": 0,
+      "source_tree_and_spec_files": 0
+    },
+    "rotation_caveat": "Changing .env.compose.local does not change the passwords MySQL stored in an already initialised data directory. Pointing new credentials at the old volume therefore fails in a way that looks like a broken stack. 8C.1 starts from a fresh volume instead of running ALTER USER against the old one.",
+    "volumes": {
+      "this_round": "gopherlearn-8c1-mysql-data",
+      "previous_round_volume": "gopherlearn-8c-mysql-data (retained, not mounted by this round, not deleted)",
+      "phase_8b1_volume": "gopherlearn-mysql-8b1-data (untouched)"
+    }
+  },
+  "graceful_shutdown": {
+    "files": ["cmd/gopherlearn/main.go", "cmd/gopherlearn/shutdown_test.go", "cmd/gopherlearn/shutdown_posix_test.go", "cmd/gopherlearn/shutdown_windows_test.go"],
+    "mechanism": "signal.NotifyContext for SIGINT and SIGTERM is installed before anything is opened; serveUntil runs Serve in a goroutine and on cancellation calls http.Server.Shutdown with a deadline of shutdownGrace, then Close if the deadline fires.",
+    "drain_window_seconds": 10,
+    "compose_stop_grace_period_seconds": 30,
+    "ordering_guarantee": "Shutdown closes the listener first, so a request arriving after the signal is refused instead of being queued and served; requests already running keep their connections until they finish or the window expires.",
+    "exit_behaviour": "The process returns from main, so the container exits 0. A forced close still exits 0 and logs that the drain window was exhausted - a non-zero code there would tell a supervisor to keep restarting a process that was asked to leave.",
+    "semantics_unchanged": "No retry was added, no readiness or health route was added, no Redis or RabbitMQ was introduced, and request, auth, learning, RAG, agent and memory behaviour is untouched: the HTTP contract golden did not move by one byte.",
+    "supersedes_v1_limitation": "docker-stack-v1.json's shutdown_observations recorded that main.go had no signal handling and that `docker stop` ended the process with exit code 2, and its limitations listed the same fact. Both are closed by this round. The observation about go-sql-driver's `closing bad idle connection: EOF` during a graceful MySQL restart is unchanged and still stands."
+  },
+  "measured": {
+    "docker_stop_with_24_parallel_streams_in_flight": {
+      "streams_completed_with_terminal_event": 24,
+      "streams_cut_off": 0,
+      "fastest_stream_ms": 123,
+      "slowest_stream_ms": 1751,
+      "docker_stop_wall_ms": 806,
+      "backend_container_exit_code": 0,
+      "backend_log_tail": "GopherLearn backend stopped",
+      "rows_after_restart": {"sessions": 1, "messages": 48, "users": 1},
+      "correlation_note": "The stop was issued two seconds into the workload, so the slower streams were genuinely mid-flight when the signal arrived; the fastest ones may already have finished. The claim is bounded accordingly: streams still running at the signal reached their terminal event."
+    },
+    "requests_arriving_while_stopped": "504 from Nginx, not 200 - nothing new was served while the backend was gone",
+    "frontend_container_stop_exit_code": 0,
+    "windows_signal_test": "The pure-Go SIGTERM case skips on Windows with a reason rather than passing vacuously; the loopback drain tests and this Docker measurement are what carry the claim on this host."
+  },
+  "browser_core_flow_under_new_credentials": {
+    "register_login_logout": true,
+    "stale_token_after_secret_rotation": "The token signed with the previous JWT secret is rejected, and the SPA bounced to /login and cleared the stored auth on its own.",
+    "chat_session_and_sse_turn": true,
+    "learning_agent_session_created": true,
+    "knowledge_base_created_and_markdown_uploaded": true,
+    "rag_citations_attached_to_assistant_message": 3,
+    "quiz_three_questions_completed": true,
+    "mastery_progress_read": {"level": "developing", "mastery": 71, "valid_attempts": 3, "confidence": 0.5},
+    "memory_draft_pending_then_confirmed_through_ui": true,
+    "login_again_after_logout": true,
+    "synthetic_data_only": true
+  },
+  "gates": {
+    "gofmt": "clean",
+    "go_vet": "exit 0",
+    "go_build": "host, GOOS=linux and GOOS=windows all build (syscall.SIGTERM compiles on Windows)",
+    "go_test": "20 packages ok, 0 failures",
+    "go_test_race": "20 packages ok, 0 failures",
+    "mysql_gated_integration_suite": "250 PASS lines / 0 FAIL against the 8C.1 volume's MySQL 8.0.46",
+    "docker_compose_config_no_env_resolution": "exit 0, stop_grace_period and the round-specific volume present",
+    "compose_mysql_yml_standalone_config": "exit 0",
+    "eslint": "exit 0",
+    "vitest": "691 tests passed",
+    "vite_build": "exit 0"
+  },
+  "mutation_probe": {
+    "change": "server.Shutdown(drain) replaced by server.Close(), single anchor",
+    "result": "all three stop-path tests fail, each for its own reason: the in-flight stream is cut with an unexpected EOF, the drained-stream assertion fails, and the forced-close case returns nil where errShutdownForced is required",
+    "first_attempt_rejected": "An earlier variant of this mutation failed to compile instead of failing a test (removing the only use of `drain`), which is reported rather than hidden because a mutation that never ran proves nothing",
+    "restored_byte_exact": {"cmd/gopherlearn/main.go": "ac85d27c86afc0c6e7d909d39cd4878aa249518dfa98ef77f53a9a7b80a1036e"}
+  },
+  "not_claimed": [
+    "Graceful shutdown is not zero-downtime. A stream slower than the drain window is still cut, and there is still no retry, because replaying a request whose outcome is unknown turns one possible success into two possible side effects.",
+    "The SSE buffered-versus-passthrough question remains unanswered on this host; 8C.1 did not improve the measurement, and docker-stack-v1.json's why_not still applies.",
+    "This stack remains a single-machine development setup: one replica per service, no Redis, no RabbitMQ, no real provider.",
+    "No message body, document text, account identifier, password, DSN, JWT or token is recorded in this file."
+  ]
+}

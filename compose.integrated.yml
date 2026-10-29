@@ -1,0 +1,257 @@
+# Integrated stack: the hybrid kernel (original V2 Agent = Eino ReAct) with the retained
+# ordinary Chat, its own MySQL, its own Redis Stack index, and the web client.
+#
+#   docker compose -p gopherlearn-integrated -f compose.integrated.yml up --build
+#
+# One file, one command, one startup story: the index is a service of this stack, not a second
+# stack to bring up first, and the backend will not start until it is *healthy* - where healthy
+# means an authenticated FT._LIST answered with a JSON array of strings, not that a port opened.
+#
+# Two properties this file keeps on purpose.
+#
+# 1. It shares no project with the baseline files. `-p gopherlearn-integrated` is part of the
+#    command and every container, volume and network name below is distinct, because
+#    `docker compose` keys resources by project name plus service name: running compose.app.yml
+#    afterwards would otherwise recreate these containers with the baseline image. The two
+#    backends write the same table names with incompatible columns and each starts its own
+#    episodic and knowledge workers, so they must not share one schema, one Redis server or one
+#    knowledge directory. The baseline default stack still has no Redis service of its own and
+#    nothing in it references this file.
+# 2. It does not create the business schema. The application entry refuses a configuration with
+#    isolatedEntry.migrate = true (hybrid/entry.go:27-29), so `up` starts against an existing
+#    schema and fails loudly when it is absent. Creating tables is a separate, explicitly
+#    authorised act - see tutorial/v2-production-entry/README.md - and never a startup side
+#    effect here.
+#
+# Credentials: no value is interpolated and none is committed. `docker compose config` prints
+# interpolated values, so a credential written that way would land in resolved output and in every
+# terminal that pastes it. Configuration arrives as operator-owned files, mounted read-only:
+#
+#   ./config.integrated.toml.local        the application's only configuration (-config)
+#   ./redis.integrated.conf.local         the index server's own /redis-stack.conf
+#   .env.compose.integrated.local         the MySQL container's account bootstrap
+#
+# All three end in `.local`, which is the suffix both .gitignore and .dockerignore match. The two
+# deployment scripts under deploy/ are mounted too: they are this stack's checked-in plumbing, not
+# a host checkout reaching the image, and no application source is mounted anywhere.
+#
+# Every bind mount below declares `bind.create_host_path: false`: a source that is missing must
+# stay missing, not be created on the host. The key name is `create_host_path` -
+# `create_host_directory` is not a Compose key at all, and Docker Compose v5.1.3 refuses to parse
+# a file that carries it ("additional properties 'create_host_directory' not allowed"). Measured
+# on Docker Desktop (Windows): the flag is accepted and kept in the resolved configuration, but the
+# engine still creates the missing source as an empty directory. The second, independent guarantee
+# is the preflight that is the index container's entrypoint: it refuses a missing or non-conforming
+# configuration before the server is reached, so the service does not come up either way.
+
+services:
+  mysql:
+    # The reference the owner approved for this stack, digest-pinned with no tag beside it: the
+    # approved tag was mysql:8.0.46 and the digest is exactly the one given, so the identity is
+    # unchanged while the redundant decoration is dropped (the repository already requires that
+    # of the index image).
+    image: mysql@sha256:62fb722c78b24245ddff1796a0fcee4a49cc5b87e0aaaf20c92d1da9e0a2497b
+    container_name: gopherlearn-integrated-mysql
+    restart: unless-stopped
+    # Measured in the baseline round, not theorised: InnoDB needs longer than Docker's 10-second
+    # default to flush and close, and under that default it exited 137 with every row intact.
+    stop_grace_period: 30s
+    volumes:
+      - type: volume
+        source: integrated-mysql-data
+        target: /var/lib/mysql
+    # This stack's own env file, so bringing it up neither borrows the baseline credentials nor
+    # fails on the first run for that reason. The interpolated variable names a path, not a
+    # secret.
+    env_file:
+      - ${GOPHERLEARN_INTEGRATED_MYSQL_ENV_FILE:-.env.compose.integrated.local}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      # The schema and the application account are NOT created here: an initdb mount would be an
+      # implicit migration. The operator creates gopherlearn_v2_integration and its schema-only
+      # account out of band, and the backend's startup checks then report a missing schema rather
+      # than writing one.
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - data
+    # No published port: nothing on the host reaches this database from here.
+
+  redis:
+    # The accepted reference for the verified batches, digest-pinned. The stack variant is
+    # required, not preferred: plain redis answers FT.CREATE with an unknown command.
+    image: redis/redis-stack-server@sha256:39adcbb083b240642cd5738a75c4959c0393ef2a40fa545f2e1c7b55798eeda4
+    container_name: gopherlearn-integrated-redis
+    restart: unless-stopped
+    stop_grace_period: 30s
+    # The image's own /entrypoint.sh sets CONFFILE only when /redis-stack.conf exists, and
+    # otherwise starts redis-server with no configuration at all - which for this deployment
+    # would mean no access control. The sealed entry evidence is
+    # tutorial/v2-j1-knowledge/frozen/image-entry-evidence/entrypoint.sh.txt:8-10,25-36.
+    # So the wrapper below is the container's entrypoint: it refuses to hand over unless that
+    # exact file is present, readable, non-empty and carries exactly one conforming requirepass
+    # line, and only then execs the image's real entrypoint with no arguments of its own.
+    # The password is never placed in argv, in this file, or in REDIS_ARGS.
+    entrypoint: ["/bin/sh", "/redis-stack-preflight.sh"]
+    volumes:
+      - type: bind
+        source: ./redis.integrated.conf.local
+        target: /redis-stack.conf
+        read_only: true
+        bind:
+          # The operator's file must exist or must stay missing: without this flag Docker
+          # creates the missing source path on the host, and a configuration that was
+          # supposed to be absent would turn into an empty directory - which the preflight
+          # refuses, but only after the host has already been changed. With it, the start
+          # fails at the mount instead, and nothing is created.
+          create_host_path: false
+      - type: bind
+        source: ./deploy/redis-stack-preflight.sh
+        target: /redis-stack-preflight.sh
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./deploy/redis-stack-healthcheck.sh
+        target: /redis-stack-healthcheck.sh
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: volume
+        source: gopherlearn-integrated-redis-data
+        target: /data
+    environment:
+      # The image's entrypoint writes its dump here; naming it keeps the mount and the server
+      # agreement in one place.
+      REDIS_DATA_DIR: /data
+    healthcheck:
+      # /bin/sh runs the checked-in script, so nothing about the credential is in argv. The
+      # script reads the value out of /redis-stack.conf at run time and passes it to redis-cli
+      # through REDISCLI_AUTH: visible in that one probe child's process environment inside this
+      # container (same uid, and root), not in `ps` of the host, not in `docker inspect`, not in
+      # this file, not in its output. Exit codes: only a JSON array whose elements are all
+      # strings is healthy - an empty array included - while auth rejection, connection failure,
+      # a missing module, an error reply or unparseable output all exit non-zero.
+      test: ["CMD", "/bin/sh", "/redis-stack-healthcheck.sh"]
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+      retries: 20
+    networks:
+      - data
+    # No published port: the backend reaches it over `data`, which is internal, so neither the
+    # host nor any container outside it can open the Redis port.
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend-integrated
+      args:
+        # Not a secret, so interpolating it is safe. The integrated modules declare
+        # `go 1.25.0`, so this must be a newer compiler than the baseline build's pin; nothing
+        # is downgraded to make an older image work.
+        GO_IMAGE: ${GOPHERLEARN_GO_IMAGE_INTEGRATED:-golang:1.25-bookworm}
+    image: gopherlearn-backend-integrated:1
+    container_name: gopherlearn-integrated-backend
+    restart: unless-stopped
+    # Larger than the entry's own 15-second HTTP shutdown bound plus the resource cleanup that
+    # follows it, so a stop drains rather than truncates.
+    stop_grace_period: 40s
+    depends_on:
+      mysql:
+        condition: service_healthy
+      # Search is a startup requirement of this stack, not an opt-in: the application would
+      # otherwise come up and answer retrieval with a connection failure that reads like a bug.
+      redis:
+        condition: service_healthy
+    # One explicit configuration file, mounted read-only: the entry reads no setting from the
+    # environment. Inside this stack the file must carry mainConfig.host = "0.0.0.0" and
+    # mainConfig.port = 8080, because the shared nginx.frontend.conf proxies to backend:8080;
+    # the example template's 127.0.0.1:18082 is the host-run profile, chosen so it cannot collide
+    # with a baseline backend already on 8080.
+    command: ["-config", "/config/integrated.toml"]
+    volumes:
+      # The only file mounts in this service: a configuration file and a writable directory for
+      # the knowledge source bytes the configuration names
+      # (data/gopherlearn-integrated/knowledge, resolved against the working directory `/`).
+      # No host source tree is mounted - the image is built.
+      - type: bind
+        source: ./config.integrated.toml.local
+        target: /config/integrated.toml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: volume
+        source: integrated-knowledge-data
+        target: /data
+    networks:
+      - data
+      - web
+    # No env_file: this entry reads no setting from the environment. No health route either - the
+    # original V2 assembly has none, and adding one would be an API change, not a deployment one.
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        NODE_IMAGE: ${GOPHERLEARN_NODE_IMAGE:-node:22-bookworm-slim}
+        NGINX_IMAGE: ${GOPHERLEARN_NGINX_IMAGE:-nginx:1.27-alpine}
+    image: gopherlearn-frontend-integrated:1
+    container_name: gopherlearn-integrated-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      # Loopback only, and a different host port from the baseline stack's 8081, so both stacks
+      # can sit stopped on one machine without fighting for it.
+      - "127.0.0.1:8083:8080"
+    networks:
+      # `web` only. What keeps this container away from MySQL and the index is `data` being
+      # internal - no gateway, no route from outside - not merely the absence of a network name.
+      - web
+
+  # The one-time schema creation, behind a profile so an ordinary `up` never runs it.
+  #
+  # The entry refuses to change a schema, and this stack's MySQL publishes no port, so
+  # the tables cannot be created from the host: this service runs the same image with
+  # the schemainit binary as its entrypoint. It joins the internal `data` network, which
+  # is how it reaches MySQL, and it is removed when it finishes.
+  schemainit:
+    profiles: ["init"]
+    image: gopherlearn-backend-integrated:1
+    container_name: gopherlearn-integrated-schemainit
+    restart: "no"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    entrypoint: ["/schemainit"]
+    command: ["-config", "/config/integrated.toml"]
+    volumes:
+      - type: bind
+        source: ./config.integrated.toml.local
+        target: /config/integrated.toml
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      - data
+
+networks:
+  data:
+    name: gopherlearn-integrated-data
+    internal: true
+  web:
+    name: gopherlearn-integrated-web
+
+volumes:
+  integrated-mysql-data:
+    name: gopherlearn-integrated-mysql-data
+  integrated-knowledge-data:
+    name: gopherlearn-integrated-knowledge-data
+  gopherlearn-integrated-redis-data:
+    name: gopherlearn-integrated-redis-data

@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  root:
+    name: root module (baseline entry)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: gofmt -l cmd internal conversation
+      - run: go vet ./cmd/... ./internal/... ./conversation/...
+      - run: go test -count=1 ./cmd/... ./internal/... ./conversation/...
+
+  v2:
+    name: v2 module (application kernel)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: v2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: v2/go.mod
+      - run: gofmt -l .
+      - run: go vet ./...
+      - run: go test -count=1 ./...
+
+  hybrid:
+    name: hybrid module (integrated entry)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hybrid
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: hybrid/go.mod
+      - run: gofmt -l .
+      - run: go vet ./...
+      - run: go test -count=1 ./...
+
+  frontend:
+    name: web client
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run test
+      - run: npm run build

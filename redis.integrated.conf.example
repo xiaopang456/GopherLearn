@@ -1,0 +1,21 @@
+# Redis Stack server configuration for the integrated stack.
+#
+# Copy this file to `redis.integrated.conf.local` in the repository root and replace the value
+# there. compose.integrated.yml mounts that file read-only at `/redis-stack.conf`, which is the
+# only path this image's own `/entrypoint.sh` reads (sealed evidence:
+# tutorial/v2-j1-knowledge/frozen/image-entry-evidence/entrypoint.sh.txt:8-10). Without it the
+# entrypoint starts redis-server with no configuration at all, so `/redis-stack.conf` is where
+# access control has to be declared - not in command arguments, and not in REDIS_ARGS.
+#
+# What the checked-in preflight requires of the copy, and refuses otherwise:
+#   * the file exists, is readable and is not empty;
+#   * exactly one `requirepass` line, starting at the beginning of the line;
+#   * a value that is one unquoted token of allowed characters, at least 32 bytes long;
+#   * a value that is not this file's placeholder.
+# So this example is safe to commit precisely because starting the stack with it still fails.
+#
+# Keep the value to yourself: the copy ends in `.local`, which is the suffix both .gitignore and
+# .dockerignore match, and the healthcheck reads it out of this file instead of taking it from
+# the environment or the command line.
+
+requirepass REPLACE_WITH_A_RANDOM_SECRET_OF_AT_LEAST_32_BYTES

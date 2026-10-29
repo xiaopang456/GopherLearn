@@ -1,0 +1,56 @@
+import assert from 'node:assert/strict'
+import process from 'node:process'
+import { setTokenProvider } from '../../src/api/http.js'
+import { createSession } from '../../src/api/sessions.js'
+import { readV2Source } from '../../src/api/v2Documents.js'
+import { useV2Learning } from '../../src/composables/useV2Learning.js'
+const realFetch = globalThis.fetch
+globalThis.fetch = (url, init) => realFetch(new URL(url, process.env.HYBRID_TEST_URL), init)
+const login = await fetch('/api/v1/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'learner@invalid.example', password: 'synthetic-password' }) })
+const authenticated = await login.json()
+assert.equal(login.status, 200)
+setTokenProvider(() => authenticated.data.token)
+const session = await createSession({ mode: 'learning_agent', title: '独立学习页面 socket', requestId: 'learning-ui-create' })
+const page = useV2Learning()
+await page.loadSessions()
+assert.ok(page.sessions.value.some((item) => item.id === session.id))
+page.selectSession(session.id)
+assert.ok(await page.perform('start', { topic: 'Redis' }))
+const taskID = page.task.value.id
+const source = page.task.value.question.sources[0]
+const text = await readV2Source(source.documentId, String(source.documentVersion), String(source.startLine), String(source.endLine))
+assert.equal(text.document_id, source.documentId)
+assert.equal(text.document_version, source.documentVersion)
+assert.ok(text.lines[0].text.includes('惰性删除'))
+const restored = useV2Learning()
+restored.selectSession(session.id)
+await restored.perform('current')
+assert.equal(restored.task.value.id, taskID)
+assert.equal(restored.attempt.value, null)
+assert.ok(await restored.perform('answer', { answer: '惰性删除和定期删除' }))
+const request = JSON.stringify(restored.pending.value)
+const attemptID = restored.attempt.value.id
+assert.equal(restored.attempt.value.effectiveTotal, 80)
+assert.equal(restored.task.value.currentQuestion, 2)
+await restored.retry()
+assert.equal(restored.attempt.value.id, attemptID)
+assert.equal(JSON.stringify(restored.pending.value), request)
+await restored.perform('correct', { attemptId: attemptID, effectiveTotal: 25, reason: '用户明确纠正' })
+assert.equal(restored.attempt.value.effectiveTotal, 25)
+assert.equal(restored.progress.value.mastery_score, 25)
+await restored.perform('progress', { topic: 'Redis' })
+assert.equal(restored.progress.value.mastery_score, 25)
+assert.equal(typeof restored.progress.value.id, 'string')
+await restored.perform('action', { action: 'skip' })
+assert.equal(restored.attempt.value.status, 'skipped')
+assert.equal(restored.task.value.currentQuestion, 3)
+await restored.retry()
+assert.equal(restored.task.value.currentQuestion, 3)
+await restored.perform('cancel')
+assert.equal(restored.task.value.status, 'cancelled')
+assert.equal(await restored.perform('current'), null)
+assert.equal(restored.task.value, null)
+assert.equal(restored.attempt.value, null)
+assert.equal(restored.error.value.code, 'v2_8002')
+page.dispose(); restored.dispose()
+console.log(JSON.stringify({ taskID, attemptID, transport: 'actual page composable + native API + auth + original Service/DAO, local socket; no provider' }))

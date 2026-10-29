@@ -1,0 +1,1430 @@
+[
+ {
+  "name": "register ok",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"id\":\"user-4\",\"email\":\"new@example.com\",\"display_name\":\"New\"},\"error\":null}\n"
+ },
+ {
+  "name": "register duplicate email",
+  "status": 409,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"conflict\",\"message\":\"resource already exists\"}}\n"
+ },
+ {
+  "name": "register short password",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "register unknown field",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "register wrong method",
+  "status": 405,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"method is not allowed\"}}\n"
+ },
+ {
+  "name": "register empty body",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "register two json values",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "register not json",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "login ok",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_credentials\",\"message\":\"invalid credentials\"}}\n"
+ },
+ {
+  "name": "login bad password",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_credentials\",\"message\":\"invalid credentials\"}}\n"
+ },
+ {
+  "name": "login wrong method",
+  "status": 405,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"method is not allowed\"}}\n"
+ },
+ {
+  "name": "me anonymous",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ },
+ {
+  "name": "me bad token",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ },
+ {
+  "name": "me non bearer",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ },
+ {
+  "name": "me ok",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"id\":\"user-1\",\"email\":\"owner@example.com\",\"display_name\":\"Owner\"},\"error\":null}\n"
+ },
+ {
+  "name": "me wrong method",
+  "status": 405,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"method is not allowed\"}}\n"
+ },
+ {
+  "name": "sessions list",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"items\":[{\"id\":\"session-N\",\"user_id\":\"user-1\",\"title\":\"Chat\",\"mode\":\"chat\",\"created_at\":\"-\",\"updated_at\":\"-\"}]},\"error\":null}\n"
+ },
+ {
+  "name": "sessions list anonymous",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ },
+ {
+  "name": "create chat",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"id\":\"session-N\",\"user_id\":\"user-1\",\"title\":\"Chat\",\"mode\":\"chat\",\"created_at\":\"-\",\"updated_at\":\"-\"},\"error\":null}\n"
+ },
+ {
+  "name": "create learning agent",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"id\":\"session-N\",\"user_id\":\"user-1\",\"title\":\"Agent\",\"mode\":\"learning_agent\",\"created_at\":\"-\",\"updated_at\":\"-\"},\"error\":null}\n"
+ },
+ {
+  "name": "create missing mode",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "create retired fast_chat",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "create knowledge_qa as mode",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "create direct_chat as mode",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "create agent as mode",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "create unknown mode",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "create numeric mode",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "create oversized title",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "sessions unsupported method",
+  "status": 405,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"method is not allowed\"}}\n"
+ },
+ {
+  "name": "send message",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"assistant_message\":{\"id\":\"message-N\",\"session_id\":\"session-N\",\"role\":\"assistant\",\"content\":\"safe answer\",\"created_at\":\"-\"},\"user_message\":{\"id\":\"message-N\",\"session_id\":\"session-N\",\"role\":\"user\",\"content\":\"question\",\"created_at\":\"-\"}},\"error\":null}\n"
+ },
+ {
+  "name": "send with knowledge",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "send knowledge without collections",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "send disabled with collections",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "send blank collection",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "send with mode field",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "send with strategy field",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "send legacy message field",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "send empty content",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "send malformed json",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "send cross owner",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "send unknown session",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "send anonymous",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ },
+ {
+  "name": "messages wrong method",
+  "status": 405,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"method is not allowed\"}}\n"
+ },
+ {
+  "name": "list messages",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"items\":[]},\"error\":null}\n"
+ },
+ {
+  "name": "list messages cross owner",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "list messages anonymous",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ },
+ {
+  "name": "stream ok",
+  "status": 200,
+  "headers": "cache-control=no-cache;connection=keep-alive;content-type=text/event-stream; charset=utf-8;x-content-type-options=nosniff",
+  "body": "event: message.started\ndata: {}\n\nevent: message.delta\ndata: {\"delta\":\"safe \"}\n\nevent: message.delta\ndata: {\"delta\":\"answer\"}\n\nevent: message.completed\ndata: {\"content\":\"safe answer\",\"message_id\":\"message-N\"}\n\n"
+ },
+ {
+  "name": "stream with knowledge",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "stream invalid knowledge",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "stream mode field rejected",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "stream cross owner",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "stream anonymous",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ },
+ {
+  "name": "stream wrong method",
+  "status": 405,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"method is not allowed\"}}\n"
+ },
+ {
+  "name": "stream writer cannot flush",
+  "status": 500,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"internal_error\",\"message\":\"streaming is unavailable\"}}\n"
+ },
+ {
+  "name": "delete owner",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":null}\n"
+ },
+ {
+  "name": "delete cross owner",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "delete unknown session",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "item wrong method",
+  "status": 405,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"method is not allowed\"}}\n"
+ },
+ {
+  "name": "item patch anonymous",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ },
+ {
+  "name": "item get",
+  "status": 405,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"method is not allowed\"}}\n"
+ },
+ {
+  "name": "unknown api path",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "root path",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "sessions trailing slash",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "session trailing slash",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "session double slash",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "session deep path",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "session deep path anonymous",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ },
+ {
+  "name": "encoded separator",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "unknown action",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "me trailing slash",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "head on me",
+  "status": 405,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"method is not allowed\"}}\n"
+ },
+ {
+  "name": "options on session item",
+  "status": 405,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"method is not allowed\"}}\n"
+ },
+ {
+  "name": "options on collection",
+  "status": 405,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"method is not allowed\"}}\n"
+ },
+ {
+  "name": "post to stream item path",
+  "status": 405,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"method is not allowed\"}}\n"
+ },
+ {
+  "name": "delete on messages",
+  "status": 405,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"method is not allowed\"}}\n"
+ },
+ {
+  "name": "trace on register",
+  "status": 405,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"method is not allowed\"}}\n"
+ },
+ {
+  "name": "uppercase path",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "health style unknown",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"id\":\"session-N\",\"user_id\":\"user-1\",\"title\":\"ok\",\"mode\":\"chat\",\"created_at\":\"-\",\"updated_at\":\"-\"},\"error\":null}\n"
+ },
+ {
+  "name": "send message invalid utf-8",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "stream invalid utf-8",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "send message truncated utf-8",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "send message lone surrogate escape",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "send message dangling high surrogate",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "collection title invalid utf-8",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "memory draft invalid utf-8",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "send message surrogate pair emoji",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"assistant_message\":{\"id\":\"message-N\",\"session_id\":\"session-N\",\"role\":\"assistant\",\"content\":\"safe answer\",\"created_at\":\"-\"},\"user_message\":{\"id\":\"message-N\",\"session_id\":\"session-N\",\"role\":\"user\",\"content\":\"🔬\",\"created_at\":\"-\"}},\"error\":null}\n"
+ },
+ {
+  "name": "create collection",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"id\":\"collection-O\",\"title\":\"部署手册\",\"created_at\":\"-\",\"updated_at\":\"-\"},\"error\":null}\n"
+ },
+ {
+  "name": "create collection without title",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "create collection anonymous",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ },
+ {
+  "name": "list collections",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"items\":[{\"id\":\"collection-O\",\"title\":\"运行手册\",\"created_at\":\"-\",\"updated_at\":\"-\"}]},\"error\":null}\n"
+ },
+ {
+  "name": "list collections anonymous",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ },
+ {
+  "name": "collections wrong method",
+  "status": 405,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"method is not allowed\"}}\n"
+ },
+ {
+  "name": "collection detail route does not exist",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "add document",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"id\":\"document-O\",\"collection_id\":\"collection-O\",\"title\":\"kafka.md\",\"format\":\"markdown\",\"version\":1,\"chunk_count\":1,\"created_at\":\"-\",\"updated_at\":\"-\"},\"error\":null}\n"
+ },
+ {
+  "name": "add document unknown field",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "add document without content",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "add document unknown format",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "add document to foreign collection",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "add document to unknown collection",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "add document anonymous",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ },
+ {
+  "name": "list documents",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"items\":[{\"id\":\"document-O\",\"collection_id\":\"collection-O\",\"title\":\"redis-persistence.md\",\"format\":\"markdown\",\"version\":1,\"chunk_count\":4,\"created_at\":\"-\",\"updated_at\":\"-\"}]},\"error\":null}\n"
+ },
+ {
+  "name": "list documents anonymous",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ },
+ {
+  "name": "list documents of foreign collection",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "list documents of unknown collection",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "collection documents wrong method",
+  "status": 405,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"method is not allowed\"}}\n"
+ },
+ {
+  "name": "replace document content",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"id\":\"document-O\",\"collection_id\":\"collection-O\",\"title\":\"redis-persistence.md\",\"format\":\"markdown\",\"version\":2,\"chunk_count\":1,\"created_at\":\"-\",\"updated_at\":\"-\"},\"error\":null}\n"
+ },
+ {
+  "name": "replace document unknown field",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "replace unknown document",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "delete document",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":null}\n"
+ },
+ {
+  "name": "delete unknown document",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "delete foreign document",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "delete document anonymous",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ },
+ {
+  "name": "document wrong method",
+  "status": 405,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"method is not allowed\"}}\n"
+ },
+ {
+  "name": "documents subpath does not exist",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "grounded sync",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"assistant_message\":{\"id\":\"message-N\",\"session_id\":\"session-N\",\"role\":\"assistant\",\"content\":\"检索到 3 条知识库片段（抽取式回答，本阶段未接入生成模型）：\\n1. redis-persistence.md › Redis 持久化\\n   # Redis 持久化\\n   Redis 提供 RDB 快照与 AOF 追加日志两种持久化方式，取舍点在于恢复速度与写入 durability。\\n2. redis-persistence.md › Redis 持久化 / AOF\\n   ## AOF\\n   AOF 以追加写记录每条写命令，fsync 策略可以选 always、everysec 或 no。\\n3. redis-persistence.md › Redis 持久化 / RDB\\n   ## RDB\\n   RDB 在 fork 出的子进程里生成内存快照，代价与实例内存大小相关。\\n问题：Redis 持久化 AOF 与 RDB 怎么取舍\",\"sources\":[{\"source_id\":\"src-O\",\"document_id\":\"document-O\",\"collection_id\":\"collection-O\",\"chunk_id\":\"document-O\",\"title\":\"redis-persistence.md\",\"section\":\"Redis 持久化\",\"snippet\":\"# Redis 持久化\\nRedis 提供 RDB 快照与 AOF 追加日志两种持久化方式，取舍点在于恢复速度与写入 durability。\"},{\"source_id\":\"src-O\",\"document_id\":\"document-O\",\"collection_id\":\"collection-O\",\"chunk_id\":\"document-O\",\"title\":\"redis-persistence.md\",\"section\":\"Redis 持久化 / AOF\",\"snippet\":\"## AOF\\nAOF 以追加写记录每条写命令，fsync 策略可以选 always、everysec 或 no。\"},{\"source_id\":\"src-O\",\"document_id\":\"document-O\",\"collection_id\":\"collection-O\",\"chunk_id\":\"document-O\",\"title\":\"redis-persistence.md\",\"section\":\"Redis 持久化 / RDB\",\"snippet\":\"## RDB\\nRDB 在 fork 出的子进程里生成内存快照，代价与实例内存大小相关。\"}],\"created_at\":\"-\"},\"user_message\":{\"id\":\"message-N\",\"session_id\":\"session-N\",\"role\":\"user\",\"content\":\"Redis 持久化 AOF 与 RDB 怎么取舍\",\"created_at\":\"-\"}},\"error\":null}\n"
+ },
+ {
+  "name": "grounded stream",
+  "status": 200,
+  "headers": "cache-control=no-cache;connection=keep-alive;content-type=text/event-stream; charset=utf-8;x-content-type-options=nosniff",
+  "body": "event: message.started\ndata: {}\n\nevent: message.delta\ndata: {\"delta\":\"检索到 3 条知识库片段（抽取式\"}\n\nevent: message.delta\ndata: {\"delta\":\"回答，本阶段未接入生成模型）：\\n\"}\n\nevent: message.delta\ndata: {\"delta\":\"1. redis-persist\"}\n\nevent: message.delta\ndata: {\"delta\":\"ence.md › Redis \"}\n\nevent: message.delta\ndata: {\"delta\":\"持久化\\n   # Redis 持\"}\n\nevent: message.delta\ndata: {\"delta\":\"久化\\n   Redis 提供 R\"}\n\nevent: message.delta\ndata: {\"delta\":\"DB 快照与 AOF 追加日志两\"}\n\nevent: message.delta\ndata: {\"delta\":\"种持久化方式，取舍点在于恢复速度\"}\n\nevent: message.delta\ndata: {\"delta\":\"与写入 durability。\\n\"}\n\nevent: message.delta\ndata: {\"delta\":\"2. redis-persist\"}\n\nevent: message.delta\ndata: {\"delta\":\"ence.md › Redis \"}\n\nevent: message.delta\ndata: {\"delta\":\"持久化 / AOF\\n   ## \"}\n\nevent: message.delta\ndata: {\"delta\":\"AOF\\n   AOF 以追加写记\"}\n\nevent: message.delta\ndata: {\"delta\":\"录每条写命令，fsync 策略可\"}\n\nevent: message.delta\ndata: {\"delta\":\"以选 always、everys\"}\n\nevent: message.delta\ndata: {\"delta\":\"ec 或 no。\\n3. redi\"}\n\nevent: message.delta\ndata: {\"delta\":\"s-persistence.md\"}\n\nevent: message.delta\ndata: {\"delta\":\" › Redis 持久化 / R\"}\n\nevent: message.delta\ndata: {\"delta\":\"DB\\n   ## RDB\\n   \"}\n\nevent: message.delta\ndata: {\"delta\":\"RDB 在 fork 出的子进程\"}\n\nevent: message.delta\ndata: {\"delta\":\"里生成内存快照，代价与实例内存大\"}\n\nevent: message.delta\ndata: {\"delta\":\"小相关。\\n问题：Redis 持久\"}\n\nevent: message.delta\ndata: {\"delta\":\"化 AOF 与 RDB 怎么取舍\"}\n\nevent: message.completed\ndata: {\"content\":\"检索到 3 条知识库片段（抽取式回答，本阶段未接入生成模型）：\\n1. redis-persistence.md › Redis 持久化\\n   # Redis 持久化\\n   Redis 提供 RDB 快照与 AOF 追加日志两种持久化方式，取舍点在于恢复速度与写入 durability。\\n2. redis-persistence.md › Redis 持久化 / AOF\\n   ## AOF\\n   AOF 以追加写记录每条写命令，fsync 策略可以选 always、everysec 或 no。\\n3. redis-persistence.md › Redis 持久化 / RDB\\n   ## RDB\\n   RDB 在 fork 出的子进程里生成内存快照，代价与实例内存大小相关。\\n问题：Redis 持久化 AOF 与 RDB 怎么取舍\",\"message_id\":\"message-N\",\"sources\":[{\"source_id\":\"src-O\",\"document_id\":\"document-O\",\"collection_id\":\"collection-O\",\"chunk_id\":\"document-O\",\"title\":\"redis-persistence.md\",\"section\":\"Redis 持久化\",\"snippet\":\"# Redis 持久化\\nRedis 提供 RDB 快照与 AOF 追加日志两种持久化方式，取舍点在于恢复速度与写入 durability。\"},{\"source_id\":\"src-O\",\"document_id\":\"document-O\",\"collection_id\":\"collection-O\",\"chunk_id\":\"document-O\",\"title\":\"redis-persistence.md\",\"section\":\"Redis 持久化 / AOF\",\"snippet\":\"## AOF\\nAOF 以追加写记录每条写命令，fsync 策略可以选 always、everysec 或 no。\"},{\"source_id\":\"src-O\",\"document_id\":\"document-O\",\"collection_id\":\"collection-O\",\"chunk_id\":\"document-O\",\"title\":\"redis-persistence.md\",\"section\":\"Redis 持久化 / RDB\",\"snippet\":\"## RDB\\nRDB 在 fork 出的子进程里生成内存快照，代价与实例内存大小相关。\"}]}\n\n"
+ },
+ {
+  "name": "grounded foreign collection",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "grounded unknown collection",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "grounded stream foreign collection",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "grounded empty collection scope",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "memories list anonymous",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ },
+ {
+  "name": "memories list pending",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"items\":[{\"memory_id\":\"mem-O\",\"scope\":\"global\",\"content\":\"用户用 Go 写后端服务\",\"status\":\"pending\",\"confidence\":1,\"source_session_id\":\"session-N\",\"source_message_ids\":[\"message-N\"],\"created_at\":\"-\",\"updated_at\":\"-\"}]},\"error\":null}\n"
+ },
+ {
+  "name": "memories list active",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"items\":[{\"memory_id\":\"mem-O\",\"scope\":\"topic\",\"topic_key\":\"redis\",\"content\":\"AOF 的 fsync 策略选 everysec\",\"status\":\"active\",\"confidence\":1,\"source_session_id\":\"session-N\",\"source_message_ids\":[\"message-N\"],\"created_at\":\"-\",\"updated_at\":\"-\"}]},\"error\":null}\n"
+ },
+ {
+  "name": "memories list as the other user",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"items\":[{\"memory_id\":\"mem-O\",\"scope\":\"episodic\",\"content\":\"别人的一次经历\",\"status\":\"pending\",\"confidence\":1,\"source_session_id\":\"session-N\",\"source_message_ids\":[\"message-N\"],\"created_at\":\"-\",\"updated_at\":\"-\"}]},\"error\":null}\n"
+ },
+ {
+  "name": "memories list without a state",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "memories list an archived state",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "memories list unknown state",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "memories wrong method",
+  "status": 405,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"method is not allowed\"}}\n"
+ },
+ {
+  "name": "memories anonymous wrong method",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ },
+ {
+  "name": "memory detail path is not a route",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "memory detail path anonymous",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "add memory",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"memory_id\":\"mem-O\",\"scope\":\"global\",\"content\":\"用户习惯先看代码再读文档\",\"status\":\"active\",\"confidence\":1,\"source_session_id\":\"\",\"source_message_ids\":null,\"created_at\":\"-\",\"updated_at\":\"-\"},\"error\":null}\n"
+ },
+ {
+  "name": "add memory anonymous",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ },
+ {
+  "name": "add memory topic",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"memory_id\":\"mem-O\",\"scope\":\"topic\",\"topic_key\":\"redis\",\"content\":\"AOF 的 fsync 用 everysec\",\"status\":\"active\",\"confidence\":1,\"source_session_id\":\"\",\"source_message_ids\":null,\"created_at\":\"-\",\"updated_at\":\"-\"},\"error\":null}\n"
+ },
+ {
+  "name": "add memory with status",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "add memory with confidence",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "add memory with user id",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "add memory with a source session",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "add memory with source messages",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "add memory with superseded at",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "add memory unknown scope",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "add memory episodic",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "add memory topic without a key",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "add memory global with a key",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "add memory blank content",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "add memory empty body",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "add memory not json",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "confirm memory draft",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"memory_id\":\"mem-O\",\"scope\":\"global\",\"content\":\"用户用 Go 写后端服务\",\"status\":\"active\",\"confidence\":1,\"source_session_id\":\"session-N\",\"source_message_ids\":[\"message-N\"],\"created_at\":\"-\",\"updated_at\":\"-\"},\"error\":null}\n"
+ },
+ {
+  "name": "confirm memory draft anonymous",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ },
+ {
+  "name": "confirm an active memory",
+  "status": 409,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"memory_already_confirmed\",\"message\":\"this memory was already confirmed\"}}\n"
+ },
+ {
+  "name": "confirm a foreign draft",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "confirm an unknown draft",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "confirm memory draft wrong method",
+  "status": 405,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"method is not allowed\"}}\n"
+ },
+ {
+  "name": "memory action anonymous wrong method",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ },
+ {
+  "name": "confirm memory draft with a body",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "confirm memory draft with an empty object",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"memory_id\":\"mem-O\",\"scope\":\"global\",\"content\":\"用户用 Go 写后端服务\",\"status\":\"active\",\"confidence\":1,\"source_session_id\":\"session-N\",\"source_message_ids\":[\"message-N\"],\"created_at\":\"-\",\"updated_at\":\"-\"},\"error\":null}\n"
+ },
+ {
+  "name": "reject memory draft",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"memory_id\":\"mem-O\",\"scope\":\"global\",\"content\":\"用户用 Go 写后端服务\",\"status\":\"archived\",\"confidence\":1,\"source_session_id\":\"session-N\",\"source_message_ids\":[\"message-N\"],\"created_at\":\"-\",\"updated_at\":\"-\"},\"error\":null}\n"
+ },
+ {
+  "name": "reject an active memory",
+  "status": 409,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"memory_already_confirmed\",\"message\":\"this memory was already confirmed\"}}\n"
+ },
+ {
+  "name": "archive active memory",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"memory_id\":\"mem-O\",\"scope\":\"topic\",\"topic_key\":\"redis\",\"content\":\"AOF 的 fsync 策略选 everysec\",\"status\":\"archived\",\"confidence\":1,\"source_session_id\":\"session-N\",\"source_message_ids\":[\"message-N\"],\"created_at\":\"-\",\"updated_at\":\"-\"},\"error\":null}\n"
+ },
+ {
+  "name": "archive a pending draft",
+  "status": 409,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"memory_not_active\",\"message\":\"this memory is not in the state the action needs\"}}\n"
+ },
+ {
+  "name": "archive a foreign draft",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "memory unknown action",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "memory action anonymous unknown action",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ },
+ {
+  "name": "learning start",
+  "status": 201,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"id\":\"lsn-O\",\"session_id\":\"session-N\",\"topic\":\"RDB\",\"status\":\"waiting_answer\",\"current_question\":1,\"total_questions\":3,\"question\":{\"ordinal\":1,\"type\":\"short_answer\",\"question\":\"卷 C 第 1 题：说明两种做法各解决什么问题？\"},\"expires_at\":\"-\"},\"error\":null}\n"
+ },
+ {
+  "name": "learning start with an answer key field",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "learning start without a topic",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "learning start without a conversation",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"session_id is required\"}}\n"
+ },
+ {
+  "name": "learning start on an unknown conversation",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "learning start on a plain chat conversation",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"a quiz needs a learning agent conversation\"}}\n"
+ },
+ {
+  "name": "learning start while a quiz is open",
+  "status": 409,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"learning_session_active\",\"message\":\"this conversation already has an unfinished quiz\"}}\n"
+ },
+ {
+  "name": "learning start anonymous",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ },
+ {
+  "name": "learning start cross owner",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "learning collection wrong method",
+  "status": 405,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"method is not allowed\"}}\n"
+ },
+ {
+  "name": "learning resume",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"id\":\"lsn-O\",\"session_id\":\"session-N\",\"topic\":\"AOF\",\"status\":\"waiting_answer\",\"current_question\":2,\"total_questions\":3,\"question\":{\"ordinal\":2,\"type\":\"short_answer\",\"question\":\"卷 B 第 2 题：说明两种做法各解决什么问题？\"},\"expires_at\":\"-\"},\"error\":null}\n"
+ },
+ {
+  "name": "learning resume with nothing open",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":null}\n"
+ },
+ {
+  "name": "learning resume on an unknown conversation",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "learning resume without a conversation",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"session_id is required\"}}\n"
+ },
+ {
+  "name": "learning resume anonymous",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ },
+ {
+  "name": "learning resume cross owner",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "learning answer replay",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"id\":\"lsn-O\",\"session_id\":\"session-N\",\"topic\":\"AOF\",\"status\":\"waiting_answer\",\"current_question\":2,\"total_questions\":3,\"question\":{\"ordinal\":2,\"type\":\"short_answer\",\"question\":\"卷 B 第 2 题：说明两种做法各解决什么问题？\"},\"expires_at\":\"-\"},\"error\":null}\n"
+ },
+ {
+  "name": "learning answer next card",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"id\":\"lsn-O\",\"session_id\":\"session-N\",\"topic\":\"AOF\",\"status\":\"waiting_answer\",\"current_question\":3,\"total_questions\":3,\"question\":{\"ordinal\":3,\"type\":\"short_answer\",\"question\":\"卷 B 第 3 题：说明两种做法各解决什么问题？\"},\"expires_at\":\"-\"},\"error\":null}\n"
+ },
+ {
+  "name": "learning answer out of order",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"learning_question_order\",\"message\":\"that is not the question being asked\"}}\n"
+ },
+ {
+  "name": "learning answer without a submission id",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "learning answer blank",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "learning answer with a score field",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "learning answer anonymous",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ },
+ {
+  "name": "learning answer cross owner",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "learning answer unknown quiz",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "learning answer wrong method",
+  "status": 405,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"method is not allowed\"}}\n"
+ },
+ {
+  "name": "learning unknown action",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "learning skip",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"id\":\"lsn-O\",\"session_id\":\"session-N\",\"topic\":\"AOF\",\"status\":\"waiting_answer\",\"current_question\":3,\"total_questions\":3,\"question\":{\"ordinal\":3,\"type\":\"short_answer\",\"question\":\"卷 B 第 3 题：说明两种做法各解决什么问题？\"},\"expires_at\":\"-\"},\"error\":null}\n"
+ },
+ {
+  "name": "learning skip without a submission id",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request is invalid\"}}\n"
+ },
+ {
+  "name": "learning skip with an ordinal field",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "learning skip with a reference answer field",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "learning skip with a numeric submission id",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "learning cancel",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"id\":\"lsn-O\",\"session_id\":\"session-N\",\"topic\":\"AOF\",\"status\":\"cancelled\",\"current_question\":2,\"total_questions\":3,\"expires_at\":\"-\"},\"error\":null}\n"
+ },
+ {
+  "name": "learning cancel with a body",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "learning progress",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"topic_key\":\"aof\",\"topic\":\"AOF\",\"mastery\":64,\"confidence\":0.16666666666666666,\"valid_attempts\":1,\"level\":\"insufficient\",\"weak_points\":[\"没说清恢复速度与写入开销的关系\"],\"last_attempt\":\"-\"},\"error\":null}\n"
+ },
+ {
+  "name": "learning progress for an unpractised topic",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "learning progress without a topic",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"topic is required\"}}\n"
+ },
+ {
+  "name": "learning progress anonymous",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ },
+ {
+  "name": "learning progress cross owner",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "learning start without the workflow",
+  "status": 500,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"internal_error\",\"message\":\"internal server error\"}}\n"
+ },
+ {
+  "name": "learning progress without the workflow",
+  "status": 500,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"internal_error\",\"message\":\"internal server error\"}}\n"
+ },
+ {
+  "name": "learning answer invalid utf-8",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "learning skip invalid utf-8",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "topic memory read anonymous",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ },
+ {
+  "name": "topic memory read defaults to off",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"enabled\":false},\"error\":null}\n"
+ },
+ {
+  "name": "topic memory read as the other user",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "topic memory read a missing conversation",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "topic memory read a chat conversation",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"enabled\":false},\"error\":null}\n"
+ },
+ {
+  "name": "topic memory read unknown action",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "topic memory switch on",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"enabled\":true},\"error\":null}\n"
+ },
+ {
+  "name": "topic memory switch off",
+  "status": 200,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":{\"enabled\":false},\"error\":null}\n"
+ },
+ {
+  "name": "topic memory switch anonymous",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ },
+ {
+  "name": "topic memory switch a chat conversation",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"topic memory needs a learning agent conversation\"}}\n"
+ },
+ {
+  "name": "topic memory switch as the other user",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "topic memory switch a missing conversation",
+  "status": 404,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"not_found\",\"message\":\"resource not found\"}}\n"
+ },
+ {
+  "name": "topic memory switch without enabled",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"enabled is required\"}}\n"
+ },
+ {
+  "name": "topic memory switch empty body",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "topic memory switch not json",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "topic memory switch wrong type",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "topic memory switch null",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"enabled is required\"}}\n"
+ },
+ {
+  "name": "topic memory switch array",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "topic memory switch trailing json",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "topic memory switch with topic key",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "topic memory switch with user id",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "topic memory switch with scope",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "topic memory switch with session id",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "topic memory switch with all users",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "topic memory switch with mode",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "topic memory switch invalid utf-8",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "topic memory switch lone surrogate escape",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "topic memory switch truncated utf-8",
+  "status": 400,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"request body is invalid\"}}\n"
+ },
+ {
+  "name": "topic memory wrong method",
+  "status": 405,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"method is not allowed\"}}\n"
+ },
+ {
+  "name": "topic memory delete method",
+  "status": 405,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"method is not allowed\"}}\n"
+ },
+ {
+  "name": "topic memory patch method",
+  "status": 405,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"invalid_request\",\"message\":\"method is not allowed\"}}\n"
+ },
+ {
+  "name": "topic memory anonymous wrong method",
+  "status": 401,
+  "headers": "content-type=application/json; charset=utf-8",
+  "body": "{\"data\":null,\"error\":{\"code\":\"unauthorized\",\"message\":\"authentication is required\"}}\n"
+ }
+]

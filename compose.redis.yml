@@ -1,0 +1,69 @@
+# Phase 11A: Redis with the RediSearch module, for the opt-in semantic retrieval mode.
+#
+# This file brings up a vector index and nothing else. It is not part of the default
+# stack: `compose.app.yml` still describes MySQL + backend + web, and that stack starts and
+# serves with no Redis in it, because the retrieval mode defaults to `deterministic`. Point
+# the backend at this index only by setting the semantic-mode variables in the process
+# environment, which `compose.provider.yml` deliberately does not do:
+#
+#   GOPHERLEARN_RETRIEVAL_MODE=semantic_redis  go run ./cmd/gopherlearn
+#
+# In that mode every one of the required variables has to be present - embedder, index and
+# cross-encoder - or the process refuses to start. There is no mode in which this file is a
+# silent requirement.
+#
+# Like 8B.1's MySQL, the service is reached from the host over the loopback interface, so
+# the backend may keep running outside Docker while the index runs inside it. The port is
+# published on 127.0.0.1 only; nothing outside this machine can open a connection.
+#
+# There are no credentials in this file and no `${VAR}` interpolation, which keeps
+# `docker compose config` output free of anything worth hiding. The image's own entrypoint
+# starts Redis with `--protected-mode no`, so loopback-only publishing is what carries the
+# isolation here. A deployment that exposes this beyond one machine must terminate TLS or a
+# password in front of it (the client here supports `GOPHERLEARN_REDIS_PASSWORD` and
+# `redis://` / `rediss://` addresses for that) and must not reuse this file as-is.
+#
+# What lives in the volume is re-derivable: every hashed vector was computed from a
+# document chunk that MySQL still holds, so losing this volume costs a re-index, not data.
+name: gopherlearn-redis
+
+services:
+  redis:
+    # redis-stack-server because plain `redis` has no RediSearch module, and the KNN query
+    # this mode issues is answered by that module, not by Redis core. The tag is resolved to
+    # a digest so "the version we verified" stays a fact: this digest is
+    # redis/redis-stack-server:latest as pulled on 2026-09-27, and a module version change
+    # silently changes index behaviour.
+    image: redis/redis-stack-server@sha256:798ab84d9f266936b034ab11c4d04a2b8e4b441884c5aa7d17ac951eefdf742a
+    container_name: gopherlearn-redis-11a
+    restart: unless-stopped
+    ports:
+      # Host loopback only.
+      - "127.0.0.1:6380:6379"
+    environment:
+      # The image writes its RDB here. Set explicitly rather than relying on the
+      # entrypoint's default, so the mount below cannot quietly become decorative.
+      REDIS_DATA_DIR: /data
+      # The search module's own result ceiling. The retrieval layer caps a query at its
+      # candidate limit long before this, so the value only bounds what a hand-run FT.SEARCH
+      # could ask for; leaving it at the image default (10000) is a way for a mistyped
+      # request to cost more than the application ever would.
+      REDISEARCH_ARGS: MAXSEARCHRESULTS 1000 MAXAGGREGATERESULTS 1000
+    volumes:
+      - data:/data
+    healthcheck:
+      # "started" is not "queryable": the entrypoint loads the search module before it
+      # accepts commands, and an index created against a server that has not finished that
+      # step fails in a way that reads like a broken schema. FT._LIST is the check that
+      # actually proves the module answering the query is loaded.
+      test: ["CMD-SHELL", "/opt/redis-stack/bin/redis-cli -h 127.0.0.1 FT._LIST > /dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  data:
+    # Named after this project so a shared Docker host cannot collide with it, and so
+    # `docker volume ls` says whose index this is.
+    name: gopherlearn-redis-11a-data

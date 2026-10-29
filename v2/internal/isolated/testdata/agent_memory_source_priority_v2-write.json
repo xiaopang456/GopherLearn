@@ -1,0 +1,56 @@
+[
+  {
+    "description": "Record what the user just asked you to remember, as a draft they must confirm. Use it only when the CURRENT user message explicitly asks to remember or save a personal preference, goal, correction, understanding, confusion, analogy or pitfall. It searches nothing - you do not need to look anything up first, and looking something up will not tell you whether to use it. It does not save the memory either: it creates a visible draft, and only the user's confirmation makes it real. Write into it only what this message states. Never write retrieved memory cards, search results, your own inferences, document passages or quiz scores into a draft. Global is for background, teaching preferences, study goals/plans and prohibitions even when they mention a technical subject. Topic is only for the learner's own understanding, confusion, analogy or pitfall about one technical topic.\nCurrent server time is 2026-10-07T20:00:00+08:00. For time_bound memory, valid_until must be a future RFC3339 timestamp with timezone. If the user omits the year, choose the next future occurrence of that month and day; for a stated 'before/by' date, use the end of that local day.",
+    "name": "save_memory_draft",
+    "schema": {
+      "properties": {
+        "scope": {
+          "enum": [
+            "global",
+            "topic"
+          ],
+          "description": "global applies across topics; topic is the user's own understanding or difficulty for one technical topic.",
+          "type": "string"
+        },
+        "subject": {
+          "description": "Concise subject no longer than 200 characters.",
+          "type": "string"
+        },
+        "content": {
+          "description": "Self-contained fact the user explicitly asked to remember; no longer than 400 characters.",
+          "type": "string"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "description": "Zero to five lowercase retrieval tags.",
+          "type": "array"
+        },
+        "topic_key": {
+          "description": "Required for topic scope and forbidden for global scope.",
+          "type": "string"
+        },
+        "durability": {
+          "enum": [
+            "stable",
+            "time_bound"
+          ],
+          "type": "string"
+        },
+        "valid_until": {
+          "description": "Future RFC3339 timestamp required only for time_bound.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "scope",
+        "subject",
+        "content",
+        "durability"
+      ],
+      "type": "object"
+    }
+  }
+]

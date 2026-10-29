@@ -1,0 +1,218 @@
+/* GopherLearn design tokens and document defaults.
+   Palette and structure are original to this implementation. */
+
+:root {
+  --gl-paper: #f4f2ee;
+  --gl-surface: #ffffff;
+  --gl-surface-soft: #faf9f6;
+  --gl-surface-line: #e3dfd6;
+  --gl-ink: #1d2b2a;
+  --gl-ink-soft: #5c6b69;
+  --gl-ink-faint: #8a9694;
+  --gl-accent: #0f766e;
+  --gl-accent-soft: #d8ece9;
+  --gl-accent-ink: #0a4f49;
+  --gl-danger: #a32d2a;
+  --gl-danger-soft: #fbe9e7;
+  --gl-warn: #8a5a00;
+  --gl-warn-soft: #fdf1dc;
+  --gl-radius: 12px;
+  --gl-radius-sm: 8px;
+  --gl-shadow: 0 1px 2px rgba(29, 43, 42, 0.06), 0 8px 24px rgba(29, 43, 42, 0.06);
+  --gl-rail: 62px;
+  --gl-panel: 268px;
+  --gl-font: 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei',
+    system-ui, -apple-system, sans-serif;
+  --gl-mono: 'Cascadia Mono', 'JetBrains Mono', Consolas, 'Liberation Mono',
+    monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--gl-paper);
+  color: var(--gl-ink);
+  font-family: var(--gl-font);
+  font-size: 17px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 1.6rem;
+  line-height: 1.3;
+}
+
+h2 {
+  font-size: 1.2rem;
+  line-height: 1.35;
+}
+
+h3 {
+  font-size: 1rem;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+a {
+  color: var(--gl-accent-ink);
+}
+
+:focus-visible {
+  outline: 2px solid var(--gl-accent);
+  outline-offset: 2px;
+}
+
+/* Atoms ------------------------------------------------------------- */
+
+.gl-card {
+  background: var(--gl-surface);
+  border: 1px solid var(--gl-surface-line);
+  border-radius: var(--gl-radius);
+  box-shadow: var(--gl-shadow);
+}
+
+.gl-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45em;
+  padding: 0.5em 1.05em;
+  border: 1px solid var(--gl-surface-line);
+  border-radius: var(--gl-radius-sm);
+  background: var(--gl-surface);
+  font-size: 0.95rem;
+  font-weight: 600;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.gl-btn:hover:not(:disabled) {
+  background: var(--gl-surface-soft);
+}
+
+.gl-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.gl-btn--primary {
+  background: var(--gl-accent);
+  border-color: var(--gl-accent);
+  color: #fff;
+}
+
+.gl-btn--primary:hover:not(:disabled) {
+  background: var(--gl-accent-ink);
+}
+
+.gl-btn--quiet {
+  background: transparent;
+  border-color: transparent;
+  color: var(--gl-ink-soft);
+  font-weight: 500;
+}
+
+.gl-btn--quiet:hover:not(:disabled) {
+  background: var(--gl-accent-soft);
+  color: var(--gl-accent-ink);
+}
+
+.gl-btn--danger {
+  background: var(--gl-danger-soft);
+  border-color: #eccfcb;
+  color: var(--gl-danger);
+}
+
+.gl-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.gl-muted {
+  color: var(--gl-ink-soft);
+}
+
+.gl-eyebrow {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--gl-ink-faint);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Shared page frame for the placeholder sections. */
+.gl-page {
+  padding: 1.5rem clamp(1rem, 4vw, 2.5rem) 3rem;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.gl-page__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--gl-surface-line);
+  margin-bottom: 1.5rem;
+}
+
+.gl-page__head h1 {
+  flex: 1 1 auto;
+}
+
+.gl-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15em 0.6em;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  background: var(--gl-warn-soft);
+  color: var(--gl-warn);
+}
+
+.gl-badge--done {
+  background: var(--gl-accent-soft);
+  color: var(--gl-accent-ink);
+}

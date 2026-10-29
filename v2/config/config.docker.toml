@@ -1,0 +1,6 @@
+# Public non-secret deployment field projection; not a runnable infrastructure configuration.
+[agentConfig]
+contextInputTargetTokens = 28000
+contextMaxTopicUserMemoryTokens = 1200
+episodeRecallMode = "inject_enabled"
+memoryReadMode = "legacy_v2"

@@ -1,0 +1,28 @@
+{
+  "marker": "stabilize065 rehearsal only: scripted episode generator and scripted relation classifier, in-process stores; no provider call, and no number here describes a real model's relation accuracy",
+  "sessions": 5,
+  "episodes": 5,
+  "assertions": 5,
+  "pairs_considered": 10,
+  "by_relation": {
+    "equivalent": 2,
+    "independent": 4,
+    "replaces": 1,
+    "supplements": 1,
+    "uncertain": 2
+  },
+  "by_reject": {
+    "source_already_replaced": 2
+  },
+  "uncertain": 2,
+  "candidate_recall": "10/10",
+  "classification_exact_match": "4/4",
+  "wrong_replacements": 0,
+  "unauthorized_cross_user": 0,
+  "duplicate_proposals": 0,
+  "idempotent_replay": "proposals 10, relations 4, states 3 (unchanged)",
+  "states_changed": 2,
+  "relations_written": 3,
+  "governed_read_back": "5 assertions resolved: [decision=replaced decision=current decision=current decision=unknown decision=unknown]",
+  "external_calls": 0
+}

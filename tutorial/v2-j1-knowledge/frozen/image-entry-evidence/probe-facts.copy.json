@@ -1,0 +1,499 @@
+{
+  "grant": "OWNER-AUTHORIZED-REDIS-IMAGE-READONLY-ONCE",
+  "attempt_id": "92f85041788449e1a3f2f809d1e06a2d",
+  "authorized_head": "750dc84d9ab0a3b337b53e237e4d71893d5b32af",
+  "observed_head": "750dc84d9ab0a3b337b53e237e4d71893d5b32af",
+  "sealing": {
+    "manifest_sha256": "004e2418590fe982b195715a9fb7a2ad0415dc46cea9862fd201ea4a01d72f3b",
+    "manifest_files": 125,
+    "seal_base": "b839df34c9e7673e0da0f477e691093f08f104c7",
+    "sealed_paths": 15,
+    "manifest_branch": "qoder/redis-gate-acceptance",
+    "manifest_recorded_base": "8e0e1d7238b97ae73909d1d5ca00f657d50a3155"
+  },
+  "scope": "read-only identity and content of the registered image",
+  "real_gate_execution": 0,
+  "containers_created": 0,
+  "networks_created": 0,
+  "credentials_generated": 0,
+  "permissions_set": 0,
+  "ports_probed": 0,
+  "scripts_executed": 0,
+  "redis_or_mysql_connections": 0,
+  "preflight": {
+    "oci_sizes": {
+      "index": 743,
+      "platform": 3034,
+      "config": 5005
+    },
+    "image": "redis/redis-stack-server:7.4.0-v8@sha256:39adcbb083b240642cd5738a75c4959c0393ef2a40fa545f2e1c7b55798eeda4",
+    "platform": "linux/amd64",
+    "index_digest": "sha256:798ab84d9f266936b034ab11c4d04a2b8e4b441884c5aa7d17ac951eefdf742a",
+    "manifest_digest": "sha256:39adcbb083b240642cd5738a75c4959c0393ef2a40fa545f2e1c7b55798eeda4",
+    "config_digest": "sha256:3b02c41b1595ea458314b605f2641f18b5b0fef67a2c954a9ee78f16a4b44d62",
+    "backend_construction": "forbidden-and-hooked",
+    "docker_calls_allowed": [
+      "docker.image.inspect",
+      "docker.image.save"
+    ]
+  },
+  "inspect": {
+    "local_id": "sha256:39adcbb083b240642cd5738a75c4959c0393ef2a40fa545f2e1c7b55798eeda4",
+    "id_semantics": "platform-manifest-addressed",
+    "manifest_digest": "sha256:39adcbb083b240642cd5738a75c4959c0393ef2a40fa545f2e1c7b55798eeda4",
+    "config_digest": "sha256:3b02c41b1595ea458314b605f2641f18b5b0fef67a2c954a9ee78f16a4b44d62",
+    "platform": "linux/amd64",
+    "repo_digests": [
+      "redis/redis-stack-server@sha256:39adcbb083b240642cd5738a75c4959c0393ef2a40fa545f2e1c7b55798eeda4"
+    ],
+    "repo_tags": [
+      "redis/redis-stack-server@sha256:39adcbb083b240642cd5738a75c4959c0393ef2a40fa545f2e1c7b55798eeda4"
+    ],
+    "descriptor": {
+      "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+      "digest": "sha256:39adcbb083b240642cd5738a75c4959c0393ef2a40fa545f2e1c7b55798eeda4",
+      "size": 3034
+    },
+    "os": "linux",
+    "architecture": "amd64",
+    "rootfs_type": "layers",
+    "diff_ids": [
+      "sha256:767e56ba346ae714b6e6b816baa839051145ed78cfa0e4524a86cc287b0c4b00",
+      "sha256:ab42212aa13985d574efb48438617802d613c263fde49f6ba1f4f654884fd945",
+      "sha256:65802dba7c3372002c60070873dd41d4ae384a46a1cfcc1635ab7b99fc97e195",
+      "sha256:eaed8fd4a9a7c4feeabc7be7558c3f2ccf431988f9e1e372677ad6d83a839805",
+      "sha256:5980d0b0a29fdddb69f0fbb261a9dca974024cc864375f18ad8bf9d201b87e4f",
+      "sha256:fbde55a3eb29f33076ad7134fd72456f49d8085962396b57370d065db301d159",
+      "sha256:811d7ffbbd91b6e5514c9a24632fd960f004809cf289addc689ac18f97f33270",
+      "sha256:d3413166af70b2a6b33c8dd00bc8f30ab923f7307f9b9bbe5748846747bda4f9",
+      "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef",
+      "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef",
+      "sha256:bd0f1d84d185f2f384b6286331a904a32f8039bdd3b80a363bba2713358d08d3",
+      "sha256:c53b0c0e61705b4f5731028beecfec4d889a5fa47742e75bb8e65ed9aeb31476",
+      "sha256:e6a55ddfc657c02096206a740be6a47c7e7f25aebf825ee5ba16c82f48710ce4"
+    ],
+    "created": "2025-11-03T09:58:23.421070569Z",
+    "size": 298202643,
+    "config": {
+      "ExposedPorts": {
+        "6379/tcp": {}
+      },
+      "Env": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "REDISBLOOM_ARGS=",
+        "REDISEARCH_ARGS=",
+        "REDISJSON_ARGS=",
+        "REDISTIMESERIES_ARGS=",
+        "REDIS_ARGS="
+      ],
+      "Cmd": [
+        "/entrypoint.sh"
+      ],
+      "Labels": {
+        "org.opencontainers.image.ref.name": "ubuntu",
+        "org.opencontainers.image.version": "22.04"
+      },
+      "ArgsEscaped": true
+    },
+    "container_config": null
+  },
+  "archive": {
+    "referenced_by": "verified local image id only (no tag)",
+    "bytes": 298220544,
+    "sha256": "sha256:061eee6b9585284390ca1be843b3039298e1198ed773cc07e5f2bd436a130e8e"
+  },
+  "archive_verification": {
+    "manifest_entries": 1,
+    "config_member": "blobs/sha256/3b02c41b1595ea458314b605f2641f18b5b0fef67a2c954a9ee78f16a4b44d62",
+    "config_sha256": "sha256:3b02c41b1595ea458314b605f2641f18b5b0fef67a2c954a9ee78f16a4b44d62",
+    "layer_count": 13,
+    "layers": [
+      {
+        "index": 0,
+        "member": "blobs/sha256/af6eca94c8104c8e90d3f9efe59c2b3a02b20aad3d985e31c7cd009ea104c447",
+        "stored_bytes": 29536818,
+        "stored_sha256": "sha256:af6eca94c8104c8e90d3f9efe59c2b3a02b20aad3d985e31c7cd009ea104c447",
+        "effective_sha256": "sha256:767e56ba346ae714b6e6b816baa839051145ed78cfa0e4524a86cc287b0c4b00",
+        "gzip_stored": true,
+        "config_diff_id": "sha256:767e56ba346ae714b6e6b816baa839051145ed78cfa0e4524a86cc287b0c4b00",
+        "frozen_registry_digest": "sha256:af6eca94c8104c8e90d3f9efe59c2b3a02b20aad3d985e31c7cd009ea104c447",
+        "frozen_declared_size": 29536818,
+        "matched_by": [
+          "uncompressed==config-diff_id",
+          "stored==frozen-registry-blob"
+        ]
+      },
+      {
+        "index": 1,
+        "member": "blobs/sha256/c44be512799084d7de6c73b84e3e66b12490774625ce2babc5fe6058e381d133",
+        "stored_bytes": 47730785,
+        "stored_sha256": "sha256:c44be512799084d7de6c73b84e3e66b12490774625ce2babc5fe6058e381d133",
+        "effective_sha256": "sha256:ab42212aa13985d574efb48438617802d613c263fde49f6ba1f4f654884fd945",
+        "gzip_stored": true,
+        "config_diff_id": "sha256:ab42212aa13985d574efb48438617802d613c263fde49f6ba1f4f654884fd945",
+        "frozen_registry_digest": "sha256:c44be512799084d7de6c73b84e3e66b12490774625ce2babc5fe6058e381d133",
+        "frozen_declared_size": 47730785,
+        "matched_by": [
+          "uncompressed==config-diff_id",
+          "stored==frozen-registry-blob"
+        ]
+      },
+      {
+        "index": 2,
+        "member": "blobs/sha256/2f00f0bbe17642104d28687d06851b1b5e7bd39347c3b9db414845502e61a94a",
+        "stored_bytes": 522270,
+        "stored_sha256": "sha256:2f00f0bbe17642104d28687d06851b1b5e7bd39347c3b9db414845502e61a94a",
+        "effective_sha256": "sha256:65802dba7c3372002c60070873dd41d4ae384a46a1cfcc1635ab7b99fc97e195",
+        "gzip_stored": true,
+        "config_diff_id": "sha256:65802dba7c3372002c60070873dd41d4ae384a46a1cfcc1635ab7b99fc97e195",
+        "frozen_registry_digest": "sha256:2f00f0bbe17642104d28687d06851b1b5e7bd39347c3b9db414845502e61a94a",
+        "frozen_declared_size": 522270,
+        "matched_by": [
+          "uncompressed==config-diff_id",
+          "stored==frozen-registry-blob"
+        ]
+      },
+      {
+        "index": 3,
+        "member": "blobs/sha256/470b8b88ae796a9e91a0413b03285a0a6992747e4efc736a3c4224b0e589a284",
+        "stored_bytes": 13037428,
+        "stored_sha256": "sha256:470b8b88ae796a9e91a0413b03285a0a6992747e4efc736a3c4224b0e589a284",
+        "effective_sha256": "sha256:eaed8fd4a9a7c4feeabc7be7558c3f2ccf431988f9e1e372677ad6d83a839805",
+        "gzip_stored": true,
+        "config_diff_id": "sha256:eaed8fd4a9a7c4feeabc7be7558c3f2ccf431988f9e1e372677ad6d83a839805",
+        "frozen_registry_digest": "sha256:470b8b88ae796a9e91a0413b03285a0a6992747e4efc736a3c4224b0e589a284",
+        "frozen_declared_size": 13037428,
+        "matched_by": [
+          "uncompressed==config-diff_id",
+          "stored==frozen-registry-blob"
+        ]
+      },
+      {
+        "index": 4,
+        "member": "blobs/sha256/884894b888a90e0667de8b63dc05cfb68e4ef889be033ad1a9ac7b208fa11508",
+        "stored_bytes": 143617702,
+        "stored_sha256": "sha256:884894b888a90e0667de8b63dc05cfb68e4ef889be033ad1a9ac7b208fa11508",
+        "effective_sha256": "sha256:5980d0b0a29fdddb69f0fbb261a9dca974024cc864375f18ad8bf9d201b87e4f",
+        "gzip_stored": true,
+        "config_diff_id": "sha256:5980d0b0a29fdddb69f0fbb261a9dca974024cc864375f18ad8bf9d201b87e4f",
+        "frozen_registry_digest": "sha256:884894b888a90e0667de8b63dc05cfb68e4ef889be033ad1a9ac7b208fa11508",
+        "frozen_declared_size": 143617702,
+        "matched_by": [
+          "uncompressed==config-diff_id",
+          "stored==frozen-registry-blob"
+        ]
+      },
+      {
+        "index": 5,
+        "member": "blobs/sha256/bea263b5571e67aa1297735f6dfe9fe7276b68a56d6b78fef7958e0a3b0c1391",
+        "stored_bytes": 133,
+        "stored_sha256": "sha256:bea263b5571e67aa1297735f6dfe9fe7276b68a56d6b78fef7958e0a3b0c1391",
+        "effective_sha256": "sha256:fbde55a3eb29f33076ad7134fd72456f49d8085962396b57370d065db301d159",
+        "gzip_stored": true,
+        "config_diff_id": "sha256:fbde55a3eb29f33076ad7134fd72456f49d8085962396b57370d065db301d159",
+        "frozen_registry_digest": "sha256:bea263b5571e67aa1297735f6dfe9fe7276b68a56d6b78fef7958e0a3b0c1391",
+        "frozen_declared_size": 133,
+        "matched_by": [
+          "uncompressed==config-diff_id",
+          "stored==frozen-registry-blob"
+        ]
+      },
+      {
+        "index": 6,
+        "member": "blobs/sha256/36ed7d156188400bcdab01f8260a23fd266d80965b3dac2436f433bd63b9077e",
+        "stored_bytes": 98,
+        "stored_sha256": "sha256:36ed7d156188400bcdab01f8260a23fd266d80965b3dac2436f433bd63b9077e",
+        "effective_sha256": "sha256:811d7ffbbd91b6e5514c9a24632fd960f004809cf289addc689ac18f97f33270",
+        "gzip_stored": true,
+        "config_diff_id": "sha256:811d7ffbbd91b6e5514c9a24632fd960f004809cf289addc689ac18f97f33270",
+        "frozen_registry_digest": "sha256:36ed7d156188400bcdab01f8260a23fd266d80965b3dac2436f433bd63b9077e",
+        "frozen_declared_size": 98,
+        "matched_by": [
+          "uncompressed==config-diff_id",
+          "stored==frozen-registry-blob"
+        ]
+      },
+      {
+        "index": 7,
+        "member": "blobs/sha256/972e1c16660402ad74b8319295167aad2efefd8c0aa3f3ec3d93f8c9804acc84",
+        "stored_bytes": 63747946,
+        "stored_sha256": "sha256:972e1c16660402ad74b8319295167aad2efefd8c0aa3f3ec3d93f8c9804acc84",
+        "effective_sha256": "sha256:d3413166af70b2a6b33c8dd00bc8f30ab923f7307f9b9bbe5748846747bda4f9",
+        "gzip_stored": true,
+        "config_diff_id": "sha256:d3413166af70b2a6b33c8dd00bc8f30ab923f7307f9b9bbe5748846747bda4f9",
+        "frozen_registry_digest": "sha256:972e1c16660402ad74b8319295167aad2efefd8c0aa3f3ec3d93f8c9804acc84",
+        "frozen_declared_size": 63747946,
+        "matched_by": [
+          "uncompressed==config-diff_id",
+          "stored==frozen-registry-blob"
+        ]
+      },
+      {
+        "index": 8,
+        "member": "blobs/sha256/4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1",
+        "stored_bytes": 32,
+        "stored_sha256": "sha256:4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1",
+        "effective_sha256": "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef",
+        "gzip_stored": true,
+        "config_diff_id": "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef",
+        "frozen_registry_digest": "sha256:4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1",
+        "frozen_declared_size": 32,
+        "matched_by": [
+          "uncompressed==config-diff_id",
+          "stored==frozen-registry-blob"
+        ]
+      },
+      {
+        "index": 9,
+        "member": "blobs/sha256/4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1",
+        "stored_bytes": 32,
+        "stored_sha256": "sha256:4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1",
+        "effective_sha256": "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef",
+        "gzip_stored": true,
+        "config_diff_id": "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef",
+        "frozen_registry_digest": "sha256:4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1",
+        "frozen_declared_size": 32,
+        "matched_by": [
+          "uncompressed==config-diff_id",
+          "stored==frozen-registry-blob"
+        ]
+      },
+      {
+        "index": 10,
+        "member": "blobs/sha256/8816734d9cfa93e289cb4eb7b766d465c565f4a1acc0a358f5424263b41156c1",
+        "stored_bytes": 149,
+        "stored_sha256": "sha256:8816734d9cfa93e289cb4eb7b766d465c565f4a1acc0a358f5424263b41156c1",
+        "effective_sha256": "sha256:bd0f1d84d185f2f384b6286331a904a32f8039bdd3b80a363bba2713358d08d3",
+        "gzip_stored": true,
+        "config_diff_id": "sha256:bd0f1d84d185f2f384b6286331a904a32f8039bdd3b80a363bba2713358d08d3",
+        "frozen_registry_digest": "sha256:8816734d9cfa93e289cb4eb7b766d465c565f4a1acc0a358f5424263b41156c1",
+        "frozen_declared_size": 149,
+        "matched_by": [
+          "uncompressed==config-diff_id",
+          "stored==frozen-registry-blob"
+        ]
+      },
+      {
+        "index": 11,
+        "member": "blobs/sha256/44190ad1f55f285d021ef807d367b422303f39b45aecfcf7384cbc25a683ac87",
+        "stored_bytes": 605,
+        "stored_sha256": "sha256:44190ad1f55f285d021ef807d367b422303f39b45aecfcf7384cbc25a683ac87",
+        "effective_sha256": "sha256:c53b0c0e61705b4f5731028beecfec4d889a5fa47742e75bb8e65ed9aeb31476",
+        "gzip_stored": true,
+        "config_diff_id": "sha256:c53b0c0e61705b4f5731028beecfec4d889a5fa47742e75bb8e65ed9aeb31476",
+        "frozen_registry_digest": "sha256:44190ad1f55f285d021ef807d367b422303f39b45aecfcf7384cbc25a683ac87",
+        "frozen_declared_size": 605,
+        "matched_by": [
+          "uncompressed==config-diff_id",
+          "stored==frozen-registry-blob"
+        ]
+      },
+      {
+        "index": 12,
+        "member": "blobs/sha256/4d8c94c7ecbddeb22d4ae308498d5cc7aa50c0bc4a7b20b2fac3bdea467e690c",
+        "stored_bytes": 606,
+        "stored_sha256": "sha256:4d8c94c7ecbddeb22d4ae308498d5cc7aa50c0bc4a7b20b2fac3bdea467e690c",
+        "effective_sha256": "sha256:e6a55ddfc657c02096206a740be6a47c7e7f25aebf825ee5ba16c82f48710ce4",
+        "gzip_stored": true,
+        "config_diff_id": "sha256:e6a55ddfc657c02096206a740be6a47c7e7f25aebf825ee5ba16c82f48710ce4",
+        "frozen_registry_digest": "sha256:4d8c94c7ecbddeb22d4ae308498d5cc7aa50c0bc4a7b20b2fac3bdea467e690c",
+        "frozen_declared_size": 606,
+        "matched_by": [
+          "uncompressed==config-diff_id",
+          "stored==frozen-registry-blob"
+        ]
+      }
+    ],
+    "repo_tags_in_manifest": null,
+    "inspect_diff_ids_match": true,
+    "note": "docker save 归档里是层 tar 字节；config 的 diff_id 是未压缩摘要，注册表 blob 摘要是压缩层，两个数不同属正常。本表逐层写明实际对上的是哪一种身份，对不上任何一种是阻塞。"
+  },
+  "view": {
+    "regular_files": 4398,
+    "links": 267,
+    "whiteouts": 1,
+    "opaque_dirs": 0
+  },
+  "entrypoint": {
+    "/entrypoint.sh": {
+      "requested": "/entrypoint.sh",
+      "file": "entrypoint.sh.txt",
+      "provided_by_layer": 12,
+      "tar_member": "entrypoint.sh",
+      "via": null,
+      "via_target": null,
+      "bytes": 1280,
+      "sha256": "sha256:5d4d68c8c49ce305775ee57695c74db44fe20a35af8b1652840938995bfb2d7c",
+      "mode": "0o755",
+      "uid": 0,
+      "gid": 0,
+      "layer_effective_sha256": "sha256:e6a55ddfc657c02096206a740be6a47c7e7f25aebf825ee5ba16c82f48710ce4",
+      "layer_is_the_frozen_diff_id": true
+    }
+  },
+  "entry_semantics": {
+    "redis_args_lines": [
+      {
+        "line": 36,
+        "text": "${REDIS_ARGS}"
+      }
+    ],
+    "exec_lines": [
+      {
+        "line": 7,
+        "text": "CMD=${BASEDIR}/bin/redis-server"
+      }
+    ],
+    "identity_switch_markers": [],
+    "log_or_redirect_markers": [
+      "daemonize"
+    ],
+    "quoted_expansion": false,
+    "bare_expansion": true,
+    "config_candidates": [
+      "/redis-stack.conf"
+    ]
+  },
+  "related": [
+    {
+      "path": "/bin/redis-server",
+      "status": "not-in-final-view",
+      "reason": "absent from the merged view"
+    },
+    {
+      "path": "/bin/sh",
+      "status": "not-in-final-view",
+      "reason": "absent from the merged view"
+    },
+    {
+      "path": "/data",
+      "status": "not-in-final-view",
+      "reason": "absent from the merged view"
+    },
+    {
+      "path": "/nodejs/bin/node",
+      "status": "not-in-final-view",
+      "reason": "absent from the merged view"
+    },
+    {
+      "path": "/opt/redis-stack",
+      "status": "not-in-final-view",
+      "reason": "absent from the merged view"
+    },
+    {
+      "path": "/opt/redis-stack/lib/libredisgears_v8_plugin.so",
+      "status": "too-large-recorded-only",
+      "bytes": 37920448,
+      "mode": "0o755",
+      "provided_by_layer": 7
+    },
+    {
+      "path": "/opt/redis-stack/lib/redisbloom.so",
+      "status": "extracted",
+      "file": "opt_redis-stack_lib_redisbloom.so.txt",
+      "bytes": 480568,
+      "sha256": "sha256:9b3e2b4f54eae53fc37dc2b15d52b6687ba598913664d6d30fec68f4a819c88e",
+      "provided_by_layer": 7,
+      "tar_member": "opt/redis-stack/lib/redisbloom.so",
+      "mode": "0o755",
+      "uid": 65534,
+      "gid": 1001,
+      "layer_effective_sha256": "sha256:d3413166af70b2a6b33c8dd00bc8f30ab923f7307f9b9bbe5748846747bda4f9"
+    },
+    {
+      "path": "/opt/redis-stack/lib/rediscompat.so",
+      "status": "extracted",
+      "file": "opt_redis-stack_lib_rediscompat.so.txt",
+      "bytes": 82872,
+      "sha256": "sha256:be26372ab476b1a6b6bd9e7394bd6f75eccf4a788249bfc6ae10e050dfcff381",
+      "provided_by_layer": 7,
+      "tar_member": "opt/redis-stack/lib/rediscompat.so",
+      "mode": "0o755",
+      "uid": 65534,
+      "gid": 1001,
+      "layer_effective_sha256": "sha256:d3413166af70b2a6b33c8dd00bc8f30ab923f7307f9b9bbe5748846747bda4f9"
+    },
+    {
+      "path": "/opt/redis-stack/lib/redisearch.so",
+      "status": "too-large-recorded-only",
+      "bytes": 8522472,
+      "mode": "0o755",
+      "provided_by_layer": 7
+    },
+    {
+      "path": "/opt/redis-stack/lib/redisgears.so",
+      "status": "too-large-recorded-only",
+      "bytes": 4742920,
+      "mode": "0o755",
+      "provided_by_layer": 7
+    },
+    {
+      "path": "/opt/redis-stack/lib/redistimeseries.so",
+      "status": "too-large-recorded-only",
+      "bytes": 2156160,
+      "mode": "0o755",
+      "provided_by_layer": 7
+    },
+    {
+      "path": "/opt/redis-stack/lib/rejson.so",
+      "status": "too-large-recorded-only",
+      "bytes": 29882016,
+      "mode": "0o755",
+      "provided_by_layer": 7
+    },
+    {
+      "path": "/redis-stack.conf",
+      "status": "not-in-final-view",
+      "reason": "absent from the merged view"
+    },
+    {
+      "path": "/share/redisinsight/.env",
+      "status": "not-in-final-view",
+      "reason": "absent from the merged view"
+    },
+    {
+      "path": "/share/redisinsight/api/dist/src/main.js",
+      "status": "not-in-final-view",
+      "reason": "absent from the merged view"
+    },
+    {
+      "path": "/share/redisinsight/api/node_modules/dotenv/config",
+      "status": "not-in-final-view",
+      "reason": "absent from the merged view"
+    },
+    {
+      "path": "/usr/bin/dumb-init",
+      "status": "extracted",
+      "file": "usr_bin_dumb-init.txt",
+      "bytes": 18624,
+      "sha256": "sha256:a9ef0e5e2f73ec228719ffb79629a4a9026c095e8888bd5b6ca732c55fe26aac",
+      "provided_by_layer": 3,
+      "tar_member": "usr/bin/dumb-init",
+      "mode": "0o755",
+      "uid": 0,
+      "gid": 0,
+      "layer_effective_sha256": "sha256:eaed8fd4a9a7c4feeabc7be7558c3f2ccf431988f9e1e372677ad6d83a839805"
+    }
+  ],
+  "docker_commands": [
+    {
+      "category": "docker.image.inspect",
+      "exit_code": 0,
+      "outcome": "ok",
+      "seconds": 0.08,
+      "stdout_bytes": 3033,
+      "stderr_bytes": 0,
+      "stderr_phrases": []
+    },
+    {
+      "category": "docker.image.save",
+      "exit_code": 0,
+      "outcome": "ok",
+      "seconds": 3.709,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0,
+      "stderr_phrases": []
+    }
+  ],
+  "seconds_left_in_round": 891.094
+}

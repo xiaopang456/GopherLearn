@@ -1,0 +1,262 @@
+{
+  "conversion_grant": "OWNER-AUTHORIZED-REDIS-EVIDENCE-CONVERSION-ONCE",
+  "conversion_head": "3e48ddb3db8c1477dbba05d8543bd570b8387f4a",
+  "conversion_manifest_sha256": "0fd424980e30fa37f53ef623b18142e1b37364621c3da46922263c2031d1122e",
+  "collection_grant": "OWNER-AUTHORIZED-REDIS-IMAGE-READONLY-ONCE",
+  "collection_attempt_id": "92f85041788449e1a3f2f809d1e06a2d",
+  "collection_authorized_head": "750dc84d9ab0a3b337b53e237e4d71893d5b32af",
+  "collection_manifest_sha256": "004e2418590fe982b195715a9fb7a2ad0415dc46cea9862fd201ea4a01d72f3b",
+  "collection_record_sha256": {
+    "probe-facts.json": "a7c4581ff53f2a6487604866464920943e05e845b76b30851281e65c02fd4190",
+    "probe-cleanup.json": "48774b4f0a49dec7bfc0b9e327abbd768c8e87da83604c0eb920300a5a28b08e"
+  },
+  "entrypoint_extract_sha256": "5d4d68c8c49ce305775ee57695c74db44fe20a35af8b1652840938995bfb2d7c",
+  "entrypoint_bytes": 1280,
+  "entrypoint_text_validation": {
+    "bytes": 1280,
+    "magic": "23212f75",
+    "kind": "undetermined",
+    "nul_bytes": 0,
+    "within_size_bound": true,
+    "is_text": true,
+    "encoding": "utf-8-strict",
+    "reason": null
+  },
+  "ledger": [
+    {
+      "category": "docker.image.inspect",
+      "exit_code": 0,
+      "seconds": 0.08
+    },
+    {
+      "category": "docker.image.save",
+      "exit_code": 0,
+      "seconds": 3.709
+    }
+  ],
+  "layers": 13,
+  "cleanup": {
+    "registered": 14,
+    "removed": 14,
+    "leftovers": [],
+    "recursive": false
+  },
+  "history_preserved": {
+    "original_head_rewritten": false,
+    "original_identity_checks_kept": true,
+    "collection_files_modified": 0,
+    "collection_files_deleted": 0
+  },
+  "parser_at_conversion": "r9-strict-text-static-variable-resolution",
+  "parser_at_collection": "legacy-before-parser-fix",
+  "scope": {
+    "included": [
+      {
+        "path": "/entrypoint.sh",
+        "file": "entrypoint.sh.txt",
+        "sha256": "sha256:5d4d68c8c49ce305775ee57695c74db44fe20a35af8b1652840938995bfb2d7c"
+      }
+    ],
+    "excluded": [
+      {
+        "path": "/bin/redis-server",
+        "status": "legacy-lookup-artifact",
+        "recorded_status": "not-in-final-view",
+        "existence": "not asserted",
+        "cause": "unconfirmed",
+        "reason": "the historical lookup could not attribute this term inside the merged view; that is a limitation of the parser or of the view query at collection time, so this record supports no existence conclusion in either direction",
+        "historical_detail": "see probe-facts.copy.json (历史采集器输出，不是本次转换认可的存在性结论)"
+      },
+      {
+        "path": "/bin/sh",
+        "status": "legacy-lookup-artifact",
+        "recorded_status": "not-in-final-view",
+        "existence": "not asserted",
+        "cause": "unconfirmed",
+        "reason": "the historical lookup could not attribute this term inside the merged view; that is a limitation of the parser or of the view query at collection time, so this record supports no existence conclusion in either direction",
+        "historical_detail": "see probe-facts.copy.json (历史采集器输出，不是本次转换认可的存在性结论)"
+      },
+      {
+        "path": "/data",
+        "status": "legacy-lookup-artifact",
+        "recorded_status": "not-in-final-view",
+        "existence": "not asserted",
+        "cause": "unconfirmed",
+        "reason": "the historical lookup could not attribute this term inside the merged view; that is a limitation of the parser or of the view query at collection time, so this record supports no existence conclusion in either direction",
+        "historical_detail": "see probe-facts.copy.json (历史采集器输出，不是本次转换认可的存在性结论)"
+      },
+      {
+        "path": "/nodejs/bin/node",
+        "status": "legacy-lookup-artifact",
+        "recorded_status": "not-in-final-view",
+        "existence": "not asserted",
+        "cause": "unconfirmed",
+        "reason": "the historical lookup could not attribute this term inside the merged view; that is a limitation of the parser or of the view query at collection time, so this record supports no existence conclusion in either direction",
+        "historical_detail": "see probe-facts.copy.json (历史采集器输出，不是本次转换认可的存在性结论)"
+      },
+      {
+        "path": "/opt/redis-stack",
+        "status": "legacy-lookup-artifact",
+        "recorded_status": "not-in-final-view",
+        "existence": "not asserted",
+        "cause": "unconfirmed",
+        "reason": "the historical lookup could not attribute this term inside the merged view; that is a limitation of the parser or of the view query at collection time, so this record supports no existence conclusion in either direction",
+        "historical_detail": "see probe-facts.copy.json (历史采集器输出，不是本次转换认可的存在性结论)"
+      },
+      {
+        "path": "/opt/redis-stack/lib/libredisgears_v8_plugin.so",
+        "status": "too-large-recorded-only",
+        "file": null,
+        "kind": null,
+        "bytes": 37920448,
+        "existence": "not asserted",
+        "reason": "historical size/type/skip record; bytes were not re-read by this conversion, so neither presence nor absence is asserted here",
+        "historical_detail": "see probe-facts.copy.json (历史采集器输出，不是本次转换认可的存在性结论)"
+      },
+      {
+        "path": "/opt/redis-stack/lib/redisbloom.so",
+        "status": "extracted",
+        "file": "opt_redis-stack_lib_redisbloom.so.txt",
+        "kind": null,
+        "existence": "not asserted",
+        "reason": "extracted before text validation existed; the bytes are not proven to be text, so they are excluded from entry evidence"
+      },
+      {
+        "path": "/opt/redis-stack/lib/rediscompat.so",
+        "status": "extracted",
+        "file": "opt_redis-stack_lib_rediscompat.so.txt",
+        "kind": null,
+        "existence": "not asserted",
+        "reason": "extracted before text validation existed; the bytes are not proven to be text, so they are excluded from entry evidence"
+      },
+      {
+        "path": "/opt/redis-stack/lib/redisearch.so",
+        "status": "too-large-recorded-only",
+        "file": null,
+        "kind": null,
+        "bytes": 8522472,
+        "existence": "not asserted",
+        "reason": "historical size/type/skip record; bytes were not re-read by this conversion, so neither presence nor absence is asserted here",
+        "historical_detail": "see probe-facts.copy.json (历史采集器输出，不是本次转换认可的存在性结论)"
+      },
+      {
+        "path": "/opt/redis-stack/lib/redisgears.so",
+        "status": "too-large-recorded-only",
+        "file": null,
+        "kind": null,
+        "bytes": 4742920,
+        "existence": "not asserted",
+        "reason": "historical size/type/skip record; bytes were not re-read by this conversion, so neither presence nor absence is asserted here",
+        "historical_detail": "see probe-facts.copy.json (历史采集器输出，不是本次转换认可的存在性结论)"
+      },
+      {
+        "path": "/opt/redis-stack/lib/redistimeseries.so",
+        "status": "too-large-recorded-only",
+        "file": null,
+        "kind": null,
+        "bytes": 2156160,
+        "existence": "not asserted",
+        "reason": "historical size/type/skip record; bytes were not re-read by this conversion, so neither presence nor absence is asserted here",
+        "historical_detail": "see probe-facts.copy.json (历史采集器输出，不是本次转换认可的存在性结论)"
+      },
+      {
+        "path": "/opt/redis-stack/lib/rejson.so",
+        "status": "too-large-recorded-only",
+        "file": null,
+        "kind": null,
+        "bytes": 29882016,
+        "existence": "not asserted",
+        "reason": "historical size/type/skip record; bytes were not re-read by this conversion, so neither presence nor absence is asserted here",
+        "historical_detail": "see probe-facts.copy.json (历史采集器输出，不是本次转换认可的存在性结论)"
+      },
+      {
+        "path": "/redis-stack.conf",
+        "status": "legacy-lookup-artifact",
+        "recorded_status": "not-in-final-view",
+        "existence": "not asserted",
+        "cause": "unconfirmed",
+        "reason": "the historical lookup could not attribute this term inside the merged view; that is a limitation of the parser or of the view query at collection time, so this record supports no existence conclusion in either direction",
+        "historical_detail": "see probe-facts.copy.json (历史采集器输出，不是本次转换认可的存在性结论)"
+      },
+      {
+        "path": "/share/redisinsight/.env",
+        "status": "legacy-lookup-artifact",
+        "recorded_status": "not-in-final-view",
+        "existence": "not asserted",
+        "cause": "unconfirmed",
+        "reason": "the historical lookup could not attribute this term inside the merged view; that is a limitation of the parser or of the view query at collection time, so this record supports no existence conclusion in either direction",
+        "historical_detail": "see probe-facts.copy.json (历史采集器输出，不是本次转换认可的存在性结论)"
+      },
+      {
+        "path": "/share/redisinsight/api/dist/src/main.js",
+        "status": "legacy-lookup-artifact",
+        "recorded_status": "not-in-final-view",
+        "existence": "not asserted",
+        "cause": "unconfirmed",
+        "reason": "the historical lookup could not attribute this term inside the merged view; that is a limitation of the parser or of the view query at collection time, so this record supports no existence conclusion in either direction",
+        "historical_detail": "see probe-facts.copy.json (历史采集器输出，不是本次转换认可的存在性结论)"
+      },
+      {
+        "path": "/share/redisinsight/api/node_modules/dotenv/config",
+        "status": "legacy-lookup-artifact",
+        "recorded_status": "not-in-final-view",
+        "existence": "not asserted",
+        "cause": "unconfirmed",
+        "reason": "the historical lookup could not attribute this term inside the merged view; that is a limitation of the parser or of the view query at collection time, so this record supports no existence conclusion in either direction",
+        "historical_detail": "see probe-facts.copy.json (历史采集器输出，不是本次转换认可的存在性结论)"
+      },
+      {
+        "path": "/usr/bin/dumb-init",
+        "status": "extracted",
+        "file": "usr_bin_dumb-init.txt",
+        "kind": null,
+        "existence": "not asserted",
+        "reason": "extracted before text validation existed; the bytes are not proven to be text, so they are excluded from entry evidence"
+      }
+    ],
+    "related_existence_unverified": [
+      "/bin/redis-server",
+      "/bin/sh",
+      "/data",
+      "/nodejs/bin/node",
+      "/opt/redis-stack",
+      "/opt/redis-stack/lib/libredisgears_v8_plugin.so",
+      "/opt/redis-stack/lib/redisearch.so",
+      "/opt/redis-stack/lib/redisgears.so",
+      "/opt/redis-stack/lib/redistimeseries.so",
+      "/opt/redis-stack/lib/rejson.so",
+      "/redis-stack.conf",
+      "/share/redisinsight/.env",
+      "/share/redisinsight/api/dist/src/main.js",
+      "/share/redisinsight/api/node_modules/dotenv/config"
+    ],
+    "binary_existence_verified": false,
+    "lookup_verdict_authority": "本次转换只重读入口文本的原始字节；其余行沿用历史记录，既不确认也不否认存在性。视图判据本身只到\"整串是否命中\"为止，中间目录为符号链接时仍会漏判（已单独登记为 D3，未修）。",
+    "historical_copy_disclaimer": "probe-facts.copy.json 与 probe-cleanup.copy.json 是原样副本，其中的旧措辞（含 absent from the merged view）只代表那一轮采集器的输出，不是本次转换认可的事实。",
+    "note": "新解析器不能补出已被清理归档里的事实：本轮转换只复核留在树外的原始字节与记录，相关 .so／可执行体的存在性与类型仍记为未验证。"
+  },
+  "real_gate_execution": 0,
+  "docker_commands_issued_now": 0,
+  "containers_created": 0,
+  "credentials_generated": 0,
+  "permissions_set": 0,
+  "ports_probed": 0,
+  "scripts_executed": 0,
+  "redis_or_mysql_connections": 0,
+  "executor_accepts_evidence": true,
+  "executor_reading": {
+    "image": "redis/redis-stack-server:7.4.0-v8@sha256:39adcbb083b240642cd5738a75c4959c0393ef2a40fa545f2e1c7b55798eeda4",
+    "files": 1,
+    "layers": 13,
+    "entrypoint_sha256": "sha256:5d4d68c8c49ce305775ee57695c74db44fe20a35af8b1652840938995bfb2d7c",
+    "verified_at": "2026-10-10T09:26:03Z",
+    "archive_sha256": "sha256:061eee6b9585284390ca1be843b3039298e1198ed773cc07e5f2bd436a130e8e",
+    "archive_bytes": 298220544,
+    "local_id": "sha256:39adcbb083b240642cd5738a75c4959c0393ef2a40fa545f2e1c7b55798eeda4",
+    "id_semantics": "platform-manifest-addressed",
+    "docker_calls": [
+      "docker.image.inspect",
+      "docker.image.save"
+    ]
+  }
+}

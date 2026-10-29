@@ -1,0 +1,50 @@
+# Phase 10A: run the same three-service stack against a real OpenAI-compatible endpoint.
+#
+# This file changes one thing: which model answers. MySQL, the backend image, the Nginx
+# frontend, the loopback-only port, the internal `data` network and the round-specific
+# volume all stay exactly as compose.app.yml describes them, and nothing here is read by
+# the default command - the stack without this file keeps answering from `echo` with the
+# scripted quiz model and needs no provider credential at all.
+#
+#   default (unchanged, zero provider, zero credentials):
+#     docker compose --env-file .env.compose.local `
+#       -f compose.mysql.yml -f compose.app.yml up -d --build
+#
+#   real provider (explicit, costs money, reads a local untracked file):
+#     copy .env.provider.example to .env.provider.local and fill it in
+#     docker compose --env-file .env.compose.local `
+#       -f compose.mysql.yml -f compose.app.yml -f compose.provider.yml up -d --build
+#
+# Where the credential lives, and where it does not:
+#
+#   * The API key is read from `.env.provider.local` through `env_file`, so it is never
+#     written in this file, never appears as a `${...}` interpolation, and therefore never
+#     lands in `docker compose config` output, in a shell's visible history, or in an image
+#     layer. Compose reads env_file values into the container environment directly.
+#   * `GOPHERLEARN_AI_PROVIDER` and the removal of the scripted model are written literally
+#     here because they are a mode, not a secret: an operator reading this file must be able
+#     to see that it spends money.
+#   * `.env.provider.local` matches the repository's `*.local` ignore rule, the same way
+#     `.env.compose.local` does. The tracked file is `.env.provider.example`, which carries
+#     no values.
+#
+# Why the scripted learning model is blanked rather than left alone: compose merges two
+# `environment` mappings per key, so the `deterministic` value from compose.app.yml would
+# otherwise survive into provider mode. The backend refuses that combination at startup
+# (app.ErrLocalLearningModelNeedsEcho) - and it should keep refusing it - so this file sets
+# the key to empty instead of relying on the collision being noticed later. One conversation
+# must not be answered by a provider while its exercises are scored by a script.
+services:
+  backend:
+    # `!override` because a sequence merge would depend on file order for which of the two
+    # files wins a duplicated key. Both entries are restated: the stack's own credential
+    # file, exactly as compose.app.yml names it, then the provider file on top of it.
+    env_file: !override
+      - ${GOPHERLEARN_STACK_ENV_FILE:-.env.compose.local}
+      - .env.provider.local
+    # Merged, not overridden: everything else compose.app.yml sets for this service -
+    # GOPHERLEARN_STORAGE, GOPHERLEARN_HTTP_ADDR, the profile marker - is inherited, so a
+    # setting added there later cannot silently disappear from provider mode.
+    environment:
+      GOPHERLEARN_AI_PROVIDER: openai_compatible
+      GOPHERLEARN_LOCAL_LEARNING_MODEL: ""

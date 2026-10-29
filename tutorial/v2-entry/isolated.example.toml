@@ -1,0 +1,40 @@
+# Independent deployment template. Empty keys deliberately refuse startup.
+# Do not point this file at a GopherLearn business database or existing Redis.
+[isolatedEntry]
+isolated = true
+migrate = false
+chatKey = ""
+chatModel = "explicit-model-name"
+chatBaseURL = "https://provider.invalid/v1"
+embeddingKey = ""
+[mainConfig]
+host = "127.0.0.1"
+port = 18082
+[mysqlConfig]
+host = "mysql-isolated.invalid"
+port = 3306
+user = "v2_isolated"
+password = ""
+databaseName = "v2_isolated"
+charset = "utf8mb4"
+[redisConfig]
+host = "redis-isolated.invalid"
+port = 6379
+db = 0
+password = ""
+[jwtConfig]
+key = ""
+expire_duration = 24
+issuer = "v2-isolated"
+subject = "v2-isolated-user"
+[knowledgeConfig]
+storageDir = "data/v2-isolated/knowledge"
+[ragModelConfig]
+embeddingModel = "explicit-embedding-model"
+embeddingBaseUrl = "https://embedding.invalid/v1"
+chatModelName = "explicit-model-name"
+baseUrl = "https://provider.invalid/v1"
+dimension = 1024
+rerankEnabled = false
+# Omitted agent fields retain original source defaults: legacy_v2/shadow_only.
+# Deployment may explicitly choose legacy_v2/inject_enabled.

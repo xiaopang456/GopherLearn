@@ -1,0 +1,20 @@
+# 只钉需要保持 LF 的文件，不用通配。
+#
+# deploy/redis-stack-preflight.sh 与 deploy/redis-stack-healthcheck.sh 把这两份脚本按只读绑定
+# 挂进 Redis Stack 容器，由容器里的 /bin/sh 直接执行。一次 CRLF 检出会把 shebang 变成
+# `/bin/sh\r`，服务在启动前就起不来 —— 那是行尾造成的故障，不是配置错误。
+deploy/redis-stack-preflight.sh text eol=lf
+deploy/redis-stack-healthcheck.sh text eol=lf
+
+# 下面两个文件按**行内容**被断言，CRLF 会让断言本身失效，所以它们也必须以 LF 检出：
+#
+# - compose.integrated.yml：internal/app/retrieval_stack_config_test.go 逐行找顶层的
+#   `services:`，CRLF 下这一行是 "services:\r"，找不到，规则测试报的是
+#   `no top-level "services:" line`。
+# - cmd/gopherlearn/main.go：cmd/gopherlearn/shutdown_test.go 用正则读 `shutdownGrace` 的
+#   秒数，CRLF 下 `$` 前多一个 \r，正则不匹配，于是报
+#   `main.go no longer declares shutdownGrace as a whole number of seconds`。
+#
+# 两个失败都与行尾有关，与业务逻辑无关；把它们钉成 LF 是修掉失败，不是放宽断言。
+compose.integrated.yml text eol=lf
+cmd/gopherlearn/main.go text eol=lf

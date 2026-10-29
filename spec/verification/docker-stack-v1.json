@@ -1,0 +1,181 @@
+{
+  "record": "docker-stack-v1",
+  "phase": "8C",
+  "created_at_utc": "2026-09-27T06:56:30Z",
+  "repository": "github.com/xiaopang456/GopherLearn",
+  "scope": "Local three-service Docker stack: MySQL 8, the Go backend image, the built web client behind Nginx, driven through a real browser.",
+  "runtime_flags": {
+    "docker": true,
+    "mysql": true,
+    "real_provider_calls": false,
+    "embedding_calls": false,
+    "redis": false,
+    "rabbitmq": false,
+    "v3_or_v31_evaluation_line_read": false
+  },
+  "tool_versions": {
+    "go_language_directive": "1.24.0",
+    "builder_image_default": "golang:1.24.10-bookworm",
+    "node_image_default": "node:22-bookworm-slim",
+    "nginx_image_default": "nginx:1.27-alpine",
+    "mysql_server_version": "8.0.46",
+    "base_image_source": "Defaults are the canonical upstream names. This run pulled mirror copies through GOPHERLEARN_GO_IMAGE / GOPHERLEARN_NODE_IMAGE / GOPHERLEARN_NGINX_IMAGE, which live only in the git-ignored .env.compose.local."
+  },
+  "images": [
+    {"name": "gopherlearn-backend:8c", "id": "c0f4ae9906b1", "size_bytes_approx": 29600000, "config_user": "65532:65532", "final_stage": "scratch", "exposed_ports": ["8080/tcp"], "entrypoint": ["/gopherlearn"], "rootfs_entries": 16, "rootfs_contents": ["the binary", "ca-certificates.crt", "Docker mount stubs"]},
+    {"name": "gopherlearn-frontend:8c", "id": "15b3336b907f", "size_bytes_approx": 73900000, "config_user": "", "exposed_ports": ["80/tcp", "8080/tcp"], "rootfs_entries": 2216, "served_files": ["index.html", "50x.html", "assets/index-C9oCOOsh.js", "assets/index-HmU1dsmu.css"]}
+  ],
+  "services": [
+    {"name": "mysql", "container": "gopherlearn-mysql-8c", "state": "running", "health": "healthy", "published": "127.0.0.1:3308->3306/tcp", "carried_over_from": "8B.1 compose.mysql.yml, standalone run still verified"},
+    {"name": "backend", "container": "gopherlearn-mysql-backend-1", "state": "running", "health": "no healthcheck in this build", "published": "nothing - 8080/tcp internal only", "startup_log_confirms": "storage=mysql, provider=echo, local_learning_model=deterministic"},
+    {"name": "frontend", "container": "gopherlearn-mysql-frontend-1", "state": "running", "health": "no healthcheck", "published": "127.0.0.1:8081->8080/tcp"}
+  ],
+  "networks": [
+    {"name": "gopherlearn-app-data", "driver": "bridge", "internal": true, "members": ["mysql", "backend"]},
+    {"name": "gopherlearn-app-web", "driver": "bridge", "internal": false, "members": ["backend", "frontend"]},
+    {"name": "gopherlearn-mysql_default", "driver": "bridge", "internal": false, "members": ["mysql"], "reason": "keeps the 8B.1 loopback publishing of 3308 working"}
+  ],
+  "volumes": [
+    {"name": "gopherlearn-8c-mysql-data", "used_by_this_round": true, "created_empty": true, "kept_after_round": true},
+    {"name": "gopherlearn-mysql-8b1-data", "used_by_this_round": false, "touched": false, "data": "retained from 8B.1"}
+  ],
+  "schema": {
+    "tables_after_migration": 14,
+    "table_names": ["users", "sessions", "messages", "message_sources", "session_summaries", "memories", "memory_sources", "learning_sessions", "learning_questions", "learning_attempts", "topic_progress", "knowledge_collections", "knowledge_documents", "knowledge_chunks"]
+  },
+  "row_counts_after_acceptance": {
+    "note": "Counts only. No account identifier, message body, document title or document text is recorded in this file.",
+    "users": 2,
+    "sessions": 4,
+    "messages": 16,
+    "message_sources": 1,
+    "session_summaries": 0,
+    "knowledge_collections": 1,
+    "knowledge_documents": 1,
+    "knowledge_chunks": 4,
+    "learning_sessions": 3,
+    "learning_questions": 9,
+    "learning_attempts": 6,
+    "topic_progress": 1,
+    "memories": 1,
+    "memory_sources": 1
+  },
+  "credential_handling": {
+    "secret_bearing_file": ".env.compose.local (untracked, matched by the *.local ignore rule)",
+    "example_file": ".env.compose.example - variable names and fake values only",
+    "shared_by": "backend and MySQL read the same single file; no duplicated password",
+    "delivery": "env_file only. No credential is interpolated into compose.app.yml, so no resolved configuration text depends on the flag that hides them.",
+    "verified_no_secret_in": ["compose.app.yml source", "docker compose config --no-env-resolution output", "backend image rootfs", "frontend image rootfs", "all three container logs"],
+    "scan_method": "The four distinct secret shapes were read into shell variables from the local file and grepped against the exported image rootfs tars and the container logs as fixed strings. Only match counts were printed; no value was ever printed, hashed into a file, or copied into an artifact.",
+    "match_counts": {"app_password": 0, "root_password": 0, "jwt_secret": 0, "dsn_with_host_and_port": 0, "log_lines_scanned": {"mysql": 13, "backend": 1, "frontend": 37}},
+    "note_on_plain_compose_config": "A plain `docker compose config` inlines env_file contents and therefore prints the values. It is an operator's own view, never an artifact. Every configuration check in this round used --no-env-resolution.",
+    "failure_modes_observed": ["missing env file: compose exits 1 before creating anything", "required marker variable unset: compose exits 1 naming the variable", "backend without JWT secret or DSN: startup fails with a named complaint"]
+  },
+  "browser_acceptance": {
+    "driver": "real Chromium page, real SPA, real fetch through the Nginx proxy at 127.0.0.1:8081; pointer actions were unavailable in the in-app viewport (0x0), so clicks were dispatched on the live DOM elements themselves",
+    "synthetic_data_only": true,
+    "register_login_logout": true,
+    "second_account_registered_and_isolated": true,
+    "chat_and_learning_agent_session_created": true,
+    "plain_sse_conversation": true,
+    "knowledge_base_created_and_markdown_uploaded": true,
+    "rag_citation_attached_to_assistant_message": true,
+    "deleted_document_stops_being_recalled": true,
+    "learning_three_questions_completed": true,
+    "submission_id_replay_returns_identical_body": true,
+    "submission_id_reuse_with_different_answer_refused": "409 learning_submission_conflict",
+    "skip_advances_without_an_answer": true,
+    "cancel_without_body_accepted": true,
+    "cancel_with_body_refused": "400 invalid_request",
+    "mastery_progress_read": "level=developing, mastery=76, valid_attempts=5, confidence=0.833, weak_points=3",
+    "memory_pending_confirm_archive": true,
+    "client_supplied_confidence_refused": "400 invalid_request",
+    "archived_state_not_listable": "400 invalid_request for ?state=archived",
+    "bad_token": "401 unauthorized",
+    "missing_token": "401 unauthorized",
+    "oversized_body_answered_by_go": "a 1,572,878-byte request returned 400 invalid_request from Go, not 413 from Nginx",
+    "backend_reachable_from_host": false,
+    "frontend_can_reach_mysql_after_internal_network": false,
+    "frontend_can_reach_mysql_before_internal_network": true,
+    "restart_backend_and_frontend_data_intact": true,
+    "graceful_mysql_restart_first_requests": "3 of 3 returned 200, no error observed",
+    "hard_kill_mysql_then_recreate_first_request": "200 on the first attempt",
+    "core_data_after_both_restarts": "4 sessions, 16 messages, 1 document, 4 chunks, mastery 76 unchanged"
+  },
+  "sse_measurement": {
+    "purpose": "Phase 8C item: confirm events arrive incrementally through Nginx.",
+    "turn": "one 3,500-rune message answered by the echo provider",
+    "events_received_through_proxy": 221,
+    "total_stream_bytes": 22109,
+    "read_boundaries_through_proxy": [2301, 19808],
+    "first_read_bytes": 2301,
+    "first_read_ms": 21,
+    "stream_finished_ms": 25,
+    "response_headers_through_proxy": {"content_type": "text/event-stream; charset=utf-8", "transfer_encoding": "chunked", "content_length": null},
+    "direct_to_backend_same_turn_reads": [674, 7072, 7766, 6597],
+    "live_container_config_verified": "nginx -T inside the running frontend image lists proxy_buffering off, proxy_cache off, gzip off, proxy_http_version 1.1 and the per-route timing log on the stream location; nginx -t passes",
+    "discriminated_buffered_versus_passthrough": false,
+    "why_not": "A backpressure attempt was made and it failed to produce backpressure on this host. The client read one chunk, paused its stream for 4 seconds and shrank its receive buffer, yet Nginx still reported request_time=0.139s and upstream_response_time=0.139s and delivered all 547 KB while the client was paused. With the two timings equal and no stall reaching the upstream, the measurement cannot separate proxy_buffering off from on. The claim therefore rests on the loaded configuration of the running container plus the observed multi-read delivery, and it is recorded as a limitation rather than as a proof.",
+    "timing_log_added_for_this_measurement": "log_format gopherlearn_stream plus one access_log line on the stream location; it records address, uri, status, request_time, upstream_response_time and bytes, and no header, body or credential"
+  },
+  "network_isolation_measurement": {
+    "before": "With gopherlearn-app-data as an ordinary bridge, the frontend container - not attached to it - connected to the MySQL container address on 3306 (nc reported open). Name resolution failed, routing did not.",
+    "after": "With the network internal, the same probe against the same address timed out.",
+    "conclusion": "Attachment alone is not isolation on a single Docker host. This was found by measurement during 8C and fixed in compose.app.yml; the README states the reason."
+  },
+  "gates": {
+    "docker_compose_config_no_env_resolution": "exit 0, three services, two round-specific networks, one round-specific volume",
+    "compose_mysql_yml_standalone_config": "exit 0, unchanged 8B.1 semantics",
+    "gofmt": "clean",
+    "go_vet": "exit 0",
+    "go_build": "exit 0",
+    "go_test_default_no_docker": "20 packages ok, 0 failures",
+    "go_test_race": "20 packages ok, 0 failures",
+    "mysql_gated_integration_suite": "194 subtests ok against the stack's MySQL 8.0.46",
+    "static_stack_configuration_tests": "internal/app/docker_stack_config_test.go - 4 tests ok",
+    "eslint": "exit 0",
+    "vitest": "691 tests passed",
+    "vite_build": "exit 0"
+  },
+  "mutation_probes": {
+    "purpose": "Show the two new static gates actually fail when the property they guard is removed.",
+    "single_anchor_each": true,
+    "probes": [
+      {"file": "compose.app.yml", "change": "delete the data network's internal: true line", "expected": "TestComposeStackCarriesNoSecretsAndNoExtraServices fails naming the internal-network requirement", "result": "failed as expected"},
+      {"file": "nginx.frontend.conf", "change": "first proxy_buffering off becomes on, which is the stream location", "expected": "TestProxyLeavesTheBodyLimitToTheBackendAndStreamsUnbuffered fails", "result": "failed as expected after the test was fixed; it passed the first time, which was a real weakness"}
+    ],
+    "weakness_found_by_the_first_probe": "The test scoped the stream block with a helper that stops at the next less-indented line. Inside an nginx server block nothing is less indented until the file ends, so the block swallowed the following location and proxy_buffering off in /api/ satisfied the assertion for the SSE route. Replaced with a brace-depth block extractor; the mutation then failed for the right reason.",
+    "restored_byte_exact": {"nginx.frontend.conf": "30bd30390adda4400dd60c153926007e385d6ca81408ba588fda7b8b500a3218", "compose.app.yml": "f92d6830652b4126f7a44dc5c8ba3ba5d3b17cda4eec71ada62cb5158de5e9e2"},
+    "images_rebuilt_after_restore": false,
+    "why_no_rebuild": "Both files returned to the exact bytes the running images were built from, so the deployed artefacts still match the repository."
+  },
+  "unchanged_records": {
+    "http_contract_golden": {"sha256_prefix": "36da938dc19b7f45", "records": 194, "lines": 1166, "changed_this_round": false},
+    "provider_smoke_v1": {"sha256_prefix": "ee0ba6c4cda0109d", "changed_this_round": false},
+    "agent_tool_smoke_v1": {"sha256_prefix": "3296df13a837da9a", "changed_this_round": false},
+    "agent_tool_smoke_v2": {"sha256_prefix": "a3d5d1c6c42c7162", "changed_this_round": false},
+    "mysql_runtime_v1": {"sha256_prefix": "97b8f09a6f7f3cc4", "changed_this_round": false},
+    "mysql_runtime_v2": {"sha256_prefix": "9134db8b126d066a", "changed_this_round": false}
+  },
+  "files_added_or_changed_by_this_round": {
+    "added": [".dockerignore", "Dockerfile.backend", "Dockerfile.frontend", "nginx.frontend.conf", "compose.app.yml", ".env.compose.example", "internal/app/docker_stack_config_test.go", "spec/verification/docker-stack-v1.json"],
+    "modified": ["README.md - new section 'Running the whole stack on Docker'"],
+    "untracked_and_never_committed": [".env.compose.local"],
+    "web_source_changed": false,
+    "spec_api_and_architecture_changed_this_round": false
+  },
+  "shutdown_observations": {
+    "backend_exit_code_on_docker_stop": 2,
+    "cause": "cmd/gopherlearn/main.go serves with ListenAndServe and installs no signal handler and never calls Shutdown, so SIGTERM ends the process instead of draining it. Pre-existing, outside this round's boundary of not changing app startup logic, and harmless here because no request was in flight.",
+    "driver_log_during_graceful_mysql_restart": "closing bad idle connection: EOF, then three consecutive 200 responses",
+    "why_that_matters": "A cleanly closed socket is the case go-sql-driver can detect and database/sql can retry transparently. 8B.2's one-off 500 came from a socket torn without that signal on Windows, where the stale-connection check is a no-op. The two observations are consistent; this run did not re-create the 8B.1 conditions and does not claim that gap closed."
+  },
+  "limitations": [
+    "No readiness or health endpoint exists, so depends_on orders startup and not readiness; the page can answer before the API does.",
+    "The frontend image runs the Nginx master as root, with workers as the unprivileged nginx user. Only the backend image was required to be non-root, and it is 65532:65532.",
+    "Proxy buffering behaviour could not be discriminated by timing on this host; see sse_measurement.why_not.",
+    "The single-request 500 that 8B.1 recorded after an unclean MySQL stop did not recur here in either restart mode, which is consistent with 8B.2's root cause: a graceful stop closes the socket cleanly and database/sql retries that transparently, while a SIGKILL during 8B.1 did not. It is not evidence that the Windows stale-connection gap was fixed.",
+    "This stack exercises plumbing only: every answer is the echo placeholder and every quiz question and grade comes from the scripted local model. Zero provider, embedding, Redis or RabbitMQ calls were made.",
+    "This file records counts and outcomes, never a message body, document text, account identifier, password, DSN, JWT or token."
+  ]
+}

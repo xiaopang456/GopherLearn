@@ -1,0 +1,78 @@
+{
+  "schema_version": 2,
+  "executed_at": "2026-09-25T10:15:13Z",
+  "provider": "openai_compatible",
+  "endpoint_host": "llm-44u72bu32v8exxko.cn-beijing.maas.aliyuncs.com",
+  "model": "qwen3.8-max",
+  "request_cap": 3,
+  "actual_requests": 3,
+  "retries": 0,
+  "failures": 0,
+  "complete_nonempty": true,
+  "stream_nonempty": true,
+  "stream_delta_count": 7,
+  "knowledge_answer_nonempty": true,
+  "knowledge_source_count": 1,
+  "no_evidence_skipped_provider": true,
+  "finish_reason": "stop",
+  "usage_if_returned": {
+    "prompt_tokens": 86,
+    "completion_tokens": 100,
+    "total_tokens": 186
+  },
+  "steps": [
+    {
+      "name": "complete",
+      "status": "ok",
+      "requests_used": 1,
+      "nonempty": true,
+      "answer_sha256": "2bafe4c42f4eff3543c53500ff3c2f95fe2efd3c5ee830549f2395b3a2e5a959",
+      "finish_reason": "stop",
+      "delta_count": 0,
+      "source_count": 0,
+      "failure_code": null,
+      "provider_status": null
+    },
+    {
+      "name": "stream",
+      "status": "ok",
+      "requests_used": 1,
+      "nonempty": true,
+      "answer_sha256": "4129d31fdbf7858eff89c166f976339f7aa475e9b357ecb24edea1e2d4626649",
+      "finish_reason": "stop",
+      "delta_count": 7,
+      "source_count": 0,
+      "failure_code": null,
+      "provider_status": null
+    },
+    {
+      "name": "knowledge_qa",
+      "status": "ok",
+      "requests_used": 1,
+      "nonempty": true,
+      "answer_sha256": "6c98b357f1d1cc75f3ac366b66983b74d1ed8009d8dde35a91e0d925c12c315f",
+      "finish_reason": null,
+      "delta_count": 0,
+      "source_count": 1,
+      "failure_code": null,
+      "provider_status": null
+    },
+    {
+      "name": "no_evidence",
+      "status": "ok",
+      "requests_used": 0,
+      "nonempty": true,
+      "answer_sha256": null,
+      "finish_reason": null,
+      "delta_count": 0,
+      "source_count": 0,
+      "failure_code": null,
+      "provider_status": null
+    }
+  ],
+  "api_key_recorded": false,
+  "real_mysql": false,
+  "redis": false,
+  "rabbitmq": false,
+  "docker": false
+}

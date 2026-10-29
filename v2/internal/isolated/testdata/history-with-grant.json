@@ -1,0 +1,20 @@
+{
+  "description": "Read back the learner's own words for a message an episode cites. Use it when the learner asks what they actually said, or when an episode entry is too compressed to answer from. Only ids listed in an injected episode's message_ids can be read.",
+  "name": "read_history_message",
+  "schema": {
+    "properties": {
+      "message_ids": {
+        "items": {
+          "type": "integer"
+        },
+        "description": "Message ids taken verbatim from the message_ids field of an episode entry. At most five.",
+        "type": "array"
+      }
+    },
+    "additionalProperties": false,
+    "required": [
+      "message_ids"
+    ],
+    "type": "object"
+  }
+}

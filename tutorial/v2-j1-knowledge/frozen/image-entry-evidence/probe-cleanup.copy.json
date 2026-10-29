@@ -1,0 +1,101 @@
+{
+  "registered": 14,
+  "removed": [
+    {
+      "path": "layer-02.bin",
+      "role": "streamed-member",
+      "bytes": 522270
+    },
+    {
+      "path": "layer-06.bin",
+      "role": "streamed-member",
+      "bytes": 98
+    },
+    {
+      "path": "layer-11.bin",
+      "role": "streamed-member",
+      "bytes": 605
+    },
+    {
+      "path": "layer-03.bin",
+      "role": "streamed-member",
+      "bytes": 13037428
+    },
+    {
+      "path": "layer-12.bin",
+      "role": "streamed-member",
+      "bytes": 606
+    },
+    {
+      "path": "layer-09.bin",
+      "role": "streamed-member",
+      "bytes": 32
+    },
+    {
+      "path": "layer-10.bin",
+      "role": "streamed-member",
+      "bytes": 149
+    },
+    {
+      "path": "layer-04.bin",
+      "role": "streamed-member",
+      "bytes": 143617702
+    },
+    {
+      "path": "layer-07.bin",
+      "role": "streamed-member",
+      "bytes": 63747946
+    },
+    {
+      "path": "layer-00.bin",
+      "role": "streamed-member",
+      "bytes": 29536818
+    },
+    {
+      "path": "layer-05.bin",
+      "role": "streamed-member",
+      "bytes": 133
+    },
+    {
+      "path": "layer-01.bin",
+      "role": "streamed-member",
+      "bytes": 47730785
+    },
+    {
+      "path": "config.bin",
+      "role": "streamed-member",
+      "bytes": 5005
+    },
+    {
+      "path": "image.tar",
+      "role": "docker-save-archive",
+      "bytes": 298220544
+    }
+  ],
+  "directories": [
+    {
+      "path": "docker-config",
+      "action": "removed",
+      "recursive": false
+    }
+  ],
+  "leftovers": [],
+  "kept_for_conversion": [
+    "<local-workspace>\\tutorial\\v2-redis-image-content-execution\\92f85041788449e1a3f2f809d1e06a2d\\entrypoint.sh.txt",
+    "<local-workspace>\\tutorial\\v2-redis-image-content-execution\\92f85041788449e1a3f2f809d1e06a2d\\opt_redis-stack_lib_redisbloom.so.txt",
+    "<local-workspace>\\tutorial\\v2-redis-image-content-execution\\92f85041788449e1a3f2f809d1e06a2d\\opt_redis-stack_lib_rediscompat.so.txt",
+    "<local-workspace>\\tutorial\\v2-redis-image-content-execution\\92f85041788449e1a3f2f809d1e06a2d\\usr_bin_dumb-init.txt",
+    "<local-workspace>\\tutorial\\v2-redis-image-content-execution\\92f85041788449e1a3f2f809d1e06a2d\\probe-facts.json"
+  ],
+  "recursive": false,
+  "clean": true,
+  "seconds": 0.067,
+  "cleanup_seconds_bound": 120,
+  "docker_commands": [
+    "docker.image.inspect",
+    "docker.image.save"
+  ],
+  "attempt_id": "92f85041788449e1a3f2f809d1e06a2d",
+  "authorized_head": "750dc84d9ab0a3b337b53e237e4d71893d5b32af",
+  "seconds_left_in_round": 891.025
+}
