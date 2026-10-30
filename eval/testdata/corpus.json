@@ -1,0 +1,9 @@
+{
+  "name": "synthetic-harbour-v1",
+  "root": "corpus",
+  "documents": [
+    {"file": "tide-tables.md"},
+    {"file": "lantern-maintenance.md"},
+    {"file": "notes/orchard-grafting.md"}
+  ]
+}

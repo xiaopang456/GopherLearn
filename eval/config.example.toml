@@ -1,0 +1,40 @@
+# Example configuration for `l1`. Copy it to a file that ends in `.local`
+# (`*.local` is git-ignored) and, above all, outside this repository: every
+# path below is refused when it sits inside any git working tree.
+#
+# All paths are absolute. Nothing in this file is a secret; the keys live in the
+# product configuration named under [services].
+
+[paths]
+# JSON manifest of the corpus documents (see README.md, "Corpus manifest").
+corpusManifest = 'D:\gopherlearn-eval\corpus\corpus.json'
+# JSONL question file with evidence_sets (see README.md, "Question file").
+datasetFile = 'D:\gopherlearn-eval\questions\dataset.jsonl'
+# Each run writes a new directory here. Existing runs are never overwritten.
+resultsDir = 'D:\gopherlearn-eval\results'
+
+[services]
+# A product configuration in the format the isolated entry reads: it supplies
+# the embedding model, key and dimension, the reranker, and the Redis address.
+productConfig = 'D:\gopherlearn-eval\product.toml.local'
+# The user id every evaluation chunk is stored under.
+evalUserID = 900001
+
+[matrix]
+# vector | keyword | hybrid | hybrid+rerank
+methods = ["vector", "keyword", "hybrid", "hybrid+rerank"]
+# hybrid+rerank cannot run above 24: the reranker only sees 24 candidates.
+topK = [3, 5, 8, 12, 20]
+
+[metrics]
+# A question is a hit at K when the top K covers at least this fraction of its
+# evidence lines. Fix it before looking at results. Write a decimal point
+# (0.5, 1.0): the TOML reader refuses a bare integer here.
+hitThreshold = 0.5
+
+[limits]
+# Caps on paid calls. 0 (the default) means "none allowed": a run that would need
+# a call the limit forbids refuses to start. Set them from the plan mode's
+# estimate before a real run.
+maxEmbeddingCalls = 0
+maxRerankCalls = 0

@@ -60,6 +60,23 @@ jobs:
       - run: go vet ./...
       - run: go test -count=1 ./...
 
+  eval:
+    name: eval module (retrieval evaluation harness)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: eval
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: eval/go.mod
+      # The harness's tests are offline: fake embedder, fake reranker and an
+      # in-memory index. No model, Redis or network is touched.
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test -count=1 ./...
+
   frontend:
     name: web client
     runs-on: ubuntu-latest
