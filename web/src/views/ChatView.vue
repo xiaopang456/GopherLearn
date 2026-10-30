@@ -225,6 +225,7 @@ function select(id) {
             v-for="item in chat.messages.value"
             :key="item.id"
             :message="item"
+            :steps="chat.stepsForMessage(item)"
           />
         </div>
       </div>

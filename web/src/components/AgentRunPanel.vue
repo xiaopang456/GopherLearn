@@ -8,7 +8,7 @@ import {
   AgentStage,
   isStageActive,
 } from '../lib/agentRun.js'
-import { formatStepDuration, StepStatus } from '../lib/agentSteps.js'
+import { formatStepDuration, stepStatusText, StepStatus } from '../lib/agentSteps.js'
 
 /**
  * The Learning Agent's turn status region, plus the step list the server reports while
@@ -57,22 +57,11 @@ const dot = computed(() => DOT[props.stage] ?? 'pending')
 const detail = computed(() => agentStageDetail(props.stage, props.run))
 
 /**
- * Step wording stays inside this table on purpose: a step's status is a fact the frames
- * establish (running until the next step opens, or until its own result arrives), and the
- * sentence below is the only thing this component adds to it.
+ * Step wording stays in one place on purpose: a step's status is a fact the frames
+ * establish (running until the next step opens, or until its own result arrives), and
+ * the sentence beside it is the only thing a component adds to it. The live strip and
+ * the trail under an old answer show the same steps, so they say the same thing.
  */
-const STEP_STATUS_TEXT = {
-  [StepStatus.Running]: '进行中',
-  [StepStatus.Completed]: '已完成',
-  [StepStatus.Failed]: '未成功',
-  [StepStatus.Cancelled]: '已取消',
-}
-
-function stepStatusText(status) {
-  return Object.prototype.hasOwnProperty.call(STEP_STATUS_TEXT, status)
-    ? STEP_STATUS_TEXT[status]
-    : '状态未识别'
-}
 
 function stepDuration(step) {
   return formatStepDuration(step?.durationMillis)

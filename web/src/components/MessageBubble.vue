@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 
 import AppIcon from './AppIcon.vue'
 import AgentResult from './AgentResult.vue'
+import AgentStepList from './AgentStepList.vue'
 import CitationList from './CitationList.vue'
 import MemoryDraftCard from './MemoryDraftCard.vue'
 import V2MemoryDraftCard from './V2MemoryDraftCard.vue'
@@ -13,6 +14,15 @@ const props = defineProps({
   message: {
     type: Object,
     required: true, // { id, role, content, status, error, sources, memoryDraft, processNotes }
+  },
+  /**
+   * The steps of this message's own turn, when it was an Agent turn that has been
+   * read back. The rows are the ones the live reducer produces, so the trail under
+   * an old answer is the trail that was shown while it was being produced.
+   */
+  steps: {
+    type: Array,
+    default: () => [],
   },
 })
 
@@ -136,6 +146,12 @@ const notesOpen = ref(false)
         :variant="props.message.status === 'stopped' ? 'stopped' : 'error'"
         :message="props.message.error.message"
         :code="props.message.error.code"
+      />
+      <!-- What this turn did, under the answer it produced. A turn that was read
+           back shows the same trail the live panel showed while it ran. -->
+      <AgentStepList
+        v-if="props.message.role === 'assistant'"
+        :steps="props.steps"
       />
     </div>
   </article>
