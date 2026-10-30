@@ -10,19 +10,20 @@ const route = useRoute()
 const HEADINGS = {
   chat: '对话',
   session: '对话',
-  knowledge: '知识库',
-  memory: '记忆',
   'v2-documents': '文档',
   'v2-source': '文档原文',
   'v2-memory': '记忆治理',
-  learning: '练习',
   'v2-learning': '学习／测验',
+  'not-found': '找不到页面',
 }
 
 const heading = computed(() => HEADINGS[route.name] ?? 'GopherLearn')
-const identity = computed(
-  () => authStore.state.user.email || authStore.state.user.displayName || '已登录',
-)
+// Nothing to show before the server has confirmed who this is: an empty slot
+// says less than a wrong one.
+const identity = computed(() => {
+  const { email, displayName } = authStore.state.user
+  return email || displayName || ''
+})
 
 // The shell is where a restored token first gets exercised. It only asks the
 // question; the shared unauthorized handler in the router decides what a "no"
@@ -42,7 +43,7 @@ onMounted(() => {
   <div class="shell">
     <header class="shell__bar">
       <p class="shell__title">{{ heading }}</p>
-      <p class="shell__who">{{ identity }}</p>
+      <p v-if="identity" class="shell__who">{{ identity }}</p>
     </header>
 
     <NavRail class="shell__rail" />
