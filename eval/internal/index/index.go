@@ -99,6 +99,19 @@ func (ix *Index) Loader() rag.ActiveDocumentLoader {
 	}
 }
 
+// Attach describes an index that already exists in the backend: the documents of
+// the corpus under their deterministic ids, with no ingestion. A run that reuses
+// an index built earlier (same fingerprint) uses it.
+func Attach(userID int64, corpus *dataset.Corpus) *Index {
+	ix := &Index{UserID: userID, fileByID: map[string]string{}}
+	for _, doc := range corpus.Documents {
+		id := DocID(doc.File)
+		ix.Documents = append(ix.Documents, Document{File: doc.File, DocID: id})
+		ix.fileByID[id] = doc.File
+	}
+	return ix
+}
+
 // Chunks is the total number of chunks indexed.
 func (ix *Index) Chunks() int {
 	total := 0

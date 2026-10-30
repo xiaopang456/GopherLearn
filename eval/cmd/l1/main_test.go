@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +30,19 @@ func stageInputs(t *testing.T) string {
 		"productConfig = '" + filepath.Join(root, "product.toml.local") + "'\n" +
 		"evalUserID = 900001\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	product := `[jwtConfig]
+key = "a-jwt-secret-of-at-least-thirty-two-bytes"
+
+[ragModelConfig]
+embeddingModel = "synthetic-embedding"
+embeddingBaseUrl = "https://embedding.example.invalid/v1"
+chatModelName = "synthetic-chat"
+baseUrl = "https://chat.example.invalid/v1"
+dimension = 1024
+`
+	if err := os.WriteFile(filepath.Join(root, "product.toml.local"), []byte(product), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -61,7 +75,7 @@ func copyTree(t *testing.T, from, to string) {
 
 func runCLI(args ...string) (int, string, string) {
 	var stdout, stderr bytes.Buffer
-	code := run(args, &stdout, &stderr)
+	code := run(context.Background(), args, &stdout, &stderr)
 	return code, stdout.String(), stderr.String()
 }
 
@@ -73,7 +87,7 @@ func TestCheckSummarisesTheSyntheticInputs(t *testing.T) {
 	for _, want := range []string{
 		"synthetic-harbour-v1: 3 documents, 65 lines",
 		"6 (5 dev, 1 sealed); 5 answerable, 1 unanswerable",
-		"4 methods x 5 topK values = 20 cells",
+		"4 methods x 5 topK values",
 		"no service was contacted",
 	} {
 		if !strings.Contains(stdout, want) {
@@ -121,5 +135,65 @@ func TestUsageAndFlagErrors(t *testing.T) {
 	}
 	if code, stdout, _ := runCLI("help"); code != 0 || !strings.Contains(stdout, "modes:") {
 		t.Errorf("help: exit %d", code)
+	}
+}
+
+func TestPlanForecastsAgainstTheLimits(t *testing.T) {
+	code, stdout, stderr := runCLI("plan", "-config", stageInputs(t))
+	if code != 0 {
+		t.Fatalf("exit %d, stderr: %s", code, stderr)
+	}
+	for _, want := range []string{
+		"5 (5 distinct texts) x 22 cells = 110 retrievals",
+		"embedding calls",
+		"rerank calls     6 = 5 queries + 1 startup check   (limit 0)",
+		"a real run would be refused",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("output lacks %q:\n%s", want, stdout)
+		}
+	}
+	if code, _, stderr := runCLI("plan", "-config", stageInputs(t), "-split", "nope"); code == 0 || !strings.Contains(stderr, "no questions") {
+		t.Errorf("an empty split: exit %d, %q", code, stderr)
+	}
+}
+
+func TestRunRequiresAnExplicitEnvironment(t *testing.T) {
+	code, _, stderr := runCLI("run", "-config", stageInputs(t))
+	if code != 2 || !strings.Contains(stderr, "-env must be") {
+		t.Fatalf("exit %d, stderr: %s", code, stderr)
+	}
+	if code, _, _ := runCLI("run", "-config", stageInputs(t), "-env", "prod"); code != 2 {
+		t.Fatalf("an unknown -env must be refused, exit %d", code)
+	}
+}
+
+func TestRunOnFakesWritesARunDirectoryAndSaysItIsOffline(t *testing.T) {
+	cfgPath := stageInputs(t)
+	code, stdout, stderr := runCLI("run", "-config", cfgPath, "-env", "fake")
+	if code != 0 {
+		t.Fatalf("exit %d, stderr: %s", code, stderr)
+	}
+	for _, want := range []string{"OFFLINE FAKE ENVIRONMENT", "110 (0 with errors); complete: true", "run directory"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("output lacks %q:\n%s", want, stdout)
+		}
+	}
+	runs, err := os.ReadDir(filepath.Join(filepath.Dir(cfgPath), "results"))
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("results: %v, %d runs", err, len(runs))
+	}
+	manifest, err := os.ReadFile(filepath.Join(filepath.Dir(cfgPath), "results", runs[0].Name(), "manifest.json"))
+	if err != nil || !strings.Contains(string(manifest), `"environment": "fake"`) {
+		t.Fatalf("the manifest must say the run was offline: %s %v", manifest, err)
+	}
+}
+
+func TestRealRunNeedsAProductConfigWithAnEmbeddingKey(t *testing.T) {
+	// The staged product file has no isolatedEntry.embeddingKey, so a real run
+	// stops before it contacts anything.
+	code, _, stderr := runCLI("run", "-config", stageInputs(t), "-env", "real")
+	if code == 0 || !strings.Contains(stderr, "embeddingKey is required") {
+		t.Fatalf("exit %d, stderr: %s", code, stderr)
 	}
 }

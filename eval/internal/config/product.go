@@ -42,3 +42,10 @@ func LoadProduct(path string) (*Product, error) {
 	}
 	return &Product{App: app, EmbeddingKey: envelope.Entry.EmbeddingKey}, nil
 }
+
+// LoadProductOffline reads the product configuration for planning: the
+// reranker section is neither read nor validated, so no rerank token is needed,
+// and the embedding key is not required. Planning calls no service.
+func LoadProductOffline(path string) (*appconfig.Config, error) {
+	return appconfig.LoadExplicitForSchema(path)
+}
