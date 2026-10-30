@@ -6,18 +6,18 @@ import AppIcon from './AppIcon.vue'
 import { authStore } from '../auth/store.js'
 
 /**
- * Primary navigation. Four destinations, one of which (chat) owns a second
- * contextual column; the rail therefore stays icon-led so the column next to it
- * has room for the session list.
+ * Primary navigation.
  *
- * There is no processing-monitor entry: this build processes documents in-process and has no
- * operations surface to monitor.
+ * A labelled rail, not a column of anonymous glyphs: the four destinations
+ * are the whole map of the product, and an icon alone does not say which is
+ * which. Each entry therefore carries its name under the glyph, and the
+ * label is the accessible name too.
  */
 const sections = [
-  { name: 'chat', label: '对话', icon: 'chat', to: { name: 'chat' } },
-  { name: 'v2-documents', label: '文档', icon: 'knowledge', to: { name: 'v2-documents' } },
-  { name: 'v2-memory', label: '记忆治理', icon: 'memory', to: { name: 'v2-memory' } },
-  { name: 'v2-learning', label: '学习／测验', icon: 'learning', to: { name: 'v2-learning' } },
+  { name: 'chat', label: '对话', full: '对话', icon: 'chat', to: { name: 'chat' } },
+  { name: 'v2-documents', label: '文档', full: '文档', icon: 'knowledge', to: { name: 'v2-documents' } },
+  { name: 'v2-memory', label: '记忆', full: '记忆治理', icon: 'memory', to: { name: 'v2-memory' } },
+  { name: 'v2-learning', label: '学习', full: '学习／测验', icon: 'learning', to: { name: 'v2-learning' } },
 ]
 
 const route = useRoute()
@@ -43,7 +43,7 @@ function signOut() {
 <template>
   <nav class="rail" aria-label="主导航">
     <p class="rail__brand">
-      <AppIcon name="logo" :size="24" label="GopherLearn" />
+      <AppIcon name="logo" :size="22" label="GopherLearn" />
     </p>
 
     <ul class="rail__list">
@@ -52,9 +52,12 @@ function signOut() {
           class="rail__link"
           :class="{ 'rail__link--active': active === section.name }"
           :to="section.to"
+          :title="section.full"
           :aria-current="active === section.name ? 'page' : undefined"
         >
-          <AppIcon :name="section.icon" :size="21" />
+          <span class="rail__glyph">
+            <AppIcon :name="section.icon" :size="20" />
+          </span>
           <span class="rail__text">{{ section.label }}</span>
         </RouterLink>
       </li>
@@ -70,7 +73,9 @@ function signOut() {
         title="退出登录"
         @click="signOut"
       >
-        <AppIcon name="signout" :size="21" />
+        <span class="rail__glyph">
+          <AppIcon name="signout" :size="20" />
+        </span>
         <span class="rail__text">退出</span>
       </button>
     </div>
@@ -82,20 +87,22 @@ function signOut() {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.9rem;
-  padding: 0.9rem 0;
+  gap: var(--gl-space-4);
+  padding: var(--gl-space-4) var(--gl-space-2);
   background: var(--gl-surface);
   border-right: 1px solid var(--gl-surface-line);
   min-height: 0;
 }
 
 .rail__brand {
-  color: var(--gl-accent);
-  padding-bottom: 0.5rem;
-  border-bottom: 1px solid var(--gl-surface-line);
-  width: 100%;
   display: flex;
+  align-items: center;
   justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--gl-radius-sm);
+  background: var(--gl-accent-soft);
+  color: var(--gl-accent-ink);
 }
 
 .rail__list {
@@ -103,70 +110,74 @@ function signOut() {
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 0.35rem;
+  gap: var(--gl-space-1);
   padding: 0;
   margin: 0;
 }
 
 .rail__link {
   display: flex;
-  width: 44px;
-  height: 44px;
+  width: 60px;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
+  gap: 3px;
+  padding: var(--gl-space-2) 0;
+  border: 0;
   border-radius: var(--gl-radius-sm);
+  background: none;
   color: var(--gl-ink-soft);
   text-decoration: none;
-  background: none;
-  border: 0;
-  padding: 0;
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
 .rail__link:hover {
   background: var(--gl-surface-soft);
-  color: var(--gl-accent-ink);
+  color: var(--gl-ink);
 }
 
 .rail__link--active {
   background: var(--gl-accent-soft);
   color: var(--gl-accent-ink);
-  box-shadow: inset 3px 0 0 var(--gl-accent);
+}
+
+.rail__glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+}
+
+.rail__text {
+  font-size: var(--gl-text-xs);
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: 0.02em;
 }
 
 .rail__foot {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.4rem;
+  gap: var(--gl-space-2);
 }
 
 .rail__avatar {
   display: flex;
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
   align-items: center;
   justify-content: center;
   border-radius: 50%;
   background: var(--gl-ink);
-  color: #f4f2ee;
-  font-size: 0.72rem;
-  font-weight: 700;
+  color: #fff;
+  font-size: var(--gl-text-xs);
+  font-weight: 600;
   letter-spacing: 0.02em;
 }
 
 .rail__signout:hover {
-  color: var(--gl-danger);
   background: var(--gl-danger-soft);
-}
-
-/* Icon-only: reveal the label on wide screens where the rail has slack. */
-.rail__text {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
+  color: var(--gl-danger);
 }
 
 @media (max-width: 700px) {
@@ -175,11 +186,23 @@ function signOut() {
     justify-content: space-around;
     border-right: 0;
     border-top: 1px solid var(--gl-surface-line);
-    padding: 0.3rem 0.4rem;
+    padding: var(--gl-space-1) var(--gl-space-2);
+    gap: var(--gl-space-1);
   }
 
   .rail__brand {
     display: none;
+  }
+
+  .rail__list {
+    flex-direction: row;
+    flex: none;
+    gap: var(--gl-space-1);
+  }
+
+  .rail__link {
+    width: 58px;
+    padding: 5px 0;
   }
 
   .rail__foot {
@@ -188,11 +211,6 @@ function signOut() {
 
   .rail__avatar {
     display: none;
-  }
-
-  .rail__list {
-    flex-direction: row;
-    flex: none;
   }
 }
 </style>
