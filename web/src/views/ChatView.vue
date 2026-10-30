@@ -91,6 +91,13 @@ function select(id) {
 
 <template>
   <div class="chat">
+    <div
+      v-if="showPanel && !isDesktop"
+      class="chat__scrim"
+      data-test="scrim"
+      @click="togglePanel"
+    ></div>
+
     <SessionPanel
       v-if="showPanel"
       class="chat__panel"
@@ -258,6 +265,16 @@ function select(id) {
 
 .chat__panel {
   min-height: 0;
+}
+
+/* On a narrow screen the session list is a drawer over the conversation. It
+   needs something to sit on: without a scrim the page behind it stays
+   readable and the drawer reads as a floating panel, not as an opened door. */
+.chat__scrim {
+  position: absolute;
+  z-index: 20;
+  inset: 0;
+  background: rgba(23, 23, 26, 0.32);
 }
 
 .chat__main {

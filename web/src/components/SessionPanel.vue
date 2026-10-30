@@ -376,8 +376,10 @@ function askRemove(session) {
   .panel {
     position: absolute;
     z-index: 30;
-    inset: 0 auto 0 var(--gl-rail);
-    width: min(78vw, 300px);
+    /* The narrow layout has no left rail — the navigation is at the bottom —
+       so the drawer starts at the edge instead of leaving a dead strip. */
+    inset: 0 auto 0 0;
+    width: min(82vw, 320px);
     box-shadow: var(--gl-shadow-2);
   }
 }
