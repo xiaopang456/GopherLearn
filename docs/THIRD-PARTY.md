@@ -220,11 +220,14 @@ Modules that actually contribute packages to this build:
 | `@babel/helper-validator-identifier` | `7.29.7` | MIT |
 | `@babel/parser` | `7.29.9` | MIT |
 | `@babel/types` | `7.29.8` | MIT |
+| `@css-render/plugin-bem` | `0.15.14` | MIT |
+| `@css-render/vue3-ssr` | `0.15.14` | MIT |
 | `@csstools/color-helpers` | `5.1.0` | MIT-0 |
 | `@csstools/css-calc` | `2.1.4` | MIT |
 | `@csstools/css-color-parser` | `3.1.0` | MIT |
 | `@csstools/css-parser-algorithms` | `3.0.5` | MIT |
 | `@csstools/css-tokenizer` | `3.0.4` | MIT |
+| `@emotion/hash` | `0.8.0` | MIT |
 | `@esbuild/win32-x64` | `0.25.12` | MIT |
 | `@eslint/config-array` | `0.21.2` | Apache-2.0 |
 | `@eslint/config-helpers` | `0.4.2` | Apache-2.0 |
@@ -243,6 +246,7 @@ Modules that actually contribute packages to this build:
 | `@jridgewell/resolve-uri` | `3.1.2` | MIT |
 | `@jridgewell/sourcemap-codec` | `1.6.0` | MIT |
 | `@jridgewell/trace-mapping` | `0.3.31` | MIT |
+| `@juggle/resize-observer` | `3.4.0` | Apache-2.0 |
 | `@one-ini/wasm` | `0.2.1` | MIT |
 | `@rollup/rollup-win32-x64-gnu` | `4.63.5` | MIT |
 | `@rollup/rollup-win32-x64-msvc` | `4.63.5` | MIT |
@@ -250,6 +254,8 @@ Modules that actually contribute packages to this build:
 | `@types/deep-eql` | `4.0.2` | MIT |
 | `@types/estree` | `1.0.9` | MIT |
 | `@types/json-schema` | `7.0.15` | MIT |
+| `@types/lodash` | `4.17.27` | MIT |
+| `@types/lodash-es` | `4.17.12` | MIT |
 | `@vitejs/plugin-vue` | `5.2.4` | MIT |
 | `@vitest/mocker` | `5.0.1` | MIT |
 | `@vitest/spy` | `5.0.1` | MIT |
@@ -272,6 +278,7 @@ Modules that actually contribute packages to this build:
 | `ansi-styles` | `4.3.0` | MIT |
 | `argparse` | `2.0.1` | Python-2.0 |
 | `assertion-error` | `2.0.1` | MIT |
+| `async-validator` | `4.2.5` | MIT |
 | `balanced-match` | `1.0.2` | MIT |
 | `boolbase` | `1.0.0` | ISC |
 | `brace-expansion` | `1.1.21` | MIT |
@@ -285,9 +292,12 @@ Modules that actually contribute packages to this build:
 | `config-chain` | `1.1.13` | @{type=MIT; url=https://raw.githubusercontent.com/dominictarr/config-chain/master/LICENCE} |
 | `cross-spawn` | `7.0.6` | MIT |
 | `cssesc` | `3.0.0` | MIT |
+| `css-render` | `0.15.14` | MIT |
 | `cssstyle` | `4.6.0` | MIT |
 | `csstype` | `3.2.3` | MIT |
 | `data-urls` | `5.0.0` | MIT |
+| `date-fns` | `4.4.0` | MIT |
+| `date-fns-tz` | `3.2.0` | MIT |
 | `debug` | `4.4.3` | MIT |
 | `decimal.js` | `10.6.0` | MIT |
 | `deep-is` | `0.1.4` | MIT |
@@ -306,6 +316,7 @@ Modules that actually contribute packages to this build:
 | `estraverse` | `5.3.0` | BSD-2-Clause |
 | `estree-walker` | `2.0.2` | MIT |
 | `esutils` | `2.0.3` | BSD-2-Clause |
+| `evtd` | `0.2.4` | MIT |
 | `expect-type` | `1.4.0` | Apache-2.0 |
 | `fast-deep-equal` | `3.1.3` | MIT |
 | `fast-json-stable-stringify` | `2.1.0` | MIT |
@@ -319,6 +330,7 @@ Modules that actually contribute packages to this build:
 | `globals` | `15.15.0` | MIT |
 | `glob-parent` | `6.0.2` | ISC |
 | `has-flag` | `4.0.0` | MIT |
+| `highlight.js` | `11.12.0` | BSD-3-Clause |
 | `html-encoding-sniffer` | `4.0.0` | MIT |
 | `http-proxy-agent` | `7.0.2` | MIT |
 | `https-proxy-agent` | `7.0.6` | MIT |
@@ -343,12 +355,14 @@ Modules that actually contribute packages to this build:
 | `locate-path` | `6.0.0` | MIT |
 | `lodash` | `4.18.1` | MIT |
 | `lodash.merge` | `4.6.2` | MIT |
+| `lodash-es` | `4.18.1` | MIT |
 | `lru-cache` | `10.4.3` | ISC |
 | `magic-string` | `0.30.21` | MIT |
 | `marked` | `15.0.12` | MIT |
 | `minimatch` | `3.1.5` | ISC |
 | `minipass` | `7.1.3` | BlueOak-1.0.0 |
 | `ms` | `2.1.3` | MIT |
+| `naive-ui` | `2.45.3` | MIT |
 | `nanoid` | `3.3.19` | MIT |
 | `natural-compare` | `1.4.0` | MIT |
 | `nopt` | `10.0.1` | ISC |
@@ -375,6 +389,7 @@ Modules that actually contribute packages to this build:
 | `rrweb-cssom` | `0.8.0` | MIT |
 | `safer-buffer` | `2.1.2` | MIT |
 | `saxes` | `6.0.0` | ISC |
+| `seemly` | `0.3.10` | MIT |
 | `semver` | `7.8.5` | ISC |
 | `shebang-command` | `2.0.0` | MIT |
 | `shebang-regex` | `3.0.0` | MIT |
@@ -392,16 +407,20 @@ Modules that actually contribute packages to this build:
 | `tldts-core` | `6.1.86` | MIT |
 | `tough-cookie` | `5.1.2` | BSD-3-Clause |
 | `tr46` | `5.1.1` | MIT |
+| `treemate` | `0.3.11` | MIT |
 | `type-check` | `0.4.0` | MIT |
 | `type-fest` | `0.20.2` | (MIT OR CC0-1.0) |
 | `uri-js` | `4.4.1` | BSD-2-Clause |
 | `util-deprecate` | `1.0.2` | MIT |
+| `vdirs` | `0.1.8` | MIT |
 | `vite` | `6.4.3` | MIT |
 | `vitest` | `5.0.1` | MIT |
+| `vooks` | `0.2.12` | MIT |
 | `vue` | `3.5.43` | MIT |
 | `vue-component-type-helpers` | `3.3.11` | MIT |
 | `vue-eslint-parser` | `9.4.3` | MIT |
 | `vue-router` | `4.6.4` | MIT |
+| `vueuc` | `0.4.66` | MIT |
 | `w3c-xmlserializer` | `5.0.0` | MIT |
 | `webidl-conversions` | `7.0.0` | BSD-2-Clause |
 | `whatwg-encoding` | `3.1.1` | MIT |
