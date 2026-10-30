@@ -80,10 +80,6 @@ function chooseKnowledge(next) {
   chat.setKnowledge(chat.activeId.value, next)
 }
 
-function openKnowledgePage() {
-  router.push({ name: 'v2-documents' })
-}
-
 function select(id) {
   router.push({ name: 'session', params: { sessionId: id } })
 }
@@ -205,7 +201,7 @@ function select(id) {
             <div class="chat__agenthead-text">
               <p class="chat__agenthead-title">学习 Agent</p>
               <p class="chat__agenthead-desc">
-                学习 Agent 会根据服务端当前启用的能力处理问题。执行步骤仅在真实发生并由服务端返回后显示。
+                学习 Agent 会根据服务端当前启用的能力处理问题。执行步骤仅在真实发生并由服务端返回后显示，只在本次会话里存在，刷新后不会保留。
               </p>
             </div>
           </header>
@@ -248,7 +244,6 @@ function select(id) {
         @submit="chat.send()"
         @abort="chat.cancel"
         @update:knowledge="chooseKnowledge"
-        @open-knowledge="openKnowledgePage"
       />
     </section>
   </div>

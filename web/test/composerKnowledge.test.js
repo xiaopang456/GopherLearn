@@ -28,15 +28,15 @@ function tools(app) {
 }
 
 describe('which composer gets the grounding toolbar', () => {
-  it('shows it for a chat session', () => {
-    const app = mountComposer({ mode: 'chat' })
+  it('shows it for a chat session that has collections', () => {
+    const app = mountComposer({ mode: 'chat', collections: COLLECTIONS, canUseKnowledge: true })
     expect(tools(app)).toBe(true)
     expect(app.find('[data-test="knowledge-toggle"]').text()).toContain('使用知识库')
     expect(app.find('[data-test="knowledge-pick"]').exists()).toBe(true)
   })
 
   it('never shows it for a learning agent session', () => {
-    const app = mountComposer({ mode: 'learning_agent' })
+    const app = mountComposer({ mode: 'learning_agent', collections: COLLECTIONS, canUseKnowledge: true })
     expect(tools(app)).toBe(false)
     expect(app.text()).not.toContain('使用知识库')
   })
@@ -44,46 +44,27 @@ describe('which composer gets the grounding toolbar', () => {
   it('withholds it while the mode is unrecognised', () => {
     // Guessing "agent" or guessing "chat with knowledge" would both be a claim
     // the client has no authority to make.
-    expect(tools(mountComposer({ mode: '' }))).toBe(false)
-    expect(tools(mountComposer({ mode: 'voice_beta' }))).toBe(false)
+    expect(tools(mountComposer({ mode: '', collections: COLLECTIONS, canUseKnowledge: true }))).toBe(false)
+    expect(tools(mountComposer({ mode: 'voice_beta', collections: COLLECTIONS, canUseKnowledge: true }))).toBe(false)
   })
 })
 
-describe('the toolbar with no knowledge available yet', () => {
-  it('disables both controls and explains, without pretending otherwise', () => {
+describe('the toolbar with nothing to ground with', () => {
+  it('is not rendered at all, rather than rendered dead', () => {
     const app = mountComposer({ mode: 'chat' })
 
-    const toggle = app.find('[data-test="knowledge-toggle"]')
-    expect(toggle.attributes('disabled')).toBeDefined()
-    expect(toggle.attributes('aria-pressed')).toBe('false')
-    expect(app.find('[data-test="knowledge-pick"]').attributes('disabled')).toBeDefined()
-
-    const note = app.find('[data-test="knowledge-manage-link"]')
-    expect(note.exists()).toBe(true)
-    expect(note.text()).toContain('添加知识库后可启用')
+    // The product does not serve knowledge collections yet. A switch that can
+    // never be turned on — pointing at a page that cannot enable it — reads as
+    // a broken screen, so the controls wait until there is something to ground
+    // with. They come back on their own once the backend offers a collection.
+    expect(tools(app)).toBe(false)
+    expect(app.text()).not.toContain('使用知识库')
+    expect(app.text()).not.toContain('添加知识库后可启用')
   })
 
-  it('cannot be switched on by clicking a disabled control', async () => {
+  it('sends nothing about knowledge when it is absent', async () => {
     const app = mountComposer({ mode: 'chat' })
-    await app.find('[data-test="knowledge-toggle"]').trigger('click')
-
     expect(app.emitted('update:knowledge')).toBeUndefined()
-  })
-
-  it('routes the explanation to the knowledge management page', async () => {
-    const app = mountComposer({ mode: 'chat' })
-    await app.find('[data-test="knowledge-manage-link"]').trigger('click')
-
-    expect(app.emitted('open-knowledge')).toHaveLength(1)
-  })
-
-  it('hides the explanation once collections exist', () => {
-    const app = mountComposer({
-      mode: 'chat',
-      collections: COLLECTIONS,
-      canUseKnowledge: true,
-    })
-    expect(app.find('[data-test="knowledge-manage-link"]').exists()).toBe(false)
   })
 })
 

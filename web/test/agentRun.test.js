@@ -464,8 +464,10 @@ describe('the agent region on the real screen', () => {
     await chatApp.find('textarea').setValue('普通问题')
     await chatApp.find('[data-test="send"]').trigger('click')
     await flushPromises()
-    // The chat screen keeps its toolbar and gains no agent status strip.
-    expect(chatApp.find('[data-test="knowledge-tools"]').exists()).toBe(true)
+    // The chat screen shows no grounding controls either — this build serves
+    // no knowledge collection, and a switch that can never be turned on reads
+    // as a broken screen. It gains no agent status strip.
+    expect(chatApp.find('[data-test="knowledge-tools"]').exists()).toBe(false)
     expect(chatApp.find('[data-test="agent-panel"]').exists()).toBe(false)
     expect(chatApp.find('[data-test="agent-header"]').exists()).toBe(false)
     chatApp.unmount()
@@ -494,7 +496,7 @@ describe('the agent region on the real screen', () => {
     const agentText = agent.text()
     for (const phrase of FORBIDDEN) expect(agentText).not.toContain(phrase)
     expect(agentText).toContain(
-      '学习 Agent 会根据服务端当前启用的能力处理问题。执行步骤仅在真实发生并由服务端返回后显示。',
+      '学习 Agent 会根据服务端当前启用的能力处理问题。执行步骤仅在真实发生并由服务端返回后显示，只在本次会话里存在，刷新后不会保留。',
     )
     agent.unmount()
 

@@ -25,7 +25,6 @@ const emit = defineEmits([
   'update:knowledge',
   'submit',
   'abort',
-  'open-knowledge',
 ])
 
 const localError = ref('')
@@ -37,7 +36,14 @@ const sendable = computed(
 
 // Grounding is a per-turn Chat option. A Learning Agent session picks its own
 // tools server-side, and an unrecognised mode gets no optional capability.
-const showsKnowledge = computed(() => props.mode === SessionMode.Chat)
+//
+// The controls only appear when there is something to ground with. A switch
+// that can never be turned on — pointing at a page that cannot enable it —
+// reads as a broken screen, and the product does not serve knowledge
+// collections yet. The moment the backend offers some, they come back.
+const showsKnowledge = computed(
+  () => props.mode === SessionMode.Chat && props.collections.length > 0,
+)
 const selected = computed(() => (props.knowledge.selectedCollectionIds ?? []).map(String))
 
 function update(event) {
@@ -155,18 +161,8 @@ function onToolsKeydown(event) {
             </li>
           </ul>
 
-          <p v-if="!props.canUseKnowledge" class="composer__note">
-            <button
-              type="button"
-              class="composer__note-link"
-              data-test="knowledge-manage-link"
-              @click="emit('open-knowledge')"
-            >
-              添加知识库后可启用
-            </button>
-          </p>
           <p
-            v-else-if="props.knowledge.enabled && selected.length === 0"
+            v-if="props.knowledge.enabled && selected.length === 0"
             class="composer__note"
             data-test="knowledge-no-selection"
           >

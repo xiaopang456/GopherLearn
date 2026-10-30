@@ -84,8 +84,12 @@ afterEach(() => {
 })
 
 describe('the composer follows the stored mode', () => {
-  it('offers the grounding toolbar in a chat session', async () => {
-    serve({ sessions: [CHAT, AGENT] })
+  it('offers the grounding toolbar in a chat session that has collections', async () => {
+    serve({
+      sessions: [CHAT, AGENT],
+      collections: [{ id: 'col-os', title: '操作系统笔记' }],
+    })
+    await useKnowledge().loadCollections()
     const app = await mountAt('/chat/s-chat', { sessionId: 's-chat' })
 
     expect(app.find('[data-test="knowledge-tools"]').exists()).toBe(true)
@@ -216,18 +220,6 @@ describe('creating a session is an explicit mode choice', () => {
   })
 })
 
-describe('the grounding note reaches the documents page', () => {
-  it('navigates to the V2 documents page when the note is clicked', async () => {
-    serve({ sessions: [CHAT] })
-    const app = await mountAt('/chat/s-chat', { sessionId: 's-chat' })
-
-    await app.find('[data-test="knowledge-manage-link"]').trigger('click')
-
-    expect(mocks.push).toHaveBeenCalledWith({ name: 'v2-documents' })
-    app.unmount()
-  })
-})
-
 describe('the grounding picker mirrors the shared collection list', () => {
   it('lists a real collection with no invented entry', async () => {
     serve({
@@ -249,20 +241,20 @@ describe('the grounding picker mirrors the shared collection list', () => {
 
     const options = app.findAll('.tool__option')
     expect(options.map((node) => node.text())).toEqual(['操作系统笔记', '并发编程'])
-    // The note that appears when there is nothing to select is now gone.
-    expect(app.find('[data-test="knowledge-manage-link"]').exists()).toBe(false)
     app.unmount()
   })
 
-  it('keeps the toggle inert and points at management when nothing exists', async () => {
+  it('shows no grounding controls at all when there is nothing to ground with', async () => {
     serve({ sessions: [CHAT], collections: [] })
     await useKnowledge().loadCollections()
 
     const app = await mountAt('/chat/s-chat', { sessionId: 's-chat' })
-    expect(app.find('[data-test="knowledge-toggle"]').attributes('disabled')).toBeDefined()
-    expect(app.find('[data-test="knowledge-manage-link"]').text()).toContain(
-      '添加知识库后可启用',
-    )
+    // A switch that can never be turned on, pointing at a page that cannot
+    // enable it, reads as a broken screen. The controls come back on their own
+    // once the backend serves a collection.
+    expect(app.find('[data-test="knowledge-tools"]').exists()).toBe(false)
+    expect(app.text()).not.toContain('使用知识库')
+    expect(app.text()).not.toContain('添加知识库后可启用')
     app.unmount()
   })
 
