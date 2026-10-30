@@ -1,99 +1,560 @@
 <script setup>
-import { onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
-import SectionFrame from '../components/SectionFrame.vue'
+import { onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { NButton } from 'naive-ui'
+
+import GlEmpty from '../components/GlEmpty.vue'
+import GlPageHeader from '../components/GlPageHeader.vue'
+import GlStatusTag from '../components/GlStatusTag.vue'
 import ServerNotice from '../components/ServerNotice.vue'
 import V2MemoryDraftCard from '../components/V2MemoryDraftCard.vue'
 import { useV2MemoryPage } from '../composables/useV2MemoryPage.js'
 
-const page = useV2MemoryPage(), op = page.operation
+const page = useV2MemoryPage()
+const op = page.operation
 const form = reactive({ scope: '', subject: '', content: '', topic_key: '', durability: '', valid_until: '', tags: '', reason: '' })
 const filter = reactive({ scope: '', status: 'active' })
-const edit = ref(null), reason = ref(''), decision = ref(''), target = ref('')
+const edit = ref(null)
+const reason = ref('')
+const decision = ref('')
+const target = ref('')
 watch(() => op.result.value, () => { decision.value = ''; target.value = '' })
+
 function tags(value) { return value.trim() ? value.split(',').map((item) => item.trim()) : [] }
+
 function body() {
-  return { scope: form.scope, subject: form.subject, content: form.content, durability: form.durability, reason: form.reason,
-    tags: tags(form.tags), ...(form.topic_key ? { topic_key: form.topic_key } : {}), ...(form.valid_until ? { valid_until: form.valid_until } : {}) }
+  return {
+    scope: form.scope,
+    subject: form.subject,
+    content: form.content,
+    durability: form.durability,
+    reason: form.reason,
+    tags: tags(form.tags),
+    ...(form.topic_key ? { topic_key: form.topic_key } : {}),
+    ...(form.valid_until ? { valid_until: form.valid_until } : {}),
+  }
 }
+
 function refresh() { return page.refresh({ ...(filter.scope ? { scope: filter.scope } : {}), status: filter.status }) }
+
 async function perform(kind, payload, id) {
   if (op.busy.value) return
   for (const [field, limit] of [['subject', 200], ['content', 400], ['topic_key', 160], ['reason', 500]]) {
     const value = String(payload[field] ?? '')
     if (payload[field] !== undefined && Array.from(field === 'reason' ? value : value.trim()).length > limit) {
-      op.error.value = { message: `${field} 超过原 ${limit} 字上限。`, code: 'invalid_form' }; return
+      op.error.value = { message: `${field} 超过原 ${limit} 字上限。`, code: 'invalid_form' }
+      return
     }
   }
   if (await op.start(kind, payload, id)) await refresh()
 }
+
 async function retry() { if (await op.retry()) await refresh() }
+
 function conflictDecision() {
   if (!decision.value || (decision.value === 'replace' && !target.value)) return
   const snapshot = op.pending.value?.body
   if (!snapshot) return
   return perform('create', { ...snapshot, decision: decision.value, ...(decision.value === 'replace' ? { target_memory_id: target.value } : {}) })
 }
-function editMemory(memory) { edit.value = { id: memory.id, subject: memory.subject, content: memory.content, tags: (memory.tags || []).join(','), reason: '' } }
+
+function editMemory(memory) {
+  edit.value = { id: memory.id, subject: memory.subject, content: memory.content, tags: (memory.tags || []).join(','), reason: '' }
+}
+
+function scopeLabel(scope) { return scope === 'topic' ? '主题' : '全局' }
+
+function durabilityLabel(durability) { return durability === 'time_bound' ? '有期限' : '长期有效' }
+
 onMounted(refresh)
 onBeforeUnmount(page.dispose)
 </script>
+
 <template>
-  <div class="gl-page">
-    <SectionFrame title="V2 记忆治理" eyebrow="原 native 合同" icon="memory" status="独立入口" status-tone="done"
-      summary="原 global/topic 治理入口；旧 clean 手写表单与卡片合同仍未无损迁移。治理操作不授予主题读取权限。">
-      <p class="gl-muted">记忆列表、pendingDrafts、revision 各最多 100 条，无分页，不代表完整历史。global 写入保留原模型判断与 MySQL 命名锁。</p>
-      <ServerNotice v-if="op.error.value || page.readError.value" :message="(op.error.value || page.readError.value).message" :code="(op.error.value || page.readError.value).code" />
-      <button v-if="op.busy.value" class="gl-btn" data-test="v2-cancel" @click="op.cancel">取消当前请求</button>
-      <button v-if="op.pending.value && !op.busy.value" class="gl-btn" data-test="v2-retry" @click="retry">明确重试同一请求（原键与内容）</button>
-      <p v-if="op.pending.value?.body.idempotency_key" data-test="operation-key">本次操作键：{{ op.pending.value.body.idempotency_key }}</p>
-      <details v-if="op.result.value" open data-test="v2-operation-result"><summary>原实际返回（含 conflicts/replay/state）</summary><pre>{{ JSON.stringify(op.result.value, null, 2) }}</pre></details>
-      <form data-test="v2-create-form" @submit.prevent="perform('create', body())">
-        <fieldset :disabled="op.busy.value" class="v2-fields"><legend>显式创建；提交新操作生成独立操作键</legend>
-          <label>scope <select v-model="form.scope" required data-test="scope"><option value="" disabled>请选择范围</option><option value="global">global</option><option value="topic">topic</option></select></label>
-          <label>subject（最多 200 字）<input v-model="form.subject" required data-test="subject"></label>
-          <label>content（最多 400 字）<textarea v-model="form.content" required data-test="content" /></label>
-          <label>topic_key（topic 必填，global 禁止）<input v-model="form.topic_key" :required="form.scope === 'topic'" data-test="topic-key"></label>
-          <label>durability <select v-model="form.durability" required data-test="durability"><option value="" disabled>请选择有效期类型</option><option value="stable">stable</option><option value="time_bound">time_bound</option></select></label>
-          <label>valid_until（time_bound 必填；RFC3339 含时区，stable 禁止）<input v-model="form.valid_until" :required="form.durability === 'time_bound'" placeholder="2030-01-01T00:00:00+08:00" data-test="valid-until"></label>
-          <label>tags（原词表，最多 5 项，英文逗号分隔，可留空）<input v-model="form.tags" data-test="tags"></label>
-          <label>reason（最多 500 字）<input v-model="form.reason" required data-test="reason"></label>
-          <button class="gl-btn gl-btn--primary" data-test="v2-create">提交新创建操作</button>
-        </fieldset>
-      </form>
-      <fieldset v-if="op.result.value?.conflicts?.length" :disabled="op.busy.value" data-test="v2-conflicts"><legend>原公开冲突；未自动写入，需明确选择</legend>
-        <pre>{{ JSON.stringify(op.result.value.conflicts, null, 2) }}</pre>
-        <select v-model="decision" data-test="create-decision"><option value="" disabled>请选择操作</option><option value="add">add</option><option value="replace">replace</option></select>
-        <select v-if="decision === 'replace'" v-model="target" data-test="create-target"><option value="" disabled>请选择原冲突目标</option><option v-for="item in op.result.value.conflicts" :key="item.id" :value="item.id">{{ item.subject }} · {{ item.id }} · {{ item.scope }}/{{ item.topic_key }}</option></select>
-        <button class="gl-btn" :disabled="!decision || (decision === 'replace' && !target)" @click="conflictDecision">提交明确冲突决策（新操作键）</button>
-      </fieldset>
-      <label>列表 scope <select v-model="filter.scope"><option value="">全部原范围</option><option value="global">global</option><option value="topic">topic</option></select></label>
-      <label>列表状态 <select v-model="filter.status"><option v-for="state in ['active','archived','superseded','deleted']" :key="state">{{ state }}</option></select></label>
-      <button class="gl-btn" data-test="v2-refresh" @click="refresh">读取实际列表</button>
-      <label>归档/删除 reason <input v-model="reason" data-test="manage-reason"></label>
-      <ul><li v-for="memory in page.memories.value" :key="memory.id" class="gl-card" data-test="v2-memory-row">
-        <h3>{{ memory.subject }}</h3><p>{{ memory.content }}</p>
-        <p>{{ memory.id }} · {{ memory.scope }}/{{ memory.topic_key }} · {{ memory.status }} · user_confirmed={{ memory.user_confirmed }}</p>
-        <p>durability={{ memory.durability }} · valid_until={{ memory.valid_until || '无' }} · {{ memory.source }}</p><p>tags={{ memory.tags }}</p>
-        <details><summary>原返回的公开字段</summary><pre>{{ JSON.stringify(memory, null, 2) }}</pre></details>
-        <button class="gl-btn" data-test="v2-revisions" @click="page.showRevisions(memory.id)">查看原 revision</button>
-        <button v-if="memory.status === 'active'" class="gl-btn" :disabled="op.busy.value" data-test="v2-edit" @click="editMemory(memory)">修改</button>
-        <button v-if="memory.status === 'active'" class="gl-btn" :disabled="op.busy.value || !reason.trim()" data-test="v2-archive" @click="perform('archive', { reason }, memory.id)">归档</button>
-        <button class="gl-btn" :disabled="op.busy.value || !reason.trim()" data-test="v2-delete" @click="perform('delete', { reason }, memory.id)">删除</button>
-      </li></ul>
-      <form v-if="edit" data-test="v2-edit-form" @submit.prevent="perform('correct', { subject: edit.subject, content: edit.content, tags: tags(edit.tags), reason: edit.reason }, edit.id)">
-        <fieldset :disabled="op.busy.value" class="v2-fields"><legend>修改 {{ edit.id }}；保留原范围与有效期</legend>
-          <input v-model="edit.subject" required aria-label="修改 subject"><textarea v-model="edit.content" required aria-label="修改 content" />
-          <input v-model="edit.tags" required aria-label="修改 tags"><input v-model="edit.reason" required aria-label="修改 reason"><button class="gl-btn" data-test="v2-correct">提交修改</button>
-        </fieldset>
-      </form>
-      <details v-if="page.revisions.value" open data-test="v2-revision-result"><summary>{{ page.revisions.value.id }} revision（最多 100）</summary><pre>{{ JSON.stringify(page.revisions.value.items, null, 2) }}</pre></details>
-      <h3>原 pendingDrafts（最多 100）</h3><pre data-test="v2-pending-drafts">{{ JSON.stringify(page.drafts.value, null, 2) }}</pre>
+  <div class="gl-page memory">
+    <GlPageHeader
+      title="记忆治理"
+      description="你想让 AI 一直记住的事。回答时会被检索，只有你确认过的才会生效。"
+    />
+
+    <ServerNotice
+      v-if="op.error.value || page.readError.value"
+      :message="(op.error.value || page.readError.value).message"
+      :code="(op.error.value || page.readError.value).code"
+    />
+
+    <p v-if="op.result.value?.memory" class="memory__done" role="status" data-test="v2-operation-result">
+      已保存：{{ op.result.value.memory.subject }}
+    </p>
+
+    <div class="memory__actions">
+      <n-button v-if="op.busy.value" size="small" data-test="v2-cancel" @click="op.cancel">
+        取消本次请求
+      </n-button>
+      <n-button v-if="op.pending.value && !op.busy.value" size="small" data-test="v2-retry" @click="retry">
+        重试上一次操作
+      </n-button>
+    </div>
+
+    <details class="gl-disclosure memory__create">
+      <summary>新建一条记忆</summary>
+      <div class="gl-disclosure__body">
+        <form data-test="v2-create-form" @submit.prevent="perform('create', body())">
+          <div class="memory__grid">
+            <label class="gl-label">
+              <span class="gl-label__name">范围</span>
+              <select v-model="form.scope" required class="gl-field" data-test="scope">
+                <option value="" disabled>请选择范围</option>
+                <option value="global">全局</option>
+                <option value="topic">主题</option>
+              </select>
+            </label>
+
+            <label class="gl-label">
+              <span class="gl-label__name">有效期</span>
+              <select v-model="form.durability" required class="gl-field" data-test="durability">
+                <option value="" disabled>请选择有效期类型</option>
+                <option value="stable">长期有效</option>
+                <option value="time_bound">到某个时间为止</option>
+              </select>
+            </label>
+
+            <label class="gl-label memory__span">
+              <span class="gl-label__name">标题</span>
+              <input v-model="form.subject" required class="gl-field" data-test="subject" placeholder="一句话概括这条记忆">
+            </label>
+
+            <label class="gl-label memory__span">
+              <span class="gl-label__name">内容</span>
+              <textarea v-model="form.content" required class="gl-field" data-test="content" placeholder="要记住的具体内容" />
+            </label>
+
+            <label class="gl-label">
+              <span class="gl-label__name">主题</span>
+              <input v-model="form.topic_key" class="gl-field" data-test="topic-key" placeholder="主题范围时必填">
+              <span class="gl-label__hint">选了「主题」才需要填</span>
+            </label>
+
+            <label class="gl-label">
+              <span class="gl-label__name">到期时间</span>
+              <input v-model="form.valid_until" class="gl-field" data-test="valid-until" placeholder="2030-01-01T00:00:00+08:00">
+              <span class="gl-label__hint">选了「到某个时间为止」才需要填</span>
+            </label>
+
+            <label class="gl-label">
+              <span class="gl-label__name">标签</span>
+              <input v-model="form.tags" class="gl-field" data-test="tags" placeholder="用逗号分隔，可留空">
+            </label>
+
+            <label class="gl-label">
+              <span class="gl-label__name">原因</span>
+              <input v-model="form.reason" required class="gl-field" data-test="reason" placeholder="为什么值得记住">
+            </label>
+          </div>
+
+          <div class="memory__submit">
+            <n-button type="primary" :disabled="op.busy.value" data-test="v2-create">
+              保存这条记忆
+            </n-button>
+          </div>
+        </form>
+      </div>
+    </details>
+
+    <section v-if="op.result.value?.conflicts?.length" class="memory__conflict gl-card" data-test="v2-conflicts">
+      <h2 class="memory__conflict-title">这条和已有的记忆重复了</h2>
+      <p class="gl-muted">系统没有替你选，两条都在。你决定是都留着，还是用新的替换其中一条。</p>
+      <ul class="memory__conflict-list">
+        <li v-for="item in op.result.value.conflicts" :key="item.id">
+          <strong>{{ item.subject }}</strong>
+          <span class="gl-muted">{{ item.content }}</span>
+        </li>
+      </ul>
+      <div class="memory__conflict-actions">
+        <label class="gl-label">
+          <span class="gl-label__name">你的决定</span>
+          <select v-model="decision" class="gl-field" data-test="create-decision">
+            <option value="" disabled>请选择</option>
+            <option value="add">两条都留着</option>
+            <option value="replace">用新的替换其中一条</option>
+          </select>
+        </label>
+        <label v-if="decision === 'replace'" class="gl-label">
+          <span class="gl-label__name">替换哪一条</span>
+          <select v-model="target" class="gl-field" data-test="create-target">
+            <option value="" disabled>请选择要替换的记忆</option>
+            <option v-for="item in op.result.value.conflicts" :key="item.id" :value="item.id">
+              {{ item.subject }}
+            </option>
+          </select>
+        </label>
+        <n-button
+          type="primary"
+          :disabled="!decision || (decision === 'replace' && !target)"
+          @click="conflictDecision"
+        >
+          确认这个决定
+        </n-button>
+      </div>
+    </section>
+
+    <div class="memory__filter">
+      <label class="gl-label">
+        <span class="gl-label__name">范围</span>
+        <select v-model="filter.scope" class="gl-field">
+          <option value="">全部</option>
+          <option value="global">全局</option>
+          <option value="topic">主题</option>
+        </select>
+      </label>
+      <label class="gl-label">
+        <span class="gl-label__name">状态</span>
+        <select v-model="filter.status" class="gl-field">
+          <option v-for="state in ['active', 'archived', 'superseded', 'deleted']" :key="state" :value="state">
+            {{ { active: '生效中', archived: '已归档', superseded: '已被替代', deleted: '已删除' }[state] }}
+          </option>
+        </select>
+      </label>
+      <n-button size="small" data-test="v2-refresh" @click="refresh">刷新</n-button>
+    </div>
+
+    <label class="gl-label memory__reason">
+      <span class="gl-label__name">操作原因</span>
+      <input
+        v-model="reason"
+        class="gl-field"
+        data-test="manage-reason"
+        placeholder="归档或删除前需要写明原因"
+      >
+      <span class="gl-label__hint">归档与删除需要先填这里</span>
+    </label>
+
+    <GlEmpty
+      v-if="page.memories.value.length === 0"
+      description="还没有记忆。保存一条你希望 AI 一直记住的偏好试试。"
+    />
+
+    <ul v-else class="memory__list">
+      <li v-for="memory in page.memories.value" :key="memory.id" class="memory__item gl-card" data-test="v2-memory-row">
+        <div class="memory__item-head">
+          <h2 class="memory__subject">{{ memory.subject }}</h2>
+          <div class="memory__tags">
+            <GlStatusTag :status="memory.status" />
+            <span class="memory__chip">{{ scopeLabel(memory.scope) }}</span>
+            <span class="memory__chip">{{ durabilityLabel(memory.durability) }}</span>
+          </div>
+        </div>
+
+        <p class="memory__content">{{ memory.content }}</p>
+
+        <p v-if="memory.tags?.length" class="memory__meta">标签：{{ memory.tags.join('、') }}</p>
+
+        <div class="memory__item-actions">
+          <n-button size="small" quaternary data-test="v2-revisions" @click="page.showRevisions(memory.id)">
+            修订记录
+          </n-button>
+          <n-button
+            v-if="memory.status === 'active'"
+            size="small"
+            quaternary
+            data-test="v2-edit"
+            @click="editMemory(memory)"
+          >
+            修改
+          </n-button>
+          <n-button
+            v-if="memory.status === 'active'"
+            size="small"
+            quaternary
+            :disabled="op.busy.value || !reason.trim()"
+            data-test="v2-archive"
+            @click="perform('archive', { reason }, memory.id)"
+          >
+            归档
+          </n-button>
+          <n-button
+            size="small"
+            quaternary
+            type="error"
+            :disabled="op.busy.value || !reason.trim()"
+            data-test="v2-delete"
+            @click="perform('delete', { reason }, memory.id)"
+          >
+            删除
+          </n-button>
+        </div>
+
+        <form
+          v-if="edit && edit.id === memory.id"
+          class="memory__edit"
+          data-test="v2-edit-form"
+          @submit.prevent="perform('correct', { subject: edit.subject, content: edit.content, tags: tags(edit.tags), reason: edit.reason }, edit.id)"
+        >
+          <label class="gl-label">
+            <span class="gl-label__name">标题</span>
+            <input v-model="edit.subject" required class="gl-field" aria-label="修改 subject">
+          </label>
+          <label class="gl-label">
+            <span class="gl-label__name">内容</span>
+            <textarea v-model="edit.content" required class="gl-field" aria-label="修改 content" />
+          </label>
+          <label class="gl-label">
+            <span class="gl-label__name">标签</span>
+            <input v-model="edit.tags" required class="gl-field" aria-label="修改 tags">
+          </label>
+          <label class="gl-label">
+            <span class="gl-label__name">修改原因</span>
+            <input v-model="edit.reason" required class="gl-field" aria-label="修改 reason">
+          </label>
+          <n-button type="primary" size="small" :disabled="op.busy.value" data-test="v2-correct">
+            保存修改
+          </n-button>
+        </form>
+      </li>
+    </ul>
+
+    <details v-if="page.revisions.value" class="gl-disclosure memory__revisions" open data-test="v2-revision-result">
+      <summary>修订记录（最多 100 条）</summary>
+      <div class="gl-disclosure__body">
+        <ul class="memory__revision-list">
+          <li v-for="item in page.revisions.value.items" :key="item.id">
+            <span class="memory__revision-id">{{ item.id }}</span>
+            <span class="memory__revision-reason">{{ item.reason }}</span>
+          </li>
+        </ul>
+      </div>
+    </details>
+
+    <section v-if="page.drafts.value.length" class="memory__drafts">
+      <h2 class="memory__section-title">待确认的草稿</h2>
       <V2MemoryDraftCard v-for="draft in page.drafts.value" :key="draft.id" :draft="draft" />
-      <p class="gl-muted">没有原 detail/草稿状态查询接口；不会从列表缺失推断确认成功。历史未返回 RunResult 时无法恢复 Agent 卡片。</p>
-    </SectionFrame>
+    </section>
   </div>
 </template>
+
 <style scoped>
-.v2-fields { display: grid; gap: .65rem; margin-block: 1rem; border: 1px solid var(--gl-surface-line); border-radius: var(--gl-radius-sm); padding: 1rem; }
-label { display: grid; gap: .25rem; } pre { white-space: pre-wrap; overflow-wrap: anywhere; } .gl-card { margin-block: .6rem; }
+.memory {
+  max-width: 900px;
+}
+
+.memory__actions {
+  display: flex;
+  gap: var(--gl-space-2);
+  margin-bottom: var(--gl-space-3);
+}
+
+.memory__done {
+  margin: 0 0 var(--gl-space-3);
+  padding: var(--gl-space-2) var(--gl-space-3);
+  border-radius: var(--gl-radius-sm);
+  background: var(--gl-accent-soft);
+  color: var(--gl-accent-ink);
+  font-size: var(--gl-text-sm);
+  font-weight: 600;
+}
+
+.memory__create {
+  margin-bottom: var(--gl-space-4);
+}
+
+.memory__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--gl-space-3);
+}
+
+.memory__span {
+  grid-column: 1 / -1;
+}
+
+.memory__submit {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: var(--gl-space-4);
+}
+
+.memory__conflict {
+  margin-bottom: var(--gl-space-4);
+  padding: var(--gl-space-4);
+  border-color: #f0d8b4;
+  background: #fffdf7;
+}
+
+.memory__conflict-title {
+  font-size: var(--gl-text-base);
+  font-weight: 600;
+}
+
+.memory__conflict-list {
+  list-style: none;
+  margin: var(--gl-space-3) 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gl-space-2);
+}
+
+.memory__conflict-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--gl-space-2) var(--gl-space-3);
+  border-radius: var(--gl-radius-sm);
+  background: var(--gl-surface);
+  border: 1px solid var(--gl-surface-line);
+}
+
+.memory__conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--gl-space-3);
+}
+
+.memory__filter {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--gl-space-3);
+  margin-bottom: var(--gl-space-3);
+}
+
+.memory__filter .gl-label {
+  width: 160px;
+}
+
+.memory__reason {
+  max-width: 420px;
+  margin-bottom: var(--gl-space-4);
+}
+
+.memory__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gl-space-3);
+}
+
+.memory__item {
+  padding: var(--gl-space-4);
+}
+
+.memory__item-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--gl-space-3);
+}
+
+.memory__subject {
+  font-size: var(--gl-text-lg);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.memory__tags {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: var(--gl-space-1);
+}
+
+.memory__chip {
+  padding: 0.1em 0.55em;
+  border-radius: var(--gl-radius-pill);
+  background: var(--gl-surface-soft);
+  border: 1px solid var(--gl-surface-line);
+  color: var(--gl-ink-soft);
+  font-size: var(--gl-text-xs);
+  font-weight: 600;
+}
+
+.memory__content {
+  margin-top: var(--gl-space-2);
+  font-size: var(--gl-text-base);
+  line-height: var(--gl-leading-normal);
+  color: var(--gl-ink);
+}
+
+.memory__meta {
+  margin-top: var(--gl-space-2);
+  font-size: var(--gl-text-xs);
+  color: var(--gl-ink-faint);
+}
+
+.memory__item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gl-space-1);
+  margin-top: var(--gl-space-3);
+  padding-top: var(--gl-space-2);
+  border-top: 1px solid var(--gl-surface-line);
+}
+
+.memory__edit {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gl-space-3);
+  margin-top: var(--gl-space-3);
+  padding-top: var(--gl-space-3);
+  border-top: 1px solid var(--gl-surface-line);
+}
+
+.memory__edit .gl-btn,
+.memory__edit .n-button {
+  align-self: flex-start;
+}
+
+.memory__revisions {
+  margin-top: var(--gl-space-4);
+}
+
+.memory__revision-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gl-space-1);
+}
+
+.memory__revision-list li {
+  display: flex;
+  gap: var(--gl-space-3);
+  font-size: var(--gl-text-sm);
+}
+
+.memory__revision-id {
+  font-family: var(--gl-mono);
+  font-size: var(--gl-text-xs);
+  color: var(--gl-ink-faint);
+}
+
+.memory__revision-reason {
+  color: var(--gl-ink-soft);
+}
+
+.memory__drafts {
+  margin-top: var(--gl-space-5);
+}
+
+.memory__section-title {
+  font-size: var(--gl-text-lg);
+  font-weight: 600;
+  margin-bottom: var(--gl-space-3);
+}
+
+@media (max-width: 700px) {
+  .memory__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .memory__filter {
+    flex-wrap: wrap;
+  }
+
+  .memory__filter .gl-label {
+    width: 100%;
+  }
+}
 </style>

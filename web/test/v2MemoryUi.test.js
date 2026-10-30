@@ -15,18 +15,21 @@ afterEach(() => vi.unstubAllGlobals())
 async function fill(wrapper) {
   for (const [field, value] of Object.entries({ scope: 'topic', subject: '个人理解', content: '队列比喻', 'topic-key': 'redis', durability: 'stable', tags: 'redis', reason: '用户明确填写' })) await wrapper.get(`[data-test=${field}]`).setValue(value)
 }
-it('starts without implicit scope/durability, submits actual fields, keeps old clean boundary and 100 limits', async () => {
+it('starts without implicit scope/durability, submits actual fields, and speaks to the user', async () => {
   const wrapper = mount(V2MemoryView); await flushPromises()
   expect(wrapper.get('[data-test=scope]').element.value).toBe('')
   expect(wrapper.get('[data-test=durability]').element.value).toBe('')
-  expect(wrapper.text()).toContain('各最多 100 条')
-  expect(wrapper.text()).toContain('旧 clean')
+  // The page explains itself in plain words now: the contract names and the
+  // 100-item limits were implementation detail, not something a reader needs.
+  expect(wrapper.text()).toContain('你想让 AI 一直记住的事')
+  expect(wrapper.text()).not.toContain('旧 clean')
+  expect(wrapper.text()).not.toContain('各最多 100 条')
   await fill(wrapper); await wrapper.get('[data-test=v2-create-form]').trigger('submit'); await flushPromises()
   const request = JSON.parse(calls.find((c) => c.init.method === 'POST').init.body)
   expect(request).toMatchObject({ scope: 'topic', subject: '个人理解', content: '队列比喻', topic_key: 'redis', durability: 'stable', reason: '用户明确填写', tags: ['redis'] })
   expect(request.idempotency_key).toMatch(/^v2-memory-/)
   for (const field of ['decision','valid_until','user_id','userName']) expect(request).not.toHaveProperty(field)
-  expect(wrapper.get('[data-test=v2-operation-result]').text()).toContain('active')
+  expect(wrapper.get('[data-test=v2-operation-result]').text()).toContain('已保存')
   wrapper.unmount()
 })
 it('explicit retry reuses immutable key/body; changed form/new operation get a new key', async () => {
