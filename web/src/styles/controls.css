@@ -1,0 +1,121 @@
+/* Native form controls, styled to the same specification as the Naive UI
+   controls: 36px tall, 8px radius, a hairline border, and the same focus
+   ring. Several of this app's forms are read by their contract (a select's
+   value is part of the request body), so these stay native elements — but
+   they no longer look like a different product from the buttons next to
+   them. */
+
+.gl-field,
+input.gl-field,
+select.gl-field,
+textarea.gl-field {
+  width: 100%;
+  min-height: var(--gl-control-md);
+  padding: 0 var(--gl-space-3);
+  border: 1px solid var(--gl-surface-line);
+  border-radius: var(--gl-radius-sm);
+  background: var(--gl-surface);
+  color: var(--gl-ink);
+  font-size: var(--gl-text-base);
+  font-family: inherit;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+select.gl-field {
+  appearance: none;
+  padding-right: var(--gl-space-6);
+  background-image: linear-gradient(45deg, transparent 50%, var(--gl-ink-faint) 50%),
+    linear-gradient(135deg, var(--gl-ink-faint) 50%, transparent 50%);
+  background-position: calc(100% - 16px) 50%, calc(100% - 11px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  cursor: pointer;
+}
+
+textarea.gl-field {
+  min-height: 6rem;
+  padding: var(--gl-space-2) var(--gl-space-3);
+  line-height: var(--gl-leading-normal);
+  resize: vertical;
+}
+
+.gl-field::placeholder {
+  color: var(--gl-ink-faint);
+}
+
+.gl-field:hover:not(:disabled) {
+  border-color: var(--gl-line-strong);
+}
+
+.gl-field:focus {
+  outline: none;
+  border-color: var(--gl-accent);
+  box-shadow: var(--gl-focus-ring);
+}
+
+.gl-field:disabled {
+  background: var(--gl-surface-soft);
+  color: var(--gl-ink-faint);
+  cursor: not-allowed;
+}
+
+/* The label above a control: a name, not a field name. */
+.gl-label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gl-space-1);
+}
+
+.gl-label__name {
+  font-size: var(--gl-text-sm);
+  font-weight: 600;
+  color: var(--gl-ink);
+}
+
+.gl-label__hint {
+  font-size: var(--gl-text-xs);
+  color: var(--gl-ink-faint);
+}
+
+/* A native disclosure used as a "create" panel: it keeps its children in the
+   document (the contract reads them) while showing one summary line until
+   the user asks for it. */
+.gl-disclosure {
+  border: 1px solid var(--gl-surface-line);
+  border-radius: var(--gl-radius);
+  background: var(--gl-surface);
+}
+
+.gl-disclosure > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--gl-space-2);
+  padding: var(--gl-space-3) var(--gl-space-4);
+  cursor: pointer;
+  font-size: var(--gl-text-base);
+  font-weight: 600;
+  color: var(--gl-ink);
+  list-style: none;
+}
+
+.gl-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.gl-disclosure > summary::before {
+  content: '＋';
+  color: var(--gl-ink-faint);
+  font-weight: 400;
+}
+
+.gl-disclosure[open] > summary::before {
+  content: '－';
+}
+
+.gl-disclosure[open] > summary {
+  border-bottom: 1px solid var(--gl-surface-line);
+}
+
+.gl-disclosure__body {
+  padding: var(--gl-space-4);
+}

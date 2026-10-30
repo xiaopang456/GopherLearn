@@ -12,6 +12,7 @@ import {
 import { createMockMemoryAdapter } from './api/memoryMock.js'
 
 import './styles/base.css'
+import './styles/controls.css'
 import './styles/markdown.css'
 
 // A stored token is adopted before the first navigation so the guard can tell
