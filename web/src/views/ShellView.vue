@@ -3,7 +3,6 @@ import { computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 
 import NavRail from '../components/NavRail.vue'
-import AppIcon from '../components/AppIcon.vue'
 import { authStore } from '../auth/store.js'
 
 const route = useRoute()
@@ -42,10 +41,7 @@ onMounted(() => {
 <template>
   <div class="shell">
     <header class="shell__bar">
-      <p class="shell__title">
-        <AppIcon name="chat" :size="17" />
-        {{ heading }}
-      </p>
+      <p class="shell__title">{{ heading }}</p>
       <p class="shell__who">{{ identity }}</p>
     </header>
 
@@ -74,23 +70,22 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
-  padding: 0.45rem clamp(0.75rem, 2vw, 1.25rem);
+  gap: var(--gl-space-4);
+  height: 44px;
+  padding: 0 var(--gl-space-5);
   background: var(--gl-surface);
   border-bottom: 1px solid var(--gl-surface-line);
 }
 
 .shell__title {
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-  font-size: 1rem;
-  font-weight: 700;
+  font-size: var(--gl-text-base);
+  font-weight: 600;
+  letter-spacing: -0.01em;
   color: var(--gl-ink);
 }
 
 .shell__who {
-  font-size: 0.84rem;
+  font-size: var(--gl-text-sm);
   color: var(--gl-ink-faint);
   overflow-wrap: anywhere;
 }
@@ -115,6 +110,10 @@ onMounted(() => {
       'top'
       'main'
       'rail';
+  }
+
+  .shell__bar {
+    padding: 0 var(--gl-space-4);
   }
 }
 </style>
