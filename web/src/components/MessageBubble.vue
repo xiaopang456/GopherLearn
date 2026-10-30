@@ -66,12 +66,10 @@ const notesOpen = ref(false)
     :class="[`turn--${props.message.role}`, `turn--${props.message.status}`]"
     :data-test="`message-${props.message.id}`"
   >
-    <header class="turn__meta">
-      <AppIcon
-        v-if="!isUser()"
-        name="logo"
-        :size="15"
-      />
+    <header v-if="!isUser()" class="turn__meta">
+      <span class="turn__glyph">
+        <AppIcon name="logo" :size="13" />
+      </span>
       <span class="turn__who">{{ label() }}</span>
       <span v-if="streaming()" class="turn__flag">正在生成</span>
       <span v-else-if="props.message.status === 'stopped'" class="turn__flag">
@@ -79,7 +77,11 @@ const notesOpen = ref(false)
       </span>
     </header>
 
-    <div class="turn__body">
+    <footer v-if="isUser()" class="turn__meta turn__meta--user">
+      <span class="turn__who">{{ label() }}</span>
+    </footer>
+
+    <div class="turn__body" :class="{ 'turn__body--bubble': isUser() }">
       <section
         v-if="processNotes.length"
         class="turn__notes"
@@ -113,6 +115,7 @@ const notesOpen = ref(false)
           </li>
         </ol>
       </section>
+
       <!-- Answers are formatted; the learner's own words stay literal. -->
       <MessageContent
         v-if="showBody"
@@ -139,93 +142,134 @@ const notesOpen = ref(false)
 </template>
 
 <style scoped>
+/* An answer is text on a page, not a card inside a card: it reads as running
+   prose, and only the learner's own turn is a filled block. */
 .turn {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
-  padding: 0.7rem 0.9rem;
-  border: 1px solid var(--gl-surface-line);
-  border-radius: var(--gl-radius);
-  background: var(--gl-surface);
-}
-
-.turn--user {
-  align-self: flex-end;
-  width: min(100%, 62ch);
-  background: var(--gl-accent-soft);
-  border-color: #bfdcd7;
+  gap: var(--gl-space-2);
 }
 
 .turn--assistant {
   align-self: stretch;
-  width: min(100%, 82ch);
+}
+
+.turn--user {
+  align-self: flex-end;
+  max-width: 78%;
+}
+
+.turn__body--bubble {
+  padding: var(--gl-space-3) var(--gl-space-4);
+  border-radius: 14px;
+  background: var(--gl-surface-soft);
 }
 
 .turn--system {
   align-self: center;
+  padding: var(--gl-space-2) var(--gl-space-3);
+  border-radius: var(--gl-radius-sm);
   background: var(--gl-surface-soft);
-  font-size: 0.88rem;
+  font-size: var(--gl-text-sm);
 }
 
 .turn--error {
-  border-color: #e6c9c6;
-  box-shadow: inset 3px 0 0 var(--gl-danger);
+  padding: var(--gl-space-3) var(--gl-space-4);
+  border: 1px solid #f3d4d1;
+  border-radius: var(--gl-radius);
+  background: #fffbfb;
 }
 
 .turn--stopped {
-  box-shadow: inset 3px 0 0 var(--gl-warn);
+  padding: var(--gl-space-3) var(--gl-space-4);
+  border-radius: var(--gl-radius);
+  background: var(--gl-surface-soft);
 }
 
 .turn__meta {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.03em;
+  gap: var(--gl-space-2);
+  font-size: var(--gl-text-sm);
+  font-weight: 600;
+  color: var(--gl-ink);
+}
+
+.turn__meta--user {
+  justify-content: flex-end;
+  font-size: var(--gl-text-xs);
+  font-weight: 500;
   color: var(--gl-ink-faint);
 }
 
+.turn__glyph {
+  display: flex;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--gl-accent-soft);
+  color: var(--gl-accent-ink);
+}
+
+.turn__who {
+  letter-spacing: 0.01em;
+}
+
 .turn__flag {
-  padding: 0.05em 0.5em;
-  border-radius: 999px;
+  padding: 0.1em 0.5em;
+  border-radius: var(--gl-radius-pill);
   background: var(--gl-surface-soft);
   border: 1px solid var(--gl-surface-line);
-  color: var(--gl-accent-ink);
-  font-weight: 600;
+  color: var(--gl-ink-soft);
+  font-size: var(--gl-text-xs);
+  font-weight: 500;
 }
 
 .turn__body {
-  font-size: 1rem;
+  font-size: var(--gl-text-md);
+  line-height: var(--gl-leading-relaxed);
+}
+
+.turn--user .turn__body {
+  font-size: var(--gl-text-base);
+  line-height: var(--gl-leading-normal);
+  color: var(--gl-ink);
 }
 
 .turn__notes {
-  margin-bottom: 0.5rem;
+  margin-bottom: var(--gl-space-3);
 }
 
 .turn__notes-toggle {
-  padding: 0.15rem 0.55rem;
+  padding: 3px var(--gl-space-2);
   border: 1px solid var(--gl-surface-line);
-  border-radius: 999px;
-  background: var(--gl-surface-soft);
+  border-radius: var(--gl-radius-pill);
+  background: var(--gl-surface);
   color: var(--gl-ink-soft);
-  font-size: 0.82rem;
-  font-weight: 600;
-  cursor: pointer;
+  font-size: var(--gl-text-sm);
+  font-weight: 500;
+}
+
+.turn__notes-toggle:hover {
+  border-color: var(--gl-line-strong);
+  color: var(--gl-ink);
 }
 
 .turn__note-list {
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
-  margin: 0.5rem 0 0;
-  padding-left: 1.35rem;
+  gap: var(--gl-space-2);
+  margin: var(--gl-space-3) 0 0;
+  padding-left: var(--gl-space-4);
   border-left: 2px solid var(--gl-surface-line);
   color: var(--gl-ink-soft);
-  font-size: 0.92rem;
+  font-size: var(--gl-text-base);
 }
 
 .turn__notice {
-  margin-top: 0.6rem;
+  margin-top: var(--gl-space-3);
 }
 </style>

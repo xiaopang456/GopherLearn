@@ -9,7 +9,7 @@ const props = defineProps({
   modelValue: { type: String, default: '' },
   streaming: { type: Boolean, default: false },
   disabled: { type: Boolean, default: false },
-  placeholder: { type: String, default: '向 GopherLearn 提问…' },
+  placeholder: { type: String, default: '输入你的问题…' },
   /** The server-owned mode of the open session; '' while still unknown. */
   mode: { type: String, default: '' },
   knowledge: {
@@ -98,69 +98,6 @@ function onToolsKeydown(event) {
   <form class="composer" data-test="composer" @submit.prevent="submit">
     <p v-if="localError" class="composer__error">{{ localError }}</p>
 
-    <div
-      v-if="showsKnowledge"
-      class="composer__tools"
-      data-test="knowledge-tools"
-      @keydown="onToolsKeydown"
-    >
-      <button
-        type="button"
-        class="tool"
-        :class="{ 'tool--on': props.knowledge.enabled }"
-        data-test="knowledge-toggle"
-        :aria-pressed="String(props.knowledge.enabled)"
-        :disabled="!props.canUseKnowledge"
-        @click="toggleKnowledge"
-      >
-        <AppIcon name="knowledge" :size="14" />
-        <span>使用知识库</span>
-      </button>
-
-      <button
-        type="button"
-        class="tool"
-        data-test="knowledge-pick"
-        :disabled="!props.knowledge.enabled"
-        :aria-expanded="String(picking)"
-        @click="picking = !picking"
-      >
-        <span>选择知识库</span>
-        <span v-if="props.knowledge.enabled" class="tool__count">{{ selected.length }}</span>
-      </button>
-
-      <ul v-if="picking && props.collections.length > 0" class="tool__list">
-        <li v-for="item in props.collections" :key="item.id">
-          <label class="tool__option">
-            <input
-              type="checkbox"
-              :checked="selected.includes(String(item.id))"
-              @change="toggleCollection(item.id)"
-            />
-            <span>{{ item.title }}</span>
-          </label>
-        </li>
-      </ul>
-
-      <p v-if="!props.canUseKnowledge" class="composer__note">
-        <button
-          type="button"
-          class="composer__note-link"
-          data-test="knowledge-manage-link"
-          @click="emit('open-knowledge')"
-        >
-          添加知识库后可启用
-        </button>
-      </p>
-      <p
-        v-else-if="props.knowledge.enabled && selected.length === 0"
-        class="composer__note"
-        data-test="knowledge-no-selection"
-      >
-        已开启，但还没选择知识库；本轮不会引用资料。
-      </p>
-    </div>
-
     <div class="composer__box">
       <textarea
         class="composer__input"
@@ -174,29 +111,92 @@ function onToolsKeydown(event) {
       ></textarea>
 
       <div class="composer__actions">
-        <span class="composer__hint">
-          Enter 发送 · Shift + Enter 换行
-        </span>
-        <button
-          v-if="props.streaming"
-          type="button"
-          class="gl-btn gl-btn--danger"
-          data-test="abort"
-          @click="emit('abort')"
+        <div
+          v-if="showsKnowledge"
+          class="composer__tools"
+          data-test="knowledge-tools"
+          @keydown="onToolsKeydown"
         >
-          <AppIcon name="stop" :size="15" />
-          <span>停止</span>
-        </button>
-        <button
-          v-else
-          type="submit"
-          class="gl-btn gl-btn--primary"
-          data-test="send"
-          :disabled="!sendable"
-        >
-          <AppIcon name="send" :size="15" />
-          <span>发送</span>
-        </button>
+          <button
+            type="button"
+            class="tool"
+            :class="{ 'tool--on': props.knowledge.enabled }"
+            data-test="knowledge-toggle"
+            :aria-pressed="String(props.knowledge.enabled)"
+            :disabled="!props.canUseKnowledge"
+            @click="toggleKnowledge"
+          >
+            <AppIcon name="knowledge" :size="14" />
+            <span>使用知识库</span>
+          </button>
+
+          <button
+            type="button"
+            class="tool"
+            data-test="knowledge-pick"
+            :disabled="!props.knowledge.enabled"
+            :aria-expanded="String(picking)"
+            @click="picking = !picking"
+          >
+            <span>选择知识库</span>
+            <span v-if="props.knowledge.enabled" class="tool__count">{{ selected.length }}</span>
+          </button>
+
+          <ul v-if="picking && props.collections.length > 0" class="tool__list">
+            <li v-for="item in props.collections" :key="item.id">
+              <label class="tool__option">
+                <input
+                  type="checkbox"
+                  :checked="selected.includes(String(item.id))"
+                  @change="toggleCollection(item.id)"
+                />
+                <span>{{ item.title }}</span>
+              </label>
+            </li>
+          </ul>
+
+          <p v-if="!props.canUseKnowledge" class="composer__note">
+            <button
+              type="button"
+              class="composer__note-link"
+              data-test="knowledge-manage-link"
+              @click="emit('open-knowledge')"
+            >
+              添加知识库后可启用
+            </button>
+          </p>
+          <p
+            v-else-if="props.knowledge.enabled && selected.length === 0"
+            class="composer__note"
+            data-test="knowledge-no-selection"
+          >
+            已开启，但还没选择知识库；本轮不会引用资料。
+          </p>
+        </div>
+
+        <div class="composer__right">
+          <span class="composer__hint">Enter 发送 · Shift + Enter 换行</span>
+          <button
+            v-if="props.streaming"
+            type="button"
+            class="composer__send composer__send--stop"
+            data-test="abort"
+            title="停止生成"
+            @click="emit('abort')"
+          >
+            <AppIcon name="stop" :size="14" />
+          </button>
+          <button
+            v-else
+            type="submit"
+            class="composer__send"
+            data-test="send"
+            :disabled="!sendable"
+            title="发送"
+          >
+            <AppIcon name="send" :size="15" />
+          </button>
+        </div>
       </div>
     </div>
   </form>
@@ -204,95 +204,137 @@ function onToolsKeydown(event) {
 
 <style scoped>
 .composer {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  padding: 0.75rem clamp(0.75rem, 3vw, 1.5rem) 1rem;
-  background: var(--gl-surface);
-  border-top: 1px solid var(--gl-surface-line);
+  padding: 0 var(--gl-space-6) var(--gl-space-5);
+  background: var(--gl-paper);
 }
 
 .composer__error {
-  margin: 0;
-  font-size: 0.85rem;
+  margin: 0 0 var(--gl-space-2);
+  font-size: var(--gl-text-sm);
   color: var(--gl-danger);
   font-weight: 600;
 }
 
-/* A tool strip, not a third navigation tier: low contrast, pill-shaped, and it
-   inherits the composer's own padding rather than adding chrome above it. */
+.composer__box {
+  max-width: 760px;
+  margin: 0 auto;
+  border: 1px solid var(--gl-surface-line);
+  border-radius: 14px;
+  background: var(--gl-surface);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.composer__box:focus-within {
+  border-color: var(--gl-accent);
+  box-shadow: var(--gl-focus-ring);
+}
+
+.composer__input {
+  display: block;
+  width: 100%;
+  max-height: 40vh;
+  min-height: 2.5rem;
+  padding: var(--gl-space-3) var(--gl-space-4) var(--gl-space-2);
+  border: 0;
+  background: none;
+  resize: none;
+  font-size: var(--gl-text-md);
+  line-height: var(--gl-leading-normal);
+  color: var(--gl-ink);
+}
+
+.composer__input:focus {
+  outline: none;
+}
+
+.composer__input::placeholder {
+  color: var(--gl-ink-faint);
+}
+
+.composer__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gl-space-3);
+  padding: var(--gl-space-2) var(--gl-space-2) var(--gl-space-2) var(--gl-space-3);
+  border-top: 1px solid var(--gl-surface-line);
+}
+
+/* A tool strip, not a third navigation tier: flat, quiet, and it inherits the
+   composer's own padding rather than adding chrome above it. */
 .composer__tools {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 0.45rem;
+  gap: var(--gl-space-1);
   flex-wrap: wrap;
+  min-width: 0;
 }
 
 .tool {
   display: inline-flex;
   align-items: center;
-  gap: 0.35em;
-  padding: 0.2em 0.6em;
-  border: 1px solid var(--gl-surface-line);
-  border-radius: 999px;
-  background: var(--gl-surface-soft);
+  gap: 5px;
+  padding: 5px var(--gl-space-2);
+  border: 0;
+  border-radius: var(--gl-radius-xs);
+  background: none;
   color: var(--gl-ink-soft);
-  font-size: 0.8rem;
-  font-weight: 600;
+  font-size: var(--gl-text-sm);
+  font-weight: 500;
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
 .tool:hover:not(:disabled) {
-  border-color: var(--gl-accent);
-  color: var(--gl-accent-ink);
+  background: var(--gl-surface-soft);
+  color: var(--gl-ink);
 }
 
 .tool:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
 .tool--on {
   background: var(--gl-accent-soft);
-  border-color: #bfdcd7;
   color: var(--gl-accent-ink);
 }
 
 .tool__count {
-  min-width: 1.6em;
-  padding: 0 0.25em;
-  border-radius: 999px;
+  min-width: 1.5em;
+  padding: 0 0.35em;
+  border-radius: var(--gl-radius-pill);
   background: var(--gl-surface);
   color: var(--gl-accent-ink);
-  font-size: 0.72rem;
+  font-size: var(--gl-text-xs);
   text-align: center;
 }
 
 .tool__list {
   position: absolute;
-  bottom: calc(100% + 0.3rem);
+  bottom: calc(100% + 0.4rem);
   left: 0;
   z-index: 20;
   list-style: none;
   margin: 0;
-  padding: 0.35rem;
+  padding: var(--gl-space-1);
   min-width: 220px;
   display: flex;
   flex-direction: column;
-  gap: 0.1rem;
+  gap: 2px;
   background: var(--gl-surface);
   border: 1px solid var(--gl-surface-line);
   border-radius: var(--gl-radius-sm);
-  box-shadow: var(--gl-shadow);
+  box-shadow: var(--gl-shadow-2);
 }
 
 .tool__option {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.3rem 0.4rem;
-  border-radius: var(--gl-radius-sm);
-  font-size: 0.86rem;
+  gap: var(--gl-space-2);
+  padding: 6px var(--gl-space-2);
+  border-radius: var(--gl-radius-xs);
+  font-size: var(--gl-text-sm);
   cursor: pointer;
 }
 
@@ -302,7 +344,8 @@ function onToolsKeydown(event) {
 
 .composer__note {
   margin: 0;
-  font-size: 0.78rem;
+  padding-left: var(--gl-space-2);
+  font-size: var(--gl-text-xs);
   color: var(--gl-ink-faint);
 }
 
@@ -316,50 +359,55 @@ function onToolsKeydown(event) {
   text-underline-offset: 2px;
 }
 
-.composer__box {
+.composer__right {
   display: flex;
-  align-items: flex-end;
-  gap: 0.6rem;
-  padding: 0.5rem 0.6rem;
-  border: 1px solid var(--gl-surface-line);
-  border-radius: var(--gl-radius);
-  background: var(--gl-surface-soft);
-}
-
-.composer__box:focus-within {
-  border-color: var(--gl-accent);
-  background: var(--gl-surface);
-}
-
-.composer__input {
-  flex: 1;
-  min-width: 0;
-  max-height: 40vh;
-  min-height: 2.6rem;
-  padding: 0.35rem 0.2rem;
-  border: 0;
-  background: none;
-  resize: vertical;
-  line-height: 1.6;
-  overflow-y: auto;
-}
-
-.composer__input:focus {
-  outline: none;
-}
-
-.composer__actions {
-  display: flex;
+  flex: none;
   align-items: center;
-  gap: 0.6rem;
+  gap: var(--gl-space-3);
 }
 
 .composer__hint {
-  font-size: 0.75rem;
+  font-size: var(--gl-text-xs);
   color: var(--gl-ink-faint);
 }
 
+.composer__send {
+  display: flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--gl-ink);
+  color: #fff;
+  transition: background-color 120ms ease, opacity 120ms ease;
+}
+
+.composer__send:hover:not(:disabled) {
+  background: #000;
+}
+
+.composer__send:disabled {
+  background: var(--gl-surface-soft);
+  color: var(--gl-ink-faint);
+  cursor: not-allowed;
+}
+
+.composer__send--stop {
+  background: var(--gl-danger);
+}
+
+.composer__send--stop:hover {
+  background: #9c211a;
+}
+
 @media (max-width: 700px) {
+  .composer {
+    padding: 0 var(--gl-space-3) var(--gl-space-3);
+  }
+
   .composer__hint {
     display: none;
   }

@@ -71,16 +71,16 @@ function askRemove(session) {
 <template>
   <aside class="panel">
     <div class="panel__head" @keydown="onHeadKeydown">
-      <h2 class="gl-eyebrow">会话</h2>
+      <h2 class="panel__label">会话</h2>
       <button
         type="button"
-        class="gl-btn gl-btn--primary panel__new"
+        class="panel__new"
         data-test="new-session"
         aria-haspopup="menu"
         :aria-expanded="String(choosing)"
         @click="choosing = !choosing"
       >
-        <AppIcon name="plus" :size="16" />
+        <AppIcon name="plus" :size="15" />
         <span>新建</span>
       </button>
     </div>
@@ -95,7 +95,7 @@ function askRemove(session) {
           @click="pick(choice.mode)"
         >
           <span class="chooser__glyph">
-            <AppIcon :name="choice.icon" :size="16" />
+            <AppIcon :name="choice.icon" :size="15" />
           </span>
           <span class="chooser__text">
             <span class="chooser__title">{{ modeLabel(choice.mode) }}</span>
@@ -148,7 +148,7 @@ function askRemove(session) {
             :aria-label="`删除会话 ${session.title}`"
             @click="askRemove(session)"
           >
-            <AppIcon name="trash" :size="16" />
+            <AppIcon name="trash" :size="15" />
           </button>
         </div>
       </li>
@@ -160,10 +160,10 @@ function askRemove(session) {
 .panel {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: var(--gl-space-2);
   min-height: 0;
-  padding: 0.75rem;
-  background: var(--gl-surface-soft);
+  padding: var(--gl-space-4) var(--gl-space-3);
+  background: var(--gl-side, #fbfbfc);
   border-right: 1px solid var(--gl-surface-line);
   overflow: hidden;
 }
@@ -172,38 +172,63 @@ function askRemove(session) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.5rem;
+  gap: var(--gl-space-2);
+  padding: 0 var(--gl-space-1) var(--gl-space-1);
+}
+
+.panel__label {
+  font-size: var(--gl-text-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--gl-ink-faint);
 }
 
 .panel__new {
-  padding: 0.3em 0.6em;
-  font-size: 0.82rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px var(--gl-space-2);
+  border: 1px solid var(--gl-surface-line);
+  border-radius: var(--gl-radius-xs);
+  background: var(--gl-surface);
+  color: var(--gl-ink);
+  font-size: var(--gl-text-xs);
+  font-weight: 600;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.panel__new:hover {
+  background: var(--gl-surface-soft);
+  border-color: var(--gl-line-strong);
 }
 
 .chooser {
   list-style: none;
   margin: 0;
-  padding: 0;
+  padding: var(--gl-space-1);
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: 2px;
+  background: var(--gl-surface);
+  border: 1px solid var(--gl-surface-line);
+  border-radius: var(--gl-radius-sm);
+  box-shadow: var(--gl-shadow-1);
 }
 
 .chooser__item {
   display: flex;
   align-items: flex-start;
-  gap: 0.5rem;
+  gap: var(--gl-space-2);
   width: 100%;
-  padding: 0.45rem 0.5rem;
-  border: 1px solid var(--gl-surface-line);
-  border-radius: var(--gl-radius-sm);
-  background: var(--gl-surface);
+  padding: var(--gl-space-2);
+  border: 0;
+  border-radius: var(--gl-radius-xs);
+  background: none;
   text-align: left;
 }
 
 .chooser__item:hover {
-  border-color: var(--gl-accent);
-  background: #fff;
+  background: var(--gl-surface-soft);
 }
 
 .chooser__glyph {
@@ -213,7 +238,7 @@ function askRemove(session) {
   flex: none;
   align-items: center;
   justify-content: center;
-  border-radius: 6px;
+  border-radius: var(--gl-radius-xs);
   background: var(--gl-accent-soft);
   color: var(--gl-accent-ink);
 }
@@ -225,19 +250,21 @@ function askRemove(session) {
 }
 
 .chooser__title {
-  font-size: 0.9rem;
-  font-weight: 700;
+  font-size: var(--gl-text-sm);
+  font-weight: 600;
 }
 
 .chooser__hint {
-  font-size: 0.74rem;
+  font-size: var(--gl-text-xs);
   color: var(--gl-ink-faint);
 }
 
 .panel__state {
-  margin: 0.6rem 0 0;
-  font-size: 0.86rem;
+  margin: var(--gl-space-2) 0 0;
+  padding: 0 var(--gl-space-1);
+  font-size: var(--gl-text-sm);
   color: var(--gl-ink-faint);
+  line-height: var(--gl-leading-normal);
 }
 
 .panel__state--error {
@@ -250,7 +277,7 @@ function askRemove(session) {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.3rem;
+  gap: 2px;
   overflow-y: auto;
   min-height: 0;
 }
@@ -259,14 +286,20 @@ function askRemove(session) {
   display: flex;
   align-items: stretch;
   border-radius: var(--gl-radius-sm);
-  background: var(--gl-surface);
-  border: 1px solid var(--gl-surface-line);
+  transition: background-color 120ms ease;
+}
+
+.panel__row:hover {
+  background: var(--gl-surface-soft);
 }
 
 .panel__row--active {
-  border-color: var(--gl-accent);
-  background: #fff;
-  box-shadow: inset 3px 0 0 var(--gl-accent);
+  background: var(--gl-surface);
+  box-shadow: inset 0 0 0 1px var(--gl-surface-line);
+}
+
+.panel__row--active:hover {
+  background: var(--gl-surface);
 }
 
 .panel__pick {
@@ -274,20 +307,20 @@ function askRemove(session) {
   min-width: 0;
   display: flex;
   align-items: flex-start;
-  gap: 0.45rem;
-  padding: 0.5rem 0.55rem;
+  gap: var(--gl-space-2);
+  padding: var(--gl-space-2);
   background: none;
   border: 0;
   text-align: left;
 }
 
-/* Quiet by design: the marker identifies the mode without competing with the
-   title for the eye. */
+/* Quiet by design: the marker identifies the mode without competing with
+   the title for the eye. */
 .panel__mode {
   display: flex;
   flex: none;
   align-items: center;
-  padding-top: 0.2rem;
+  padding-top: 2px;
   color: var(--gl-ink-faint);
 }
 
@@ -302,31 +335,41 @@ function askRemove(session) {
 }
 
 .panel__title {
-  font-size: 0.92rem;
-  font-weight: 600;
+  font-size: var(--gl-text-sm);
+  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.panel__row--active .panel__title {
+  font-weight: 600;
+  color: var(--gl-ink);
+}
+
 .panel__when {
-  font-size: 0.74rem;
+  font-size: var(--gl-text-xs);
   color: var(--gl-ink-faint);
 }
 
 .panel__remove {
   display: flex;
   align-items: center;
-  padding: 0 0.55rem;
+  padding: 0 var(--gl-space-2);
   background: none;
   border: 0;
-  border-left: 1px solid var(--gl-surface-line);
   color: var(--gl-ink-faint);
+  opacity: 0;
+  transition: opacity 120ms ease, color 120ms ease;
+}
+
+.panel__row:hover .panel__remove,
+.panel__remove:focus-visible {
+  opacity: 1;
 }
 
 .panel__remove:hover {
   color: var(--gl-danger);
-  background: var(--gl-danger-soft);
 }
 
 @media (max-width: 1020px) {
@@ -335,7 +378,7 @@ function askRemove(session) {
     z-index: 30;
     inset: 0 auto 0 var(--gl-rail);
     width: min(78vw, 300px);
-    box-shadow: var(--gl-shadow);
+    box-shadow: var(--gl-shadow-2);
   }
 }
 </style>

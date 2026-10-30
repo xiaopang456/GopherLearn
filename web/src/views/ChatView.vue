@@ -104,22 +104,40 @@ function select(id) {
     />
 
     <section class="chat__main" aria-label="对话内容">
-      <button v-if="chat.sessionsError.value && chat.pendingCreate.value?.mode === SessionMode.LearningAgent" type="button" class="gl-btn" data-test="retry-create" @click="chat.retryCreate">重试同一次创建</button>
-      <button v-if="chat.retryableSend.value" type="button" class="gl-btn" data-test="retry-agent-send" @click="chat.retrySend">重试同一次 Agent 请求（沿用原操作键）</button>
-      <div class="chat__bar">
+      <header class="chat__head">
         <button
           type="button"
-          class="gl-btn gl-btn--quiet chat__drawer"
+          class="chat__drawer"
           data-test="drawer"
           :aria-expanded="String(showPanel)"
           title="会话列表"
           @click="togglePanel"
         >
-          <AppIcon :name="showPanel ? 'close' : 'panel'" :size="17" />
-          <span>{{ chat.activeSession.value?.title ?? '会话列表' }}</span>
+          <AppIcon :name="panelOpen ? 'close' : 'panel'" :size="17" />
         </button>
-        <p class="chat__mode">回答按 Markdown 排版显示，原始 HTML 只当作文字</p>
-      </div>
+        <h1 class="chat__title">
+          {{ chat.activeSession.value?.title ?? '新对话' }}
+        </h1>
+      </header>
+
+      <button
+        v-if="chat.sessionsError.value && chat.pendingCreate.value?.mode === SessionMode.LearningAgent"
+        type="button"
+        class="chat__retry"
+        data-test="retry-create"
+        @click="chat.retryCreate"
+      >
+        重试同一次创建
+      </button>
+      <button
+        v-if="chat.retryableSend.value"
+        type="button"
+        class="chat__retry"
+        data-test="retry-agent-send"
+        @click="chat.retrySend"
+      >
+        重试同一次 Agent 请求（沿用原操作键）
+      </button>
 
       <div ref="transcript" class="chat__scroll" data-test="transcript">
         <p v-if="chat.historyError.value" class="chat__pad">
@@ -131,24 +149,24 @@ function select(id) {
         </div>
 
         <div v-else-if="chat.messages.value.length === 0" class="chat__pad">
-          <div class="chat__empty gl-card" data-test="empty-state">
-            <div class="chat__empty-head">
-              <AppIcon :name="chat.isAgentSession.value ? 'learning' : 'logo'" :size="24" />
-              <div>
-                <h2>{{ chat.isAgentSession.value ? '开始一段学习会话' : '从一个具体的问题开始' }}</h2>
-                <p class="gl-muted">
-                  {{
-                    chat.isAgentSession.value
-                      ? '直接提出学习目标即可。这个会话属于学习 Agent，输入框不会出现知识库开关。'
-                      : '直接输入即可开始普通对话；需要使用学习 Agent 时，可单独创建一个会话。'
-                  }}
-                </p>
-              </div>
+          <div class="chat__empty" data-test="empty-state">
+            <div class="chat__empty-mark">
+              <AppIcon name="logo" :size="26" />
             </div>
+            <h2 class="chat__empty-title">
+              {{ chat.isAgentSession.value ? '开始一段学习会话' : '从一个具体的问题开始' }}
+            </h2>
+            <p class="chat__empty-text">
+              {{
+                chat.isAgentSession.value
+                  ? '直接提出学习目标即可。这个会话属于学习 Agent，输入框不会出现知识库开关。'
+                  : '直接输入即可开始普通对话；需要使用学习 Agent 时，可单独创建一个会话。'
+              }}
+            </p>
             <div v-if="!chat.activeMode.value" class="chat__empty-actions">
               <button
                 type="button"
-                class="gl-btn"
+                class="gl-btn gl-btn--primary"
                 data-test="empty-new-chat"
                 @click="startNew(SessionMode.Chat)"
               >
@@ -175,7 +193,7 @@ function select(id) {
             data-test="agent-header"
           >
             <span class="chat__agenthead-glyph">
-              <AppIcon name="learning" :size="16" />
+              <AppIcon name="learning" :size="15" />
             </span>
             <div class="chat__agenthead-text">
               <p class="chat__agenthead-title">学习 Agent</p>
@@ -250,39 +268,56 @@ function select(id) {
   background: var(--gl-paper);
 }
 
-.chat__bar {
+/* No rule under this bar: the app bar above it already carries the only
+   separation the page needs, and a second one makes the two read as one
+   thick band. */
+.chat__head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  padding: 0.5rem clamp(0.75rem, 3vw, 1.5rem);
-  border-bottom: 1px solid var(--gl-surface-line);
+  gap: var(--gl-space-3);
+  height: 46px;
+  padding: 0 var(--gl-space-6);
   background: var(--gl-surface);
 }
 
 .chat__drawer {
-  min-width: 0;
-  padding: 0.25em 0.5em;
-  font-size: 0.88rem;
+  display: flex;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--gl-radius-xs);
+  background: none;
+  color: var(--gl-ink-soft);
 }
 
-.chat__drawer span {
+.chat__drawer:hover {
+  background: var(--gl-surface-soft);
+  color: var(--gl-ink);
+}
+
+.chat__title {
+  font-size: var(--gl-text-md);
+  font-weight: 600;
+  letter-spacing: -0.01em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.chat__mode {
-  font-size: 0.76rem;
-  color: var(--gl-ink-faint);
-  white-space: nowrap;
+.chat__retry {
+  align-self: flex-start;
+  margin: var(--gl-space-3) var(--gl-space-6) 0;
 }
 
 .chat__scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 1rem clamp(0.75rem, 3vw, 1.5rem);
+  padding: var(--gl-space-6) var(--gl-space-6) var(--gl-space-4);
 }
 
 .chat__pad {
@@ -291,75 +326,76 @@ function select(id) {
 
 .chat__busy {
   color: var(--gl-ink-faint);
-  font-size: 0.92rem;
+  font-size: var(--gl-text-sm);
 }
 
 .chat__list {
   display: flex;
   flex-direction: column;
-  gap: 0.7rem;
-  max-width: 900px;
+  gap: var(--gl-space-6);
+  max-width: 760px;
   margin: 0 auto;
 }
 
+/* --- empty state ---------------------------------------------------- */
+
 .chat__empty {
   display: flex;
-  max-width: 640px;
-  margin: 4vh auto 0;
-  padding: 1.15rem 1.25rem;
+  max-width: 420px;
+  margin: 10vh auto 0;
   flex-direction: column;
-  gap: 0.9rem;
-  color: var(--gl-accent);
-}
-
-.chat__empty-head {
-  display: flex;
   align-items: flex-start;
-  gap: 0.7rem;
+  gap: var(--gl-space-3);
 }
 
-.chat__empty-head h2 {
-  font-size: 1.05rem;
+.chat__empty-mark {
+  display: flex;
+  width: 52px;
+  height: 52px;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--gl-radius);
+  background: var(--gl-accent-soft);
+  color: var(--gl-accent-ink);
 }
 
-.chat__empty-head p {
-  font-size: 0.92rem;
-  margin-top: 0.15rem;
+.chat__empty-title {
+  font-size: var(--gl-text-xl);
+  font-weight: 650;
+  letter-spacing: -0.02em;
 }
 
-.chat__empty h2,
-.chat__empty p {
-  color: var(--gl-ink);
+.chat__empty-text {
+  font-size: var(--gl-text-base);
+  color: var(--gl-ink-soft);
+  line-height: var(--gl-leading-normal);
 }
 
 .chat__empty-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
-  padding-top: 0.15rem;
-  border-top: 1px solid var(--gl-surface-line);
-  margin-top: -0.15rem;
-  padding-inline: 0.1rem;
+  gap: var(--gl-space-2);
+  padding-top: var(--gl-space-2);
 }
 
+/* --- agent notice ---------------------------------------------------- */
+
 .chat__notice {
-  margin: 0 0 0.2rem;
-  padding: 0.45rem 0.7rem;
+  margin: 0 0 var(--gl-space-2);
+  padding: var(--gl-space-2) var(--gl-space-3);
   border-radius: var(--gl-radius-sm);
   background: var(--gl-surface-soft);
   border: 1px solid var(--gl-surface-line);
-  font-size: 0.82rem;
+  font-size: var(--gl-text-sm);
   color: var(--gl-ink-soft);
 }
 
-/* Same surface language as .chat__notice: a header for the mode, not a new
-   visual system. */
 .chat__agenthead {
   display: flex;
   align-items: flex-start;
-  gap: 0.55rem;
-  padding: 0.55rem 0.7rem;
-  border-radius: var(--gl-radius-sm);
+  gap: var(--gl-space-2);
+  padding: var(--gl-space-3);
+  border-radius: var(--gl-radius);
   background: var(--gl-surface);
   border: 1px solid var(--gl-surface-line);
 }
@@ -371,7 +407,7 @@ function select(id) {
   flex: none;
   align-items: center;
   justify-content: center;
-  border-radius: 7px;
+  border-radius: var(--gl-radius-xs);
   background: var(--gl-accent-soft);
   color: var(--gl-accent-ink);
 }
@@ -381,29 +417,34 @@ function select(id) {
 }
 
 .chat__agenthead-title {
-  font-size: 0.88rem;
-  font-weight: 700;
-  color: var(--gl-ink);
+  font-size: var(--gl-text-sm);
+  font-weight: 600;
 }
 
 .chat__agenthead-desc {
-  margin-top: 0.1rem;
-  font-size: 0.8rem;
+  margin-top: 2px;
+  font-size: var(--gl-text-sm);
   color: var(--gl-ink-faint);
+  line-height: var(--gl-leading-normal);
 }
 
 .chat__send-error {
   margin: 0;
-  padding: 0.4rem 1rem;
+  padding: var(--gl-space-2) var(--gl-space-6);
   background: var(--gl-danger-soft);
   color: var(--gl-danger);
-  font-size: 0.88rem;
+  font-size: var(--gl-text-sm);
   font-weight: 600;
 }
 
 @media (max-width: 1020px) {
   .chat {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .chat__head,
+  .chat__scroll {
+    padding-inline: var(--gl-space-4);
   }
 }
 
