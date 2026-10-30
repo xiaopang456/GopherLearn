@@ -183,6 +183,30 @@ func (s *RAGService) Retrieve(ctx context.Context, userID int64, query string, t
 	return s.retrieve(ctx, userID, query, RetrieveOptions{TopK: topK}, nil)
 }
 
+// RetrieveWithOptions is Retrieve with the knobs a measurement needs: which
+// channels run, whether the reranker runs, how deep each channel fetches, and
+// the fused candidate pool before any rerank. With only TopK set it returns the
+// same Results as Retrieve. It exists for the retrieval evaluation; production
+// callers keep using Retrieve (the interfaces they depend on do not expose it).
+func (s *RAGService) RetrieveWithOptions(ctx context.Context, userID int64, query string, opts RetrieveOptions) (RetrieveOutcome, error) {
+	diagnostics := retrievalDiagnostics{rerankStatus: RerankNotAttached}
+	if s != nil && s.reranker != nil {
+		diagnostics.rerankStatus = RerankBypassed
+	}
+	results, err := s.retrieve(ctx, userID, query, opts, &diagnostics)
+	if err != nil {
+		return RetrieveOutcome{}, err
+	}
+	outcome := RetrieveOutcome{
+		Results: results, Candidates: diagnostics.candidates,
+		RerankStatus: diagnostics.rerankStatus, EffectiveCandidateDepth: diagnostics.depth,
+	}
+	if opts.WantCandidates && outcome.Candidates == nil {
+		outcome.Candidates = []RetrievalResult{} // asked for, none to give (for example no active documents)
+	}
+	return outcome, nil
+}
+
 // retrieve is the one implementation behind Retrieve and RetrieveWithOptions.
 // Every option at its zero value reproduces the original Retrieve exactly.
 // diagnostics may be nil; the production path passes nil.
