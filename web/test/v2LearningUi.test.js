@@ -114,7 +114,7 @@ it('keeps uncertain Start after progress lookup and discards a retry from a diff
   page.dispose()
 })
 
-it('mounts protected standalone navigation while retaining the old learning route', async () => {
+it('mounts protected standalone navigation', async () => {
   const authStore = { isAuthenticated: () => false, signOut: () => {} }
   const router = createAppRouter({ history: createMemoryHistory(), authStore })
   await router.push('/learning/v2'); await router.isReady()
@@ -122,5 +122,4 @@ it('mounts protected standalone navigation while retaining the old learning rout
   expect(router.currentRoute.value.query.redirect).toBe('/learning/v2')
   authStore.isAuthenticated = () => true
   await router.push('/learning/v2'); expect(router.currentRoute.value.name).toBe('v2-learning')
-  await router.push('/learning'); expect(router.currentRoute.value.name).toBe('learning')
 })

@@ -27,6 +27,16 @@ it('uses original password rune/byte boundaries independently of the clean valid
   for (const value of ['12345678', 'a'.repeat(64), '中'.repeat(24)]) expect(validateV2Password(value)).toBe('')
   for (const value of ['1234567', 'a'.repeat(65), '中'.repeat(25), '😀'.repeat(19)]) expect(validateV2Password(value)).not.toBe('')
 })
+it('the register button submits the form, and the captcha button does not', async () => {
+  const { wrapper: w } = await page()
+  // The control layer renders a real <button>; its HTML type decides whether a
+  // click submits the form or merely fires a handler. The register action has
+  // to submit, and "send the captcha" must not.
+  const submit = w.get('form button[type="submit"]')
+  expect(submit.exists()).toBe(true)
+  expect(submit.text()).toContain('注册')
+  expect(w.get('[data-test=send]').element.type).toBe('button')
+})
 it('binds exact native fields, preserves leading zero captcha/username and confirms real /me without login', async () => {
   const { wrapper: w } = await page(); await fill(w)
   await w.get('[data-test=send]').trigger('click'); await flushPromises()

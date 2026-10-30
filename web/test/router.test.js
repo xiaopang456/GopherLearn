@@ -28,7 +28,7 @@ function makeRouter(signedIn = false) {
 }
 
 describe('application routes require a session', () => {
-  const protectedPaths = ['/chat', '/memory', '/knowledge', '/learning', '/chat/s-1']
+  const protectedPaths = ['/chat', '/memory/v2', '/knowledge/v2-documents', '/learning/v2', '/chat/s-1']
 
   it.each(protectedPaths)('%s redirects to the sign-in screen', async (path) => {
     const { router } = makeRouter(false)
@@ -50,13 +50,13 @@ describe('application routes require a session', () => {
 
   it('re-checks the guard on every navigation, not only at boot', async () => {
     const { router, store } = makeRouter(true)
-    await router.push('/memory')
-    expect(router.currentRoute.value.name).toBe('memory')
+    await router.push('/memory/v2')
+    expect(router.currentRoute.value.name).toBe('v2-memory')
 
     store.signOut()
-    await router.push('/learning')
+    await router.push('/learning/v2')
     expect(router.currentRoute.value.name).toBe('login')
-    expect(router.currentRoute.value.query.redirect).toBe('/learning')
+    expect(router.currentRoute.value.query.redirect).toBe('/learning/v2')
   })
 
   it('sends a signed-in visitor away from the guest screens', async () => {
@@ -64,7 +64,7 @@ describe('application routes require a session', () => {
     await router.push('/login')
     expect(router.currentRoute.value.name).toBe('chat')
 
-    await router.push('/register')
+    await router.push('/register/v2')
     expect(router.currentRoute.value.name).toBe('chat')
   })
 
