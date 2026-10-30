@@ -13,9 +13,11 @@ const HEADINGS = {
   session: '对话',
   knowledge: '知识库',
   memory: '记忆',
-  'v2-memory': 'V2 记忆治理',
+  'v2-documents': '文档',
+  'v2-source': '文档原文',
+  'v2-memory': '记忆治理',
   learning: '练习',
-  'v2-learning': 'V2 学习／测验',
+  'v2-learning': '学习／测验',
 }
 
 const heading = computed(() => HEADINGS[route.name] ?? 'GopherLearn')
