@@ -26,18 +26,16 @@ import (
 // this round implements as a seam only. External calls: none.
 //
 // These were written and run before the implementation, and the real failures
-// are recorded in exp033/stabilize065/phase2/repro/c1-t1t16-red-before.txt. The
-// expectations below are the ones preregistered in
-// projector-remediation-test-matrix.md; nothing here was relaxed to make the
-// fix look better.
+// were recorded at the time. The expectations below are the ones that were
+// fixed in advance; nothing here was relaxed to make the fix look better.
 
 // --- disposable store -------------------------------------------------------
 
 func c1DSN() string {
-	if dsn := os.Getenv("STABILIZE065_C1_TEST_DSN"); dsn != "" {
+	if dsn := os.Getenv("EPISODE_C1_TEST_DSN"); dsn != "" {
 		return dsn
 	}
-	return "root:s065local@tcp(127.0.0.1:33506)/stabilize065_c1?charset=utf8mb4&parseTime=True&loc=Local"
+	return "root:episodeclocal@tcp(127.0.0.1:33506)/episode_c1?charset=utf8mb4&parseTime=True&loc=Local"
 }
 
 // openC1DB connects to the disposable store, or skips honestly.

@@ -18,7 +18,7 @@ import (
 	"GopherAI/service/episoderelation"
 )
 
-// STABILIZE-065 Phase 1.1 integration: the relation write side against a real
+// Episode relation integration: the relation write side against a real
 // MySQL.
 //
 // It runs against a disposable container and its own schema. It never touches
@@ -29,13 +29,13 @@ import (
 // on error. That is a description of what a transaction does, written by the
 // same person who wrote the code being tested. These tests make MySQL do it.
 
-// s065DSN is the disposable container. Overridable so the suite can be pointed
+// relationDSN is the disposable container. Overridable so the suite can be pointed
 // at another throwaway instance, never at a real one.
-func s065DSN() string {
-	if dsn := os.Getenv("STABILIZE065_TEST_DSN"); dsn != "" {
+func relationDSN() string {
+	if dsn := os.Getenv("EPISODE_RELATION_TEST_DSN"); dsn != "" {
 		return dsn
 	}
-	return "root:s065local@tcp(127.0.0.1:33506)/stabilize065_relation?charset=utf8mb4&parseTime=True&loc=Local"
+	return "root:relationlocal@tcp(127.0.0.1:33506)/episode_relation?charset=utf8mb4&parseTime=True&loc=Local"
 }
 
 const (
@@ -51,7 +51,7 @@ var itBase = time.Date(2026, 2, 1, 9, 0, 0, 0, time.UTC)
 // it the real-storage claim is unproven, and the phase does not qualify.
 func openTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(mysqldriver.Open(s065DSN()), &gorm.Config{
+	db, err := gorm.Open(mysqldriver.Open(relationDSN()), &gorm.Config{
 		Logger: gormlogger.Default.LogMode(gormlogger.Silent)})
 	if err != nil {
 		t.Skipf("the disposable MySQL is unavailable, real storage is UNPROVEN: %v", err)
@@ -170,7 +170,7 @@ type itClassifier struct {
 	calls  int
 }
 
-func (c *itClassifier) Identity() string { return "stabilize065_integration_v1" }
+func (c *itClassifier) Identity() string { return "episode_relation_integration_v1" }
 
 func (c *itClassifier) Classify(_ context.Context,
 	request episoderelation.ClassifyRequest) (episoderelation.ClassifyResponse, error) {
@@ -684,7 +684,7 @@ func TestIntegrationRelationsForAssertionsIsScopedAndBatched(t *testing.T) {
 			TargetEpisodeID:   "ep-other-b",
 			SourceKind:        model.AssertionDecision, TargetKind: model.AssertionDecision,
 			SourceOccurredAt: itBase, TargetOccurredAt: itBase.AddDate(0, 0, 1),
-			DecidedBy: "stabilize065_integration_v1"},
+			DecidedBy: "episode_relation_integration_v1"},
 		{UserID: itOwner, Kind: model.RelationEquivalent,
 			SourceAssertionID: model.DeterministicAssertionID("own|x"),
 			SourceEpisodeID:   "ep-own-x",
@@ -692,7 +692,7 @@ func TestIntegrationRelationsForAssertionsIsScopedAndBatched(t *testing.T) {
 			TargetEpisodeID:   "ep-own-y",
 			SourceKind:        model.AssertionDecision, TargetKind: model.AssertionDecision,
 			SourceOccurredAt: itBase, TargetOccurredAt: itBase.AddDate(0, 0, 1),
-			DecidedBy: "stabilize065_integration_v1"},
+			DecidedBy: "episode_relation_integration_v1"},
 	} {
 		if err := fixture.relation.SaveRelation(itCtx(), row); err != nil {
 			t.Fatalf("seed an unrelated edge: %v", err)

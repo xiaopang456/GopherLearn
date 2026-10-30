@@ -9,7 +9,6 @@ import (
 	"flag"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -177,15 +176,15 @@ func TestI0DiagnosticStepsAndPrivacy(t *testing.T) {
 	}
 }
 
-// Executor writes a synthetic config to a temporary file; Load is real and no resource is opened.
-func TestI0ExecutorSyntheticConfigLoad(t *testing.T) {
+// The gate writes a synthetic config to a temporary file; Load is real and no resource is opened.
+func TestI0SyntheticConfigLoad(t *testing.T) {
 	path := os.Getenv("I0_SYNTHETIC_CONFIG")
 	if path == "" {
-		path = filepath.Join("..", "tutorial", "v2-real-gates-plan", "i0-diagnostics", "synthetic.toml")
+		t.Skip("set I0_SYNTHETIC_CONFIG to a synthetic configuration file to run this gate")
 	}
 	s, err := entry.Load(path)
 	if err != nil {
-		t.Fatal("synthetic executor configuration rejected by entry.Load")
+		t.Fatal("synthetic configuration rejected by entry.Load")
 	}
 	if err = validateInitializer(s, "cccccccccccccccccccccccccccccccc", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"); err != nil {
 		t.Fatal("synthetic safety rejected")

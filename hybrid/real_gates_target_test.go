@@ -5,13 +5,16 @@ package hybrid
 import (
 	"GopherAI/entry"
 	"encoding/json"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func TestI0TargetEvidenceClosedMatches(t *testing.T) {
-	s, err := entry.Load(filepath.Join("..", "tutorial", "v2-real-gates-plan", "i0-diagnostics", "synthetic.toml"))
+	path := os.Getenv("I0_SYNTHETIC_CONFIG")
+	if path == "" {
+		t.Skip("set I0_SYNTHETIC_CONFIG to a synthetic configuration file to run this gate")
+	}
+	s, err := entry.Load(path)
 	if err != nil {
 		t.Fatal("synthetic Load failed")
 	}

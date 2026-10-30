@@ -1,4 +1,4 @@
-# Minimal MySQL for GopherLearn-clean's runtime verification.
+# Minimal MySQL for this repository's local runs.
 #
 # This file brings up a database and nothing else. The Go backend and the Vite
 # dev server keep running on the host (`go run ./cmd/gopherlearn`,

@@ -5,9 +5,9 @@ module or package, the version actually selected by `go list -m all` / `npm ls`,
 license found in that package's own source. Licenses are reported as the packages
 themselves declare them; this is an inventory, not a legal review.
 
-The remote-executor (RPC) framework that earlier development builds vendored under
-`third_party/` is **not** part of this release: it contributes no dependency and no
-license here, and the build does not reference it.
+No additional third-party code is vendored in this repository: the build
+carries no vendored dependency of its own, so it contributes no dependency
+and no license here.
 
 Four entries report "no LICENSE file at module root" because the license lives in the
 parent module directory rather than beside the package: the three `cloudwego/eino-ext`

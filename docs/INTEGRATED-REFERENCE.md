@@ -1,6 +1,6 @@
 # 正式入口技术参考（INTEGRATED REFERENCE）
 
-本文件是**公开版正式应用**（`hybrid/cmd/gopherlearn-integrated`）的技术参考：
+本文件是**本项目正式应用**（`hybrid/cmd/gopherlearn-integrated`）的技术参考：
 学习／测验（quiz）接口合同、以及三个 Go 模块与前端包的验证命令。
 
 面向新用户的安装、配置与启动步骤在仓库根目录的 [README.md](../README.md)；

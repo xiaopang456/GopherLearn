@@ -1,7 +1,7 @@
 {
   "image": "redis/redis-stack-server:7.4.0-v8@sha256:39adcbb083b240642cd5738a75c4959c0393ef2a40fa545f2e1c7b55798eeda4",
   "verified_at": "2026-10-10T09:26:03Z",
-  "extracted_by": "image_entry_probe.py",
+  "extracted_by": "extracted from the image archive",
   "archive": {
     "local_id": "sha256:39adcbb083b240642cd5738a75c4959c0393ef2a40fa545f2e1c7b55798eeda4",
     "id_semantics": "platform-manifest-addressed",

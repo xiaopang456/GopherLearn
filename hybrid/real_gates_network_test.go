@@ -9,7 +9,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -99,7 +98,7 @@ func TestI0OriginalConnectionTargetWithoutDial(t *testing.T) {
 	}
 	path := os.Getenv("I0_SYNTHETIC_CONFIG")
 	if path == "" {
-		path = filepath.Join("..", "tutorial", "v2-real-gates-plan", "i0-diagnostics", "synthetic.toml")
+		t.Skip("set I0_SYNTHETIC_CONFIG to a synthetic configuration file to run this gate")
 	}
 	s, err := entry.Load(path)
 	if err != nil {

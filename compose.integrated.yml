@@ -20,7 +20,7 @@
 # 2. It does not create the business schema. The application entry refuses a configuration with
 #    isolatedEntry.migrate = true (hybrid/entry.go:27-29), so `up` starts against an existing
 #    schema and fails loudly when it is absent. Creating tables is a separate, explicitly
-#    authorised act - see tutorial/v2-production-entry/README.md - and never a startup side
+#    authorised act - see docs/INTEGRATED-DEPLOYMENT.md - and never a startup side
 #    effect here.
 #
 # Credentials: no value is interpolated and none is committed. `docker compose config` prints

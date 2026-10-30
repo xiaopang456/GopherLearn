@@ -36,8 +36,9 @@ func opsRequest(t *testing.T, engine http.Handler, path string, user string) int
 	return rec.Code
 }
 
-// This build has no document-processing operations surface: it processed documents in-process
-// from the start, so those routes were never routed and every request to them is a 404.
+// This build has no cross-user document-processing routes: it processes documents
+// in-process from the start, so those paths were never routed and every request
+// to them is a 404.
 func TestO3OpsAccessControl(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	valid := jwt.AuthWithUserValidator(func(_ context.Context, id int64, username string) (bool, error) {

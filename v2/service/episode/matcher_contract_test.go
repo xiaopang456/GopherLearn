@@ -1,13 +1,13 @@
 package episode
 
-// STABILIZE-065 F4: candidate edge generator contract.
+// Candidate edge generator contract.
 //
 // This is NOT a matcher. It generates candidate edges between Gold units and
 // generated assertions; it does not decide semantic equivalence. Until the
 // semantic adjudication stage runs, durable recall, per-kind recall and slot
 // accuracy are null (terminal=awaiting_semantic_match_adjudication).
 //
-// Contract (tutorial/stabilize065-f4-candidate-edge-contract.md):
+// Contract:
 //   1. edges are generated only within the same session;
 //   2. only user citations generate edges; assistant citations are refused;
 //   3. evidence overlap must be non-empty;

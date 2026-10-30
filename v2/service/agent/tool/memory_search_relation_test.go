@@ -409,16 +409,19 @@ func TestRelationPayloadCarriesNoInternalIdentity(t *testing.T) {
 }
 
 // writeRelationSample records the model-visible observation as evidence.
+// It lands in the system temporary directory: the repository carries no
+// artefacts of a test run.
 func writeRelationSample(t *testing.T, raw string) {
 	t.Helper()
 	var pretty bytes.Buffer
 	if err := json.Indent(&pretty, []byte(raw), "", "  "); err != nil {
 		t.Fatalf("the observation is not valid JSON: %v", err)
 	}
-	path := filepath.Join("..", "..", "..", "exp033", "stabilize065", "repro",
-		"phase1-1-1-model-visible-relations.json")
+	path := filepath.Join(os.TempDir(), "gopherlearn-model-visible-relations.json")
 	if err := os.WriteFile(path, pretty.Bytes(), 0o644); err != nil {
 		t.Logf("could not record the sample observation: %v", err)
+	} else {
+		t.Logf("sample observation recorded at %s", path)
 	}
 }
 

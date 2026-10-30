@@ -10,7 +10,7 @@
 #   其余 V2 段        v2/config/config.go:217-226 的段名与 toml 键名，未重命名、未合并
 #   [ordinaryChat]   conversation/client.go:13-19 的保留键白名单；白名单外的键在装载期被拒
 #
-# 三类约束要分清（详见 tutorial/v2-production-entry/README.md 的措辞表）：
+# 三类约束要分清（详见 docs/INTEGRATED-DEPLOYMENT.md 的措辞表）：
 #   入口会**拒绝**的：缺 -config、非法 TOML、缺强制字段、isolated=false、migrate=true、
 #                     ordinaryChat 未知键、普通客户端不是 openai_compatible、密钥短于 32 字节。
 #   模板给的**默认值**：下面的库名/库号/目录/端口都是本整合栈的取值，不是入口的强制检查。
@@ -66,16 +66,16 @@ subject = "gopherlearn-integrated-user"
 # 而这一点无法由配置装载发现。容器部署时该路径挂在可写卷上。
 storageDir = "data/gopherlearn-integrated/knowledge"
 
-# 文档处理方式。公开版只提供进程内处理：后端自己的 IndexWorkerPool 解析、切片、
+# 文档处理方式。只提供进程内处理：后端自己的 IndexWorkerPool 解析、切片、
 # embedding 并把向量写入 Redis，文档的问答直接检索这些向量。
 #
 # executionMode 因此没有可选项：省略或 "legacy" 都是同一个进程内处理；写出别的值
-# （例如旧版本遗留的 "candidate"）会在启动时被拒绝，而不是悄悄降级成本地处理。
+# （例如从旧配置继承下来的其它取值）会在启动时被拒绝，而不是悄悄降级成本地处理。
 # executionMode = "legacy"
 
 # 文档处理状态由文档所有者自己的接口查看：
 # GET /api/v1/knowledge/documents/:id/processing —— 回答 {"mode":"legacy","status":<index_status>}。
-# 没有跨用户的运维接口：/api/v1/ops/document-processing/... 一律 404。
+# 这个接口只回答文档所有者自己的文档状态。
 
 [ragModelConfig]
 embeddingModel = "REPLACE_WITH_EMBEDDING_MODEL_NAME"

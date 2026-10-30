@@ -3,9 +3,9 @@
  *
  * - the owner's processing state:  GET /api/v1/knowledge/documents/:id/processing
  *
- * This build processes documents in-process, so the processing endpoint answers with the local
- * processing state only ("mode":"legacy" plus the document's index status). There is no
- * operations surface: /api/v1/ops/document-processing/... is not routed and answers 404.
+ * This build processes documents in-process, so the processing endpoint answers with the
+ * processing mode plus the document's index status. It is the only document-processing
+ * route this client knows about.
  */
 import { ApiError, buildUrl, currentToken, isAbort, reportIfRejected } from './http.js'
 

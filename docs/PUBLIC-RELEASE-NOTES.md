@@ -1,6 +1,6 @@
-# GopherLearn 首版发布说明（开发预览版）
+# GopherLearn 发布说明（开发预览版）
 
-> 版本建议：**v0.1.0-preview.1**（仅为建议；本仓库尚未创建标签或 Release）。
+> 当前版本：**v0.1.1**。v0.1.1 起可以开启检索重排序，见 [README §5.5](../README.md#55-开启重排可选)。
 
 ## 这是什么
 
@@ -12,8 +12,7 @@ GopherLearn 是一个个人 AI 学习助手，参考并基于 [GopherAI](https:/
 
 - **开发预览版**：核心链路已跑通，前端样式与交互会继续迭代。
 - **正式入口**：`hybrid/cmd/gopherlearn-integrated`（Go 后端 + Vue 3 前端 + MySQL + Redis Stack）。
-- **文档处理在进程内完成**：解析、切片、嵌入、索引都在后端进程里，没有独立的执行节点、
-  协调器或跨服务协议。
+- **文档处理在进程内完成**：解析、切片、嵌入、索引都在后端进程里。
 
 ## 已经验证过的能力
 
@@ -44,9 +43,22 @@ npm --prefix web ci
 VITE_DEV_API_ORIGIN=http://127.0.0.1:18082 npm --prefix web run dev
 ```
 
+## 行为变化与错误码
+
+这一版修掉了几处对外可见的行为差异。表里写的是**修完之后**的契约：
+
+| 场景 | 修之前 | 现在 |
+|---|---|---|
+| 新用户注册，验证码请求 | `4001 服务繁忙`（笼统） | 邮件未配置：`2012 邮件服务未配置，无法发送验证码：请在配置文件的 [emailConfig] 段填写发件地址与授权码`；已配置但投递失败：`2013 验证码邮件发送失败，请稍后重试或检查邮件服务配置` |
+| 请求体绑定失败（记忆创建/纠正/归档/删除/草稿决议等） | `500` + `4001 服务繁忙` | `400` + `2001 请求参数错误`；真正的服务端错误仍然是 `500` |
+| 上传的不是 multipart 请求 | `500` + `4001` | `400` + `2001`；超出大小限制仍然是 `413` + `7002` |
+| 兼容接口未认证时响应体 | `401`，**空 body** | `401` + `{"data":null,"error":{"code":"unauthorized","message":"authentication is required"}}` |
+| 上传缺少 `file` 字段 | `400` + `7001 仅支持有效的 .md 或 .txt 文件` | `400` + `7011 缺少文件字段 file`；真正的 `.pdf` 仍然报 `7001` |
+
+所有权核验、跨用户隔离、JWT 校验与来源权限边界**没有被改动**，相关测试保持通过。
+
 ## 已知限制
 
-- **不含 RPC 文件处理**，也没有多节点分布式执行。
 - **只支持 `.md` 与 `.txt`**（单文件上限 5 MiB）。**不支持 PDF**。
 - **指代文档请用精确文件名**（例如 `notes.md`）。检索工具只认文档 id 或精确文件名；
   用标题指代会把切片全部过滤掉，回答会退化成模型的通用知识。
@@ -74,8 +86,9 @@ VITE_DEV_API_ORIGIN=http://127.0.0.1:18082 npm --prefix web run dev
 
 | 文件 | 内容 |
 |---|---|
-| [RELEASE-READINESS.md](RELEASE-READINESS.md) | 发布就绪报告：改了什么、哪些修好了、验证怎么复现、哪些还没验证 |
 | [INTEGRATED-REFERENCE.md](INTEGRATED-REFERENCE.md) | 正式入口技术参考：学习测验接口合同、三个模块的验证命令 |
+| [INTEGRATED-DEPLOYMENT.md](INTEGRATED-DEPLOYMENT.md) | 整合栈部署参考：启动命令、配置模板与忽略规则、每一类主张由谁保证、搜索索引接缝 |
+| [CREDENTIAL-HANDLING.md](CREDENTIAL-HANDLING.md) | 凭据处理：口令放在哪、不放在哪、哪些做法不要用 |
 | [LEGACY-DEVELOPMENT-REFERENCE.md](LEGACY-DEVELOPMENT-REFERENCE.md) | 历史基线入口的开发说明（**仅供查阅历史实现**，不是快速开始） |
 | [REAL-MODEL-VALIDATION-PLAN.md](REAL-MODEL-VALIDATION-PLAN.md) | 真实模型验证的额度口径与执行方案 |
 | `spec/API.md`、`spec/ARCHITECTURE.md` | 接口合同与架构说明 |

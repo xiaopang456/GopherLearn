@@ -271,8 +271,9 @@ func TestDockerignoreAndGitignoreCoverTheOperatorFiles(t *testing.T) {
 		}
 	}
 	for _, path := range []string{
-		"tutorial/v2-production-entry/README.md", "tutorial/v2-production-entry/verification.md",
-		"tutorial/v2-production-entry/learning.md", "hybrid/integrated_ignore_matching_test.go",
+		"tutorial/README.md", "tutorial/v2-entry/isolated.example.toml",
+		"docs/INTEGRATED-DEPLOYMENT.md", "docs/CREDENTIAL-HANDLING.md",
+		"hybrid/integrated_ignore_matching_test.go",
 	} {
 		if ignoredBy(compileIgnoreRules(gitIgnore, anyLevelUnanchored), path) {
 			t.Errorf("%s is ignored by Git, so the delivery could never commit it", path)

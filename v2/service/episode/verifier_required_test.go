@@ -28,8 +28,8 @@ import (
 //	   experiment runs under. A boundary that is off by default is not a
 //	   boundary; it is an option nobody took.
 //
-// The probe that recorded (3) and (4) as real behaviour is sealed in
-// exp033/stabilize065/phase2/repro/c11-verifier-red-before.txt.
+// The probe that recorded (3) and (4) as real behaviour was run against the
+// pre-fix build; its transcript is not part of this repository.
 //
 // The fix is structural rather than procedural: the verifier becomes a
 // constructor argument, so a Projector without one cannot be built, and

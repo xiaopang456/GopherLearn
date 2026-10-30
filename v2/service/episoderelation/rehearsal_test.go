@@ -139,7 +139,7 @@ type rehearsalClassifier struct {
 	seen    []ClassifyRequest
 }
 
-func (c *rehearsalClassifier) Identity() string { return "stabilize065_scripted_v1" }
+func (c *rehearsalClassifier) Identity() string { return "episode_relation_scripted_v1" }
 
 func (c *rehearsalClassifier) Classify(_ context.Context,
 	request ClassifyRequest) (ClassifyResponse, error) {
@@ -180,7 +180,7 @@ type RehearsalReport struct {
 }
 
 // The drill.
-func TestStabilize065Rehearsal(t *testing.T) {
+func TestEpisodeRelationRehearsal(t *testing.T) {
 	ctx := context.Background()
 	corpus := rehearsalCorpus()
 	store := newMemoryStore()
@@ -523,24 +523,23 @@ func containsString(haystack, needle string) bool {
 
 // RehearsalMarker must appear on every artefact this drill produces. Local
 // deterministic scripts produced every number in it.
-const RehearsalMarker = "stabilize065 rehearsal only: scripted episode generator " +
+const RehearsalMarker = "episode relation rehearsal only: scripted episode generator " +
 	"and scripted relation classifier, in-process stores; no provider call, and " +
 	"no number here describes a real model's relation accuracy"
 
-// writeRehearsalReport leaves the drill's numbers where the local-rehearsal
-// document can quote them without being retyped.
+// writeRehearsalReport leaves the drill's numbers where they can be read back
+// without being retyped. The file lands in the system temporary directory: the
+// repository carries no artefacts of a test run.
 func writeRehearsalReport(t *testing.T, report RehearsalReport) {
 	t.Helper()
-	dir := filepath.Join("..", "..", "exp033", "stabilize065", "repro")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	dir := os.TempDir()
 	blob, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "rehearsal-report.json"),
+	if err := os.WriteFile(filepath.Join(dir, "gopherlearn-episode-relation-rehearsal.json"),
 		append(blob, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	t.Logf("rehearsal report written to %s", filepath.Join(dir, "gopherlearn-episode-relation-rehearsal.json"))
 }

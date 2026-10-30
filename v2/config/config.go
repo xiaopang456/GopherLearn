@@ -150,9 +150,9 @@ type KnowledgeConfig struct {
 	// mode: "" or "legacy", the in-process worker pool that parses, chunks,
 	// embeds and stores a document inside the backend process.
 	//
-	// The key is still read so that a configuration carried over from a build
-	// that offered a remote executor fails loudly instead of being silently
-	// downgraded to local processing.
+	// The key is still read so that a configuration carried over from an
+	// earlier build fails loudly instead of being silently downgraded to
+	// local processing.
 	ExecutionMode string `toml:"executionMode"`
 }
 
@@ -995,7 +995,7 @@ func (c KnowledgeConfig) Validate() error {
 // misconfigured mode before it opens any connection.
 //
 // This build processes documents in-process. A configuration that still names a
-// remote executor is refused on purpose: silently running it locally would
+// an unknown mode is refused on purpose: silently running it locally would
 // answer with a different pipeline than the operator asked for.
 func (c KnowledgeConfig) ValidateExecutionMode() error {
 	switch c.ExecutionMode {

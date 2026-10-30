@@ -23,19 +23,17 @@ features remain the focus of the README.
 This public packaging and the GopherLearn-specific changes are marked as
 modified in 2026.
 
-## Scope of this public release
+## Scope of this release
 
-This release ships the **local (in-process) document-processing path only**.
-The remote-executor path and its RPC framework dependency are not part of this
-release, so no additional third-party license is carried by it:
+This release ships the **in-process document-processing path only**:
 
 - documents are parsed, chunked, embedded and indexed by the backend's own
   worker pool, and answers retrieve from the resulting vector index;
-- there is no document-executor node, no coordinator and no cross-service
-  document protocol;
-- the `knowledgeConfig.executionMode` setting accepts only the local mode; a
-  configuration that still names a remote executor is refused at startup
-  rather than silently downgraded.
+- no additional third-party code is vendored in this repository, so it carries
+  no dependency and no license beyond the ones listed in
+  `docs/THIRD-PARTY.md`;
+- the `knowledgeConfig.executionMode` setting accepts only the in-process mode;
+  any other value is refused at startup rather than silently downgraded.
 
 ## Third-party dependencies
 

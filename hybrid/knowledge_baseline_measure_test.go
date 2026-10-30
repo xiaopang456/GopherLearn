@@ -149,14 +149,12 @@ func TestKnowledgeBaselineMeasurementSmoke(t *testing.T) {
 	recorder.event("unmeasured-signals", map[string]any{
 		"goroutines":  nil,
 		"connections": nil,
-		"rpc_pending": nil,
 		"queue_depth": nil,
 		"peak_memory": nil,
 		"cpu_time":    nil,
-		"reason": "these are not observable from inside the test process. Resource sampling is done once, " +
-			"by measure-baseline.ps1, over the whole go test process tree; the values it cannot read are " +
+		"reason": "these are not observable from inside the test process. Resource sampling is done " +
+			"from outside, over the whole go test process tree; the values it cannot read are " +
 			"recorded there as null with the platform reason, and a sampled peak is not an absolute peak.",
-		"sampling_owner": "measure-baseline.ps1 (script level only; the in-process sampler was removed)",
 	})
 	recorder.event("fake-store-counters", map[string]any{
 		"store_calls": storeCalls, "vector_search_calls": vectorCalls, "text_search_calls": textCalls,

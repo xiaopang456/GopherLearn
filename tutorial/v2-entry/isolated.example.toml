@@ -36,5 +36,5 @@ chatModelName = "explicit-model-name"
 baseUrl = "https://provider.invalid/v1"
 dimension = 1024
 rerankEnabled = false
-# Omitted agent fields retain original source defaults: legacy_v2/shadow_only.
-# Deployment may explicitly choose legacy_v2/inject_enabled.
+# Omitted agent fields retain the build's defaults: legacy_v2/shadow_only.
+# A deployment may explicitly choose legacy_v2/inject_enabled.

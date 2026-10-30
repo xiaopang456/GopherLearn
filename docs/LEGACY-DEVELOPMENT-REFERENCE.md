@@ -1,7 +1,7 @@
 # 历史基线开发参考（LEGACY DEVELOPMENT REFERENCE）
 
-> **仅适用于历史基线入口，不是公开版正式应用的快速开始。**
-> 公开版的正式入口是 `hybrid/cmd/gopherlearn-integrated`；它的安装、配置与启动步骤全部在
+> **仅适用于历史基线入口，不是本项目正式应用的快速开始。**
+> 本项目的正式入口是 `hybrid/cmd/gopherlearn-integrated`；它的安装、配置与启动步骤全部在
 > 仓库根目录的 [README.md](../README.md) 里。本文件只是把仓库里**历史基线入口**
 > （根模块 `cmd/gopherlearn`）的开发说明、环境变量表与冒烟检查集中存放，供查阅历史实现时使用。
 > 这里的 `GOPHERLEARN_*` 环境变量属于基线入口的配置面；正式入口读的是
@@ -98,7 +98,7 @@ on in `npm run dev` labels its own rows as demo data, while a production build a
 to the server.
 
 Phase 5B.4 gives the learning agent one write of its own - `propose_memory` - and it is
-the same capability the original GopherAI design had, re-derived for this architecture rather
+the same capability the upstream project had, re-derived for this architecture rather
 than copied. The model may say `scope`, `topic_key` and `content`; everything that decides
 whose memory it is and what it rests on is filled in from the turn, and the only stored
 message it may cite is this turn's own question, which is already in the database (the answer
@@ -108,9 +108,9 @@ Memory page. No memory id, message id or store error ever reaches it, the result
 citation, and a pending draft is invisible to recall, so a proposal cannot become the agent's
 own evidence. Confidence is fixed by the service at "certain", the capability may run once per
 turn, and a repeat of the same claim returns the row already waiting instead of a second copy.
-Tightened relative to the original: strict argument parsing (a payload carrying `user_id` or
+Tightened relative to the upstream design: strict argument parsing (a payload carrying `user_id` or
 `status` is refused whole, not ignored downstream), no identifiers in the result, and
-message-level provenance. Not migrated on purpose: `subject`, `tags`, `durability`,
+message-level provenance. Deliberately not carried over: `subject`, `tags`, `durability`,
 `valid_until`, conflict enumeration with `replace`, a global-memory quota, and `RunID`-keyed
 run-level idempotency. There is no provider smoke for `propose_memory` at all - its only
 evidence so far is offline.
@@ -411,7 +411,7 @@ narrows the window and does not close it: a connection torn while a request is a
 flight, or one drawn inside those 90 seconds, still answers with an error, and an unreachable
 database always does. **None of this is high availability or a lossless rolling restart** - a
 database restart costs this process a handful of failed requests, which is the honest
-expectation for a single-node deployment.
+expectation for a single-instance deployment.
 
 Finally, there is no half-started mode: with `storage=mysql` and no reachable database the
 process exits during startup with a scrubbed message rather than serving traffic.
@@ -601,7 +601,7 @@ placeholder**: an embedding client that calls an OpenAI-compatible
 `POST {base}/embeddings` endpoint, a Redis/RediSearch vector index that answers cosine KNN
 inside the caller's authorized collections, and a **BGE cross-encoder reranker** that
 re-scores the fused head. Two names worth keeping straight, because they answer different
-questions in an interview: the embedding model is the original project's
+questions in an interview: the embedding model is this deployment's
 **Qwen/DashScope-compatible endpoint at 1024 dimensions**, and **`BAAI/bge-reranker-v2-m3` is
 the reranker** - a cross-encoder that scores a question-and-passage pair, so it cannot produce
 a stored vector and nothing in this build should be described as a "BGE embedding". What the
@@ -686,7 +686,7 @@ claims and this file should not let them blur:
 | Piece | Level reached |
 |---|---|
 | RediSearch index adapter | executed against a **real Redis Stack container** in a throwaway volume: index creation, KNN ordering with exact 1.0/0.0 similarities, owner isolation, vector-identity isolation, version sweep, document delete, end-to-end store decorator and re-index. Its own gated suite, which an ordinary `go test ./...` skips. |
-| Embedding client | executed against the **real embedding endpoint** (the original project's Qwen/DashScope-compatible service, 1024 dimensions) through the production client: vector count per batch, width, order, error shapes, batch splitting. |
+| Embedding client | executed against the **real embedding endpoint** (a Qwen/DashScope-compatible service, 1024 dimensions) through the production client: vector count per batch, width, order, error shapes, batch splitting. |
 | BGE reranker client | executed against a **locally served `BAAI/bge-reranker-v2-m3`**, through the production client: the relevant passage ranked first, score ordering, `/health`, refusal of malformed shapes, graceful degradation when the service is unreachable. |
 | `semantic_redis` assembly | reachable **from `cmd/gopherlearn`** and driven end to end over HTTP: upload → chunks in MySQL → chunk vectors embedded and indexed → query embedded → KNN recall → BGE re-rank → server-built citation; then delete-then-unrecallable, and cross-user refusal. |
 | Assistant chat provider | **not part of this verification.** The chain above was run with `GOPHERLEARN_AI_PROVIDER=echo`, so no chat completion was requested and the answers were extractive. A semantic-mode turn answered by a real provider, and retrieval *quality* against a judged corpus, remain open. |
@@ -819,7 +819,7 @@ as an `abstained` row rather than an absence. The saved card is embedded into a 
 view that is separate from the knowledge index (`gopherlearn_memory_episodes_v1_idx` /
 `gopherlearn:memory:episode:` in `semantic_redis` mode, a process-local view rebuilt from the
 store at startup in `deterministic` mode). Recall runs the same fusion discipline as the
-original system: exact-topic, identifier, lexical and vector channels fused with reciprocal
+rest of the pipeline: exact-topic, identifier, lexical and vector channels fused with reciprocal
 rank, where a vector-only candidate is never admitted and every candidate is re-read through
 the store - owner, live session, active status, indexed view, and a per-version provenance
 closure - before it can become evidence. Deleting a session removes its Episode rows and
@@ -863,30 +863,6 @@ and boundaries - authorization, versioning, leases, deletion, engine behavior. N
 evidence about projection quality with a real language model: no real-provider episode
 projection or verification run has been executed, and no offline test should be read as
 proving how well a real model summarizes or verifies conversations.
-
-### Migration differences and not-yet-migrated Episode paths
-
-This is a behavioral migration, not byte-for-byte equivalence. The old production Agent
-built Episode recall into its server-side context builder; clean keeps ordinary Chat and
-Knowledge context unchanged and exposes cross-session Episodes only through the model-driven
-`episode_search` tool. The model must choose to search, and the bounded observation is not
-injected into every turn. The old trigger was limited to completed Agent runs; clean triggers
-from every successfully stored conversation turn, including Chat, because the clean message
-service is the shared persistence boundary. This can create more background projection work;
-`GOPHERLEARN_EPISODES` is off by default and the 10-minute quiet window limits churn.
-
-The following old production paths are intentionally not in this migration:
-
-- **shadow recall mode:** old v2 ran a recall-only observer that discarded Episode text for
-  measurement. Clean has no shadow observer; offline tests cover the real enabled path.
-- **assertion governance / relations:** old v2 had mode-gated assertion-time governance and
-  an optional relation pass for replacement decisions. Clean stores stable assertion ids and
-  versioned cards, but does not migrate the governance tables, relation classifier or
-  replacement semantics. The missing relation history is an explicit limitation.
-- **message-level Episode provenance:** old v2 carried Episode source closures through
-  assistant-message provenance. Clean messages retain their existing knowledge citations;
-  Episode source/version closure lives on `episode_memories` and is checked during reload.
-  Message-level derived Episode provenance is not migrated.
 
 No RabbitMQ, TTL memory extraction, image recognition, TTS, retired semantic-memory
 extraction path, or ordinary-Chat automatic long-term-memory injection was added.

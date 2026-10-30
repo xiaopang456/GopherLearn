@@ -14,9 +14,10 @@ GopherLearn 是一个个人 AI 学习助手，参考并基于 [GopherAI](https:/
 > 本文面向第一次接触这个项目的人：怎么配置、怎么跑起来、怎么用。
 > 更细的技术合同与历史说明在 [`docs/`](docs/) 下：
 > [正式入口技术参考](docs/INTEGRATED-REFERENCE.md)、
+> [整合栈部署参考](docs/INTEGRATED-DEPLOYMENT.md)、
+> [凭据处理](docs/CREDENTIAL-HANDLING.md)、
 > [历史基线开发参考](docs/LEGACY-DEVELOPMENT-REFERENCE.md)、
-> [发布就绪报告](docs/RELEASE-READINESS.md)、
-> [公开版说明](docs/PUBLIC-RELEASE-NOTES.md)、
+> [发布说明](docs/PUBLIC-RELEASE-NOTES.md)、
 > [真实模型验证计划](docs/REAL-MODEL-VALIDATION-PLAN.md)。
 
 ---
@@ -34,7 +35,7 @@ GopherLearn 面向"用自己的资料学习"这件事，提供两种会话形态
 - **记忆**：需要确认才入库的长期记忆、主题记忆、情景记忆；记忆只属于它的主人。
 - **学习／测验（quiz）**：按主题出题、作答判分，并把结果累计到主题掌握度上。
 
-公开版**只包含进程内（in-process）的文档处理**：解析、切片、嵌入、索引全部发生在后端进程里。没有独立执行节点、没有协调器、构建里不含任何 RPC 框架。
+文档处理**全部在进程内（in-process）完成**：解析、切片、嵌入、索引都发生在后端进程里。
 
 ---
 
@@ -54,12 +55,12 @@ GopherLearn 面向"用自己的资料学习"这件事，提供两种会话形态
 
 ## 3. 当前版本与已知限制
 
-**已验证到什么程度**：核心链路（普通聊天、文档问答与引用、Agent 工具往返、出题、判分与掌握度）已经用**真实模型**做过一次小规模验收——15 次真实模型请求，过程中发现并修掉了若干缺陷。详见 [发布就绪报告 §7](docs/RELEASE-READINESS.md)。
+**已验证到什么程度**：核心链路（普通聊天、文档问答与引用、Agent 工具往返、出题、判分与掌握度）已经用**真实模型**做过一次小规模验收——15 次真实模型请求，过程中发现并修掉了若干缺陷。对外可见的行为差异与错误码见 [发布说明 §行为变化与错误码](docs/PUBLIC-RELEASE-NOTES.md#行为变化与错误码)。
 
 **仍然存在的限制**，请在评估时一并考虑：
 
 - **这是开发预览版**，前端界面与交互还会迭代。
-- **不含 RPC 文件处理**，也没有多节点分布式执行。
+- **检索重排序默认关闭**：需要时可以开启，见 [§5.5](#55-开启重排可选)。
 - **当前只支持 `.md` 与 `.txt`**（单文件上限 5 MiB，`knowledgeConfig.maxFileSizeBytes`）。**不支持 PDF**——PDF 解析没有实现，别按"能传就行"来预期。
 - **指代文档请用精确文件名**（例如 `seagull7-facts.md`）。检索工具只认文档 id 或**精确文件名**；用标题指代会把所有切片过滤掉，回答会退化成模型的通用知识，并显示"没有找到笔记证据"的提示。
 - **检索与判分的普遍质量没有被证明**：只验证过单账号、单个自建文档、一个主题、一次判分。
@@ -317,7 +318,7 @@ GRANT ALL ON gopherlearn_v2_integration.* TO 'gopherlearn_v2_integration'@'%';
 FLUSH PRIVILEGES;
 ```
 
-### 步骤 4 · 建表（公开版提供的一次性命令）
+### 步骤 4 · 建表（一次性命令）
 
 ```bash
 # 在仓库根目录执行；go -C 会把程序的工作目录切到 v2/，所以配置写成 ../config.integrated.toml.local

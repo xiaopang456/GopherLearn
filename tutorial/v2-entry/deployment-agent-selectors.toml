@@ -1,4 +1,4 @@
-# Public selector values confirmed by the owner; no private deployment settings.
+# The two selector values this build supports.
 [agentConfig]
 memoryReadMode = "legacy_v2"
 episodeRecallMode = "inject_enabled"

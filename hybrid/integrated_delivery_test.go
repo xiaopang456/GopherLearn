@@ -286,7 +286,7 @@ func TestIntegratedConfigTemplateLoadsAndRefusesCrossings(t *testing.T) {
 func TestNoDeliveryFileStillNamesTheUnignoredConfigFile(t *testing.T) {
 	const obsolete = "config.integrated.local.toml"
 	for _, name := range []string{"compose.integrated.yml", "README.md", "config.integrated.example.toml",
-		filepath.Join("tutorial", "v2-production-entry", "README.md")} {
+		filepath.Join("docs", "INTEGRATED-DEPLOYMENT.md")} {
 		if strings.Contains(repositoryFile(t, name), obsolete) {
 			t.Errorf("%s still names %s, which neither ignore rule matches", name, obsolete)
 		}
