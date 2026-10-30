@@ -48,6 +48,15 @@ var integratedNavRoutes = []struct{ method, path, source string }{
 	{"POST", "/api/v1/user/login", "web/src/api/v2Registration.js:5"},
 	{"POST", "/api/v1/AI/agent/run", "v2/router/Agent.go:15"},
 	{"POST", "/api/v1/AI/agent/run-stream", "v2/router/Agent.go:16"},
+	// The read side of a run: a conversation that is opened again shows the
+	// steps its turns took. The client that asks for these arrives with the
+	// history view; until then the rows pin that the native surface serves
+	// them, so a later removal of the route fails here rather than silently.
+	// The path segments are spelled as they are registered: this table is
+	// compared against the router's own route list, where the parameter name
+	// is part of the path.
+	{"GET", "/api/v1/AI/agent/sessions/:sessionId/runs", "web/src/api/agentRuns.js (history view)"},
+	{"GET", "/api/v1/AI/agent/sessions/:sessionId/runs/:runId/steps", "web/src/api/agentRuns.js (history view)"},
 }
 
 // mainlineCompat is the surface this module answers itself rather than passing

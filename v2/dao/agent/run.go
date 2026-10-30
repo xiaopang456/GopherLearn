@@ -30,6 +30,12 @@ var (
 
 const runTransactionMaxAttempts = 3
 
+// MaxRunsPerSessionRead bounds how many runs one session read returns. A
+// session that holds more turns than this is not refused: the newest turns
+// are the ones a reader is looking at, and the caller is told that older
+// ones were left out.
+const MaxRunsPerSessionRead = 100
+
 type RunAcquisition struct {
 	Run              *model.AgentRun
 	Created          bool
@@ -231,6 +237,67 @@ func (r *Repository) ListSteps(ctx context.Context, userID int64, sessionID, run
 	err := r.db.WithContext(ctx).
 		Where("user_id = ? AND run_id = ?", userID, runID).
 		Order("sequence ASC").
+		Find(&steps).Error
+	return steps, err
+}
+
+// ListRunsBySession reads the runs of one session that belong to this user,
+// newest first.
+//
+// The owner and the session are both part of the query, so a run of another
+// account is absent from the result rather than reported: the caller has no
+// legitimate use for knowing that a run id it may not read exists. The limit
+// keeps the newest runs and the boolean says whether older ones were left
+// out, so a reader can be told the list is incomplete instead of being left
+// to assume it is whole.
+func (r *Repository) ListRunsBySession(ctx context.Context, userID int64, sessionID string, limit int) ([]model.AgentRun, bool, error) {
+	if err := r.ready(); err != nil {
+		return nil, false, err
+	}
+	if userID <= 0 || strings.TrimSpace(sessionID) == "" {
+		return nil, false, ErrRunNotFound
+	}
+	if limit <= 0 || limit > MaxRunsPerSessionRead {
+		limit = MaxRunsPerSessionRead
+	}
+	var runs []model.AgentRun
+	// One row beyond the limit is read to learn whether the list was cut. The
+	// row that does not fit is the oldest one, so it is the one dropped.
+	err := r.db.WithContext(ctx).
+		Where("user_id = ? AND session_id = ?", userID, sessionID).
+		Order("started_at DESC, id DESC").
+		Limit(limit + 1).
+		Find(&runs).Error
+	if err != nil {
+		return nil, false, err
+	}
+	truncated := len(runs) > limit
+	if truncated {
+		runs = runs[:limit]
+	}
+	return runs, truncated, nil
+}
+
+// ListStepsByRuns reads the steps of several runs of this user at once.
+//
+// The step table has no session column, so the fence is the owner plus the
+// run ids, and those run ids come from a read that already carried the owner
+// and the session. The order is by run and then by the server's own
+// sequence, which is the order the steps happened in.
+func (r *Repository) ListStepsByRuns(ctx context.Context, userID int64, runIDs []string) ([]model.AgentStep, error) {
+	if err := r.ready(); err != nil {
+		return nil, err
+	}
+	if userID <= 0 || len(runIDs) == 0 {
+		return nil, nil
+	}
+	if len(runIDs) > MaxRunsPerSessionRead {
+		runIDs = runIDs[:MaxRunsPerSessionRead]
+	}
+	var steps []model.AgentStep
+	err := r.db.WithContext(ctx).
+		Where("user_id = ? AND run_id IN ?", userID, runIDs).
+		Order("run_id ASC, sequence ASC").
 		Find(&steps).Error
 	return steps, err
 }

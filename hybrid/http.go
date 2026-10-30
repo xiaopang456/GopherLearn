@@ -461,6 +461,13 @@ func (s *httpSurface) history(ctx context.Context, uid int64, sid string) ([]any
 		for i := len(pages) - 1; i >= 0; i-- {
 			for _, row := range pages[i] {
 				view := messageView(domainMessage(row)).(map[string]any)
+				// The run that produced this message is part of the message's
+				// own fact: it is what lets a conversation that is opened again
+				// show the steps its turn took. A message of an ordinary chat
+				// has no run, and then the key is absent rather than empty.
+				if row.AgentRunID != nil && strings.TrimSpace(*row.AgentRunID) != "" {
+					view["run_id"] = *row.AgentRunID
+				}
 				if len(row.Sources) > 0 {
 					sources := make([]any, 0, len(row.Sources))
 					for _, source := range row.Sources {

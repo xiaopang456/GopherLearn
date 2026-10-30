@@ -14,6 +14,10 @@ func AgentRouter(r *gin.RouterGroup) {
 	r.POST("/agent/topic-consent", controlleragent.IssueTopicConsent)
 	r.POST("/agent/run", controlleragent.Run)
 	r.POST("/agent/run-stream", controlleragent.RunStream)
+	// The read side of a run. A conversation that is opened again shows the
+	// steps its turns took, which the run table already holds.
+	r.GET("/agent/sessions/:sessionId/runs", controlleragent.SessionRuns)
+	r.GET("/agent/sessions/:sessionId/runs/:runId/steps", controlleragent.RunSteps)
 	r.POST("/agent/learning/start", controllerlearning.Start)
 	r.POST("/agent/learning/start-stream", controllerlearning.StartStream)
 	r.GET("/agent/learning/current", controllerlearning.Current)
