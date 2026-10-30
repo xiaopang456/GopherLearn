@@ -191,6 +191,15 @@ export function useChat() {
    */
   const restoredSteps = ref({})
 
+  /**
+   * Whether the server left turns out of the list it read back.
+   *
+   * A session with more turns than one read returns comes back with a marker, and
+   * the marker is worth showing: without it, a conversation whose older turns have
+   * no steps would look like a conversation that never had any.
+   */
+  const runsTruncated = ref(false)
+
   /** Move the open steps to match where the answer run ended. Idempotent. */
   function syncStepsWithRun(state) {
     if (!state) return
@@ -501,6 +510,7 @@ export function useChat() {
 
     messages.value = []
     restoredSteps.value = {}
+    runsTruncated.value = false
     historyError.value = ''
     historyLoading.value = true
 
@@ -548,10 +558,12 @@ export function useChat() {
         })
       }
       restoredSteps.value = next
+      runsTruncated.value = payload.truncated === true
     } catch (error) {
       if (isAbort(error)) return
       if (generation !== historyGeneration || activeId.value !== id) return
       restoredSteps.value = {}
+      runsTruncated.value = false
     }
   }
 
@@ -599,6 +611,7 @@ export function useChat() {
     activeId.value = ''
     messages.value = []
     restoredSteps.value = {}
+    runsTruncated.value = false
     run.value = null
     historyError.value = ''
   }
@@ -835,6 +848,7 @@ export function useChat() {
     setAgentPanelOpen,
     resetAgentState,
     stepsForMessage,
+    runsTruncated,
     loadSessions,
     openSession,
     closeSession,

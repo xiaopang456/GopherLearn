@@ -286,7 +286,7 @@ describe('the run id on a message', () => {
 const AGENT = { id: 'ag-1', title: '学习会话', mode: 'learning_agent' }
 
 /** The history of one session, and the runs the store kept for it. */
-function serve({ messages, runs, status = 1000 }) {
+function serve({ messages, runs, status = 1000, truncated = false }) {
   installFetchStub((url) => {
     const path = new URL(String(url), 'https://api.test').pathname
     if (path === '/api/v1/sessions') {
@@ -296,7 +296,7 @@ function serve({ messages, runs, status = 1000 }) {
       return jsonResponse({ data: { items: messages }, error: null })
     }
     if (/\/runs$/.test(path)) {
-      return jsonResponse({ status_code: status, runs, truncated: false })
+      return jsonResponse({ status_code: status, runs, truncated })
     }
     return jsonResponse({ data: null, error: { code: 'not_found', message: 'no' } }, { status: 404 })
   })
@@ -462,6 +462,40 @@ describe('the trail under an old answer', () => {
     // card over the conversation.
     expect(app.text()).toContain('你好。')
     expect(app.find('[data-test="agent-history-steps"]').exists()).toBe(false)
+    app.unmount()
+  })
+
+  it('says so when the server left turns out of the list it read back', async () => {
+    serve({
+      messages: [
+        { id: 'q-6', role: 'user', content: '你好', created_at: '2026-10-30T12:50:00Z' },
+        { id: 'a-6', role: 'assistant', content: '你好。', created_at: '2026-10-30T12:50:01Z' },
+      ],
+      runs: [],
+      truncated: true,
+    })
+
+    const app = await openSession()
+
+    // A session whose older turns were left out must not look like a session that
+    // never had any steps.
+    expect(app.find('[data-test="runs-truncated"]').exists()).toBe(true)
+    expect(app.find('[data-test="runs-truncated"]').text()).toContain('最近 100 轮')
+    app.unmount()
+  })
+
+  it('says nothing about truncation when the list was the whole story', async () => {
+    serve({
+      messages: [
+        { id: 'q-7', role: 'user', content: '你好', created_at: '2026-10-30T13:00:00Z' },
+        { id: 'a-7', role: 'assistant', content: '你好。', created_at: '2026-10-30T13:00:01Z' },
+      ],
+      runs: [],
+    })
+
+    const app = await openSession()
+
+    expect(app.find('[data-test="runs-truncated"]').exists()).toBe(false)
     app.unmount()
   })
 })

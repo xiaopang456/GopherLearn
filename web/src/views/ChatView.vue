@@ -215,6 +215,16 @@ function select(id) {
             @update:expanded="chat.setAgentPanelOpen"
           />
 
+          <!-- The server left turns out of the list it read back. Saying so is the
+               difference between a bounded answer and a silently wrong one. -->
+          <p
+            v-if="chat.runsTruncated.value"
+            class="chat__notice"
+            data-test="runs-truncated"
+          >
+            这个会话的轮次较多，执行过程只读回了最近 100 轮。
+          </p>
+
           <p
             v-else-if="!chat.activeMode.value && !chat.historyLoading.value"
             class="chat__notice"
