@@ -28,7 +28,6 @@ defineProps({
           <li>知识库由你自己上传和删除，带不带资料提问每一轮单独选。</li>
         </ul>
       </div>
-      <p class="auth__phase">Phase 1：认证、会话与流式对话。</p>
     </section>
 
     <main class="auth__form">
@@ -55,27 +54,28 @@ defineProps({
 .auth__statement {
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  gap: 2rem;
-  padding: clamp(1.5rem, 5vw, 4rem);
-  background: linear-gradient(160deg, #12403b 0%, #1d2b2a 62%, #24332f 100%);
-  color: #eef3f1;
+  justify-content: center;
+  gap: var(--gl-space-6);
+  padding: clamp(2rem, 5vw, 4rem);
+  background: linear-gradient(165deg, #1c1c20 0%, #101012 60%, #17171a 100%);
+  color: #f3f3f5;
 }
 
 .auth__mark {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
-  font-size: 1.15rem;
+  gap: var(--gl-space-2);
+  font-size: var(--gl-text-lg);
   font-weight: 700;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
 }
 
 .auth__pitch h2 {
-  font-size: clamp(1.4rem, 2.4vw, 2rem);
-  line-height: 1.35;
+  font-size: clamp(1.4rem, 2.4vw, 1.9rem);
+  line-height: var(--gl-leading-tight);
+  letter-spacing: -0.02em;
   max-width: 22ch;
-  margin-bottom: 1rem;
+  margin-bottom: var(--gl-space-4);
 }
 
 .auth__pitch ul {
@@ -83,17 +83,10 @@ defineProps({
   padding-left: 1.1rem;
   display: flex;
   flex-direction: column;
-  gap: 0.55rem;
-  color: #c8d8d4;
-  font-size: 0.98rem;
-  max-width: 34ch;
-}
-
-.auth__phase {
-  font-size: 0.82rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: #8fb0aa;
+  gap: var(--gl-space-3);
+  color: #b8b8c2;
+  font-size: var(--gl-text-base);
+  max-width: 36ch;
 }
 
 .auth__form {
@@ -105,15 +98,15 @@ defineProps({
 
 .auth__card {
   width: 100%;
-  max-width: 400px;
-  padding: clamp(1.4rem, 3vw, 2.2rem);
+  max-width: 380px;
+  padding: clamp(1.5rem, 3vw, 2.25rem);
   display: flex;
   flex-direction: column;
-  gap: 0.9rem;
+  gap: var(--gl-space-4);
 }
 
 .auth__desc {
-  font-size: 0.95rem;
+  font-size: var(--gl-text-base);
 }
 
 @media (max-width: 860px) {
@@ -122,10 +115,10 @@ defineProps({
   }
 
   .auth__statement {
-    padding: 1.25rem 1.25rem 0;
+    padding: var(--gl-space-6) var(--gl-space-5) 0;
     background: none;
     color: inherit;
-    gap: 0.5rem;
+    gap: var(--gl-space-3);
   }
 
   .auth__pitch {
@@ -133,15 +126,11 @@ defineProps({
   }
 
   .auth__mark {
-    color: var(--gl-accent-ink);
-  }
-
-  .auth__phase {
-    color: var(--gl-ink-faint);
+    color: var(--gl-ink);
   }
 
   .auth__form {
-    padding: 1.25rem;
+    padding: var(--gl-space-5);
   }
 }
 </style>
