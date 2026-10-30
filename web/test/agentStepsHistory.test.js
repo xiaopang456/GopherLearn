@@ -107,7 +107,7 @@ describe('the read-back trail and the watched one', () => {
     expect(restored.map((row) => row.sequence)).toEqual([1, 2, 3])
     expect(restored[0]).toMatchObject({ label: '模型规划', status: StepStatus.Completed })
     expect(restored[1]).toMatchObject({
-      label: '工具调用 · knowledge_search',
+      label: '工具调用 · 检索知识库',
       status: StepStatus.Completed,
       durationMillis: 412,
     })
@@ -360,7 +360,7 @@ describe('the trail under an old answer', () => {
     const rows = answer.findAll('[data-test="agent-history-step-list"] li')
     expect(rows).toHaveLength(2)
     expect(rows[0].text()).toContain('模型规划')
-    expect(rows[1].text()).toContain('knowledge_search')
+    expect(rows[1].text()).toContain('检索知识库')
     expect(rows[1].text()).toContain('已完成')
     expect(rows[1].text()).toContain('412 毫秒')
     app.unmount()
@@ -440,7 +440,7 @@ describe('the trail under an old answer', () => {
     await flushPromises()
 
     const row = app.find('[data-test="agent-history-step-list"] li')
-    expect(row.text()).toContain('document_read')
+    expect(row.text()).toContain('阅读文档原文')
     expect(row.text()).toContain('未成功')
     expect(row.text()).not.toContain('已完成')
     app.unmount()

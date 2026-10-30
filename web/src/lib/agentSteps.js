@@ -32,6 +32,7 @@
  */
 
 import { MemoryScope } from '../api/memory.js'
+import { toolDisplayName } from './toolNames.js'
 
 export const StepPhase = {
   Started: 'step_started',
@@ -318,7 +319,7 @@ export function stepRows(state) {
   return (state?.steps ?? []).map((step) => ({
     id: `step-${step.sequence}`,
     sequence: step.sequence,
-    label: step.toolName ? `${step.label} · ${step.toolName}` : step.label,
+    label: step.toolName ? `${step.label} · ${toolDisplayName(step.toolName)}` : step.label,
     status: step.status,
     detail: step.detail,
     durationMillis: step.durationMillis,

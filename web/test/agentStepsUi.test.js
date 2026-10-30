@@ -100,7 +100,7 @@ describe('a watched agent turn', () => {
     expect(rows).toHaveLength(2)
     expect(rows[0].text()).toContain('model generation 1')
     expect(rows[0].text()).toContain('已完成')
-    expect(rows[1].text()).toContain('memory_search')
+    expect(rows[1].text()).toContain('查找记忆')
     expect(rows[1].text()).toContain('本轮已查阅长期记忆。')
     expect(rows[1].text()).toContain('7 毫秒')
     expect(app.find('[data-test="send"]').exists()).toBe(true)
@@ -137,7 +137,7 @@ describe('a watched agent turn', () => {
     late.push(sseFrame('tool_started', { run_id: 'run-9', sequence: 2, tool_name: 'knowledge_search' }))
     await flushPromises()
     // The previous step closed because this one opened — no client timer involved.
-    expect(app.find('[data-test="agent-current-step"]').text()).toContain('knowledge_search')
+    expect(app.find('[data-test="agent-current-step"]').text()).toContain('检索知识库')
     await expand(app)
     const rows = app.findAll('[data-test="agent-steps"] li')
     expect(rows[0].text()).toContain('已完成')

@@ -185,10 +185,10 @@ describe('the frames as they actually arrive', () => {
 
     expect(rows.map((row) => row.sequence)).toEqual([1, 2, 3])
     expect(rows[0]).toMatchObject({ label: 'model generation 1', status: StepStatus.Completed })
-    // The label is the server's own sentence with the tool name appended; the client
+    // The label is the server's own sentence with the tool's display name appended; the client
     // never rewrites "tool call 1" into a word of its own.
     expect(rows[1]).toMatchObject({
-      label: 'tool call 1 · memory_search',
+      label: 'tool call 1 · 查找记忆',
       status: StepStatus.Completed,
       detail: '本轮已查阅长期记忆。',
       durationMillis: 7,
@@ -222,7 +222,7 @@ describe('the frames as they actually arrive', () => {
     const state = play([started(2, 'tool', 'tool call 1'), toolStarted(2, 'memory_search')])
 
     expect(stepRows(state)).toHaveLength(1)
-    expect(stepRows(state)[0].label).toBe('tool call 1 · memory_search')
+    expect(stepRows(state)[0].label).toBe('tool call 1 · 查找记忆')
     expect(stepRows(state)[0].status).toBe(StepStatus.Running)
   })
 
@@ -230,8 +230,8 @@ describe('the frames as they actually arrive', () => {
     const state = play([toolStarted(4, 'memory_search')])
 
     expect(stepRows(state)[0]).toMatchObject({ sequence: 4, status: StepStatus.Running })
-    // The name is displayed, so it must be the server's value verbatim.
-    expect(stepRows(state)[0].label).toContain('memory_search')
+    // The tool is shown by its display name, not by the raw name the server sent.
+    expect(stepRows(state)[0].label).toContain('查找记忆')
   })
 })
 
