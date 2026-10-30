@@ -201,7 +201,7 @@ function select(id) {
             <div class="chat__agenthead-text">
               <p class="chat__agenthead-title">学习 Agent</p>
               <p class="chat__agenthead-desc">
-                学习 Agent 会根据服务端当前启用的能力处理问题。执行步骤仅在真实发生并由服务端返回后显示，只在本次会话里存在，刷新后不会保留。
+                学习 Agent 会根据服务端当前启用的能力处理问题。执行步骤仅在真实发生并由服务端返回后显示，重新打开这个会话仍能读到。
               </p>
             </div>
           </header>
