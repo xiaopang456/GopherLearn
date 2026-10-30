@@ -64,9 +64,21 @@ async function perform(action, deleted = false) {
 
 function size(bytes) {
   const value = Number(bytes ?? 0)
-  if (!value) return '0'
+  if (!value) return '0 字节'
   if (value < 1024) return `${value} 字节`
   return `${(value / 1024).toFixed(1)} KB`
+}
+
+function when(dateString) {
+  if (!dateString) return ''
+  const stamp = Date.parse(dateString)
+  if (Number.isNaN(stamp)) return ''
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(stamp))
 }
 
 /**
@@ -136,15 +148,18 @@ onMounted(refresh)
       </template>
     </GlEmpty>
 
+    <!-- One document per turn, in the same flat shape as a conversation:
+         a name, a state, a line of facts, and the actions under a hairline. -->
     <ul v-else class="docs__list">
-      <li v-for="document in documents" :key="document.id" class="docs__item gl-card" data-test="v2-document">
-        <div class="docs__item-head">
-          <h3 class="docs__name">{{ document.original_name }}</h3>
+      <li v-for="document in documents" :key="document.id" class="docs__item" data-test="v2-document">
+        <div class="docs__head">
+          <h2 class="docs__name">{{ document.original_name }}</h2>
           <GlStatusTag :status="document.index_status" data-test="v2-status" />
         </div>
 
         <p class="docs__meta">
           版本 {{ document.active_version }} · {{ size(document.file_size) }}
+          <span v-if="when(document.updated_at)"> · {{ when(document.updated_at) }}</span>
         </p>
 
         <p v-if="document.error_message" class="docs__error">{{ document.error_message }}</p>
@@ -152,7 +167,7 @@ onMounted(refresh)
         <div class="docs__actions">
           <n-button
             v-if="document.active_version > 0"
-            type="primary"
+            size="small"
             secondary
             :disabled="busy"
             @click="openSource(document)"
@@ -161,6 +176,8 @@ onMounted(refresh)
           </n-button>
           <n-button
             v-if="document.index_status === 'failed'"
+            size="small"
+            quaternary
             :disabled="busy"
             @click="perform(() => retryV2Document(document.id))"
           >
@@ -168,6 +185,8 @@ onMounted(refresh)
           </n-button>
           <n-button
             v-if="document.index_status === 'ready'"
+            size="small"
+            quaternary
             :disabled="busy"
             @click="perform(() => reindexV2Document(document.id))"
           >
@@ -175,12 +194,15 @@ onMounted(refresh)
           </n-button>
           <n-button
             v-if="document.index_status === 'ready'"
+            size="small"
+            quaternary
             :disabled="busy"
             @click="pick(document.id)"
           >
             更新
           </n-button>
           <n-button
+            size="small"
             quaternary
             type="error"
             :disabled="busy"
@@ -189,6 +211,7 @@ onMounted(refresh)
             删除
           </n-button>
           <n-button
+            size="small"
             text
             :disabled="busy"
             data-test="v2-processing-toggle"
@@ -201,6 +224,7 @@ onMounted(refresh)
 
         <DocumentProcessingPanel
           v-if="processingOpen[document.id]"
+          class="docs__panel"
           :document-id="document.id"
           :document-status="document.index_status"
         />
@@ -210,6 +234,12 @@ onMounted(refresh)
 </template>
 
 <style scoped>
+/* The same reading column the transcript uses: one document per turn, the
+   actions under a hairline, nothing boxed in. */
+.docs {
+  max-width: 760px;
+}
+
 .docs__notice {
   margin: 0 0 var(--gl-space-4);
   padding: var(--gl-space-2) var(--gl-space-3);
@@ -223,30 +253,34 @@ onMounted(refresh)
   list-style: none;
   margin: 0;
   padding: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: var(--gl-space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gl-space-5);
 }
 
 .docs__item {
   display: flex;
   flex-direction: column;
   gap: var(--gl-space-2);
-  padding: var(--gl-space-4);
   min-width: 0;
 }
 
-.docs__item-head {
+.docs__head {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  align-items: center;
   gap: var(--gl-space-3);
+  min-width: 0;
 }
 
 .docs__name {
+  flex: 1;
+  min-width: 0;
   font-size: var(--gl-text-lg);
-  font-weight: 700;
-  overflow-wrap: anywhere;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .docs__meta {
@@ -264,7 +298,12 @@ onMounted(refresh)
 .docs__actions {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--gl-space-2);
+  gap: var(--gl-space-1);
   padding-top: var(--gl-space-2);
+  border-top: 1px solid var(--gl-surface-line);
+}
+
+.docs__panel {
+  margin-top: var(--gl-space-2);
 }
 </style>
