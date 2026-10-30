@@ -174,7 +174,20 @@ func (s *RAGService) AttachReranker(reranker Reranker) error {
 	return nil
 }
 
-func (s *RAGService) Retrieve(ctx context.Context, userID int64, query string, topK int) (results []RetrievalResult, resultErr error) {
+// Retrieve returns the top-K chunks for a query with the production defaults:
+// hybrid retrieval, and a rerank when a reranker is attached and topK is at most
+// DefaultRerankMaxTopK. It is RetrieveWithOptions with every option left at its
+// zero value; its behaviour is pinned by retrieval_golden_test.go and
+// retrieval_differential_test.go.
+func (s *RAGService) Retrieve(ctx context.Context, userID int64, query string, topK int) ([]RetrievalResult, error) {
+	return s.retrieve(ctx, userID, query, RetrieveOptions{TopK: topK}, nil)
+}
+
+// retrieve is the one implementation behind Retrieve and RetrieveWithOptions.
+// Every option at its zero value reproduces the original Retrieve exactly.
+// diagnostics may be nil; the production path passes nil.
+func (s *RAGService) retrieve(ctx context.Context, userID int64, query string, opts RetrieveOptions, diagnostics *retrievalDiagnostics) (results []RetrievalResult, resultErr error) {
+	topK := opts.TopK
 	started := time.Now()
 	defer func() {
 		status, reason := "complete", "none"
@@ -195,6 +208,9 @@ func (s *RAGService) Retrieve(ctx context.Context, userID int64, query string, t
 	query = strings.TrimSpace(query)
 	if userID <= 0 || query == "" || topK <= 0 || topK > 100 {
 		return nil, ErrInvalidRetrievalRequest
+	}
+	if err := opts.validate(s.reranker != nil); err != nil {
+		return nil, err
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -217,43 +233,60 @@ func (s *RAGService) Retrieve(ctx context.Context, userID int64, query string, t
 	if len(activeVersions) == 0 {
 		return []RetrievalResult{}, nil
 	}
-	vectors, err := s.embedder.EmbedStrings(ctx, []string{query})
-	if err != nil {
-		if errors.Is(err, context.Canceled) && errors.Is(ctx.Err(), context.Canceled) {
-			return nil, fmt.Errorf("%w: embed query: %w", ErrRetrievalFailed, err)
+	var vector []float32
+	if opts.Mode != RetrievalModeKeyword { // keyword-only retrieval never embeds the query
+		vectors, err := s.embedder.EmbedStrings(ctx, []string{query})
+		if err != nil {
+			if errors.Is(err, context.Canceled) && errors.Is(ctx.Err(), context.Canceled) {
+				return nil, fmt.Errorf("%w: embed query: %w", ErrRetrievalFailed, err)
+			}
+			return nil, retrievalUnavailable(RetrievalReasonEmbedding, err)
 		}
-		return nil, retrievalUnavailable(RetrievalReasonEmbedding, err)
-	}
-	if len(vectors) != 1 {
-		return nil, fmt.Errorf("%w: query embedder returned %d vectors", ErrRetrievalFailed, len(vectors))
-	}
-	vector, err := retrievalVector(vectors[0], s.dimension)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrRetrievalFailed, err)
+		if len(vectors) != 1 {
+			return nil, fmt.Errorf("%w: query embedder returned %d vectors", ErrRetrievalFailed, len(vectors))
+		}
+		vector, err = retrievalVector(vectors[0], s.dimension)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrRetrievalFailed, err)
+		}
 	}
 	candidateK := topK * 6
 	if candidateK < 30 {
 		candidateK = 30
 	}
-	useReranker := s.reranker != nil && topK <= 8
+	useReranker := s.reranker != nil && topK <= DefaultRerankMaxTopK
+	switch opts.Rerank {
+	case RerankForceOn:
+		useReranker = s.reranker != nil
+	case RerankForceOff:
+		useReranker = false
+	}
 	if useReranker {
 		candidateK = 48
 	}
 	if candidateK > 100 {
 		candidateK = 100
 	}
+	if opts.CandidateDepth > 0 {
+		candidateK = opts.CandidateDepth
+	}
 	var vectorCandidates, lexicalCandidates []RedisChunkSearchResult
 	var vectorErr, lexicalErr error
 	var searches sync.WaitGroup
-	searches.Add(2)
-	go func() {
-		defer searches.Done()
-		vectorCandidates, vectorErr = s.searcher.SearchActiveByUserVector(ctx, userID, vector, candidateK, activeVersions)
-	}()
-	go func() {
-		defer searches.Done()
-		lexicalCandidates, lexicalErr = s.searcher.SearchActiveByUserText(ctx, userID, query, candidateK, activeVersions)
-	}()
+	if opts.Mode != RetrievalModeKeyword {
+		searches.Add(1)
+		go func() {
+			defer searches.Done()
+			vectorCandidates, vectorErr = s.searcher.SearchActiveByUserVector(ctx, userID, vector, candidateK, activeVersions)
+		}()
+	}
+	if opts.Mode != RetrievalModeVector {
+		searches.Add(1)
+		go func() {
+			defer searches.Done()
+			lexicalCandidates, lexicalErr = s.searcher.SearchActiveByUserText(ctx, userID, query, candidateK, activeVersions)
+		}()
+	}
 	searches.Wait()
 	if vectorErr != nil {
 		if errors.Is(vectorErr, context.Canceled) && errors.Is(ctx.Err(), context.Canceled) {
@@ -270,8 +303,13 @@ func (s *RAGService) Retrieve(ctx context.Context, userID int64, query string, t
 	a0Candidates := FuseRRF(vectorCandidates, lexicalCandidates, topK)
 	candidates := a0Candidates
 	rerankScores := map[string]RerankScore{}
+	rerankStatus := RerankNotAttached
+	if s.reranker != nil {
+		rerankStatus = RerankBypassed
+	}
+	var preRerank []RedisChunkSearchResult
 	if useReranker {
-		preRerank := FuseRRF(vectorCandidates, lexicalCandidates, RerankCandidateK)
+		preRerank = FuseRRF(vectorCandidates, lexicalCandidates, RerankCandidateK)
 		if err := validateActiveCandidates(preRerank, activeVersions); err != nil {
 			return nil, err
 		}
@@ -291,6 +329,7 @@ func (s *RAGService) Retrieve(ctx context.Context, userID int64, query string, t
 			if errors.Is(rerankErr, ErrRerankUnavailable) {
 				observability.Memory.KnowledgeRerank("fallback", time.Since(rerankStarted))
 				candidates = a0Candidates
+				rerankStatus = RerankFallback
 			} else {
 				observability.Memory.KnowledgeRerank("failed", time.Since(rerankStarted))
 				return nil, fmt.Errorf("%w: rerank candidates: %w", ErrRetrievalFailed, rerankErr)
@@ -313,11 +352,37 @@ func (s *RAGService) Retrieve(ctx context.Context, userID int64, query string, t
 				rerankScores[retrievalIdentity(candidate)] = RerankScore{Index: rank + 1, Score: score.Score}
 			}
 			observability.Memory.KnowledgeRerank("applied", time.Since(rerankStarted))
+			rerankStatus = RerankApplied
 		}
 	} else if s.reranker != nil {
 		observability.Memory.KnowledgeRerank("bypassed", 0)
 	}
-	results = make([]RetrievalResult, 0, len(candidates))
+	if diagnostics != nil {
+		diagnostics.rerankStatus, diagnostics.depth = rerankStatus, candidateK
+		if opts.WantCandidates {
+			if preRerank == nil { // the reranker did not run; the pool is still the top of the fused list
+				preRerank = FuseRRF(vectorCandidates, lexicalCandidates, RerankCandidateK)
+			}
+			pool, err := buildRetrievalResults(preRerank, activeVersions, documentNames, nil)
+			if err != nil {
+				return nil, err
+			}
+			diagnostics.candidates = pool
+		}
+	}
+	results, err = buildRetrievalResults(candidates, activeVersions, documentNames, rerankScores)
+	if err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+// buildRetrievalResults turns fused candidates into results: it re-checks each
+// candidate against the active document versions, keeps the first occurrence of
+// a chunk and attaches the rerank score of the chunk, if it has one. It was the
+// tail of Retrieve and is unchanged; a nil rerankScores map means "no rerank".
+func buildRetrievalResults(candidates []RedisChunkSearchResult, activeVersions map[string]int, documentNames map[string]string, rerankScores map[string]RerankScore) ([]RetrievalResult, error) {
+	results := make([]RetrievalResult, 0, len(candidates))
 	seen := make(map[string]struct{}, len(candidates))
 	for _, candidate := range candidates {
 		if err := validateActiveCandidates([]RedisChunkSearchResult{candidate}, activeVersions); err != nil {
