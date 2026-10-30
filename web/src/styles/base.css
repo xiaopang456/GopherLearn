@@ -1,14 +1,31 @@
 /* GopherLearn design tokens and document defaults.
-   Palette and structure are original to this implementation. */
+   Palette and structure are original to this implementation.
+
+   This file is the single source of truth for the app's visual language:
+   colour, type scale, spacing, radius, control height, elevation and focus.
+   Every size below is a named step, so a page never has to invent one — the
+   old free-form rem values are what made two pages feel like two products.
+
+   The control layer (buttons, inputs, selects, tags, empty states) is
+   Naive UI; `styles/naive-theme.js` maps the same tokens onto it, so the
+   library's components and the hand-written atoms share one palette. */
 
 :root {
+  /* --- surfaces ------------------------------------------------------- */
   --gl-paper: #f4f2ee;
   --gl-surface: #ffffff;
   --gl-surface-soft: #faf9f6;
   --gl-surface-line: #e3dfd6;
+  --gl-line-strong: #d6d1c6;
+
+  /* --- ink ------------------------------------------------------------ */
   --gl-ink: #1d2b2a;
   --gl-ink-soft: #5c6b69;
-  --gl-ink-faint: #8a9694;
+  /* `faint` is still readable: it was #8a9694, which sat around 3:1 on the
+     paper background and made every helper line hard to read. */
+  --gl-ink-faint: #6f7d7b;
+
+  /* --- accents -------------------------------------------------------- */
   --gl-accent: #0f766e;
   --gl-accent-soft: #d8ece9;
   --gl-accent-ink: #0a4f49;
@@ -16,9 +33,48 @@
   --gl-danger-soft: #fbe9e7;
   --gl-warn: #8a5a00;
   --gl-warn-soft: #fdf1dc;
-  --gl-radius: 12px;
-  --gl-radius-sm: 8px;
-  --gl-shadow: 0 1px 2px rgba(29, 43, 42, 0.06), 0 8px 24px rgba(29, 43, 42, 0.06);
+
+  /* --- type scale (6 steps, no more) ---------------------------------- */
+  --gl-text-xs: 0.75rem;      /* 12px badges, counts, line numbers */
+  --gl-text-sm: 0.8125rem;    /* 13px helper text, hints */
+  --gl-text-base: 0.9375rem;  /* 15px body, form controls */
+  --gl-text-md: 1rem;         /* 16px answer text */
+  --gl-text-lg: 1.125rem;     /* 18px card and section titles */
+  --gl-text-xl: 1.5rem;       /* 24px page titles */
+
+  --gl-leading-tight: 1.35;
+  --gl-leading-normal: 1.6;
+  --gl-leading-relaxed: 1.75;
+
+  /* --- spacing (4px steps) -------------------------------------------- */
+  --gl-space-1: 0.25rem;
+  --gl-space-2: 0.5rem;
+  --gl-space-3: 0.75rem;
+  --gl-space-4: 1rem;
+  --gl-space-5: 1.25rem;
+  --gl-space-6: 1.5rem;
+  --gl-space-7: 2rem;
+  --gl-space-8: 2.5rem;
+
+  /* --- radius --------------------------------------------------------- */
+  --gl-radius: 12px;      /* cards */
+  --gl-radius-sm: 8px;    /* controls, inputs */
+  --gl-radius-xs: 6px;    /* small chips */
+  --gl-radius-pill: 999px;
+
+  /* --- control height (buttons and inputs share it, so they align) ----- */
+  --gl-control-sm: 32px;
+  --gl-control-md: 40px;
+  --gl-control-lg: 48px;
+
+  /* --- elevation ------------------------------------------------------ */
+  --gl-shadow-1: 0 1px 2px rgba(29, 43, 42, 0.06), 0 8px 24px rgba(29, 43, 42, 0.06);
+  --gl-shadow-2: 0 8px 32px rgba(29, 43, 42, 0.14);
+
+  /* --- focus ---------------------------------------------------------- */
+  --gl-focus-ring: 0 0 0 3px rgba(15, 118, 110, 0.35);
+
+  /* --- layout --------------------------------------------------------- */
   --gl-rail: 62px;
   --gl-panel: 268px;
   --gl-font: 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei',
@@ -42,8 +98,8 @@ body {
   background: var(--gl-paper);
   color: var(--gl-ink);
   font-family: var(--gl-font);
-  font-size: 17px;
-  line-height: 1.65;
+  font-size: var(--gl-text-base);
+  line-height: var(--gl-leading-normal);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -55,17 +111,18 @@ p {
 }
 
 h1 {
-  font-size: 1.6rem;
-  line-height: 1.3;
+  font-size: var(--gl-text-xl);
+  line-height: var(--gl-leading-tight);
 }
 
 h2 {
-  font-size: 1.2rem;
-  line-height: 1.35;
+  font-size: var(--gl-text-lg);
+  line-height: var(--gl-leading-tight);
 }
 
 h3 {
-  font-size: 1rem;
+  font-size: var(--gl-text-base);
+  line-height: var(--gl-leading-tight);
 }
 
 button {
@@ -95,7 +152,7 @@ a {
   background: var(--gl-surface);
   border: 1px solid var(--gl-surface-line);
   border-radius: var(--gl-radius);
-  box-shadow: var(--gl-shadow);
+  box-shadow: var(--gl-shadow-1);
 }
 
 .gl-btn {
@@ -107,7 +164,7 @@ a {
   border: 1px solid var(--gl-surface-line);
   border-radius: var(--gl-radius-sm);
   background: var(--gl-surface);
-  font-size: 0.95rem;
+  font-size: var(--gl-text-base);
   font-weight: 600;
   transition: background-color 120ms ease, border-color 120ms ease;
 }
@@ -149,10 +206,15 @@ a {
   color: var(--gl-danger);
 }
 
+.gl-btn--sm {
+  min-height: var(--gl-control-sm);
+  padding: 0 var(--gl-space-3);
+  font-size: var(--gl-text-sm);
+}
 .gl-stack {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: var(--gl-space-3);
 }
 
 .gl-muted {
@@ -160,7 +222,7 @@ a {
 }
 
 .gl-eyebrow {
-  font-size: 0.75rem;
+  font-size: var(--gl-text-xs);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -181,7 +243,7 @@ a {
 
 /* Shared page frame for the placeholder sections. */
 .gl-page {
-  padding: 1.5rem clamp(1rem, 4vw, 2.5rem) 3rem;
+  padding: var(--gl-space-6) clamp(var(--gl-space-4), 4vw, var(--gl-space-8)) var(--gl-space-7);
   overflow-y: auto;
   height: 100%;
 }
@@ -190,10 +252,10 @@ a {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 0.75rem;
-  padding-bottom: 1rem;
+  gap: var(--gl-space-3);
+  padding-bottom: var(--gl-space-4);
   border-bottom: 1px solid var(--gl-surface-line);
-  margin-bottom: 1.5rem;
+  margin-bottom: var(--gl-space-6);
 }
 
 .gl-page__head h1 {
@@ -204,8 +266,8 @@ a {
   display: inline-flex;
   align-items: center;
   padding: 0.15em 0.6em;
-  border-radius: 999px;
-  font-size: 0.75rem;
+  border-radius: var(--gl-radius-pill);
+  font-size: var(--gl-text-xs);
   font-weight: 700;
   letter-spacing: 0.02em;
   background: var(--gl-warn-soft);
