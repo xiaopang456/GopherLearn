@@ -10,6 +10,7 @@ import {
   readList,
 } from '../api/sessions.js'
 import { streamMessage as apiStreamMessage } from '../api/stream.js'
+import { listSessionRuns as apiListSessionRuns } from '../api/agentRuns.js'
 import { GENERIC_ERROR, isAbort, safeErrorMessage } from '../api/http.js'
 import {
   abortRun,
@@ -28,6 +29,7 @@ import {
   completeSteps,
   createStepState,
   finishSteps,
+  restoreStepState,
   StepStatus,
   stepRows,
 } from '../lib/agentSteps.js'
@@ -178,6 +180,16 @@ export function useChat() {
   const stepsByRun = ref(createStepState())
 
   const agentSteps = computed(() => (run.value === null ? [] : stepRows(stepsByRun.value.state)))
+
+  /**
+   * The steps of the turns this conversation already had, read back from the store.
+   *
+   * A map of its own, kept apart from the live steps on purpose: the live ones belong
+   * to the turn that is running right now, these belong to turns that are over. The
+   * key is the run id the server wrote on the messages, which is the one thing that
+   * says "this answer came from that turn".
+   */
+  const restoredSteps = ref({})
 
   /** Move the open steps to match where the answer run ended. Idempotent. */
   function syncStepsWithRun(state) {
@@ -488,6 +500,7 @@ export function useChat() {
     historyController = controller
 
     messages.value = []
+    restoredSteps.value = {}
     historyError.value = ''
     historyLoading.value = true
 
@@ -498,6 +511,10 @@ export function useChat() {
       messages.value = readList(payload, 'messages').map((raw, index) =>
         normalizeMessage(raw, `hist-${id}-${index}`),
       )
+      // The turns of this session are read back as well, so the steps they took are
+      // on screen again after a reload. The transcript does not wait for that: an
+      // answer the learner came for should not sit behind a second request.
+      loadRestoredSteps(id, controller.signal, generation)
     } catch (error) {
       if (isAbort(error)) return
       if (generation !== historyGeneration || activeId.value !== id) return
@@ -506,6 +523,57 @@ export function useChat() {
       if (historyController === controller) historyController = null
       if (generation === historyGeneration) historyLoading.value = false
     }
+  }
+
+  /**
+   * Read the turns of one session back, with the steps each took.
+   *
+   * A failure here costs the trail, not the conversation: the transcript is already
+   * on screen, and a missing list of steps is not worth an error card over the
+   * answers. Nor is it a failure when the server does not hand the session over — a
+   * session that is not the caller's and one that does not exist both come back as
+   * the same status code, and both mean the same thing here: there is nothing to
+   * show.
+   */
+  async function loadRestoredSteps(id, signal, generation) {
+    try {
+      const payload = await apiListSessionRuns(id, { signal })
+      if (generation !== historyGeneration || activeId.value !== id) return
+      const next = {}
+      for (const item of payload.runs) {
+        next[item.runId] = restoreStepState({
+          runId: item.runId,
+          rows: item.steps,
+          runStatus: item.status,
+        })
+      }
+      restoredSteps.value = next
+    } catch (error) {
+      if (isAbort(error)) return
+      if (generation !== historyGeneration || activeId.value !== id) return
+      restoredSteps.value = {}
+    }
+  }
+
+  /**
+   * The steps of one message's own turn, as display rows.
+   *
+   * Only an assistant message carries them. A turn writes a question and an answer
+   * under the same run id, and the steps belong to the answer; a turn that failed has
+   * a question and no answer, so its steps have nothing to hang under and are not
+   * shown — which is exactly what the live turn did, and what keeps one turn from
+   * being drawn twice.
+   */
+  function stepsForMessage(message) {
+    if (!message || message.role !== 'assistant') return []
+    const runId = typeof message.runId === 'string' ? message.runId : ''
+    if (runId === '') return []
+    // The turn on screen belongs to the live panel; drawing it here as well would
+    // show the same trail twice.
+    if (run.value && message.id === run.value.placeholderId) return []
+    const state = restoredSteps.value[runId]
+    if (!state) return []
+    return stepRows(state)
   }
 
   async function openSession(id) {
@@ -530,6 +598,7 @@ export function useChat() {
     resetAgentState()
     activeId.value = ''
     messages.value = []
+    restoredSteps.value = {}
     run.value = null
     historyError.value = ''
   }
@@ -765,6 +834,7 @@ export function useChat() {
     agentPanelOpen,
     setAgentPanelOpen,
     resetAgentState,
+    stepsForMessage,
     loadSessions,
     openSession,
     closeSession,

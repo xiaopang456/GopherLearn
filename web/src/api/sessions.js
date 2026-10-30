@@ -95,5 +95,10 @@ export function normalizeMessage(raw, fallbackId) {
     // Same normalizer the SSE path uses, so a citation recovered from history is
     // byte-for-byte the structure the live turn produced.
     sources: normalizeSourceList(source.sources),
+    // The turn this message belongs to. An ordinary chat has none, and then this is
+    // the empty string rather than a made-up id: the key is only read when the server
+    // sent it, and a message of a plain conversation must not look like a turn of an
+    // Agent run.
+    runId: String(source.run_id ?? ''),
   }
 }

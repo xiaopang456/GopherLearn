@@ -24,6 +24,11 @@
  * on the wire, and only because the page cannot ask for a decision without an address to
  * send it to: the draft a confirmation card is about. `toDraftProjection` reads that
  * object field by field, so it stays the only thing a card can ever show.
+ *
+ * A turn that is read back after the fact goes through the same machine. The stored
+ * rows are turned into the frames they stand for and replayed through `applyStepEvent`,
+ * so the live panel and the history read are one reducer and one set of wording — see
+ * `restoreStepState` at the end of this file.
  */
 
 import { MemoryScope } from '../api/memory.js'
@@ -320,10 +325,201 @@ export function stepRows(state) {
   }))
 }
 
+/**
+ * The sentence a step's status is shown with.
+ *
+ * The wording lives here rather than in a component, because the live panel and the
+ * read-back trail are the same trail: two components that each carried their own
+ * table would be two places where the same step could be called something else.
+ */
+const STEP_STATUS_TEXT = {
+  [StepStatus.Running]: '进行中',
+  [StepStatus.Completed]: '已完成',
+  [StepStatus.Failed]: '未成功',
+  [StepStatus.Cancelled]: '已取消',
+}
+
+export function stepStatusText(status) {
+  return Object.prototype.hasOwnProperty.call(STEP_STATUS_TEXT, status)
+    ? STEP_STATUS_TEXT[status]
+    : '状态未识别'
+}
+
 export function formatStepDuration(durationMillis) {
   if (durationMillis === null || typeof durationMillis !== 'number' || !Number.isFinite(durationMillis)) {
     return ''
   }
   if (durationMillis < 1000) return `${durationMillis} 毫秒`
   return `${(durationMillis / 1000).toFixed(1)} 秒`
+}
+
+/**
+ * A turn that is read back after the fact.
+ *
+ * The steps of a turn are written to the store while it runs, so a conversation that
+ * is opened again can show them. The rows come back with exactly the fields the live
+ * stream published — the sequence, the step kind, the tool name and the duration —
+ * plus a status the server derived from the error the row carries.
+ *
+ * The rows are therefore replayed, not re-rendered: each one is turned into the frames
+ * the live protocol would have sent for it, and those frames go through `applyStepEvent`
+ * like any other. One reducer, one set of wording, one set of rules about when a step
+ * closes — so a turn that is read back looks like the turn that was watched, instead of
+ * like a second, similar-looking thing.
+ *
+ * What the frames do not carry is what the protocol does not publish. The server's
+ * sentence about a step ("model generation 1", "tool call 1") and the tool's own
+ * sentence about what it did are not on the read-back wire, so a restored step carries
+ * the default wording and no detail — exactly as the live panel shows a step whose
+ * frames carried none.
+ */
+const RESTORED_ROW_FAILED = 'failed'
+
+/**
+ * The step kinds the live protocol ever opens a step for.
+ *
+ * The store keeps more rows than the stream announced: the answer of a turn is
+ * written down as a step of its own, and it never was a step on screen. A row whose
+ * kind the protocol does not name is left out, because showing it would put a step on
+ * screen that the live turn never had.
+ */
+function isRestorableKind(kind) {
+  return KINDS.has(kind)
+}
+
+/**
+ * The frames one set of stored rows stands for.
+ *
+ * The mapping is the live one, read off the server's own behaviour:
+ *
+ *   - a step the server opened   → `step_started`
+ *   - a tool it named             → `tool_started`
+ *   - a tool that finished        → `tool_result`, with the duration it measured
+ *   - a tool that failed          → nothing: the server sends no result for a call
+ *                                  that did not finish, so the restored step carries
+ *                                  no duration and no result either
+ *
+ * A plan step gets no result frame for the same reason it gets none live: the server
+ * closes it when the next step opens, or when the answer lands.
+ */
+export function toRestoredStepEvents(runId, rows) {
+  const id = firstString(runId)
+  const events = []
+  const ordered = [...(Array.isArray(rows) ? rows : [])].sort(
+    (left, right) => (left?.sequence ?? 0) - (right?.sequence ?? 0),
+  )
+
+  for (const row of ordered) {
+    const sequence = positiveInt(row?.sequence)
+    if (!sequence) continue
+    const kind = firstString(row?.stepType ?? row?.step_type)
+    if (!isRestorableKind(kind)) continue
+    const toolName = firstString(row?.toolName ?? row?.tool_name)
+    const failed = firstString(row?.status).toLowerCase() === RESTORED_ROW_FAILED
+    const duration = Number(row?.durationMillis ?? row?.duration_millis)
+
+    events.push({
+      phase: StepPhase.Started,
+      runId: id,
+      sequence,
+      stepType: kind,
+      toolName: '',
+      content: '',
+      message: '',
+      durationMillis: null,
+      draft: null,
+    })
+
+    if (kind !== StepKind.Tool) continue
+
+    events.push({
+      phase: StepPhase.ToolStarted,
+      runId: id,
+      sequence,
+      stepType: '',
+      toolName,
+      content: '',
+      message: '',
+      durationMillis: null,
+      draft: null,
+    })
+
+    // A call that failed has no result frame on the wire, live or restored.
+    if (failed) continue
+
+    events.push({
+      phase: StepPhase.ToolResult,
+      runId: id,
+      sequence,
+      stepType: '',
+      toolName,
+      content: '',
+      message: '',
+      durationMillis: Number.isFinite(duration) && duration > 0 ? Math.floor(duration) : null,
+      draft: null,
+    })
+  }
+
+  return events
+}
+
+/**
+ * Close the steps the way the turn itself closed them.
+ *
+ * A finished turn closes what is still open when the answer lands. A failed turn
+ * closes it as failed and a cancelled one as cancelled — never with a result that was
+ * never sent. A turn that is still running keeps its last step open, because it is
+ * still running.
+ */
+function closeRestoredSteps(state, runStatus) {
+  switch (firstString(runStatus).toLowerCase()) {
+    case 'completed':
+      return completeSteps(state)
+    case 'failed':
+    case 'timeout':
+      return finishSteps(state, StepStatus.Failed)
+    case 'cancelled':
+      return finishSteps(state, StepStatus.Cancelled)
+    default:
+      return state
+  }
+}
+
+/**
+ * The steps the server itself recorded as failed.
+ *
+ * The live protocol has no frame that says "this one failed": a failed call simply
+ * never sends its result, and the turn's own failure closes the step. A stored row
+ * does say so, and the row is the better witness — so the status is set here, after
+ * the replay, without touching the reducer.
+ */
+function markRestoredFailures(state, rows) {
+  const failed = new Set()
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (firstString(row?.status).toLowerCase() !== RESTORED_ROW_FAILED) continue
+    const sequence = positiveInt(row?.sequence)
+    if (sequence) failed.add(sequence)
+  }
+  if (failed.size === 0) return state
+  const steps = state.steps.map((step) =>
+    failed.has(step.sequence) ? { ...step, status: StepStatus.Failed } : step,
+  )
+  return { ...state, steps }
+}
+
+/**
+ * Rebuild one turn's steps from the rows the store kept.
+ *
+ * The result is the same shape the live panel reads, so the same `stepRows` renders
+ * both — and a turn that was watched and a turn that is read back show the same
+ * things.
+ */
+export function restoreStepState({ runId = '', rows = [], runStatus = '' } = {}) {
+  const id = firstString(runId)
+  let state = createStepState({ clientRunId: id ? `restored-${id}` : 'restored' })
+  for (const event of toRestoredStepEvents(id, rows)) {
+    state = applyStepEvent(state, event)
+  }
+  state = closeRestoredSteps(state, runStatus)
+  return markRestoredFailures(state, rows)
 }
