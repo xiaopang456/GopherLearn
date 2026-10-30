@@ -1,0 +1,6846 @@
+[
+  {
+    "name": "validation/topk=-1",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "invalid RAG retrieval request",
+    "error_kinds": [
+      "invalid_request"
+    ],
+    "reason": "",
+    "loader_user_ids": [],
+    "embed_calls": [],
+    "vector_calls": [],
+    "lexical_calls": [],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "validation/topk=0",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "invalid RAG retrieval request",
+    "error_kinds": [
+      "invalid_request"
+    ],
+    "reason": "",
+    "loader_user_ids": [],
+    "embed_calls": [],
+    "vector_calls": [],
+    "lexical_calls": [],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "validation/topk=101",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "invalid RAG retrieval request",
+    "error_kinds": [
+      "invalid_request"
+    ],
+    "reason": "",
+    "loader_user_ids": [],
+    "embed_calls": [],
+    "vector_calls": [],
+    "lexical_calls": [],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "validation/topk=1000",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "invalid RAG retrieval request",
+    "error_kinds": [
+      "invalid_request"
+    ],
+    "reason": "",
+    "loader_user_ids": [],
+    "embed_calls": [],
+    "vector_calls": [],
+    "lexical_calls": [],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "validation/user=0",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "invalid RAG retrieval request",
+    "error_kinds": [
+      "invalid_request"
+    ],
+    "reason": "",
+    "loader_user_ids": [],
+    "embed_calls": [],
+    "vector_calls": [],
+    "lexical_calls": [],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "validation/user=-5",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "invalid RAG retrieval request",
+    "error_kinds": [
+      "invalid_request"
+    ],
+    "reason": "",
+    "loader_user_ids": [],
+    "embed_calls": [],
+    "vector_calls": [],
+    "lexical_calls": [],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "validation/query-empty",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "invalid RAG retrieval request",
+    "error_kinds": [
+      "invalid_request"
+    ],
+    "reason": "",
+    "loader_user_ids": [],
+    "embed_calls": [],
+    "vector_calls": [],
+    "lexical_calls": [],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "validation/query-blank",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "invalid RAG retrieval request",
+    "error_kinds": [
+      "invalid_request"
+    ],
+    "reason": "",
+    "loader_user_ids": [],
+    "embed_calls": [],
+    "vector_calls": [],
+    "lexical_calls": [],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "validation/query-is-trimmed",
+    "results_nil": false,
+    "result_count": 5,
+    "results": [
+      "chunk-10|vector+lexical|v11|l1|r0|false|0.929577|0.000000",
+      "chunk-11|vector+lexical|v12|l2|r0|false|0.915547|0.000000",
+      "chunk-12|vector+lexical|v13|l3|r0|false|0.901935|0.000000",
+      "chunk-13|vector+lexical|v14|l4|r0|false|0.888725|0.000000",
+      "chunk-14|vector+lexical|v15|l5|r0|false|0.875897|0.000000"
+    ],
+    "results_sha256": "44e12203833937c71a8d49aa333599344ba85ec6945f080f7e1fedc1da6b8e87",
+    "execution_ids": [
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "TTL 设置"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "TTL 设置",
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 5,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "validation/nil-context",
+    "results_nil": false,
+    "result_count": 5,
+    "results": [
+      "chunk-10|vector+lexical|v11|l1|r0|false|0.929577|0.000000",
+      "chunk-11|vector+lexical|v12|l2|r0|false|0.915547|0.000000",
+      "chunk-12|vector+lexical|v13|l3|r0|false|0.901935|0.000000",
+      "chunk-13|vector+lexical|v14|l4|r0|false|0.888725|0.000000",
+      "chunk-14|vector+lexical|v15|l5|r0|false|0.875897|0.000000"
+    ],
+    "results_sha256": "44e12203833937c71a8d49aa333599344ba85ec6945f080f7e1fedc1da6b8e87",
+    "execution_ids": [
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 5,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "validation/topk=1-is-valid",
+    "results_nil": false,
+    "result_count": 1,
+    "results": [
+      "chunk-10|vector+lexical|v11|l1|r0|false|0.929577|0.000000"
+    ],
+    "results_sha256": "c8df3d4492332fc34ffa0eb564958a914ca9f89b0d5980fffa8547465859d3ca",
+    "execution_ids": [
+      "exec-2"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 1,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "validation/topk=100-is-valid",
+    "results_nil": false,
+    "result_count": 50,
+    "results": [
+      "chunk-10|vector+lexical|v11|l1|r0|false|0.929577|0.000000",
+      "chunk-11|vector+lexical|v12|l2|r0|false|0.915547|0.000000",
+      "chunk-12|vector+lexical|v13|l3|r0|false|0.901935|0.000000",
+      "chunk-13|vector+lexical|v14|l4|r0|false|0.888725|0.000000",
+      "chunk-14|vector+lexical|v15|l5|r0|false|0.875897|0.000000",
+      "chunk-15|vector+lexical|v16|l6|r0|false|0.863437|0.000000",
+      "chunk-16|vector+lexical|v17|l7|r0|false|0.851328|0.000000",
+      "chunk-17|vector+lexical|v18|l8|r0|false|0.839555|0.000000",
+      "chunk-18|vector+lexical|v19|l9|r0|false|0.828105|0.000000",
+      "chunk-19|vector+lexical|v20|l10|r0|false|0.816964|0.000000",
+      "chunk-20|vector+lexical|v21|l11|r0|false|0.806121|0.000000",
+      "chunk-21|vector+lexical|v22|l12|r0|false|0.795562|0.000000",
+      "chunk-22|vector+lexical|v23|l13|r0|false|0.785278|0.000000",
+      "chunk-23|vector+lexical|v24|l14|r0|false|0.775257|0.000000",
+      "chunk-24|vector+lexical|v25|l15|r0|false|0.765490|0.000000",
+      "chunk-25|vector+lexical|v26|l16|r0|false|0.755967|0.000000",
+      "chunk-26|vector+lexical|v27|l17|r0|false|0.746679|0.000000",
+      "chunk-27|vector+lexical|v28|l18|r0|false|0.737617|0.000000",
+      "chunk-28|vector+lexical|v29|l19|r0|false|0.728773|0.000000",
+      "chunk-29|vector+lexical|v30|l20|r0|false|0.720139|0.000000",
+      "chunk-30|vector+lexical|v31|l21|r0|false|0.711708|0.000000",
+      "chunk-31|vector+lexical|v32|l22|r0|false|0.703473|0.000000",
+      "chunk-32|vector+lexical|v33|l23|r0|false|0.695427|0.000000",
+      "chunk-33|vector+lexical|v34|l24|r0|false|0.687563|0.000000",
+      "chunk-34|vector+lexical|v35|l25|r0|false|0.679876|0.000000",
+      "chunk-35|vector+lexical|v36|l26|r0|false|0.672359|0.000000",
+      "chunk-36|vector+lexical|v37|l27|r0|false|0.665008|0.000000",
+      "chunk-37|vector+lexical|v38|l28|r0|false|0.657815|0.000000",
+      "chunk-38|vector+lexical|v39|l29|r0|false|0.650777|0.000000",
+      "chunk-39|vector+lexical|v40|l30|r0|false|0.643889|0.000000",
+      "chunk-0|vector|v1|l0|r0|false|0.500000|0.000000",
+      "chunk-1|vector|v2|l0|r0|false|0.491935|0.000000",
+      "chunk-2|vector|v3|l0|r0|false|0.484127|0.000000",
+      "chunk-3|vector|v4|l0|r0|false|0.476562|0.000000",
+      "chunk-4|vector|v5|l0|r0|false|0.469231|0.000000",
+      "chunk-5|vector|v6|l0|r0|false|0.462121|0.000000",
+      "chunk-6|vector|v7|l0|r0|false|0.455224|0.000000",
+      "chunk-7|vector|v8|l0|r0|false|0.448529|0.000000",
+      "chunk-8|vector|v9|l0|r0|false|0.442029|0.000000",
+      "chunk-9|vector|v10|l0|r0|false|0.435714|0.000000",
+      "chunk-40|lexical|v0|l31|r0|false|0.335165|0.000000",
+      "chunk-41|lexical|v0|l32|r0|false|0.331522|0.000000",
+      "chunk-42|lexical|v0|l33|r0|false|0.327957|0.000000",
+      "chunk-43|lexical|v0|l34|r0|false|0.324468|0.000000",
+      "chunk-44|lexical|v0|l35|r0|false|0.321053|0.000000",
+      "chunk-45|lexical|v0|l36|r0|false|0.317708|0.000000",
+      "chunk-46|lexical|v0|l37|r0|false|0.314433|0.000000",
+      "chunk-47|lexical|v0|l38|r0|false|0.311224|0.000000",
+      "chunk-48|lexical|v0|l39|r0|false|0.308081|0.000000",
+      "chunk-49|lexical|v0|l40|r0|false|0.305000|0.000000"
+    ],
+    "results_sha256": "db809bd613f617efa370e604fdd49da6e8e94df444dc5e43ea32855deae7dd87",
+    "execution_ids": [
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 100,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 100,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 30,
+      "knowledge_candidate_total{match_kind=lexical}": 10,
+      "knowledge_candidate_total{match_kind=vector}": 10,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "active/empty-list",
+    "results_nil": false,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "execution_ids": [],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [],
+    "vector_calls": [],
+    "lexical_calls": [],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=no_evidence,reason=no_candidate}": 1
+    }
+  },
+  {
+    "name": "active/nil-list",
+    "results_nil": false,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "execution_ids": [],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [],
+    "vector_calls": [],
+    "lexical_calls": [],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=no_evidence,reason=no_candidate}": 1
+    }
+  },
+  {
+    "name": "active/loader-error",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval service unavailable: document_metadata_unavailable",
+    "error_kinds": [
+      "unavailable",
+      "scenario_load"
+    ],
+    "reason": "document_metadata_unavailable",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [],
+    "vector_calls": [],
+    "lexical_calls": [],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=unavailable,reason=document_metadata_unavailable}": 1
+    }
+  },
+  {
+    "name": "active/empty-doc-id",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: active document metadata is invalid",
+    "error_kinds": [
+      "failed"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [],
+    "vector_calls": [],
+    "lexical_calls": [],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "active/zero-version",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: active document metadata is invalid",
+    "error_kinds": [
+      "failed"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [],
+    "vector_calls": [],
+    "lexical_calls": [],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "active/single-document",
+    "results_nil": false,
+    "result_count": 5,
+    "results": [
+      "chunk-5|vector+lexical|v6|l1|r0|false|0.962121|0.000000",
+      "chunk-6|vector+lexical|v7|l2|r0|false|0.947159|0.000000",
+      "chunk-7|vector+lexical|v8|l3|r0|false|0.932656|0.000000",
+      "chunk-8|vector+lexical|v9|l4|r0|false|0.918591|0.000000",
+      "chunk-9|vector+lexical|v10|l5|r0|false|0.904945|0.000000"
+    ],
+    "results_sha256": "4593df0887db39e5ffa813522abedcfbf24a1ac257334714eed5e145c7fd199d",
+    "execution_ids": [
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 30,
+        "active": [
+          "doc-0=1"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 30,
+        "active": [
+          "doc-0=1"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 5,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "embed/error",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval service unavailable: embedding_unavailable",
+    "error_kinds": [
+      "unavailable",
+      "scenario_embed"
+    ],
+    "reason": "embedding_unavailable",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [],
+    "lexical_calls": [],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=unavailable,reason=embedding_unavailable}": 1
+    }
+  },
+  {
+    "name": "embed/wrapped-cancel-live-context",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval service unavailable: embedding_unavailable",
+    "error_kinds": [
+      "unavailable",
+      "context_canceled"
+    ],
+    "reason": "embedding_unavailable",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [],
+    "lexical_calls": [],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=unavailable,reason=embedding_unavailable}": 1
+    }
+  },
+  {
+    "name": "embed/wrapped-cancel-cancelled-context",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: embed query: wrapped embedder: context canceled",
+    "error_kinds": [
+      "failed",
+      "context_canceled"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [],
+    "lexical_calls": [],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "embed/wrong-vector-count",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: query embedder returned 2 vectors",
+    "error_kinds": [
+      "failed"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [],
+    "lexical_calls": [],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "embed/wrong-dimension",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: query vector dimension is 3, want 4",
+    "error_kinds": [
+      "failed"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [],
+    "lexical_calls": [],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "embed/nan-component",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: query vector value 0 is not finite",
+    "error_kinds": [
+      "failed"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [],
+    "lexical_calls": [],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "embed/waits-then-deadline",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval service unavailable: embedding_unavailable",
+    "error_kinds": [
+      "unavailable",
+      "context_deadline"
+    ],
+    "reason": "embedding_unavailable",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [],
+    "lexical_calls": [],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=unavailable,reason=embedding_unavailable}": 1
+    }
+  },
+  {
+    "name": "embed/waits-then-cancelled-context",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: embed query: context canceled",
+    "error_kinds": [
+      "failed",
+      "context_canceled"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [],
+    "lexical_calls": [],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "search/vector-error",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval service unavailable: vector_unavailable",
+    "error_kinds": [
+      "unavailable",
+      "scenario_vector"
+    ],
+    "reason": "vector_unavailable",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=unavailable,reason=vector_unavailable}": 1
+    }
+  },
+  {
+    "name": "search/lexical-error",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval service unavailable: lexical_unavailable",
+    "error_kinds": [
+      "unavailable",
+      "scenario_lexical"
+    ],
+    "reason": "lexical_unavailable",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=unavailable,reason=lexical_unavailable}": 1
+    }
+  },
+  {
+    "name": "search/both-error-vector-wins",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval service unavailable: vector_unavailable",
+    "error_kinds": [
+      "unavailable",
+      "scenario_vector"
+    ],
+    "reason": "vector_unavailable",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=unavailable,reason=vector_unavailable}": 1
+    }
+  },
+  {
+    "name": "search/vector-wrapped-cancel-cancelled-context",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: vector search: vector wrapped: context canceled",
+    "error_kinds": [
+      "failed",
+      "context_canceled"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "search/lexical-wrapped-cancel-cancelled-context",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: lexical search: lexical wrapped: context canceled",
+    "error_kinds": [
+      "failed",
+      "context_canceled"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "search/vector-wrapped-cancel-live-context",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval service unavailable: vector_unavailable",
+    "error_kinds": [
+      "unavailable",
+      "context_canceled"
+    ],
+    "reason": "vector_unavailable",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=unavailable,reason=vector_unavailable}": 1
+    }
+  },
+  {
+    "name": "version/stale-vector-rows",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: searcher returned a non-active document version",
+    "error_kinds": [
+      "failed"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "version/stale-lexical-rows",
+    "results_nil": false,
+    "result_count": 5,
+    "results": [
+      "chunk-10|vector+lexical|v11|l1|r0|false|0.929577|0.000000",
+      "chunk-11|vector+lexical|v12|l2|r0|false|0.915547|0.000000",
+      "chunk-12|vector+lexical|v13|l3|r0|false|0.901935|0.000000",
+      "chunk-13|vector+lexical|v14|l4|r0|false|0.888725|0.000000",
+      "chunk-14|vector+lexical|v15|l5|r0|false|0.875897|0.000000"
+    ],
+    "results_sha256": "44e12203833937c71a8d49aa333599344ba85ec6945f080f7e1fedc1da6b8e87",
+    "execution_ids": [
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 5,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "version/row-of-inactive-document",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: searcher returned a non-active document version",
+    "error_kinds": [
+      "failed"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "fusion/overlap/topk=1",
+    "results_nil": false,
+    "result_count": 1,
+    "results": [
+      "chunk-20|vector+lexical|v21|l1|r0|false|0.876543|0.000000"
+    ],
+    "results_sha256": "29d4eda1b6a7d32652efdbebf19a2bda5406e774ebd5b9ee12390bd1702d8d78",
+    "execution_ids": [
+      "exec-0"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 1,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "fusion/vector-only/topk=1",
+    "results_nil": false,
+    "result_count": 1,
+    "results": [
+      "chunk-0|vector|v1|l0|r0|false|1.000000|0.000000"
+    ],
+    "results_sha256": "2a8666f0d31872b667d99eaf52cb88210cfbd4520eeed742e3eaaff92b534060",
+    "execution_ids": [
+      "exec-0"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=vector}": 1,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "fusion/lexical-only/topk=1",
+    "results_nil": false,
+    "result_count": 1,
+    "results": [
+      "chunk-0|lexical|v0|l1|r0|false|0.500000|0.000000"
+    ],
+    "results_sha256": "b50366b320c79e4d8306cb877bdb4ec5b6ad66b29b3e29fa6b9caa2db22527ed",
+    "execution_ids": [
+      "exec-0"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=lexical}": 1,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "fusion/duplicates-and-missing-keys/topk=1",
+    "results_nil": false,
+    "result_count": 1,
+    "results": [
+      "chunk-5|vector+lexical|v26|l26|r0|false|1.209302|0.000000"
+    ],
+    "results_sha256": "f66e2cc9cac51e73d49708d257efed3087218e5be053cc00ee0f38b5fcdddc26",
+    "execution_ids": [
+      "exec-1"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 1,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "fusion/no-candidates/topk=1",
+    "results_nil": false,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "execution_ids": [],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=no_evidence,reason=no_candidate}": 1
+    }
+  },
+  {
+    "name": "fusion/overlap/topk=5",
+    "results_nil": false,
+    "result_count": 5,
+    "results": [
+      "chunk-20|vector+lexical|v21|l1|r0|false|0.876543|0.000000",
+      "chunk-21|vector+lexical|v22|l2|r0|false|0.863887|0.000000",
+      "chunk-22|vector+lexical|v23|l3|r0|false|0.851597|0.000000",
+      "chunk-23|vector+lexical|v24|l4|r0|false|0.839658|0.000000",
+      "chunk-24|vector+lexical|v25|l5|r0|false|0.828054|0.000000"
+    ],
+    "results_sha256": "88cc2b55fdab082d8962b0b6476be6fa33b87757c4acf56093480a26d45c775e",
+    "execution_ids": [
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 5,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "fusion/vector-only/topk=5",
+    "results_nil": false,
+    "result_count": 5,
+    "results": [
+      "chunk-0|vector|v1|l0|r0|false|1.000000|0.000000",
+      "chunk-1|vector|v2|l0|r0|false|0.983871|0.000000",
+      "chunk-2|vector|v3|l0|r0|false|0.968254|0.000000",
+      "chunk-3|vector|v4|l0|r0|false|0.953125|0.000000",
+      "chunk-4|vector|v5|l0|r0|false|0.938462|0.000000"
+    ],
+    "results_sha256": "084e5f0067f7dfdcd59ac2e7de50f3c0ac690e69e38dcb8b75e32a708e0f70df",
+    "execution_ids": [
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=vector}": 5,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "fusion/lexical-only/topk=5",
+    "results_nil": false,
+    "result_count": 5,
+    "results": [
+      "chunk-0|lexical|v0|l1|r0|false|0.500000|0.000000",
+      "chunk-1|lexical|v0|l2|r0|false|0.491935|0.000000",
+      "chunk-2|lexical|v0|l3|r0|false|0.484127|0.000000",
+      "chunk-3|lexical|v0|l4|r0|false|0.476562|0.000000",
+      "chunk-4|lexical|v0|l5|r0|false|0.469231|0.000000"
+    ],
+    "results_sha256": "ddcc6d623533a56c7977dcc842fed85911b84337d9202a958174fcbc717ee9d8",
+    "execution_ids": [
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=lexical}": 5,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "fusion/duplicates-and-missing-keys/topk=5",
+    "results_nil": false,
+    "result_count": 5,
+    "results": [
+      "chunk-5|vector+lexical|v26|l26|r0|false|1.209302|0.000000",
+      "chunk-6|vector+lexical|v27|l27|r0|false|1.193085|0.000000",
+      "chunk-7|vector+lexical|v28|l28|r0|false|1.177309|0.000000",
+      "chunk-8|vector+lexical|v29|l29|r0|false|1.161956|0.000000",
+      "chunk-9|vector+lexical|v30|l30|r0|false|1.147009|0.000000"
+    ],
+    "results_sha256": "8039b19d629f0a4f47f25d07c9ac8f2bf22111396a2a04c284f5cf3dcd4c5890",
+    "execution_ids": [
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 5,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "fusion/no-candidates/topk=5",
+    "results_nil": false,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "execution_ids": [],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 30,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=no_evidence,reason=no_candidate}": 1
+    }
+  },
+  {
+    "name": "fusion/overlap/topk=8",
+    "results_nil": false,
+    "result_count": 8,
+    "results": [
+      "chunk-20|vector+lexical|v21|l1|r0|false|0.876543|0.000000",
+      "chunk-21|vector+lexical|v22|l2|r0|false|0.863887|0.000000",
+      "chunk-22|vector+lexical|v23|l3|r0|false|0.851597|0.000000",
+      "chunk-23|vector+lexical|v24|l4|r0|false|0.839658|0.000000",
+      "chunk-24|vector+lexical|v25|l5|r0|false|0.828054|0.000000",
+      "chunk-25|vector+lexical|v26|l6|r0|false|0.816772|0.000000",
+      "chunk-26|vector+lexical|v27|l7|r0|false|0.805799|0.000000",
+      "chunk-27|vector+lexical|v28|l8|r0|false|0.795120|0.000000"
+    ],
+    "results_sha256": "6120b9dc82f1e9f3235ed0b7d1592142b1d9e5132e1693aae7eb912122e891bc",
+    "execution_ids": [
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 8,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "fusion/vector-only/topk=8",
+    "results_nil": false,
+    "result_count": 8,
+    "results": [
+      "chunk-0|vector|v1|l0|r0|false|1.000000|0.000000",
+      "chunk-1|vector|v2|l0|r0|false|0.983871|0.000000",
+      "chunk-2|vector|v3|l0|r0|false|0.968254|0.000000",
+      "chunk-3|vector|v4|l0|r0|false|0.953125|0.000000",
+      "chunk-4|vector|v5|l0|r0|false|0.938462|0.000000",
+      "chunk-5|vector|v6|l0|r0|false|0.924242|0.000000",
+      "chunk-6|vector|v7|l0|r0|false|0.910448|0.000000",
+      "chunk-7|vector|v8|l0|r0|false|0.897059|0.000000"
+    ],
+    "results_sha256": "235d88fbb2a90af50beaa88c5a9af5784eeceb9f4409b7527d63ff0b24a0089b",
+    "execution_ids": [
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=vector}": 8,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "fusion/lexical-only/topk=8",
+    "results_nil": false,
+    "result_count": 8,
+    "results": [
+      "chunk-0|lexical|v0|l1|r0|false|0.500000|0.000000",
+      "chunk-1|lexical|v0|l2|r0|false|0.491935|0.000000",
+      "chunk-2|lexical|v0|l3|r0|false|0.484127|0.000000",
+      "chunk-3|lexical|v0|l4|r0|false|0.476562|0.000000",
+      "chunk-4|lexical|v0|l5|r0|false|0.469231|0.000000",
+      "chunk-5|lexical|v0|l6|r0|false|0.462121|0.000000",
+      "chunk-6|lexical|v0|l7|r0|false|0.455224|0.000000",
+      "chunk-7|lexical|v0|l8|r0|false|0.448529|0.000000"
+    ],
+    "results_sha256": "9ed87637f104dd19a33ee124a61a1796d0df2f4bfcc0d15edcd8abd9691879e5",
+    "execution_ids": [
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=lexical}": 8,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "fusion/duplicates-and-missing-keys/topk=8",
+    "results_nil": false,
+    "result_count": 8,
+    "results": [
+      "chunk-5|vector+lexical|v26|l26|r0|false|1.209302|0.000000",
+      "chunk-6|vector+lexical|v27|l27|r0|false|1.193085|0.000000",
+      "chunk-7|vector+lexical|v28|l28|r0|false|1.177309|0.000000",
+      "chunk-8|vector+lexical|v29|l29|r0|false|1.161956|0.000000",
+      "chunk-9|vector+lexical|v30|l30|r0|false|1.147009|0.000000",
+      "chunk-10|vector+lexical|v31|l31|r0|false|1.132451|0.000000",
+      "chunk-11|vector+lexical|v32|l32|r0|false|1.118267|0.000000",
+      "chunk-12|vector+lexical|v13|l8|r0|false|0.866338|0.000000"
+    ],
+    "results_sha256": "38c1b883102c53003191df32366e1d536df6fee9048345819264975261d5cb3b",
+    "execution_ids": [
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 8,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "fusion/no-candidates/topk=8",
+    "results_nil": false,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "execution_ids": [],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=no_evidence,reason=no_candidate}": 1
+    }
+  },
+  {
+    "name": "fusion/overlap/topk=9",
+    "results_nil": false,
+    "result_count": 9,
+    "results": [
+      "chunk-20|vector+lexical|v21|l1|r0|false|0.876543|0.000000",
+      "chunk-21|vector+lexical|v22|l2|r0|false|0.863887|0.000000",
+      "chunk-22|vector+lexical|v23|l3|r0|false|0.851597|0.000000",
+      "chunk-23|vector+lexical|v24|l4|r0|false|0.839658|0.000000",
+      "chunk-24|vector+lexical|v25|l5|r0|false|0.828054|0.000000",
+      "chunk-25|vector+lexical|v26|l6|r0|false|0.816772|0.000000",
+      "chunk-26|vector+lexical|v27|l7|r0|false|0.805799|0.000000",
+      "chunk-27|vector+lexical|v28|l8|r0|false|0.795120|0.000000",
+      "chunk-28|vector+lexical|v29|l9|r0|false|0.784726|0.000000"
+    ],
+    "results_sha256": "bfa000cc8f3603f74eccfba5e7a87308070786bf9f1161b1a05b3f9042f03414",
+    "execution_ids": [
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 54,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 54,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 9,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "fusion/vector-only/topk=9",
+    "results_nil": false,
+    "result_count": 9,
+    "results": [
+      "chunk-0|vector|v1|l0|r0|false|1.000000|0.000000",
+      "chunk-1|vector|v2|l0|r0|false|0.983871|0.000000",
+      "chunk-2|vector|v3|l0|r0|false|0.968254|0.000000",
+      "chunk-3|vector|v4|l0|r0|false|0.953125|0.000000",
+      "chunk-4|vector|v5|l0|r0|false|0.938462|0.000000",
+      "chunk-5|vector|v6|l0|r0|false|0.924242|0.000000",
+      "chunk-6|vector|v7|l0|r0|false|0.910448|0.000000",
+      "chunk-7|vector|v8|l0|r0|false|0.897059|0.000000",
+      "chunk-8|vector|v9|l0|r0|false|0.884058|0.000000"
+    ],
+    "results_sha256": "05e25f9cc4df5de41badb2d59ec7a0e775697a8841a7d6516e7852388d112e50",
+    "execution_ids": [
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 54,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 54,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=vector}": 9,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "fusion/lexical-only/topk=9",
+    "results_nil": false,
+    "result_count": 9,
+    "results": [
+      "chunk-0|lexical|v0|l1|r0|false|0.500000|0.000000",
+      "chunk-1|lexical|v0|l2|r0|false|0.491935|0.000000",
+      "chunk-2|lexical|v0|l3|r0|false|0.484127|0.000000",
+      "chunk-3|lexical|v0|l4|r0|false|0.476562|0.000000",
+      "chunk-4|lexical|v0|l5|r0|false|0.469231|0.000000",
+      "chunk-5|lexical|v0|l6|r0|false|0.462121|0.000000",
+      "chunk-6|lexical|v0|l7|r0|false|0.455224|0.000000",
+      "chunk-7|lexical|v0|l8|r0|false|0.448529|0.000000",
+      "chunk-8|lexical|v0|l9|r0|false|0.442029|0.000000"
+    ],
+    "results_sha256": "6a1183e97d7f8c15c232b8eb34a7247dd10e6b7c5c1eaf1a575402090e9303c6",
+    "execution_ids": [
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 54,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 54,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=lexical}": 9,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "fusion/duplicates-and-missing-keys/topk=9",
+    "results_nil": false,
+    "result_count": 9,
+    "results": [
+      "chunk-5|vector+lexical|v26|l26|r0|false|1.209302|0.000000",
+      "chunk-6|vector+lexical|v27|l27|r0|false|1.193085|0.000000",
+      "chunk-7|vector+lexical|v28|l28|r0|false|1.177309|0.000000",
+      "chunk-8|vector+lexical|v29|l29|r0|false|1.161956|0.000000",
+      "chunk-9|vector+lexical|v30|l30|r0|false|1.147009|0.000000",
+      "chunk-10|vector+lexical|v31|l31|r0|false|1.132451|0.000000",
+      "chunk-11|vector+lexical|v32|l32|r0|false|1.118267|0.000000",
+      "chunk-12|vector+lexical|v13|l8|r0|false|0.866338|0.000000",
+      "chunk-13|vector+lexical|v14|l9|r0|false|0.854191|0.000000"
+    ],
+    "results_sha256": "cbbdf194b70d1bd6f93e94306f542ed06a2aa47abb9dc58fa94a3eff8e28ffe5",
+    "execution_ids": [
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 54,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 54,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 9,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "fusion/no-candidates/topk=9",
+    "results_nil": false,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "execution_ids": [],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 54,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 54,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=no_evidence,reason=no_candidate}": 1
+    }
+  },
+  {
+    "name": "fusion/overlap/topk=30",
+    "results_nil": false,
+    "result_count": 30,
+    "results": [
+      "chunk-20|vector+lexical|v21|l1|r0|false|0.876543|0.000000",
+      "chunk-21|vector+lexical|v22|l2|r0|false|0.863887|0.000000",
+      "chunk-22|vector+lexical|v23|l3|r0|false|0.851597|0.000000",
+      "chunk-23|vector+lexical|v24|l4|r0|false|0.839658|0.000000",
+      "chunk-24|vector+lexical|v25|l5|r0|false|0.828054|0.000000",
+      "chunk-25|vector+lexical|v26|l6|r0|false|0.816772|0.000000",
+      "chunk-26|vector+lexical|v27|l7|r0|false|0.805799|0.000000",
+      "chunk-27|vector+lexical|v28|l8|r0|false|0.795120|0.000000",
+      "chunk-28|vector+lexical|v29|l9|r0|false|0.784726|0.000000",
+      "chunk-29|vector+lexical|v30|l10|r0|false|0.774603|0.000000",
+      "chunk-30|vector+lexical|v31|l11|r0|false|0.764742|0.000000",
+      "chunk-31|vector+lexical|v32|l12|r0|false|0.755133|0.000000",
+      "chunk-32|vector+lexical|v33|l13|r0|false|0.745765|0.000000",
+      "chunk-33|vector+lexical|v34|l14|r0|false|0.736630|0.000000",
+      "chunk-34|vector+lexical|v35|l15|r0|false|0.727719|0.000000",
+      "chunk-35|vector+lexical|v36|l16|r0|false|0.719024|0.000000",
+      "chunk-36|vector+lexical|v37|l17|r0|false|0.710537|0.000000",
+      "chunk-37|vector+lexical|v38|l18|r0|false|0.702250|0.000000",
+      "chunk-38|vector+lexical|v39|l19|r0|false|0.694157|0.000000",
+      "chunk-39|vector+lexical|v40|l20|r0|false|0.686250|0.000000",
+      "chunk-40|vector+lexical|v41|l21|r0|false|0.678523|0.000000",
+      "chunk-41|vector+lexical|v42|l22|r0|false|0.670971|0.000000",
+      "chunk-42|vector+lexical|v43|l23|r0|false|0.663586|0.000000",
+      "chunk-43|vector+lexical|v44|l24|r0|false|0.656364|0.000000",
+      "chunk-44|vector+lexical|v45|l25|r0|false|0.649300|0.000000",
+      "chunk-45|vector+lexical|v46|l26|r0|false|0.642387|0.000000",
+      "chunk-46|vector+lexical|v47|l27|r0|false|0.635621|0.000000",
+      "chunk-47|vector+lexical|v48|l28|r0|false|0.628998|0.000000",
+      "chunk-48|vector+lexical|v49|l29|r0|false|0.622513|0.000000",
+      "chunk-49|vector+lexical|v50|l30|r0|false|0.616162|0.000000"
+    ],
+    "results_sha256": "a73959719a362300d18f90bb47000e3084783d2b6e0bd06f65ebd9dfb04a484c",
+    "execution_ids": [
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 100,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 100,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 30,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "fusion/vector-only/topk=30",
+    "results_nil": false,
+    "result_count": 30,
+    "results": [
+      "chunk-0|vector|v1|l0|r0|false|1.000000|0.000000",
+      "chunk-1|vector|v2|l0|r0|false|0.983871|0.000000",
+      "chunk-2|vector|v3|l0|r0|false|0.968254|0.000000",
+      "chunk-3|vector|v4|l0|r0|false|0.953125|0.000000",
+      "chunk-4|vector|v5|l0|r0|false|0.938462|0.000000",
+      "chunk-5|vector|v6|l0|r0|false|0.924242|0.000000",
+      "chunk-6|vector|v7|l0|r0|false|0.910448|0.000000",
+      "chunk-7|vector|v8|l0|r0|false|0.897059|0.000000",
+      "chunk-8|vector|v9|l0|r0|false|0.884058|0.000000",
+      "chunk-9|vector|v10|l0|r0|false|0.871429|0.000000",
+      "chunk-10|vector|v11|l0|r0|false|0.859155|0.000000",
+      "chunk-11|vector|v12|l0|r0|false|0.847222|0.000000",
+      "chunk-12|vector|v13|l0|r0|false|0.835616|0.000000",
+      "chunk-13|vector|v14|l0|r0|false|0.824324|0.000000",
+      "chunk-14|vector|v15|l0|r0|false|0.813333|0.000000",
+      "chunk-15|vector|v16|l0|r0|false|0.802632|0.000000",
+      "chunk-16|vector|v17|l0|r0|false|0.792208|0.000000",
+      "chunk-17|vector|v18|l0|r0|false|0.782051|0.000000",
+      "chunk-18|vector|v19|l0|r0|false|0.772152|0.000000",
+      "chunk-19|vector|v20|l0|r0|false|0.762500|0.000000",
+      "chunk-20|vector|v21|l0|r0|false|0.753086|0.000000",
+      "chunk-21|vector|v22|l0|r0|false|0.743902|0.000000",
+      "chunk-22|vector|v23|l0|r0|false|0.734940|0.000000",
+      "chunk-23|vector|v24|l0|r0|false|0.726190|0.000000",
+      "chunk-24|vector|v25|l0|r0|false|0.717647|0.000000",
+      "chunk-25|vector|v26|l0|r0|false|0.709302|0.000000",
+      "chunk-26|vector|v27|l0|r0|false|0.701149|0.000000",
+      "chunk-27|vector|v28|l0|r0|false|0.693182|0.000000",
+      "chunk-28|vector|v29|l0|r0|false|0.685393|0.000000",
+      "chunk-29|vector|v30|l0|r0|false|0.677778|0.000000"
+    ],
+    "results_sha256": "6ab3ce6e7c5a922ae917c70208d0948987ba77b65e4a1f829206c0936f05c7c1",
+    "execution_ids": [
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 100,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 100,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=vector}": 30,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "fusion/lexical-only/topk=30",
+    "results_nil": false,
+    "result_count": 30,
+    "results": [
+      "chunk-0|lexical|v0|l1|r0|false|0.500000|0.000000",
+      "chunk-1|lexical|v0|l2|r0|false|0.491935|0.000000",
+      "chunk-2|lexical|v0|l3|r0|false|0.484127|0.000000",
+      "chunk-3|lexical|v0|l4|r0|false|0.476562|0.000000",
+      "chunk-4|lexical|v0|l5|r0|false|0.469231|0.000000",
+      "chunk-5|lexical|v0|l6|r0|false|0.462121|0.000000",
+      "chunk-6|lexical|v0|l7|r0|false|0.455224|0.000000",
+      "chunk-7|lexical|v0|l8|r0|false|0.448529|0.000000",
+      "chunk-8|lexical|v0|l9|r0|false|0.442029|0.000000",
+      "chunk-9|lexical|v0|l10|r0|false|0.435714|0.000000",
+      "chunk-10|lexical|v0|l11|r0|false|0.429577|0.000000",
+      "chunk-11|lexical|v0|l12|r0|false|0.423611|0.000000",
+      "chunk-12|lexical|v0|l13|r0|false|0.417808|0.000000",
+      "chunk-13|lexical|v0|l14|r0|false|0.412162|0.000000",
+      "chunk-14|lexical|v0|l15|r0|false|0.406667|0.000000",
+      "chunk-15|lexical|v0|l16|r0|false|0.401316|0.000000",
+      "chunk-16|lexical|v0|l17|r0|false|0.396104|0.000000",
+      "chunk-17|lexical|v0|l18|r0|false|0.391026|0.000000",
+      "chunk-18|lexical|v0|l19|r0|false|0.386076|0.000000",
+      "chunk-19|lexical|v0|l20|r0|false|0.381250|0.000000",
+      "chunk-20|lexical|v0|l21|r0|false|0.376543|0.000000",
+      "chunk-21|lexical|v0|l22|r0|false|0.371951|0.000000",
+      "chunk-22|lexical|v0|l23|r0|false|0.367470|0.000000",
+      "chunk-23|lexical|v0|l24|r0|false|0.363095|0.000000",
+      "chunk-24|lexical|v0|l25|r0|false|0.358824|0.000000",
+      "chunk-25|lexical|v0|l26|r0|false|0.354651|0.000000",
+      "chunk-26|lexical|v0|l27|r0|false|0.350575|0.000000",
+      "chunk-27|lexical|v0|l28|r0|false|0.346591|0.000000",
+      "chunk-28|lexical|v0|l29|r0|false|0.342697|0.000000",
+      "chunk-29|lexical|v0|l30|r0|false|0.338889|0.000000"
+    ],
+    "results_sha256": "bc2a2c3cbbeb361b2dc72b239e0c6c28773f5807606d2654f4ab49aeadca1422",
+    "execution_ids": [
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 100,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 100,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=lexical}": 30,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "fusion/duplicates-and-missing-keys/topk=30",
+    "results_nil": false,
+    "result_count": 25,
+    "results": [
+      "chunk-5|vector+lexical|v26|l26|r0|false|1.209302|0.000000",
+      "chunk-6|vector+lexical|v27|l27|r0|false|1.193085|0.000000",
+      "chunk-7|vector+lexical|v28|l28|r0|false|1.177309|0.000000",
+      "chunk-8|vector+lexical|v29|l29|r0|false|1.161956|0.000000",
+      "chunk-9|vector+lexical|v30|l30|r0|false|1.147009|0.000000",
+      "chunk-10|vector+lexical|v31|l31|r0|false|1.132451|0.000000",
+      "chunk-11|vector+lexical|v32|l32|r0|false|1.118267|0.000000",
+      "chunk-12|vector+lexical|v13|l8|r0|false|0.866338|0.000000",
+      "chunk-13|vector+lexical|v14|l9|r0|false|0.854191|0.000000",
+      "chunk-14|vector+lexical|v15|l10|r0|false|0.842381|0.000000",
+      "chunk-15|vector+lexical|v16|l11|r0|false|0.830893|0.000000",
+      "chunk-16|vector+lexical|v17|l12|r0|false|0.819715|0.000000",
+      "chunk-17|vector+lexical|v18|l13|r0|false|0.808834|0.000000",
+      "chunk-18|vector+lexical|v19|l14|r0|false|0.798238|0.000000",
+      "chunk-19|vector+lexical|v20|l15|r0|false|0.787917|0.000000",
+      "chunk-0|vector+lexical|v21|l21|r0|false|0.753086|0.000000",
+      "chunk-1|vector+lexical|v22|l22|r0|false|0.743902|0.000000",
+      "chunk-2|vector+lexical|v23|l23|r0|false|0.734940|0.000000",
+      "chunk-3|vector+lexical|v24|l24|r0|false|0.726190|0.000000",
+      "chunk-4|vector+lexical|v25|l25|r0|false|0.717647|0.000000",
+      "chunk-20|lexical|v0|l16|r0|false|0.401316|0.000000",
+      "chunk-21|lexical|v0|l17|r0|false|0.396104|0.000000",
+      "chunk-22|lexical|v0|l18|r0|false|0.391026|0.000000",
+      "chunk-23|lexical|v0|l19|r0|false|0.386076|0.000000",
+      "chunk-24|lexical|v0|l20|r0|false|0.381250|0.000000"
+    ],
+    "results_sha256": "7490546554af9dd1e5a58bcf25b2ac5d1b7ed3ab77ad99d7f022f373db7548fb",
+    "execution_ids": [
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 100,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 100,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 20,
+      "knowledge_candidate_total{match_kind=lexical}": 5,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "fusion/no-candidates/topk=30",
+    "results_nil": false,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "execution_ids": [],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 100,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 100,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=no_evidence,reason=no_candidate}": 1
+    }
+  },
+  {
+    "name": "fusion/overlap/topk=100",
+    "results_nil": false,
+    "result_count": 80,
+    "results": [
+      "chunk-20|vector+lexical|v21|l1|r0|false|0.876543|0.000000",
+      "chunk-21|vector+lexical|v22|l2|r0|false|0.863887|0.000000",
+      "chunk-22|vector+lexical|v23|l3|r0|false|0.851597|0.000000",
+      "chunk-23|vector+lexical|v24|l4|r0|false|0.839658|0.000000",
+      "chunk-24|vector+lexical|v25|l5|r0|false|0.828054|0.000000",
+      "chunk-25|vector+lexical|v26|l6|r0|false|0.816772|0.000000",
+      "chunk-26|vector+lexical|v27|l7|r0|false|0.805799|0.000000",
+      "chunk-27|vector+lexical|v28|l8|r0|false|0.795120|0.000000",
+      "chunk-28|vector+lexical|v29|l9|r0|false|0.784726|0.000000",
+      "chunk-29|vector+lexical|v30|l10|r0|false|0.774603|0.000000",
+      "chunk-30|vector+lexical|v31|l11|r0|false|0.764742|0.000000",
+      "chunk-31|vector+lexical|v32|l12|r0|false|0.755133|0.000000",
+      "chunk-32|vector+lexical|v33|l13|r0|false|0.745765|0.000000",
+      "chunk-33|vector+lexical|v34|l14|r0|false|0.736630|0.000000",
+      "chunk-34|vector+lexical|v35|l15|r0|false|0.727719|0.000000",
+      "chunk-35|vector+lexical|v36|l16|r0|false|0.719024|0.000000",
+      "chunk-36|vector+lexical|v37|l17|r0|false|0.710537|0.000000",
+      "chunk-37|vector+lexical|v38|l18|r0|false|0.702250|0.000000",
+      "chunk-38|vector+lexical|v39|l19|r0|false|0.694157|0.000000",
+      "chunk-39|vector+lexical|v40|l20|r0|false|0.686250|0.000000",
+      "chunk-40|vector+lexical|v41|l21|r0|false|0.678523|0.000000",
+      "chunk-41|vector+lexical|v42|l22|r0|false|0.670971|0.000000",
+      "chunk-42|vector+lexical|v43|l23|r0|false|0.663586|0.000000",
+      "chunk-43|vector+lexical|v44|l24|r0|false|0.656364|0.000000",
+      "chunk-44|vector+lexical|v45|l25|r0|false|0.649300|0.000000",
+      "chunk-45|vector+lexical|v46|l26|r0|false|0.642387|0.000000",
+      "chunk-46|vector+lexical|v47|l27|r0|false|0.635621|0.000000",
+      "chunk-47|vector+lexical|v48|l28|r0|false|0.628998|0.000000",
+      "chunk-48|vector+lexical|v49|l29|r0|false|0.622513|0.000000",
+      "chunk-49|vector+lexical|v50|l30|r0|false|0.616162|0.000000",
+      "chunk-50|vector+lexical|v51|l31|r0|false|0.609940|0.000000",
+      "chunk-51|vector+lexical|v52|l32|r0|false|0.603843|0.000000",
+      "chunk-52|vector+lexical|v53|l33|r0|false|0.597868|0.000000",
+      "chunk-53|vector+lexical|v54|l34|r0|false|0.592012|0.000000",
+      "chunk-54|vector+lexical|v55|l35|r0|false|0.586270|0.000000",
+      "chunk-55|vector+lexical|v56|l36|r0|false|0.580639|0.000000",
+      "chunk-56|vector+lexical|v57|l37|r0|false|0.575117|0.000000",
+      "chunk-57|vector+lexical|v58|l38|r0|false|0.569699|0.000000",
+      "chunk-58|vector+lexical|v59|l39|r0|false|0.564383|0.000000",
+      "chunk-59|vector+lexical|v60|l40|r0|false|0.559167|0.000000",
+      "chunk-0|vector|v1|l0|r0|false|0.500000|0.000000",
+      "chunk-1|vector|v2|l0|r0|false|0.491935|0.000000",
+      "chunk-2|vector|v3|l0|r0|false|0.484127|0.000000",
+      "chunk-3|vector|v4|l0|r0|false|0.476562|0.000000",
+      "chunk-4|vector|v5|l0|r0|false|0.469231|0.000000",
+      "chunk-5|vector|v6|l0|r0|false|0.462121|0.000000",
+      "chunk-6|vector|v7|l0|r0|false|0.455224|0.000000",
+      "chunk-7|vector|v8|l0|r0|false|0.448529|0.000000",
+      "chunk-8|vector|v9|l0|r0|false|0.442029|0.000000",
+      "chunk-9|vector|v10|l0|r0|false|0.435714|0.000000",
+      "chunk-10|vector|v11|l0|r0|false|0.429577|0.000000",
+      "chunk-11|vector|v12|l0|r0|false|0.423611|0.000000",
+      "chunk-12|vector|v13|l0|r0|false|0.417808|0.000000",
+      "chunk-13|vector|v14|l0|r0|false|0.412162|0.000000",
+      "chunk-14|vector|v15|l0|r0|false|0.406667|0.000000",
+      "chunk-15|vector|v16|l0|r0|false|0.401316|0.000000",
+      "chunk-16|vector|v17|l0|r0|false|0.396104|0.000000",
+      "chunk-17|vector|v18|l0|r0|false|0.391026|0.000000",
+      "chunk-18|vector|v19|l0|r0|false|0.386076|0.000000",
+      "chunk-19|vector|v20|l0|r0|false|0.381250|0.000000",
+      "chunk-60|lexical|v0|l41|r0|false|0.301980|0.000000",
+      "chunk-61|lexical|v0|l42|r0|false|0.299020|0.000000",
+      "chunk-62|lexical|v0|l43|r0|false|0.296117|0.000000",
+      "chunk-63|lexical|v0|l44|r0|false|0.293269|0.000000",
+      "chunk-64|lexical|v0|l45|r0|false|0.290476|0.000000",
+      "chunk-65|lexical|v0|l46|r0|false|0.287736|0.000000",
+      "chunk-66|lexical|v0|l47|r0|false|0.285047|0.000000",
+      "chunk-67|lexical|v0|l48|r0|false|0.282407|0.000000",
+      "chunk-68|lexical|v0|l49|r0|false|0.279817|0.000000",
+      "chunk-69|lexical|v0|l50|r0|false|0.277273|0.000000",
+      "chunk-70|lexical|v0|l51|r0|false|0.274775|0.000000",
+      "chunk-71|lexical|v0|l52|r0|false|0.272321|0.000000",
+      "chunk-72|lexical|v0|l53|r0|false|0.269912|0.000000",
+      "chunk-73|lexical|v0|l54|r0|false|0.267544|0.000000",
+      "chunk-74|lexical|v0|l55|r0|false|0.265217|0.000000",
+      "chunk-75|lexical|v0|l56|r0|false|0.262931|0.000000",
+      "chunk-76|lexical|v0|l57|r0|false|0.260684|0.000000",
+      "chunk-77|lexical|v0|l58|r0|false|0.258475|0.000000",
+      "chunk-78|lexical|v0|l59|r0|false|0.256303|0.000000",
+      "chunk-79|lexical|v0|l60|r0|false|0.254167|0.000000"
+    ],
+    "results_sha256": "d4758208b54f2db6bf071f7be7b91d444ca77838b9b08bfc2bb9e84ebba8eace",
+    "execution_ids": [
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 100,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 100,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 40,
+      "knowledge_candidate_total{match_kind=lexical}": 20,
+      "knowledge_candidate_total{match_kind=vector}": 20,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "fusion/vector-only/topk=100",
+    "results_nil": false,
+    "result_count": 60,
+    "results": [
+      "chunk-0|vector|v1|l0|r0|false|1.000000|0.000000",
+      "chunk-1|vector|v2|l0|r0|false|0.983871|0.000000",
+      "chunk-2|vector|v3|l0|r0|false|0.968254|0.000000",
+      "chunk-3|vector|v4|l0|r0|false|0.953125|0.000000",
+      "chunk-4|vector|v5|l0|r0|false|0.938462|0.000000",
+      "chunk-5|vector|v6|l0|r0|false|0.924242|0.000000",
+      "chunk-6|vector|v7|l0|r0|false|0.910448|0.000000",
+      "chunk-7|vector|v8|l0|r0|false|0.897059|0.000000",
+      "chunk-8|vector|v9|l0|r0|false|0.884058|0.000000",
+      "chunk-9|vector|v10|l0|r0|false|0.871429|0.000000",
+      "chunk-10|vector|v11|l0|r0|false|0.859155|0.000000",
+      "chunk-11|vector|v12|l0|r0|false|0.847222|0.000000",
+      "chunk-12|vector|v13|l0|r0|false|0.835616|0.000000",
+      "chunk-13|vector|v14|l0|r0|false|0.824324|0.000000",
+      "chunk-14|vector|v15|l0|r0|false|0.813333|0.000000",
+      "chunk-15|vector|v16|l0|r0|false|0.802632|0.000000",
+      "chunk-16|vector|v17|l0|r0|false|0.792208|0.000000",
+      "chunk-17|vector|v18|l0|r0|false|0.782051|0.000000",
+      "chunk-18|vector|v19|l0|r0|false|0.772152|0.000000",
+      "chunk-19|vector|v20|l0|r0|false|0.762500|0.000000",
+      "chunk-20|vector|v21|l0|r0|false|0.753086|0.000000",
+      "chunk-21|vector|v22|l0|r0|false|0.743902|0.000000",
+      "chunk-22|vector|v23|l0|r0|false|0.734940|0.000000",
+      "chunk-23|vector|v24|l0|r0|false|0.726190|0.000000",
+      "chunk-24|vector|v25|l0|r0|false|0.717647|0.000000",
+      "chunk-25|vector|v26|l0|r0|false|0.709302|0.000000",
+      "chunk-26|vector|v27|l0|r0|false|0.701149|0.000000",
+      "chunk-27|vector|v28|l0|r0|false|0.693182|0.000000",
+      "chunk-28|vector|v29|l0|r0|false|0.685393|0.000000",
+      "chunk-29|vector|v30|l0|r0|false|0.677778|0.000000",
+      "chunk-30|vector|v31|l0|r0|false|0.670330|0.000000",
+      "chunk-31|vector|v32|l0|r0|false|0.663043|0.000000",
+      "chunk-32|vector|v33|l0|r0|false|0.655914|0.000000",
+      "chunk-33|vector|v34|l0|r0|false|0.648936|0.000000",
+      "chunk-34|vector|v35|l0|r0|false|0.642105|0.000000",
+      "chunk-35|vector|v36|l0|r0|false|0.635417|0.000000",
+      "chunk-36|vector|v37|l0|r0|false|0.628866|0.000000",
+      "chunk-37|vector|v38|l0|r0|false|0.622449|0.000000",
+      "chunk-38|vector|v39|l0|r0|false|0.616162|0.000000",
+      "chunk-39|vector|v40|l0|r0|false|0.610000|0.000000",
+      "chunk-40|vector|v41|l0|r0|false|0.603960|0.000000",
+      "chunk-41|vector|v42|l0|r0|false|0.598039|0.000000",
+      "chunk-42|vector|v43|l0|r0|false|0.592233|0.000000",
+      "chunk-43|vector|v44|l0|r0|false|0.586538|0.000000",
+      "chunk-44|vector|v45|l0|r0|false|0.580952|0.000000",
+      "chunk-45|vector|v46|l0|r0|false|0.575472|0.000000",
+      "chunk-46|vector|v47|l0|r0|false|0.570093|0.000000",
+      "chunk-47|vector|v48|l0|r0|false|0.564815|0.000000",
+      "chunk-48|vector|v49|l0|r0|false|0.559633|0.000000",
+      "chunk-49|vector|v50|l0|r0|false|0.554545|0.000000",
+      "chunk-50|vector|v51|l0|r0|false|0.549550|0.000000",
+      "chunk-51|vector|v52|l0|r0|false|0.544643|0.000000",
+      "chunk-52|vector|v53|l0|r0|false|0.539823|0.000000",
+      "chunk-53|vector|v54|l0|r0|false|0.535088|0.000000",
+      "chunk-54|vector|v55|l0|r0|false|0.530435|0.000000",
+      "chunk-55|vector|v56|l0|r0|false|0.525862|0.000000",
+      "chunk-56|vector|v57|l0|r0|false|0.521368|0.000000",
+      "chunk-57|vector|v58|l0|r0|false|0.516949|0.000000",
+      "chunk-58|vector|v59|l0|r0|false|0.512605|0.000000",
+      "chunk-59|vector|v60|l0|r0|false|0.508333|0.000000"
+    ],
+    "results_sha256": "c7ea6ee5516cfb00bb90a989079231890d1d9f113c77ba0b8dc4b260ae5614dc",
+    "execution_ids": [
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 100,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 100,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=vector}": 60,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "fusion/lexical-only/topk=100",
+    "results_nil": false,
+    "result_count": 60,
+    "results": [
+      "chunk-0|lexical|v0|l1|r0|false|0.500000|0.000000",
+      "chunk-1|lexical|v0|l2|r0|false|0.491935|0.000000",
+      "chunk-2|lexical|v0|l3|r0|false|0.484127|0.000000",
+      "chunk-3|lexical|v0|l4|r0|false|0.476562|0.000000",
+      "chunk-4|lexical|v0|l5|r0|false|0.469231|0.000000",
+      "chunk-5|lexical|v0|l6|r0|false|0.462121|0.000000",
+      "chunk-6|lexical|v0|l7|r0|false|0.455224|0.000000",
+      "chunk-7|lexical|v0|l8|r0|false|0.448529|0.000000",
+      "chunk-8|lexical|v0|l9|r0|false|0.442029|0.000000",
+      "chunk-9|lexical|v0|l10|r0|false|0.435714|0.000000",
+      "chunk-10|lexical|v0|l11|r0|false|0.429577|0.000000",
+      "chunk-11|lexical|v0|l12|r0|false|0.423611|0.000000",
+      "chunk-12|lexical|v0|l13|r0|false|0.417808|0.000000",
+      "chunk-13|lexical|v0|l14|r0|false|0.412162|0.000000",
+      "chunk-14|lexical|v0|l15|r0|false|0.406667|0.000000",
+      "chunk-15|lexical|v0|l16|r0|false|0.401316|0.000000",
+      "chunk-16|lexical|v0|l17|r0|false|0.396104|0.000000",
+      "chunk-17|lexical|v0|l18|r0|false|0.391026|0.000000",
+      "chunk-18|lexical|v0|l19|r0|false|0.386076|0.000000",
+      "chunk-19|lexical|v0|l20|r0|false|0.381250|0.000000",
+      "chunk-20|lexical|v0|l21|r0|false|0.376543|0.000000",
+      "chunk-21|lexical|v0|l22|r0|false|0.371951|0.000000",
+      "chunk-22|lexical|v0|l23|r0|false|0.367470|0.000000",
+      "chunk-23|lexical|v0|l24|r0|false|0.363095|0.000000",
+      "chunk-24|lexical|v0|l25|r0|false|0.358824|0.000000",
+      "chunk-25|lexical|v0|l26|r0|false|0.354651|0.000000",
+      "chunk-26|lexical|v0|l27|r0|false|0.350575|0.000000",
+      "chunk-27|lexical|v0|l28|r0|false|0.346591|0.000000",
+      "chunk-28|lexical|v0|l29|r0|false|0.342697|0.000000",
+      "chunk-29|lexical|v0|l30|r0|false|0.338889|0.000000",
+      "chunk-30|lexical|v0|l31|r0|false|0.335165|0.000000",
+      "chunk-31|lexical|v0|l32|r0|false|0.331522|0.000000",
+      "chunk-32|lexical|v0|l33|r0|false|0.327957|0.000000",
+      "chunk-33|lexical|v0|l34|r0|false|0.324468|0.000000",
+      "chunk-34|lexical|v0|l35|r0|false|0.321053|0.000000",
+      "chunk-35|lexical|v0|l36|r0|false|0.317708|0.000000",
+      "chunk-36|lexical|v0|l37|r0|false|0.314433|0.000000",
+      "chunk-37|lexical|v0|l38|r0|false|0.311224|0.000000",
+      "chunk-38|lexical|v0|l39|r0|false|0.308081|0.000000",
+      "chunk-39|lexical|v0|l40|r0|false|0.305000|0.000000",
+      "chunk-40|lexical|v0|l41|r0|false|0.301980|0.000000",
+      "chunk-41|lexical|v0|l42|r0|false|0.299020|0.000000",
+      "chunk-42|lexical|v0|l43|r0|false|0.296117|0.000000",
+      "chunk-43|lexical|v0|l44|r0|false|0.293269|0.000000",
+      "chunk-44|lexical|v0|l45|r0|false|0.290476|0.000000",
+      "chunk-45|lexical|v0|l46|r0|false|0.287736|0.000000",
+      "chunk-46|lexical|v0|l47|r0|false|0.285047|0.000000",
+      "chunk-47|lexical|v0|l48|r0|false|0.282407|0.000000",
+      "chunk-48|lexical|v0|l49|r0|false|0.279817|0.000000",
+      "chunk-49|lexical|v0|l50|r0|false|0.277273|0.000000",
+      "chunk-50|lexical|v0|l51|r0|false|0.274775|0.000000",
+      "chunk-51|lexical|v0|l52|r0|false|0.272321|0.000000",
+      "chunk-52|lexical|v0|l53|r0|false|0.269912|0.000000",
+      "chunk-53|lexical|v0|l54|r0|false|0.267544|0.000000",
+      "chunk-54|lexical|v0|l55|r0|false|0.265217|0.000000",
+      "chunk-55|lexical|v0|l56|r0|false|0.262931|0.000000",
+      "chunk-56|lexical|v0|l57|r0|false|0.260684|0.000000",
+      "chunk-57|lexical|v0|l58|r0|false|0.258475|0.000000",
+      "chunk-58|lexical|v0|l59|r0|false|0.256303|0.000000",
+      "chunk-59|lexical|v0|l60|r0|false|0.254167|0.000000"
+    ],
+    "results_sha256": "fe3266cd64ce1a27a1bf2f17fc5c3d371ff42ba7e23829f01e6361c2d246dbd0",
+    "execution_ids": [
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 100,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 100,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=lexical}": 60,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "fusion/duplicates-and-missing-keys/topk=100",
+    "results_nil": false,
+    "result_count": 25,
+    "results": [
+      "chunk-5|vector+lexical|v26|l26|r0|false|1.209302|0.000000",
+      "chunk-6|vector+lexical|v27|l27|r0|false|1.193085|0.000000",
+      "chunk-7|vector+lexical|v28|l28|r0|false|1.177309|0.000000",
+      "chunk-8|vector+lexical|v29|l29|r0|false|1.161956|0.000000",
+      "chunk-9|vector+lexical|v30|l30|r0|false|1.147009|0.000000",
+      "chunk-10|vector+lexical|v31|l31|r0|false|1.132451|0.000000",
+      "chunk-11|vector+lexical|v32|l32|r0|false|1.118267|0.000000",
+      "chunk-12|vector+lexical|v13|l8|r0|false|0.866338|0.000000",
+      "chunk-13|vector+lexical|v14|l9|r0|false|0.854191|0.000000",
+      "chunk-14|vector+lexical|v15|l10|r0|false|0.842381|0.000000",
+      "chunk-15|vector+lexical|v16|l11|r0|false|0.830893|0.000000",
+      "chunk-16|vector+lexical|v17|l12|r0|false|0.819715|0.000000",
+      "chunk-17|vector+lexical|v18|l13|r0|false|0.808834|0.000000",
+      "chunk-18|vector+lexical|v19|l14|r0|false|0.798238|0.000000",
+      "chunk-19|vector+lexical|v20|l15|r0|false|0.787917|0.000000",
+      "chunk-0|vector+lexical|v21|l21|r0|false|0.753086|0.000000",
+      "chunk-1|vector+lexical|v22|l22|r0|false|0.743902|0.000000",
+      "chunk-2|vector+lexical|v23|l23|r0|false|0.734940|0.000000",
+      "chunk-3|vector+lexical|v24|l24|r0|false|0.726190|0.000000",
+      "chunk-4|vector+lexical|v25|l25|r0|false|0.717647|0.000000",
+      "chunk-20|lexical|v0|l16|r0|false|0.401316|0.000000",
+      "chunk-21|lexical|v0|l17|r0|false|0.396104|0.000000",
+      "chunk-22|lexical|v0|l18|r0|false|0.391026|0.000000",
+      "chunk-23|lexical|v0|l19|r0|false|0.386076|0.000000",
+      "chunk-24|lexical|v0|l20|r0|false|0.381250|0.000000"
+    ],
+    "results_sha256": "7490546554af9dd1e5a58bcf25b2ac5d1b7ed3ab77ad99d7f022f373db7548fb",
+    "execution_ids": [
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 100,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 100,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 20,
+      "knowledge_candidate_total{match_kind=lexical}": 5,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "fusion/no-candidates/topk=100",
+    "results_nil": false,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "execution_ids": [],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 100,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 100,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=no_evidence,reason=no_candidate}": 1
+    }
+  },
+  {
+    "name": "rerank/reverse/topk=1",
+    "results_nil": false,
+    "result_count": 1,
+    "results": [
+      "chunk-33|vector+lexical|v34|l24|r1|true|0.687563|11.500000"
+    ],
+    "results_sha256": "ce339151dff67ad970f67ccced53d5526cbb9cb6fd3d38937dbcc3275a9b0195",
+    "execution_ids": [
+      "exec-1"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 1,
+      "knowledge_rerank_total{status=applied}": 1,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "rerank/reverse/topk=5",
+    "results_nil": false,
+    "result_count": 5,
+    "results": [
+      "chunk-33|vector+lexical|v34|l24|r1|true|0.687563|11.500000",
+      "chunk-32|vector+lexical|v33|l23|r2|true|0.695427|11.000000",
+      "chunk-31|vector+lexical|v32|l22|r3|true|0.703473|10.500000",
+      "chunk-30|vector+lexical|v31|l21|r4|true|0.711708|10.000000",
+      "chunk-29|vector+lexical|v30|l20|r5|true|0.720139|9.500000"
+    ],
+    "results_sha256": "70c1e2c049c7c78f3b48cedb29ed35ca10386b32b43e2452054d77b38fc4b6ac",
+    "execution_ids": [
+      "exec-1",
+      "exec-0",
+      "exec-3",
+      "exec-2",
+      "exec-1"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 5,
+      "knowledge_rerank_total{status=applied}": 1,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "rerank/reverse/topk=8",
+    "results_nil": false,
+    "result_count": 8,
+    "results": [
+      "chunk-33|vector+lexical|v34|l24|r1|true|0.687563|11.500000",
+      "chunk-32|vector+lexical|v33|l23|r2|true|0.695427|11.000000",
+      "chunk-31|vector+lexical|v32|l22|r3|true|0.703473|10.500000",
+      "chunk-30|vector+lexical|v31|l21|r4|true|0.711708|10.000000",
+      "chunk-29|vector+lexical|v30|l20|r5|true|0.720139|9.500000",
+      "chunk-28|vector+lexical|v29|l19|r6|true|0.728773|9.000000",
+      "chunk-27|vector+lexical|v28|l18|r7|true|0.737617|8.500000",
+      "chunk-26|vector+lexical|v27|l17|r8|true|0.746679|8.000000"
+    ],
+    "results_sha256": "1305708bc25dd5d11cb2547900afe58fb558a93bcbab487b06dfe2bcf7ea50fd",
+    "execution_ids": [
+      "exec-1",
+      "exec-0",
+      "exec-3",
+      "exec-2",
+      "exec-1",
+      "exec-0",
+      "exec-3",
+      "exec-2"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 8,
+      "knowledge_rerank_total{status=applied}": 1,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "rerank/tie/topk=1",
+    "results_nil": false,
+    "result_count": 1,
+    "results": [
+      "chunk-10|vector+lexical|v11|l1|r1|true|0.929577|1.000000"
+    ],
+    "results_sha256": "5d3b322510b7d24a892c4ef8b7a7f6ce8ffe13d763055f4f216bab8c8f30f9d0",
+    "execution_ids": [
+      "exec-2"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 1,
+      "knowledge_rerank_total{status=applied}": 1,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "rerank/tie/topk=5",
+    "results_nil": false,
+    "result_count": 5,
+    "results": [
+      "chunk-10|vector+lexical|v11|l1|r1|true|0.929577|1.000000",
+      "chunk-11|vector+lexical|v12|l2|r2|true|0.915547|1.000000",
+      "chunk-12|vector+lexical|v13|l3|r3|true|0.901935|1.000000",
+      "chunk-13|vector+lexical|v14|l4|r4|true|0.888725|1.000000",
+      "chunk-14|vector+lexical|v15|l5|r5|true|0.875897|1.000000"
+    ],
+    "results_sha256": "725c9250481f660b0373a8c10e950394d89674937ae57f2603e88b97313d37cc",
+    "execution_ids": [
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 5,
+      "knowledge_rerank_total{status=applied}": 1,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "rerank/tie/topk=8",
+    "results_nil": false,
+    "result_count": 8,
+    "results": [
+      "chunk-10|vector+lexical|v11|l1|r1|true|0.929577|1.000000",
+      "chunk-11|vector+lexical|v12|l2|r2|true|0.915547|1.000000",
+      "chunk-12|vector+lexical|v13|l3|r3|true|0.901935|1.000000",
+      "chunk-13|vector+lexical|v14|l4|r4|true|0.888725|1.000000",
+      "chunk-14|vector+lexical|v15|l5|r5|true|0.875897|1.000000",
+      "chunk-15|vector+lexical|v16|l6|r6|true|0.863437|1.000000",
+      "chunk-16|vector+lexical|v17|l7|r7|true|0.851328|1.000000",
+      "chunk-17|vector+lexical|v18|l8|r8|true|0.839555|1.000000"
+    ],
+    "results_sha256": "5fc1da44e97fa67c5b9dee122b2a02af5af007d814f79d4452bfea11f872c41b",
+    "execution_ids": [
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 8,
+      "knowledge_rerank_total{status=applied}": 1,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "rerank/mixed/topk=1",
+    "results_nil": false,
+    "result_count": 1,
+    "results": [
+      "chunk-12|vector+lexical|v13|l3|r1|true|0.901935|4.000000"
+    ],
+    "results_sha256": "85f8e684e7d99faafbc86f8930b5ab2e65f2c13bed513a4118eccca351c41301",
+    "execution_ids": [
+      "exec-0"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 1,
+      "knowledge_rerank_total{status=applied}": 1,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "rerank/mixed/topk=5",
+    "results_nil": false,
+    "result_count": 5,
+    "results": [
+      "chunk-12|vector+lexical|v13|l3|r1|true|0.901935|4.000000",
+      "chunk-17|vector+lexical|v18|l8|r2|true|0.839555|4.000000",
+      "chunk-22|vector+lexical|v23|l13|r3|true|0.785278|4.000000",
+      "chunk-27|vector+lexical|v28|l18|r4|true|0.737617|4.000000",
+      "chunk-32|vector+lexical|v33|l23|r5|true|0.695427|4.000000"
+    ],
+    "results_sha256": "32adf0f8852f0a006628b9b9d5fa175ff52b47c9b87239e5659f91862dc6e906",
+    "execution_ids": [
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 5,
+      "knowledge_rerank_total{status=applied}": 1,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "rerank/mixed/topk=8",
+    "results_nil": false,
+    "result_count": 8,
+    "results": [
+      "chunk-12|vector+lexical|v13|l3|r1|true|0.901935|4.000000",
+      "chunk-17|vector+lexical|v18|l8|r2|true|0.839555|4.000000",
+      "chunk-22|vector+lexical|v23|l13|r3|true|0.785278|4.000000",
+      "chunk-27|vector+lexical|v28|l18|r4|true|0.737617|4.000000",
+      "chunk-32|vector+lexical|v33|l23|r5|true|0.695427|4.000000",
+      "chunk-14|vector+lexical|v15|l5|r6|true|0.875897|3.000000",
+      "chunk-19|vector+lexical|v20|l10|r7|true|0.816964|3.000000",
+      "chunk-24|vector+lexical|v25|l15|r8|true|0.765490|3.000000"
+    ],
+    "results_sha256": "f4ba731f732af38691515447dda0453da68620689f8f9f9a18cac220c9835686",
+    "execution_ids": [
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-2",
+      "exec-3",
+      "exec-0"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 8,
+      "knowledge_rerank_total{status=applied}": 1,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "rerank/unavailable/topk=1",
+    "results_nil": false,
+    "result_count": 1,
+    "results": [
+      "chunk-10|vector+lexical|v11|l1|r0|false|0.929577|0.000000"
+    ],
+    "results_sha256": "c8df3d4492332fc34ffa0eb564958a914ca9f89b0d5980fffa8547465859d3ca",
+    "execution_ids": [
+      "exec-2"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 1,
+      "knowledge_rerank_total{status=fallback}": 1,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "rerank/unavailable/topk=5",
+    "results_nil": false,
+    "result_count": 5,
+    "results": [
+      "chunk-10|vector+lexical|v11|l1|r0|false|0.929577|0.000000",
+      "chunk-11|vector+lexical|v12|l2|r0|false|0.915547|0.000000",
+      "chunk-12|vector+lexical|v13|l3|r0|false|0.901935|0.000000",
+      "chunk-13|vector+lexical|v14|l4|r0|false|0.888725|0.000000",
+      "chunk-14|vector+lexical|v15|l5|r0|false|0.875897|0.000000"
+    ],
+    "results_sha256": "44e12203833937c71a8d49aa333599344ba85ec6945f080f7e1fedc1da6b8e87",
+    "execution_ids": [
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 5,
+      "knowledge_rerank_total{status=fallback}": 1,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "rerank/unavailable/topk=8",
+    "results_nil": false,
+    "result_count": 8,
+    "results": [
+      "chunk-10|vector+lexical|v11|l1|r0|false|0.929577|0.000000",
+      "chunk-11|vector+lexical|v12|l2|r0|false|0.915547|0.000000",
+      "chunk-12|vector+lexical|v13|l3|r0|false|0.901935|0.000000",
+      "chunk-13|vector+lexical|v14|l4|r0|false|0.888725|0.000000",
+      "chunk-14|vector+lexical|v15|l5|r0|false|0.875897|0.000000",
+      "chunk-15|vector+lexical|v16|l6|r0|false|0.863437|0.000000",
+      "chunk-16|vector+lexical|v17|l7|r0|false|0.851328|0.000000",
+      "chunk-17|vector+lexical|v18|l8|r0|false|0.839555|0.000000"
+    ],
+    "results_sha256": "3751c0901627315c91d14b596191936f7379d702ed29af5043deafef17006288",
+    "execution_ids": [
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 8,
+      "knowledge_rerank_total{status=fallback}": 1,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "rerank/failure/topk=1",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: rerank candidates: scenario reranker failure",
+    "error_kinds": [
+      "failed",
+      "scenario_rerank"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_rerank_total{status=failed}": 1,
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "rerank/failure/topk=5",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: rerank candidates: scenario reranker failure",
+    "error_kinds": [
+      "failed",
+      "scenario_rerank"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_rerank_total{status=failed}": 1,
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "rerank/failure/topk=8",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: rerank candidates: scenario reranker failure",
+    "error_kinds": [
+      "failed",
+      "scenario_rerank"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_rerank_total{status=failed}": 1,
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "rerank/short/topk=1",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: rerank returned 23 scores, want 24",
+    "error_kinds": [
+      "failed"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_rerank_total{status=failed}": 1,
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "rerank/short/topk=5",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: rerank returned 23 scores, want 24",
+    "error_kinds": [
+      "failed"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_rerank_total{status=failed}": 1,
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "rerank/short/topk=8",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: rerank returned 23 scores, want 24",
+    "error_kinds": [
+      "failed"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_rerank_total{status=failed}": 1,
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "rerank/bad-index/topk=1",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: rerank returned an invalid index or score",
+    "error_kinds": [
+      "failed"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_rerank_total{status=failed}": 1,
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "rerank/bad-index/topk=5",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: rerank returned an invalid index or score",
+    "error_kinds": [
+      "failed"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_rerank_total{status=failed}": 1,
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "rerank/bad-index/topk=8",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: rerank returned an invalid index or score",
+    "error_kinds": [
+      "failed"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_rerank_total{status=failed}": 1,
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "rerank/dup-index/topk=1",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: rerank returned a duplicate index",
+    "error_kinds": [
+      "failed"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_rerank_total{status=failed}": 1,
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "rerank/dup-index/topk=5",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: rerank returned a duplicate index",
+    "error_kinds": [
+      "failed"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_rerank_total{status=failed}": 1,
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "rerank/dup-index/topk=8",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: rerank returned a duplicate index",
+    "error_kinds": [
+      "failed"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_rerank_total{status=failed}": 1,
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "rerank/nan/topk=1",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: rerank returned an invalid index or score",
+    "error_kinds": [
+      "failed"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_rerank_total{status=failed}": 1,
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "rerank/nan/topk=5",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: rerank returned an invalid index or score",
+    "error_kinds": [
+      "failed"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_rerank_total{status=failed}": 1,
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "rerank/nan/topk=8",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: rerank returned an invalid index or score",
+    "error_kinds": [
+      "failed"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_rerank_total{status=failed}": 1,
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "rerank/bypassed/topk=9",
+    "results_nil": false,
+    "result_count": 9,
+    "results": [
+      "chunk-10|vector+lexical|v11|l1|r0|false|0.929577|0.000000",
+      "chunk-11|vector+lexical|v12|l2|r0|false|0.915547|0.000000",
+      "chunk-12|vector+lexical|v13|l3|r0|false|0.901935|0.000000",
+      "chunk-13|vector+lexical|v14|l4|r0|false|0.888725|0.000000",
+      "chunk-14|vector+lexical|v15|l5|r0|false|0.875897|0.000000",
+      "chunk-15|vector+lexical|v16|l6|r0|false|0.863437|0.000000",
+      "chunk-16|vector+lexical|v17|l7|r0|false|0.851328|0.000000",
+      "chunk-17|vector+lexical|v18|l8|r0|false|0.839555|0.000000",
+      "chunk-18|vector+lexical|v19|l9|r0|false|0.828105|0.000000"
+    ],
+    "results_sha256": "444fc5b9012319c8f9f5506636adbb13dd8c429853dd2d114db8f44f7cfe5d1e",
+    "execution_ids": [
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 54,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 54,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 9,
+      "knowledge_rerank_total{status=bypassed}": 1,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "rerank/bypassed/topk=12",
+    "results_nil": false,
+    "result_count": 12,
+    "results": [
+      "chunk-10|vector+lexical|v11|l1|r0|false|0.929577|0.000000",
+      "chunk-11|vector+lexical|v12|l2|r0|false|0.915547|0.000000",
+      "chunk-12|vector+lexical|v13|l3|r0|false|0.901935|0.000000",
+      "chunk-13|vector+lexical|v14|l4|r0|false|0.888725|0.000000",
+      "chunk-14|vector+lexical|v15|l5|r0|false|0.875897|0.000000",
+      "chunk-15|vector+lexical|v16|l6|r0|false|0.863437|0.000000",
+      "chunk-16|vector+lexical|v17|l7|r0|false|0.851328|0.000000",
+      "chunk-17|vector+lexical|v18|l8|r0|false|0.839555|0.000000",
+      "chunk-18|vector+lexical|v19|l9|r0|false|0.828105|0.000000",
+      "chunk-19|vector+lexical|v20|l10|r0|false|0.816964|0.000000",
+      "chunk-20|vector+lexical|v21|l11|r0|false|0.806121|0.000000",
+      "chunk-21|vector+lexical|v22|l12|r0|false|0.795562|0.000000"
+    ],
+    "results_sha256": "b6373fa195d8d729fa238384618cc3a991a83d29bcf3d1b1f6b4a8cdb950f95b",
+    "execution_ids": [
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 72,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 72,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 12,
+      "knowledge_rerank_total{status=bypassed}": 1,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "rerank/bypassed/topk=30",
+    "results_nil": false,
+    "result_count": 30,
+    "results": [
+      "chunk-10|vector+lexical|v11|l1|r0|false|0.929577|0.000000",
+      "chunk-11|vector+lexical|v12|l2|r0|false|0.915547|0.000000",
+      "chunk-12|vector+lexical|v13|l3|r0|false|0.901935|0.000000",
+      "chunk-13|vector+lexical|v14|l4|r0|false|0.888725|0.000000",
+      "chunk-14|vector+lexical|v15|l5|r0|false|0.875897|0.000000",
+      "chunk-15|vector+lexical|v16|l6|r0|false|0.863437|0.000000",
+      "chunk-16|vector+lexical|v17|l7|r0|false|0.851328|0.000000",
+      "chunk-17|vector+lexical|v18|l8|r0|false|0.839555|0.000000",
+      "chunk-18|vector+lexical|v19|l9|r0|false|0.828105|0.000000",
+      "chunk-19|vector+lexical|v20|l10|r0|false|0.816964|0.000000",
+      "chunk-20|vector+lexical|v21|l11|r0|false|0.806121|0.000000",
+      "chunk-21|vector+lexical|v22|l12|r0|false|0.795562|0.000000",
+      "chunk-22|vector+lexical|v23|l13|r0|false|0.785278|0.000000",
+      "chunk-23|vector+lexical|v24|l14|r0|false|0.775257|0.000000",
+      "chunk-24|vector+lexical|v25|l15|r0|false|0.765490|0.000000",
+      "chunk-25|vector+lexical|v26|l16|r0|false|0.755967|0.000000",
+      "chunk-26|vector+lexical|v27|l17|r0|false|0.746679|0.000000",
+      "chunk-27|vector+lexical|v28|l18|r0|false|0.737617|0.000000",
+      "chunk-28|vector+lexical|v29|l19|r0|false|0.728773|0.000000",
+      "chunk-29|vector+lexical|v30|l20|r0|false|0.720139|0.000000",
+      "chunk-30|vector+lexical|v31|l21|r0|false|0.711708|0.000000",
+      "chunk-31|vector+lexical|v32|l22|r0|false|0.703473|0.000000",
+      "chunk-32|vector+lexical|v33|l23|r0|false|0.695427|0.000000",
+      "chunk-33|vector+lexical|v34|l24|r0|false|0.687563|0.000000",
+      "chunk-34|vector+lexical|v35|l25|r0|false|0.679876|0.000000",
+      "chunk-35|vector+lexical|v36|l26|r0|false|0.672359|0.000000",
+      "chunk-36|vector+lexical|v37|l27|r0|false|0.665008|0.000000",
+      "chunk-37|vector+lexical|v38|l28|r0|false|0.657815|0.000000",
+      "chunk-38|vector+lexical|v39|l29|r0|false|0.650777|0.000000",
+      "chunk-39|vector+lexical|v40|l30|r0|false|0.643889|0.000000"
+    ],
+    "results_sha256": "63f379876fbe6930ddbde02c3948abd93cf83ae3d54dd678ca4e48de4daa4485",
+    "execution_ids": [
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 100,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 100,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 30,
+      "knowledge_rerank_total{status=bypassed}": 1,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "rerank/bypassed/topk=100",
+    "results_nil": false,
+    "result_count": 50,
+    "results": [
+      "chunk-10|vector+lexical|v11|l1|r0|false|0.929577|0.000000",
+      "chunk-11|vector+lexical|v12|l2|r0|false|0.915547|0.000000",
+      "chunk-12|vector+lexical|v13|l3|r0|false|0.901935|0.000000",
+      "chunk-13|vector+lexical|v14|l4|r0|false|0.888725|0.000000",
+      "chunk-14|vector+lexical|v15|l5|r0|false|0.875897|0.000000",
+      "chunk-15|vector+lexical|v16|l6|r0|false|0.863437|0.000000",
+      "chunk-16|vector+lexical|v17|l7|r0|false|0.851328|0.000000",
+      "chunk-17|vector+lexical|v18|l8|r0|false|0.839555|0.000000",
+      "chunk-18|vector+lexical|v19|l9|r0|false|0.828105|0.000000",
+      "chunk-19|vector+lexical|v20|l10|r0|false|0.816964|0.000000",
+      "chunk-20|vector+lexical|v21|l11|r0|false|0.806121|0.000000",
+      "chunk-21|vector+lexical|v22|l12|r0|false|0.795562|0.000000",
+      "chunk-22|vector+lexical|v23|l13|r0|false|0.785278|0.000000",
+      "chunk-23|vector+lexical|v24|l14|r0|false|0.775257|0.000000",
+      "chunk-24|vector+lexical|v25|l15|r0|false|0.765490|0.000000",
+      "chunk-25|vector+lexical|v26|l16|r0|false|0.755967|0.000000",
+      "chunk-26|vector+lexical|v27|l17|r0|false|0.746679|0.000000",
+      "chunk-27|vector+lexical|v28|l18|r0|false|0.737617|0.000000",
+      "chunk-28|vector+lexical|v29|l19|r0|false|0.728773|0.000000",
+      "chunk-29|vector+lexical|v30|l20|r0|false|0.720139|0.000000",
+      "chunk-30|vector+lexical|v31|l21|r0|false|0.711708|0.000000",
+      "chunk-31|vector+lexical|v32|l22|r0|false|0.703473|0.000000",
+      "chunk-32|vector+lexical|v33|l23|r0|false|0.695427|0.000000",
+      "chunk-33|vector+lexical|v34|l24|r0|false|0.687563|0.000000",
+      "chunk-34|vector+lexical|v35|l25|r0|false|0.679876|0.000000",
+      "chunk-35|vector+lexical|v36|l26|r0|false|0.672359|0.000000",
+      "chunk-36|vector+lexical|v37|l27|r0|false|0.665008|0.000000",
+      "chunk-37|vector+lexical|v38|l28|r0|false|0.657815|0.000000",
+      "chunk-38|vector+lexical|v39|l29|r0|false|0.650777|0.000000",
+      "chunk-39|vector+lexical|v40|l30|r0|false|0.643889|0.000000",
+      "chunk-0|vector|v1|l0|r0|false|0.500000|0.000000",
+      "chunk-1|vector|v2|l0|r0|false|0.491935|0.000000",
+      "chunk-2|vector|v3|l0|r0|false|0.484127|0.000000",
+      "chunk-3|vector|v4|l0|r0|false|0.476562|0.000000",
+      "chunk-4|vector|v5|l0|r0|false|0.469231|0.000000",
+      "chunk-5|vector|v6|l0|r0|false|0.462121|0.000000",
+      "chunk-6|vector|v7|l0|r0|false|0.455224|0.000000",
+      "chunk-7|vector|v8|l0|r0|false|0.448529|0.000000",
+      "chunk-8|vector|v9|l0|r0|false|0.442029|0.000000",
+      "chunk-9|vector|v10|l0|r0|false|0.435714|0.000000",
+      "chunk-40|lexical|v0|l31|r0|false|0.335165|0.000000",
+      "chunk-41|lexical|v0|l32|r0|false|0.331522|0.000000",
+      "chunk-42|lexical|v0|l33|r0|false|0.327957|0.000000",
+      "chunk-43|lexical|v0|l34|r0|false|0.324468|0.000000",
+      "chunk-44|lexical|v0|l35|r0|false|0.321053|0.000000",
+      "chunk-45|lexical|v0|l36|r0|false|0.317708|0.000000",
+      "chunk-46|lexical|v0|l37|r0|false|0.314433|0.000000",
+      "chunk-47|lexical|v0|l38|r0|false|0.311224|0.000000",
+      "chunk-48|lexical|v0|l39|r0|false|0.308081|0.000000",
+      "chunk-49|lexical|v0|l40|r0|false|0.305000|0.000000"
+    ],
+    "results_sha256": "db809bd613f617efa370e604fdd49da6e8e94df444dc5e43ea32855deae7dd87",
+    "execution_ids": [
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-0",
+      "exec-1"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 100,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 100,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 30,
+      "knowledge_candidate_total{match_kind=lexical}": 10,
+      "knowledge_candidate_total{match_kind=vector}": 10,
+      "knowledge_rerank_total{status=bypassed}": 1,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "rerank/pool-smaller-than-24",
+    "results_nil": false,
+    "result_count": 5,
+    "results": [
+      "chunk-4|vector|v5|l0|r1|true|0.938462|2.000000",
+      "chunk-3|vector|v4|l0|r2|true|0.953125|1.500000",
+      "chunk-2|vector|v3|l0|r3|true|0.968254|1.000000",
+      "chunk-1|vector|v2|l0|r4|true|0.983871|0.500000",
+      "chunk-0|vector|v1|l0|r5|true|1.000000|0.000000"
+    ],
+    "results_sha256": "d9a40f72c1d117706282c647ff4b084005d385cfecbd8ba1b350cc130cabcb38",
+    "execution_ids": [
+      "exec-0",
+      "exec-3",
+      "exec-2",
+      "exec-1",
+      "exec-0"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 0",
+          "embedding content 1",
+          "embedding content 2",
+          "embedding content 3",
+          "embedding content 4"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_candidate_total{match_kind=vector}": 5,
+      "knowledge_rerank_total{status=applied}": 1,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "rerank/topk-larger-than-pool",
+    "results_nil": false,
+    "result_count": 4,
+    "results": [
+      "chunk-3|lexical|v0|l3|r1|true|0.484127|1.500000",
+      "chunk-0|vector|v1|l0|r2|true|0.500000|1.000000",
+      "chunk-2|vector+lexical|v3|l2|r3|true|0.976062|0.500000",
+      "chunk-1|vector+lexical|v2|l1|r4|true|0.991935|0.000000"
+    ],
+    "results_sha256": "b397e9a4404f00027ef2393002872fdfd9d826b1ece34395859a8cefae89d9c6",
+    "execution_ids": [
+      "exec-3",
+      "exec-0",
+      "exec-2",
+      "exec-1"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 1",
+          "embedding content 2",
+          "embedding content 0",
+          "embedding content 3"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 2,
+      "knowledge_candidate_total{match_kind=lexical}": 1,
+      "knowledge_candidate_total{match_kind=vector}": 1,
+      "knowledge_rerank_total{status=applied}": 1,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "rerank/single-candidate",
+    "results_nil": false,
+    "result_count": 1,
+    "results": [
+      "chunk-0|vector|v1|l0|r1|true|1.000000|0.000000"
+    ],
+    "results_sha256": "4bd6ee7d9aca3377ae864c18b3288867e51ac42bc3c2f30c4a8759db0bbe9aee",
+    "execution_ids": [
+      "exec-0"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 0"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_candidate_total{match_kind=vector}": 1,
+      "knowledge_rerank_total{status=applied}": 1,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "rerank/no-candidates",
+    "results_nil": false,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "execution_ids": [],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": null
+      }
+    ],
+    "counters": {
+      "knowledge_rerank_total{status=applied}": 1,
+      "knowledge_retrieval_total{status=no_evidence,reason=no_candidate}": 1
+    }
+  },
+  {
+    "name": "rerank/falls-back-to-raw-content",
+    "results_nil": false,
+    "result_count": 5,
+    "results": [
+      "chunk-33|vector+lexical|v34|l24|r1|true|0.687563|11.500000",
+      "chunk-32|vector+lexical|v33|l23|r2|true|0.695427|11.000000",
+      "chunk-31|vector+lexical|v32|l22|r3|true|0.703473|10.500000",
+      "chunk-30|vector+lexical|v31|l21|r4|true|0.711708|10.000000",
+      "chunk-29|vector+lexical|v30|l20|r5|true|0.720139|9.500000"
+    ],
+    "results_sha256": "7cdf414f4700de4c54794a05af3ce76e04fd45f83a3ebbefae0ccd4028c4f74f",
+    "execution_ids": [
+      "exec-1",
+      "exec-0",
+      "exec-3",
+      "exec-2",
+      "exec-1"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "raw content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "raw content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "raw content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "raw content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "raw content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "raw content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "raw content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "raw content 33"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 5,
+      "knowledge_rerank_total{status=applied}": 1,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  },
+  {
+    "name": "rerank/empty-candidate-content",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: rerank candidate content is empty",
+    "error_kinds": [
+      "failed"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "rerank/stale-candidate-in-pool",
+    "results_nil": true,
+    "result_count": 0,
+    "results": [],
+    "results_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "execution_ids": [],
+    "error": "RAG retrieval failed: searcher returned a non-active document version",
+    "error_kinds": [
+      "failed"
+    ],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [],
+    "counters": {
+      "knowledge_retrieval_total{status=failed,reason=invalid_result}": 1
+    }
+  },
+  {
+    "name": "rerank/with-missing-keys",
+    "results_nil": false,
+    "result_count": 8,
+    "results": [
+      "chunk-12|vector+lexical|v13|l3|r1|true|0.901935|4.000000",
+      "chunk-17|vector+lexical|v18|l8|r2|true|0.839555|4.000000",
+      "chunk-22|vector+lexical|v23|l13|r3|true|0.785278|4.000000",
+      "chunk-27|vector+lexical|v28|l18|r4|true|0.737617|4.000000",
+      "chunk-2|vector|v3|l0|r5|true|0.484127|4.000000",
+      "chunk-14|vector+lexical|v15|l5|r6|true|0.875897|3.000000",
+      "chunk-19|vector+lexical|v20|l10|r7|true|0.816964|3.000000",
+      "chunk-24|vector+lexical|v25|l15|r8|true|0.765490|3.000000"
+    ],
+    "results_sha256": "d37098febd6ef67ec7ec269476c8ce22d07880b218cabf6def97b0db3b829868",
+    "execution_ids": [
+      "exec-0",
+      "exec-1",
+      "exec-2",
+      "exec-3",
+      "exec-2",
+      "exec-2",
+      "exec-3",
+      "exec-0"
+    ],
+    "error": "",
+    "error_kinds": [],
+    "reason": "",
+    "loader_user_ids": [
+      73
+    ],
+    "embed_calls": [
+      [
+        "如何设置 TTL"
+      ]
+    ],
+    "vector_calls": [
+      {
+        "user_id": 73,
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "lexical_calls": [
+      {
+        "user_id": 73,
+        "query": "如何设置 TTL",
+        "top_k": 48,
+        "active": [
+          "doc-0=1",
+          "doc-1=2",
+          "doc-2=3"
+        ]
+      }
+    ],
+    "rerank_calls": [
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 0",
+          "embedding content 1",
+          "embedding content 2",
+          "embedding content 3"
+        ]
+      }
+    ],
+    "counters": {
+      "knowledge_candidate_total{match_kind=hybrid}": 7,
+      "knowledge_candidate_total{match_kind=vector}": 1,
+      "knowledge_rerank_total{status=applied}": 1,
+      "knowledge_retrieval_total{status=complete,reason=none}": 1
+    }
+  }
+]
