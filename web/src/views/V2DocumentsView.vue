@@ -235,9 +235,11 @@ onMounted(refresh)
 
 <style scoped>
 /* The same reading column the transcript uses: one document per turn, the
-   actions under a hairline, nothing boxed in. */
+   actions under a hairline, nothing boxed in. The column is centred, so a wide
+   window leaves the same margins on both sides as the conversation does. */
 .docs {
   max-width: 760px;
+  margin: 0 auto;
 }
 
 .docs__notice {
