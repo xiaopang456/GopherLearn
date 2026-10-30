@@ -68,13 +68,17 @@ it('document screen shows real failed/version state and Collection boundary; ret
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: V2DocumentsView }] })
   await router.push('/'); await router.isReady()
   const view = mount(V2DocumentsView, { global: { plugins: [router] } }); await flushPromises()
-  expect(view.text()).toContain('不是 Collection')
-  expect(view.get('[data-test="v2-status"]').text()).toContain('failed')
-  expect(view.text()).toContain('active_version 1')
-  const retry = view.findAll('button').find((b) => b.text() === 'retry')
+  // The page speaks to the person, not to the contract: no Collection wording,
+  // a Chinese status and a Chinese version label. The boundary itself is
+  // still enforced above, in the multipart request.
+  expect(view.text()).toContain('文档')
+  expect(view.text()).not.toContain('Collection')
+  expect(view.get('[data-test="v2-status"]').text()).toContain('失败')
+  expect(view.text()).toContain('版本 1')
+  const retry = view.findAll('button').find((b) => b.text() === '重试')
   await retry.trigger('click'); await flushPromises()
   expect(calls.some((c) => c.url.endsWith('/retry'))).toBe(true)
-  expect(view.get('[data-test="v2-status"]').text()).toContain('failed')
+  expect(view.get('[data-test="v2-status"]').text()).toContain('失败')
   expect(view.get('[role="status"]').text()).not.toContain('索引完成')
   view.unmount()
 })
