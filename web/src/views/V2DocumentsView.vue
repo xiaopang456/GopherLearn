@@ -1,74 +1,270 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import SectionFrame from '../components/SectionFrame.vue'
-import ServerNotice from '../components/ServerNotice.vue'
+import { NButton } from 'naive-ui'
+
 import DocumentProcessingPanel from '../components/DocumentProcessingPanel.vue'
-import { listV2Documents, getV2Document, uploadV2Document, updateV2Document, retryV2Document,
-  reindexV2Document, deleteV2Document, V2_MAX_FILE_BYTES } from '../api/v2Documents.js'
+import GlEmpty from '../components/GlEmpty.vue'
+import GlPageHeader from '../components/GlPageHeader.vue'
+import GlStatusTag from '../components/GlStatusTag.vue'
+import ServerNotice from '../components/ServerNotice.vue'
+import { recordDevIssue } from '../lib/devlog.js'
+import {
+  listV2Documents,
+  uploadV2Document,
+  updateV2Document,
+  retryV2Document,
+  reindexV2Document,
+  deleteV2Document,
+  V2_MAX_FILE_BYTES,
+} from '../api/v2Documents.js'
 
 const router = useRouter()
 const documents = ref([])
 const error = ref('')
 const notice = ref('')
 const busy = ref(false)
-const detail = ref(null)
 const processingOpen = ref({}) // document id -> panel expanded
-function toggleProcessing(id) { processingOpen.value = { ...processingOpen.value, [id]: !processingOpen.value[id] } }
-async function refresh() {
-  try { documents.value = (await listV2Documents()).documents }
-  catch (cause) { error.value = `${cause.message} (${cause.code})` }
+const fileInput = ref(null)
+const updateId = ref('')
+
+function toggleProcessing(id) {
+  processingOpen.value = { ...processingOpen.value, [id]: !processingOpen.value[id] }
 }
+
+async function refresh() {
+  try {
+    documents.value = (await listV2Documents()).documents
+  } catch (cause) {
+    error.value = cause.message
+    recordDevIssue('documents.list_failed', { code: cause.code })
+  }
+}
+
 async function perform(action, deleted = false) {
   if (busy.value) return
-  busy.value = true; error.value = ''; notice.value = ''
+  busy.value = true
+  error.value = ''
+  notice.value = ''
   try {
     const result = await action()
-    notice.value = deleted ? '删除请求已提交；文档将从原列表隐藏，后台清理结果尚未确认。'
-      : result.unchanged ? '原实现返回 unchanged，未产生新版本。' : '请求已被原接口接受；以服务返回的实际索引状态为准。'
+    notice.value = deleted
+      ? '删除请求已提交，文档会从列表中消失。'
+      : result?.unchanged
+        ? '没有产生新版本。'
+        : '请求已接受，实际状态以下方列表为准。'
     await refresh()
-  } catch (cause) { error.value = `${cause.message} (${cause.code})` }
-  finally { busy.value = false }
+  } catch (cause) {
+    error.value = cause.message
+    recordDevIssue('documents.action_failed', { code: cause.code })
+  } finally {
+    busy.value = false
+  }
 }
-function chooseFile(event, id) {
-  const file = event.target.files?.[0]; event.target.value = ''
+
+function size(bytes) {
+  const value = Number(bytes ?? 0)
+  if (!value) return '0'
+  if (value < 1024) return `${value} 字节`
+  return `${(value / 1024).toFixed(1)} KB`
+}
+
+/**
+ * One hidden file input serves both "upload" and "update": the visible
+ * control is a button, so the page never shows the browser's own
+ * "选择文件 未选择文件" control next to the app's buttons.
+ */
+function pick(updateTarget = '') {
+  updateId.value = updateTarget
+  fileInput.value?.click()
+}
+
+function chosen(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  const target = updateId.value
+  updateId.value = ''
   if (!file) return
-  if (file.size > V2_MAX_FILE_BYTES) { error.value = '原文档单文件上限为 5 MiB。'; return }
-  return perform(() => id ? updateV2Document(id, file) : uploadV2Document(file))
+  if (file.size > V2_MAX_FILE_BYTES) {
+    error.value = '单个文件不能超过 5 MiB。'
+    return
+  }
+  return perform(() => (target ? updateV2Document(target, file) : uploadV2Document(file)))
 }
-async function inspect(id) {
-  try { detail.value = (await getV2Document(id)).document }
-  catch (cause) { error.value = `${cause.message} (${cause.code})` }
+
+function openSource(document) {
+  router.push({
+    name: 'v2-source',
+    params: { documentId: document.id },
+    query: { version: String(document.active_version) },
+  })
 }
+
 onMounted(refresh)
 </script>
 
 <template>
-  <div class="gl-page">
-    <SectionFrame title="V2 用户级文档" eyebrow="隔离迁移入口" icon="knowledge" status="原文档接口" status-tone="done"
-      summary="这是原 V2 的用户级文档，不是 Collection。Collection 及普通 Chat 的知识范围适配尚未接通；Agent 保持原策略。">
-      <p class="gl-muted">上传 .md/.txt，单文件上限 5 MiB（服务端 knowledgeConfig.maxFileSizeBytes 的默认值；改动后以服务端返回的提示为准）。提交成功不表示索引完成。更新使用原服务内部 CAS；没有客户端 expectedVersion 合同。</p>
-      <ServerNotice v-if="error" :message="error" />
-      <p v-if="notice" role="status">{{ notice }}</p>
-      <button class="gl-btn" :disabled="busy" @click="refresh">刷新实际状态</button>
-      <label>上传文档 <input type="file" accept=".md,.txt" :disabled="busy" data-test="v2-upload" @change="chooseFile($event)"></label>
-      <ul>
-        <li v-for="document in documents" :key="document.id" class="gl-card" data-test="v2-document">
-          <h3>{{ document.original_name }}</h3>
-          <p>文档 {{ document.id }} · 当前版本 {{ document.version }} · active_version {{ document.active_version }}</p>
-          <p data-test="v2-status">{{ document.index_status }} · {{ document.file_size }} 字节</p>
-          <p v-if="document.error_message">{{ document.error_message }}</p>
-          <button class="gl-btn" :disabled="busy" @click="inspect(document.id)">详情</button>
-          <button class="gl-btn" type="button" :aria-expanded="!!processingOpen[document.id]" data-test="v2-processing-toggle" @click="toggleProcessing(document.id)">处理详情</button>
-          <button v-if="document.index_status === 'failed'" class="gl-btn" :disabled="busy" @click="perform(() => retryV2Document(document.id))">retry</button>
-          <button v-if="document.index_status === 'ready'" class="gl-btn" :disabled="busy" @click="perform(() => reindexV2Document(document.id))">reindex</button>
-          <label v-if="document.index_status === 'ready'">更新 <input type="file" accept=".md,.txt" :disabled="busy" @change="chooseFile($event, document.id)"></label>
-          <button class="gl-btn" :disabled="busy" @click="perform(() => deleteV2Document(document.id), true)">提交删除</button>
-          <button v-if="document.active_version > 0" type="button" class="gl-btn" @click="router.push({ name: 'v2-source', params: { documentId: document.id }, query: { version: String(document.active_version) } })">读取指定 active 原文</button>
-          <DocumentProcessingPanel v-if="processingOpen[document.id]" :document-id="document.id" :document-status="document.index_status" />
-        </li>
-      </ul>
-      <pre v-if="detail" data-test="v2-detail">{{ JSON.stringify(detail, null, 2) }}</pre>
-    </SectionFrame>
+  <div class="gl-page docs">
+    <GlPageHeader
+      title="文档"
+      description="上传 .md 或 .txt 之后，回答就能引用它们的内容。单文件不超过 5 MiB。"
+    >
+      <template #actions>
+        <n-button type="primary" :disabled="busy" @click="pick()">上传文档</n-button>
+      </template>
+    </GlPageHeader>
+
+    <ServerNotice v-if="error" :message="error" />
+    <p v-if="notice" class="docs__notice" role="status">{{ notice }}</p>
+
+    <input
+      ref="fileInput"
+      class="sr-only"
+      type="file"
+      accept=".md,.txt"
+      :disabled="busy"
+      data-test="v2-upload"
+      @change="chosen"
+    />
+
+    <GlEmpty
+      v-if="documents.length === 0"
+      description="还没有文档。上传一个 .md 或 .txt 文件后，回答就能引用它的内容。"
+    >
+      <template #action>
+        <n-button type="primary" :disabled="busy" @click="pick()">上传文档</n-button>
+      </template>
+    </GlEmpty>
+
+    <ul v-else class="docs__list">
+      <li v-for="document in documents" :key="document.id" class="docs__item gl-card" data-test="v2-document">
+        <div class="docs__item-head">
+          <h3 class="docs__name">{{ document.original_name }}</h3>
+          <GlStatusTag :status="document.index_status" data-test="v2-status" />
+        </div>
+
+        <p class="docs__meta">
+          版本 {{ document.active_version }} · {{ size(document.file_size) }}
+        </p>
+
+        <p v-if="document.error_message" class="docs__error">{{ document.error_message }}</p>
+
+        <div class="docs__actions">
+          <n-button
+            v-if="document.active_version > 0"
+            type="primary"
+            secondary
+            :disabled="busy"
+            @click="openSource(document)"
+          >
+            查看原文
+          </n-button>
+          <n-button
+            v-if="document.index_status === 'failed'"
+            :disabled="busy"
+            @click="perform(() => retryV2Document(document.id))"
+          >
+            重试
+          </n-button>
+          <n-button
+            v-if="document.index_status === 'ready'"
+            :disabled="busy"
+            @click="perform(() => reindexV2Document(document.id))"
+          >
+            重新索引
+          </n-button>
+          <n-button
+            v-if="document.index_status === 'ready'"
+            :disabled="busy"
+            @click="pick(document.id)"
+          >
+            更新
+          </n-button>
+          <n-button
+            quaternary
+            type="error"
+            :disabled="busy"
+            @click="perform(() => deleteV2Document(document.id), true)"
+          >
+            删除
+          </n-button>
+          <n-button
+            text
+            :disabled="busy"
+            data-test="v2-processing-toggle"
+            :aria-expanded="String(!!processingOpen[document.id])"
+            @click="toggleProcessing(document.id)"
+          >
+            处理详情
+          </n-button>
+        </div>
+
+        <DocumentProcessingPanel
+          v-if="processingOpen[document.id]"
+          :document-id="document.id"
+          :document-status="document.index_status"
+        />
+      </li>
+    </ul>
   </div>
 </template>
+
+<style scoped>
+.docs__notice {
+  margin: 0 0 var(--gl-space-4);
+  padding: var(--gl-space-2) var(--gl-space-3);
+  border-radius: var(--gl-radius-sm);
+  background: var(--gl-accent-soft);
+  color: var(--gl-accent-ink);
+  font-size: var(--gl-text-sm);
+}
+
+.docs__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: var(--gl-space-4);
+}
+
+.docs__item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gl-space-2);
+  padding: var(--gl-space-4);
+  min-width: 0;
+}
+
+.docs__item-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--gl-space-3);
+}
+
+.docs__name {
+  font-size: var(--gl-text-lg);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.docs__meta {
+  margin: 0;
+  font-size: var(--gl-text-sm);
+  color: var(--gl-ink-faint);
+}
+
+.docs__error {
+  margin: 0;
+  font-size: var(--gl-text-sm);
+  color: var(--gl-danger);
+}
+
+.docs__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gl-space-2);
+  padding-top: var(--gl-space-2);
+}
+</style>
