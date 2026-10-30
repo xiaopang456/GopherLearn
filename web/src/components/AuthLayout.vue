@@ -47,6 +47,9 @@ defineProps({
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 480px);
   min-height: 100%;
+  /* A viewport height of its own: this page is not inside the app shell, so
+     it cannot rely on a percentage height from there. */
+  min-height: 100dvh;
 }
 
 .auth__statement {

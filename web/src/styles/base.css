@@ -93,6 +93,14 @@ body,
   height: 100%;
 }
 
+/* The theme provider sits between #app and the page, so it has to carry the
+   viewport height itself. Without this, every percentage height below it —
+   `.shell`, `.gl-page`, `.chat` — resolves against an auto-height parent and
+   the pages stop scrolling inside their own frame. */
+#app > * {
+  height: 100%;
+}
+
 body {
   margin: 0;
   background: var(--gl-paper);
