@@ -27,24 +27,22 @@ defineProps({
 <style scoped>
 .notice {
   display: flex;
-  gap: 0.6rem;
+  gap: var(--gl-space-2);
   align-items: flex-start;
-  padding: 0.7rem 0.85rem;
+  padding: var(--gl-space-3);
   border-radius: var(--gl-radius-sm);
-  border: 1px solid #e6c9c6;
   background: var(--gl-danger-soft);
   color: var(--gl-danger);
-  font-size: 0.92rem;
+  font-size: var(--gl-text-sm);
+  line-height: var(--gl-leading-normal);
 }
 
 .notice--stopped {
-  border-color: #e4d7bd;
   background: var(--gl-warn-soft);
   color: var(--gl-warn);
 }
 
 .notice--info {
-  border-color: var(--gl-surface-line);
   background: var(--gl-surface-soft);
   color: var(--gl-ink-soft);
 }
@@ -60,9 +58,9 @@ defineProps({
 }
 
 .notice__code {
-  margin: 0.2rem 0 0;
+  margin: var(--gl-space-1) 0 0;
   font-family: var(--gl-mono);
-  font-size: 0.78rem;
-  opacity: 0.85;
+  font-size: var(--gl-text-xs);
+  opacity: 0.8;
 }
 </style>

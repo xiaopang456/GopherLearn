@@ -142,25 +142,25 @@ const currentStepLabel = computed(() => {
 .agent {
   display: flex;
   flex-direction: column;
-  gap: 0.3rem;
-  padding: 0.4rem 0.6rem;
-  border-radius: var(--gl-radius-sm);
-  background: var(--gl-surface-soft);
+  gap: var(--gl-space-2);
+  padding: var(--gl-space-3);
+  border-radius: var(--gl-radius);
+  background: var(--gl-surface);
   border: 1px solid var(--gl-surface-line);
-  font-size: 0.82rem;
+  font-size: var(--gl-text-sm);
   color: var(--gl-ink-soft);
 }
 
 .agent__line {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
+  gap: var(--gl-space-2);
   margin: 0;
 }
 
 .agent__dot {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   flex: none;
   border-radius: 50%;
   background: var(--gl-ink-faint);
@@ -168,11 +168,11 @@ const currentStepLabel = computed(() => {
 
 .agent__dot--active {
   background: var(--gl-accent);
+  animation: gl-pulse 1.4s ease-in-out infinite;
 }
 
 .agent__dot--done {
   background: var(--gl-accent);
-  box-shadow: 0 0 0 2px var(--gl-accent-soft);
 }
 
 .agent__dot--failed {
@@ -181,6 +181,18 @@ const currentStepLabel = computed(() => {
 
 .agent__dot--cancelled {
   background: var(--gl-warn);
+}
+
+@keyframes gl-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent__dot--active {
+    animation: none;
+  }
 }
 
 .agent__title {
@@ -195,24 +207,26 @@ const currentStepLabel = computed(() => {
 }
 
 .agent__count {
-  padding: 0 0.4em;
-  border-radius: 999px;
-  background: var(--gl-surface);
+  padding: 0 0.45em;
+  border-radius: var(--gl-radius-pill);
+  background: var(--gl-surface-soft);
   border: 1px solid var(--gl-surface-line);
-  font-size: 0.72rem;
+  font-size: var(--gl-text-xs);
 }
 
 .agent__toggle {
   margin-left: auto;
-  padding: 0.1em 0.5em;
+  padding: 3px var(--gl-space-2);
   border: 1px solid transparent;
-  border-radius: var(--gl-radius-sm);
+  border-radius: var(--gl-radius-xs);
   background: none;
-  font-size: 0.76rem;
+  font-size: var(--gl-text-sm);
+  font-weight: 500;
   color: var(--gl-accent-ink);
 }
 
 .agent__toggle:hover {
+  background: var(--gl-surface-soft);
   border-color: var(--gl-surface-line);
 }
 
@@ -227,20 +241,20 @@ const currentStepLabel = computed(() => {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
+  gap: 2px;
 }
 
 .agent__step {
   display: flex;
   align-items: baseline;
-  gap: 0.45rem;
-  padding: 0.15rem 0;
-  border-top: 1px dashed var(--gl-surface-line);
+  gap: var(--gl-space-2);
+  padding: 5px 0;
+  border-top: 1px solid var(--gl-surface-line);
 }
 
 .agent__step-index {
   font-family: var(--gl-mono);
-  font-size: 0.72rem;
+  font-size: var(--gl-text-xs);
   color: var(--gl-ink-faint);
 }
 
@@ -250,7 +264,7 @@ const currentStepLabel = computed(() => {
 
 .agent__step-state {
   flex: none;
-  font-size: 0.72rem;
+  font-size: var(--gl-text-xs);
   color: var(--gl-ink-faint);
   white-space: nowrap;
 }
@@ -266,12 +280,12 @@ const currentStepLabel = computed(() => {
 .agent__step-time {
   flex: none;
   font-family: var(--gl-mono);
-  font-size: 0.72rem;
+  font-size: var(--gl-text-xs);
   color: var(--gl-ink-faint);
   white-space: nowrap;
 }
 
 .agent__error {
-  margin-top: 0.1rem;
+  margin-top: var(--gl-space-1);
 }
 </style>
