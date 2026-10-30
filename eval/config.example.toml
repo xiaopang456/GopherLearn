@@ -31,6 +31,10 @@ topK = [3, 5, 8, 12, 20]
 # evidence lines. Fix it before looking at results. Write a decimal point
 # (0.5, 1.0): the TOML reader refuses a bare integer here.
 hitThreshold = 0.5
+# The paired comparisons use a cluster bootstrap over documents. The seed makes a
+# report reproducible; change it only to see how much the intervals depend on it.
+bootstrapSeed = 20261030
+bootstrapResamples = 2000
 
 [limits]
 # Caps on paid calls. 0 (the default) means "none allowed": a run that would need

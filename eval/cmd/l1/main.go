@@ -5,6 +5,7 @@
 //	l1 plan  -config eval.toml.local                  forecast the work and paid calls; offline, free
 //	l1 run   -config eval.toml.local -env fake        run on in-memory fakes; offline, free
 //	l1 run   -config eval.toml.local -env real        run on the real services; spends money
+//	l1 score -config eval.toml.local -run <run dir>   score a run into tables; offline, free
 //
 // Every mode refuses to start when a configured path sits inside a git working
 // tree, and a real run makes no paid call that a limit in the configuration does
@@ -24,7 +25,9 @@ import (
 	"github.com/xiaopang456/GopherLearn/eval/internal/config"
 	"github.com/xiaopang456/GopherLearn/eval/internal/dataset"
 	"github.com/xiaopang456/GopherLearn/eval/internal/fake"
+	"github.com/xiaopang456/GopherLearn/eval/internal/pathguard"
 	"github.com/xiaopang456/GopherLearn/eval/internal/realenv"
+	"github.com/xiaopang456/GopherLearn/eval/internal/report"
 	"github.com/xiaopang456/GopherLearn/eval/internal/runner"
 )
 
@@ -40,6 +43,7 @@ modes:
   check   validate the configuration, corpus manifest and question file (offline)
   plan    forecast chunks, embedding and rerank calls against the limits (offline)
   run     run the retrieval matrix; -env fake (offline) or -env real (paid)
+  score   score a run directory into report.md and scores.json (offline)
 
 run flags:
   -env fake|real   required; fake results prove plumbing only, never quality
@@ -66,6 +70,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runPlan(ctx, rest, stdout, stderr)
 	case "run":
 		return runRun(ctx, rest, stdout, stderr)
+	case "score":
+		return runScore(rest, stdout, stderr)
 	case "-h", "-help", "--help", "help":
 		fmt.Fprint(stdout, usage)
 		return 0
@@ -241,4 +247,39 @@ func fakeEnv() runner.Env {
 		Dimension: fakeDimension, EmbeddingModel: "fake-hash-embedder", RerankModel: "fake/token-overlap",
 		Chunker: rag.DefaultChunkerConfig(), MaxSourceBytes: fakeMaxSourceBytes,
 	}
+}
+
+func runScore(args []string, stdout, stderr io.Writer) int {
+	flags, configPath := newFlags("score", stderr)
+	runDir := flags.String("run", "", "run directory to score (required)")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if *runDir == "" {
+		fmt.Fprintln(stderr, "l1 score: -run is required")
+		return 2
+	}
+	in, ok := loadInputs(flags, *configPath, stderr)
+	if !ok {
+		return 1
+	}
+	if err := pathguard.Check("-run", *runDir); err != nil {
+		fmt.Fprintf(stderr, "l1 score: %v\n", err)
+		return 1
+	}
+	rep, outDir, err := report.Score(*runDir, in.cfg, in.corpus, in.questions)
+	if err != nil {
+		fmt.Fprintf(stderr, "l1 score: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "scored %d cells over %d answerable and %d unanswerable questions\n", len(rep.Cells), rep.Answerable, rep.Unanswerable)
+	fmt.Fprintf(stdout, "report          %s\n", outDir)
+	if rep.Input.Manifest.Environment != runner.EnvReal {
+		fmt.Fprintln(stdout, "OFFLINE FAKE ENVIRONMENT: the numbers are not retrieval quality.")
+	}
+	if rep.Incomplete {
+		fmt.Fprintln(stdout, "warning: the run is incomplete; some cells lack records")
+		return 1
+	}
+	return 0
 }

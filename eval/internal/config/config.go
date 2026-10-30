@@ -75,6 +75,11 @@ type Matrix struct {
 type Metrics struct {
 	// HitThreshold is the coverage at which a question counts as a hit at K.
 	HitThreshold float64 `toml:"hitThreshold"`
+	// BootstrapSeed seeds the cluster bootstrap, so a report can be regenerated
+	// bit for bit.
+	BootstrapSeed int64 `toml:"bootstrapSeed"`
+	// BootstrapResamples is the number of bootstrap resamples per comparison.
+	BootstrapResamples int `toml:"bootstrapResamples"`
 }
 
 // Limits cap the paid calls of a run. Zero means none: a run that would need a
@@ -92,7 +97,7 @@ func Default() *Config {
 			Methods: []string{MethodVector, MethodKeyword, MethodHybrid, MethodHybridRerank},
 			TopK:    []int{3, 5, 8, 12, 20},
 		},
-		Metrics: Metrics{HitThreshold: 0.5},
+		Metrics: Metrics{HitThreshold: 0.5, BootstrapSeed: 20261030, BootstrapResamples: 2000},
 	}
 }
 
@@ -138,6 +143,9 @@ func (c *Config) Validate() error {
 	}
 	if h := c.Metrics.HitThreshold; !(h > 0 && h <= 1) {
 		return fmt.Errorf("metrics.hitThreshold must be in (0, 1], got %v", h)
+	}
+	if n := c.Metrics.BootstrapResamples; n < 100 || n > 100000 {
+		return fmt.Errorf("metrics.bootstrapResamples must be in 100..100000, got %d", n)
 	}
 	if c.Limits.MaxEmbeddingCalls < 0 || c.Limits.MaxRerankCalls < 0 {
 		return fmt.Errorf("limits must not be negative (embedding %d, rerank %d)", c.Limits.MaxEmbeddingCalls, c.Limits.MaxRerankCalls)

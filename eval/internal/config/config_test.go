@@ -48,8 +48,8 @@ func TestLoadAppliesDefaultsAndFailsClosedOnLimits(t *testing.T) {
 	if len(cfg.Matrix.TopK) != 5 || cfg.Matrix.TopK[0] != 3 || cfg.Matrix.TopK[4] != 20 {
 		t.Errorf("topK = %v", cfg.Matrix.TopK)
 	}
-	if cfg.Metrics.HitThreshold != 0.5 {
-		t.Errorf("hitThreshold = %v", cfg.Metrics.HitThreshold)
+	if cfg.Metrics.HitThreshold != 0.5 || cfg.Metrics.BootstrapSeed != 20261030 || cfg.Metrics.BootstrapResamples != 2000 {
+		t.Errorf("metrics defaults = %+v", cfg.Metrics)
 	}
 	// Forgetting [limits] must mean "no paid calls", never "unlimited".
 	if cfg.Limits.MaxEmbeddingCalls != 0 || cfg.Limits.MaxRerankCalls != 0 {
@@ -114,6 +114,7 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 		"rerank above the pool": {"\n[matrix]\ntopK = [8, 30]\n", "candidate pool"},
 		"threshold zero":        {"\n[metrics]\nhitThreshold = 0.0\n", "hitThreshold"},
 		"threshold above one":   {"\n[metrics]\nhitThreshold = 1.01\n", "hitThreshold"},
+		"too few resamples":     {"\n[metrics]\nbootstrapResamples = 10\n", "bootstrapResamples"},
 		"negative limit":        {"\n[limits]\nmaxRerankCalls = -1\n", "must not be negative"},
 	}
 	for name, tc := range cases {

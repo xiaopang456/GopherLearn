@@ -197,3 +197,36 @@ func TestRealRunNeedsAProductConfigWithAnEmbeddingKey(t *testing.T) {
 		t.Fatalf("exit %d, stderr: %s", code, stderr)
 	}
 }
+
+func TestScoreReadsARunAndWritesTheReport(t *testing.T) {
+	cfgPath := stageInputs(t)
+	if code, _, stderr := runCLI("run", "-config", cfgPath, "-env", "fake"); code != 0 {
+		t.Fatalf("run: exit %d, stderr: %s", code, stderr)
+	}
+	results := filepath.Join(filepath.Dir(cfgPath), "results")
+	runs, err := os.ReadDir(results)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("%v, %d runs", err, len(runs))
+	}
+	runDir := filepath.Join(results, runs[0].Name())
+
+	code, stdout, stderr := runCLI("score", "-config", cfgPath, "-run", runDir)
+	if code != 0 {
+		t.Fatalf("score: exit %d, stderr: %s", code, stderr)
+	}
+	for _, want := range []string{"scored 22 cells over 4 answerable and 1 unanswerable", "OFFLINE FAKE ENVIRONMENT"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("output lacks %q:\n%s", want, stdout)
+		}
+	}
+	scored, err := filepath.Glob(filepath.Join(runDir, "scores-*", "report.md"))
+	if err != nil || len(scored) != 1 {
+		t.Fatalf("report files: %v %v", scored, err)
+	}
+	if code, _, stderr := runCLI("score", "-config", cfgPath); code != 2 || !strings.Contains(stderr, "-run is required") {
+		t.Errorf("a missing -run: exit %d, %q", code, stderr)
+	}
+	if code, _, _ := runCLI("score", "-config", cfgPath, "-run", filepath.Join(results, "absent")); code == 0 {
+		t.Error("scoring a missing run must fail")
+	}
+}
