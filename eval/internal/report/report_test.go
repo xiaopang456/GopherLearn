@@ -385,6 +385,9 @@ func TestScoreWritesDeterministicFilesAndLabelsTheRun(t *testing.T) {
 	if !strings.Contains(md, "离线替身环境（fake）") || !strings.Contains(md, "命中@K（覆盖率 ≥ 0.5）") {
 		t.Error("report.md lacks the offline banner or the hit criterion")
 	}
+	if !strings.Contains(md, "调用次数，实际：嵌入 8 次、重排 6 次") || !strings.Contains(md, "运行完整：是") {
+		t.Error("report.md must state the calls the run actually made and that it finished")
+	}
 
 	// Scoring is repeatable: the same run and settings rewrite the same bytes.
 	if _, out2, err := Score(runDir, cfg, corpus, ds); err != nil || out2 != out || read("report.md") != md || read("scores.json") != js {

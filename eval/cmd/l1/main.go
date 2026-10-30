@@ -17,6 +17,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/signal"
 
@@ -49,6 +50,8 @@ run flags:
   -env fake|real   required; fake results prove plumbing only, never quality
   -split dev|sealed  questions to run (default dev; sealed is held back for the final report)
   -rebuild         replace an evaluation index in Redis whose fingerprint differs
+  -commit <sha>    commit under test, recorded in the manifest (go build does not always stamp it)
+  -verbose         keep the retrieval service's own log lines (one per retrieval)
 `
 
 // Settings of the offline environment.
@@ -191,8 +194,15 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	envName := flags.String("env", "", "environment: fake or real (required)")
 	split := flags.String("split", dataset.SplitDev, "questions to run: dev or sealed")
 	rebuild := flags.Bool("rebuild", false, "replace an evaluation index whose fingerprint differs")
+	commit := flags.String("commit", "", "commit under test, recorded in the manifest (for example $(git rev-parse HEAD))")
+	verbose := flags.Bool("verbose", false, "keep the retrieval service's own log lines (one per retrieval)")
 	if err := flags.Parse(args); err != nil {
 		return 2
+	}
+	if !*verbose {
+		// The product logs a metric line per retrieval; a run makes thousands.
+		log.SetOutput(io.Discard)
+		defer log.SetOutput(os.Stderr)
 	}
 	if *envName != runner.EnvFake && *envName != runner.EnvReal {
 		fmt.Fprintf(stderr, "l1 run: -env must be %q or %q; there is no default, so a real run is never started by accident\n", runner.EnvFake, runner.EnvReal)
@@ -222,7 +232,7 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		env = realEnv
 	}
 
-	result, err := runner.Execute(ctx, in.cfg, in.corpus, in.questions, env, runner.Options{Split: *split, Rebuild: *rebuild, Progress: stdout})
+	result, err := runner.Execute(ctx, in.cfg, in.corpus, in.questions, env, runner.Options{Split: *split, Rebuild: *rebuild, Progress: stdout, Commit: *commit})
 	if result != nil {
 		fmt.Fprintf(stdout, "run directory   %s\n", result.Dir)
 		fmt.Fprintf(stdout, "records         %d (%d with errors); complete: %v\n", result.Records, result.Errors, result.Complete)

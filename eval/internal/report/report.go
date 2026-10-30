@@ -22,7 +22,9 @@ import (
 
 // Input is everything scoring needs.
 type Input struct {
-	Manifest  runner.Manifest
+	Manifest runner.Manifest
+	// Summary is the run's summary.json; nil when the run left none (it was killed).
+	Summary   *runner.Summary
 	Records   []runner.Record
 	Questions []dataset.Question
 	Threshold float64
@@ -358,8 +360,15 @@ func Score(runDir string, cfg *config.Config, corpus *dataset.Corpus, ds *datase
 	if err != nil {
 		return nil, "", err
 	}
+	var summary *runner.Summary
+	if raw, err := os.ReadFile(filepath.Join(runDir, runner.SummaryFile)); err == nil {
+		var s runner.Summary
+		if json.Unmarshal(raw, &s) == nil {
+			summary = &s
+		}
+	}
 	rep, err := Build(Input{
-		Manifest: manifest, Records: records, Questions: ds.Filter(manifest.Split),
+		Manifest: manifest, Summary: summary, Records: records, Questions: ds.Filter(manifest.Split),
 		Threshold: cfg.Metrics.HitThreshold, Seed: cfg.Metrics.BootstrapSeed, Resamples: cfg.Metrics.BootstrapResamples,
 	})
 	if err != nil {

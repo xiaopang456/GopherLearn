@@ -230,3 +230,18 @@ func TestScoreReadsARunAndWritesTheReport(t *testing.T) {
 		t.Error("scoring a missing run must fail")
 	}
 }
+
+func TestRunRecordsTheCommitItIsGiven(t *testing.T) {
+	cfgPath := stageInputs(t)
+	if code, _, stderr := runCLI("run", "-config", cfgPath, "-env", "fake", "-commit", "0123abcd4567"); code != 0 {
+		t.Fatalf("exit %d, stderr: %s", code, stderr)
+	}
+	manifests, _ := filepath.Glob(filepath.Join(filepath.Dir(cfgPath), "results", "*", "manifest.json"))
+	if len(manifests) != 1 {
+		t.Fatalf("manifests: %v", manifests)
+	}
+	data, err := os.ReadFile(manifests[0])
+	if err != nil || !strings.Contains(string(data), `"commit": "0123abcd4567"`) {
+		t.Fatalf("manifest: %s %v", data, err)
+	}
+}

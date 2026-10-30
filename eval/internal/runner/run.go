@@ -73,6 +73,10 @@ type Options struct {
 	Now func() time.Time
 	// Progress receives one line per question; nil discards.
 	Progress io.Writer
+	// Commit names the commit under test and is recorded in the manifest. When
+	// empty the toolchain's build information is used, and "unknown" when it has
+	// none (it often has not: stamping is off under "go run" and in some worktrees).
+	Commit string
 }
 
 // Result summarises a run.
@@ -309,7 +313,7 @@ func buildManifest(runID string, started time.Time, cfg *config.Config, corpus *
 	fp safety.Fingerprint, decision safety.Decision, cells []matrix.Cell, estimate Estimate, questions int) Manifest {
 	m := Manifest{
 		SchemaVersion: 1, RunID: runID, StartedAt: started.Format(time.RFC3339), Environment: env.Kind, Split: opts.Split,
-		Commit: vcsRevision(), ConfigDigest: cfg.Digest(), Fingerprint: fp.Hash(), IndexDecision: decision.String(),
+		Commit: firstNonEmpty(opts.Commit, vcsRevision()), ConfigDigest: cfg.Digest(), Fingerprint: fp.Hash(), IndexDecision: decision.String(),
 		Chunker: env.Chunker, HitThreshold: cfg.Metrics.HitThreshold, Limits: cfg.Limits, Estimate: estimate,
 	}
 	for _, c := range cells {
@@ -344,6 +348,15 @@ func vcsRevision() string {
 		}
 	}
 	return revision + dirty
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func writeJSON(path string, value any) error {

@@ -40,7 +40,13 @@ func (r *Report) Markdown() string {
 	fmt.Fprintf(&b, "- 题集：版本 `%s`，split `%s`；可答题 %d、不可答题 %d\n", short(m.Dataset.Version), m.Split, r.Answerable, r.Unanswerable)
 	fmt.Fprintf(&b, "- 嵌入模型 `%s`（%d 维）；重排：%s\n", m.Embedding.Model, m.Embedding.Dimension, rerankText(m))
 	fmt.Fprintf(&b, "- 切块：最大 %d token，重叠 %d；索引：%s\n", m.Chunker.MaxTokens, m.Chunker.OverlapTokens, m.IndexDecision)
-	fmt.Fprintf(&b, "- 付费调用：嵌入 %d 次、重排 %d 次（计划值，见 manifest）\n\n", m.Estimate.EmbeddingCalls, m.Estimate.RerankCalls)
+	fmt.Fprintf(&b, "- 调用次数，计划值：嵌入 %d 次、重排 %d 次\n", m.Estimate.EmbeddingCalls, m.Estimate.RerankCalls)
+	if s := r.Input.Summary; s != nil {
+		fmt.Fprintf(&b, "- 调用次数，实际：嵌入 %d 次、重排 %d 次；记录 %d 条，其中失败 %d 条；运行完整：%s\n", s.EmbeddingCalls, s.RerankCalls, s.Records, s.Errors, yesNo(s.Complete))
+	} else {
+		b.WriteString("- 调用次数，实际：该运行没有 summary.json（运行被中断）\n")
+	}
+	b.WriteString("\n")
 
 	b.WriteString("## 表 1　汇总\n\n")
 	fmt.Fprintf(&b, "| 单元格 | K | 可答题 | %s | 平均覆盖率@K | %s | 平均纯度@K | 失败 | 缺记录 |\n", hitHeader, mrrHeader)
@@ -100,6 +106,13 @@ func (r *Report) Markdown() string {
 	}
 	b.WriteString("\n- 不同方法的分数含义不同（向量距离、融合分、重排分），不能跨方法比较；这里只记录分布，不据此定拒答阈值。\n")
 	return b.String()
+}
+
+func yesNo(b bool) string {
+	if b {
+		return "是"
+	}
+	return "否"
 }
 
 func rate(hits, n int) string {
