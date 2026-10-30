@@ -86,6 +86,7 @@ onBeforeUnmount(page.dispose)
       <div class="learning__bar-actions">
         <n-button
           type="primary"
+          attr-type="submit"
           :disabled="page.busy.value || !page.sessionId.value || !topic.trim()"
         >
           生成测验
@@ -109,10 +110,10 @@ onBeforeUnmount(page.dispose)
       </div>
 
       <div class="learning__bar-actions">
-        <n-button v-if="page.busy.value" type="button" data-test="abort" @click="page.abort">
+        <n-button v-if="page.busy.value" attr-type="button" data-test="abort" @click="page.abort">
           取消本次请求
         </n-button>
-        <n-button v-if="page.pending.value" type="button" data-test="retry" :disabled="page.busy.value" @click="page.retry">
+        <n-button v-if="page.pending.value" attr-type="button" data-test="retry" :disabled="page.busy.value" @click="page.retry">
           重试上一次操作
         </n-button>
       </div>
@@ -153,6 +154,7 @@ onBeforeUnmount(page.dispose)
           <div class="learning__actions">
             <n-button
               type="primary"
+              attr-type="submit"
               :disabled="page.busy.value || page.task.value.status !== 'waiting_answer' || !answer.trim()"
             >
               提交答案
@@ -170,7 +172,7 @@ onBeforeUnmount(page.dispose)
       </template>
 
       <div class="learning__actions">
-        <n-button type="button" :disabled="page.busy.value" data-test="cancel" @click="page.perform('cancel')">
+        <n-button attr-type="button" :disabled="page.busy.value" data-test="cancel" @click="page.perform('cancel')">
           结束这次测验
         </n-button>
       </div>
@@ -215,7 +217,7 @@ onBeforeUnmount(page.dispose)
           <span class="gl-label__name">修改理由</span>
           <input v-model="reason" data-test="reason" required class="gl-field" placeholder="为什么改这个分数">
         </label>
-        <n-button type="primary" :disabled="page.busy.value">提交修正</n-button>
+        <n-button type="primary" attr-type="submit" :disabled="page.busy.value">提交修正</n-button>
       </form>
     </section>
 

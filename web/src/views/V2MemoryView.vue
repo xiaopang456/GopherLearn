@@ -152,7 +152,7 @@ onBeforeUnmount(page.dispose)
           </div>
 
           <div class="memory__submit">
-            <n-button type="primary" :disabled="op.busy.value" data-test="v2-create">
+            <n-button type="primary" attr-type="submit" :disabled="op.busy.value" data-test="v2-create">
               保存这条记忆
             </n-button>
           </div>
@@ -305,7 +305,7 @@ onBeforeUnmount(page.dispose)
             <span class="gl-label__name">修改原因</span>
             <input v-model="edit.reason" required class="gl-field" aria-label="修改 reason">
           </label>
-          <n-button type="primary" size="small" :disabled="op.busy.value" data-test="v2-correct">
+          <n-button type="primary" attr-type="submit" size="small" :disabled="op.busy.value" data-test="v2-correct">
             保存修改
           </n-button>
         </form>
