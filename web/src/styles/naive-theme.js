@@ -108,9 +108,11 @@ export const naiveThemeOverrides = {
     textColor: PALETTE.ink,
     textColorHover: PALETTE.ink,
     textColorDisabled: PALETTE.inkFaint,
-    border: `1px solid ${PALETTE.line}`,
-    borderHover: `1px solid ${PALETTE.lineStrong}`,
-    borderPressed: `1px solid ${PALETTE.lineStrong}`,
+    // A secondary button still has to read as a button: the hairline is the
+    // only thing separating it from the page.
+    border: `1px solid ${PALETTE.lineStrong}`,
+    borderHover: `1px solid ${PALETTE.inkFaint}`,
+    borderPressed: `1px solid ${PALETTE.inkFaint}`,
     borderFocus: `1px solid ${PALETTE.ink}`,
     borderHoverPrimary: `1px solid ${PALETTE.ink}`,
     borderPressedPrimary: `1px solid ${PALETTE.ink}`,
