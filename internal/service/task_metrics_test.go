@@ -37,7 +37,6 @@ type scriptedReply struct {
 	// produced by the transport, not asserted.
 	raw    string
 	status int
-	delay  time.Duration
 	// stall makes the handler block until the request context is done. It is
 	// used instead of a fixed sleep: a fixed sleep of the same length as the
 	// client timeout is a race, and on a loaded machine the response can win
@@ -90,9 +89,6 @@ func newProviderScriptWithTimeout(t *testing.T, timeout time.Duration, replies .
 			<-r.Context().Done()
 			return
 		}
-		if reply.delay > 0 {
-			time.Sleep(reply.delay)
-		}
 		if reply.status != 0 {
 			w.WriteHeader(reply.status)
 			_, _ = io.WriteString(w, `{"error":{"code":"upstream","type":"server_error"}}`)
@@ -129,7 +125,7 @@ func scriptRaw(body string) scriptedReply { return scriptedReply{raw: body} }
 // on a loaded machine the response could arrive just before the timeout
 // fired, and the test failed although nothing was broken. Blocking until the
 // request context is done makes the timeout the only possible outcome.
-func scriptDelayed(timeout time.Duration) scriptedReply {
+func scriptDelayed() scriptedReply {
 	return scriptedReply{content: "太迟了。", stall: true}
 }
 

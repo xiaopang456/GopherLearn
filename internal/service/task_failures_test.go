@@ -32,7 +32,7 @@ var providerFaults = []providerFault{
 	},
 	{
 		name:       "model timeout",
-		reply:      func(timeout time.Duration) scriptedReply { return scriptDelayed(timeout) },
+		reply:      func(time.Duration) scriptedReply { return scriptDelayed() },
 		wantReason: reasonTimeout, wantOut: modelcall.OutcomeTimeout,
 	},
 	{
