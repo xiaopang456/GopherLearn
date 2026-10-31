@@ -158,16 +158,16 @@ func checkUnanswerable(report *Report, q dataset.Question, docs map[string]*Docu
 		report.Findings = append(report.Findings, Finding{
 			Severity: SeverityError, Rule: RuleUnanswerableHit, ID: q.ID,
 			File: answers[0].file, Line: answers[0].line,
-			Detail: fmt.Sprintf("an unanswerable question is answered by %d corpus line(s); the closest: %s",
-				len(answers), formatCandidates(answers))})
+			Detail: fmt.Sprintf("an unanswerable question is answered by %d corpus line(s) (only the first %d are listed): %s",
+				len(answers), shownCount(len(answers)), formatCandidates(answers))})
 		return
 	}
 	if len(suspects) > 0 {
 		report.Findings = append(report.Findings, Finding{
 			Severity: SeverityWarning, Rule: RuleUnanswerableSuspect, ID: q.ID,
 			File: suspects[0].file, Line: suspects[0].line,
-			Detail: fmt.Sprintf("%d corpus line(s) carry some of this question's keywords but not all of them; the corpus may still know the answer: %s",
-				len(suspects), formatCandidates(suspects))})
+			Detail: fmt.Sprintf("%d corpus line(s) carry part of this question's keywords but not all of them (only the first %d are listed); the corpus may still know the answer: %s",
+				len(suspects), shownCount(len(suspects)), formatCandidates(suspects))})
 		return
 	}
 	report.Findings = append(report.Findings, Finding{
@@ -211,6 +211,17 @@ func formatCandidates(candidates []corpusCandidate) string {
 		details = append(details, fmt.Sprintf("%s:%d [%s]", c.file, c.line, strings.Join(c.matched, "、")))
 	}
 	return strings.Join(details, "; ")
+}
+
+// shownCount is how many candidate lines the report actually prints. The
+// message says "only the first N are listed", so N must match what the
+// reader sees and not the total number of hits, which can be in the hundreds
+// and is of no use to whoever reads the report.
+func shownCount(total int) int {
+	if total > 5 {
+		return 5
+	}
+	return total
 }
 
 // isStrongTerm reports whether a keyword is specific enough to be evidence on
