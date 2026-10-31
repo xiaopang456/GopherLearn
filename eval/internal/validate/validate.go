@@ -41,9 +41,12 @@ const (
 	RuleEvidenceHeading   = "evidence.heading"
 	RuleEvidenceBlank     = "evidence.blank"
 
-	RuleRefusalMarker   = "question.refusal_marker"
-	RuleHistoryRecall   = "question.history_recall"
-	RuleDuplicate       = "question.duplicate"
+	RuleRefusalMarker = "question.refusal_marker"
+	RuleHistoryRecall = "question.history_recall"
+	RuleDuplicate     = "question.duplicate"
+	// RuleSimilarPair marks a pair of questions that are close but below the
+	// duplicate threshold. It is a list for the reviewer, not a defect.
+	RuleSimilarPair     = "question.similar_pair"
 	RuleQuestionEmpty   = "question.empty"
 	RuleNuggetMissing   = "nugget.keyword_missing"
 	RuleNuggetNotRun    = "nugget.not_checked"
@@ -64,6 +67,12 @@ const (
 	RuleQuotaTopic        = "quota.topic"
 	RuleQuotaSplit        = "quota.split"
 	RuleMetaMissing       = "meta.missing"
+	// RuleMetaModelMissing marks a question that does not record the model
+	// and the generation parameters it was produced with.
+	RuleMetaModelMissing = "meta.model_missing"
+	// RuleMetaModelMismatch marks a question set whose questions were not all
+	// produced the same way.
+	RuleMetaModelMismatch = "meta.model_mismatch"
 )
 
 // Finding is one problem with one question.
@@ -144,6 +153,10 @@ type Params struct {
 	// DuplicateThreshold is the Jaccard similarity above which two questions
 	// count as duplicates. 0.75 by default.
 	DuplicateThreshold float64
+	// SimilarPairMin is the similarity below which two questions are only
+	// close, not duplicates. The pairs in [SimilarPairMin, DuplicateThreshold)
+	// are listed for the reviewer. 0.6 by default.
+	SimilarPairMin float64
 	// NuggetWindow is how many lines around an evidence span are searched for
 	// a nugget keyword. 3 by default.
 	NuggetWindow int
@@ -163,6 +176,7 @@ type Params struct {
 func DefaultParams() Params {
 	return Params{
 		DuplicateThreshold:               0.75,
+		SimilarPairMin:                   0.6,
 		NuggetWindow:                     3,
 		UnanswerableMinDistinctive:       2,
 		UnanswerableMaxDocFreq:           120,
@@ -202,6 +216,7 @@ func Validate(corpus *dataset.Corpus, questions []dataset.Question, meta []Meta,
 			Detail: "no sidecar file was given, so the required-point keyword check did not run"})
 	}
 	checkDuplicates(report, questions, params)
+	checkMetaConsistency(report, questions, meta)
 	if !quota.Empty() {
 		checkQuotas(report, questions, meta, quota)
 	}
@@ -247,6 +262,54 @@ func checkQuestionText(report *Report, q dataset.Question) {
 				Detail: fmt.Sprintf("question contains %q, which the product routes to memory recall rather than to a document search", marker)})
 			break
 		}
+	}
+}
+
+// checkMetaConsistency checks that the questions of one set were produced the
+// same way.
+//
+// Every question records the model and the generation parameters it came
+// from. A set that mixes models or parameters cannot be reproduced and its
+// questions cannot be compared with each other, so that is an error. A
+// question that records neither is a warning: the run is not reproducible,
+// but nothing in it contradicts anything else.
+func checkMetaConsistency(report *Report, questions []dataset.Question, meta []Meta) {
+	if len(meta) == 0 {
+		return
+	}
+	byID := map[string]Meta{}
+	for _, m := range meta {
+		byID[m.ID] = m
+	}
+	fingerprints := map[string]int{}
+	missing := 0
+	for _, q := range questions {
+		m, ok := byID[q.ID]
+		if !ok {
+			continue
+		}
+		if m.Model == "" && m.Params == (GenParams{}) {
+			missing++
+			continue
+		}
+		fingerprints[m.Params.Fingerprint(m.Model)]++
+	}
+	if missing > 0 {
+		report.Findings = append(report.Findings, Finding{
+			Severity: SeverityWarning, Rule: RuleMetaModelMissing,
+			Detail: fmt.Sprintf("%d question(s) do not record the model and the generation parameters they were produced with; the run cannot be reproduced",
+				missing)})
+	}
+	if len(fingerprints) > 1 {
+		combinations := make([]string, 0, len(fingerprints))
+		for fingerprint := range fingerprints {
+			combinations = append(combinations, fingerprint)
+		}
+		sort.Strings(combinations)
+		report.Findings = append(report.Findings, Finding{
+			Severity: SeverityError, Rule: RuleMetaModelMismatch,
+			Detail: fmt.Sprintf("the questions were not all produced the same way (%d different model/parameter combinations): %s",
+				len(combinations), strings.Join(combinations, "; "))})
 	}
 }
 

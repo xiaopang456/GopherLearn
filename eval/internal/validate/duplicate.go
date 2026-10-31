@@ -60,6 +60,79 @@ func checkDuplicates(report *Report, questions []dataset.Question, params Params
 			kept = append(kept, e)
 		}
 	}
+
+	// The pairs that are close but not duplicates are handed over as a list
+	// for the reviewer. They are not defects, so they do not fail the run.
+	similarMin := params.SimilarPairMin
+	if similarMin <= 0 {
+		similarMin = 0.6
+	}
+	pairs := FindSimilarPairs(questions, similarMin, threshold)
+	if len(pairs) > 0 {
+		report.Findings = append(report.Findings, Finding{
+			Severity: SeverityWarning, Rule: RuleSimilarPair,
+			Detail: fmt.Sprintf("%d pair(s) of questions are similar but below the duplicate threshold (%.2f-%.2f); list them with `qcheck pairs` for the reviewer",
+				len(pairs), similarMin, threshold)})
+	}
+}
+
+// SimilarPair is two questions that are close to each other but below the
+// duplicate threshold.
+//
+// A duplicate above the threshold is a defect and one of the two is dropped.
+// A pair in the band below the threshold is neither: the two questions are
+// different, but a human should look at them, because the answer set may end
+// up measuring the same thing twice.
+type SimilarPair struct {
+	A          string  `json:"a"`
+	B          string  `json:"b"`
+	Similarity float64 `json:"similarity"`
+	QuestionA  string  `json:"question_a"`
+	QuestionB  string  `json:"question_b"`
+}
+
+// FindSimilarPairs returns every pair of questions whose similarity sits in
+// [min, max), most similar first.
+//
+// The pairs are a list for the human reviewer, not a verdict: nothing here is
+// an error, the pairs are simply handed over to the review.
+func FindSimilarPairs(questions []dataset.Question, min, max float64) []SimilarPair {
+	type entry struct {
+		id    string
+		text  string
+		grams map[string]struct{}
+	}
+	entries := make([]entry, 0, len(questions))
+	for _, q := range questions {
+		grams := trigrams(normalizeQuestion(q.Question))
+		if len(grams) == 0 {
+			continue
+		}
+		entries = append(entries, entry{id: q.ID, text: q.Question, grams: grams})
+	}
+	var pairs []SimilarPair
+	for i := 0; i < len(entries); i++ {
+		for j := i + 1; j < len(entries); j++ {
+			similarity := jaccard(entries[i].grams, entries[j].grams)
+			if similarity < min || similarity >= max {
+				continue
+			}
+			pairs = append(pairs, SimilarPair{
+				A: entries[i].id, B: entries[j].id, Similarity: similarity,
+				QuestionA: entries[i].text, QuestionB: entries[j].text,
+			})
+		}
+	}
+	sort.SliceStable(pairs, func(i, j int) bool {
+		if pairs[i].Similarity != pairs[j].Similarity {
+			return pairs[i].Similarity > pairs[j].Similarity
+		}
+		if pairs[i].A != pairs[j].A {
+			return pairs[i].A < pairs[j].A
+		}
+		return pairs[i].B < pairs[j].B
+	})
+	return pairs
 }
 
 // normalizeQuestion lowercases the question and drops everything that carries

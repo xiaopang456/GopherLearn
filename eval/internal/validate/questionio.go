@@ -87,6 +87,24 @@ func WriteQuestions(path string, questions []OutQuestion) error {
 	return writer.Flush()
 }
 
+// WriteTrimRecords writes the trim records back out, one JSON object per line.
+func WriteTrimRecords(path string, records []TrimRecord) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	writer := bufio.NewWriter(file)
+	encoder := json.NewEncoder(writer)
+	encoder.SetEscapeHTML(false)
+	for _, r := range records {
+		if err := encoder.Encode(r); err != nil {
+			return err
+		}
+	}
+	return writer.Flush()
+}
+
 // WriteMeta writes the sidecar annotations back out.
 func WriteMeta(path string, meta []Meta) error {
 	file, err := os.Create(path)

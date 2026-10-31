@@ -22,11 +22,31 @@ type Meta struct {
 	// The question file's schema has no room for it, so it lives here.
 	// The first question set is L1 only, but the split already separates by
 	// layer, so L4 can be added later without touching the split.
-	Layer  string  `json:"layer,omitempty"`
-	Points []Point `json:"points,omitempty"`
-	Batch  string  `json:"batch,omitempty"`
-	Model  string  `json:"model,omitempty"`
-	Note   string  `json:"note,omitempty"`
+	Layer  string    `json:"layer,omitempty"`
+	Points []Point   `json:"points,omitempty"`
+	Batch  string    `json:"batch,omitempty"`
+	Model  string    `json:"model,omitempty"`
+	Params GenParams `json:"params,omitempty"`
+	Note   string    `json:"note,omitempty"`
+}
+
+// GenParams are the generation parameters a question was produced with.
+//
+// They are recorded per question, next to the model name, so a generation run
+// can be reproduced and so a question set that was produced under different
+// conditions cannot slip through unnoticed.
+type GenParams struct {
+	Temperature float64 `json:"temperature,omitempty"`
+	TopP        float64 `json:"top_p,omitempty"`
+	MaxTokens   int     `json:"max_tokens,omitempty"`
+	Seed        int64   `json:"seed,omitempty"`
+}
+
+// Fingerprint is the string the consistency check compares: the model name
+// and the parameters in a fixed order.
+func (p GenParams) Fingerprint(model string) string {
+	return fmt.Sprintf("%s|temperature=%.2f|top_p=%.2f|max_tokens=%d|seed=%d",
+		model, p.Temperature, p.TopP, p.MaxTokens, p.Seed)
 }
 
 // Point is one required point of an answer, with the keywords that must be
