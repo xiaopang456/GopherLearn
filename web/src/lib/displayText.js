@@ -79,7 +79,7 @@ export const MEMORY_DURABILITY = Object.freeze({
 export const DRAFT_ACTION = Object.freeze({
   add: '确认新增',
   replace: '确认替换',
-  cancel: '拒绝草稿',
+  cancel: '拒绝这条草稿',
 })
 
 /**

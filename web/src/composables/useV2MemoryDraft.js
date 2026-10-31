@@ -15,7 +15,7 @@ export function useV2MemoryDraft(getDraft, getRunId = () => '') {
     const response = await request()
     if (!response || id !== v2DraftId(getDraft())) return null
     if (v2DraftId(response.draft) !== id) {
-      operation.error.value = { message: '原接口返回的草稿身份不一致；未显示成功。', code: 'invalid_response' }
+      operation.error.value = { message: '服务返回的草稿和这张卡对不上，没有显示成功；请重试。', code: 'invalid_response' }
       return null
     }
     // Use returned status/memory/revision/replay, never the clicked action.

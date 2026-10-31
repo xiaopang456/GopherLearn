@@ -42,7 +42,7 @@ export function useV2MemoryOperation() {
   function retry() { return pending.value ? send(clone(pending.value)) : Promise.resolve(null) }
   function cancel() {
     ++generation; controller?.abort(); busy.value = false; result.value = null
-    error.value = { message: '请求已取消；未确认服务端状态，可明确重试原请求。', code: 'AbortError' }
+    error.value = { message: '请求已取消；服务端是否已经收到还不确定，可以重试刚才的请求。', code: 'AbortError' }
   }
   function reset() { cancel(); pending.value = null; result.value = null; error.value = null }
   return { busy, error, result, pending, start, retry, cancel, reset }
