@@ -107,7 +107,7 @@ describe('the read-back trail and the watched one', () => {
     expect(restored.map((row) => row.sequence)).toEqual([1, 2, 3])
     expect(restored[0]).toMatchObject({ label: '模型规划', status: StepStatus.Completed })
     expect(restored[1]).toMatchObject({
-      label: '工具调用 · 检索知识库',
+      label: '检索知识库',
       status: StepStatus.Completed,
       durationMillis: 412,
     })

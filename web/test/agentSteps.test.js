@@ -185,10 +185,12 @@ describe('the frames as they actually arrive', () => {
 
     expect(rows.map((row) => row.sequence)).toEqual([1, 2, 3])
     expect(rows[0]).toMatchObject({ label: 'model generation 1', status: StepStatus.Completed })
-    // The label is the server's own sentence with the tool's display name appended; the client
-    // never rewrites "tool call 1" into a word of its own.
+    // A step that used a tool is named by that tool. The server's own counter sentence
+    // ("tool call 1") says the same thing as the row's number, and the category word in
+    // front of it ("工具调用 · ") said only that a tool ran — so the row reads the
+    // capability on its own, and never a word the client made up.
     expect(rows[1]).toMatchObject({
-      label: 'tool call 1 · 查找记忆',
+      label: '查找记忆',
       status: StepStatus.Completed,
       detail: '本轮已查阅长期记忆。',
       durationMillis: 7,
@@ -222,7 +224,7 @@ describe('the frames as they actually arrive', () => {
     const state = play([started(2, 'tool', 'tool call 1'), toolStarted(2, 'memory_search')])
 
     expect(stepRows(state)).toHaveLength(1)
-    expect(stepRows(state)[0].label).toBe('tool call 1 · 查找记忆')
+    expect(stepRows(state)[0].label).toBe('查找记忆')
     expect(stepRows(state)[0].status).toBe(StepStatus.Running)
   })
 

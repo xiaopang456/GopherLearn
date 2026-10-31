@@ -129,8 +129,18 @@ describe('the live panel and the read-back trail', () => {
       const history = stepRows(readBack(name))
 
       expect(history, name).toEqual(live)
-      expect(live[1].label, name).toBe(`工具调用 · ${text}`)
+      expect(live[1].label, name).toBe(text)
       expect(live[1].label, name).not.toContain(name)
+    }
+  })
+
+  it('name a tool step by the capability alone, without the category word in front', () => {
+    for (const [name, text] of KNOWN) {
+      const label = stepRows(watched(name))[1].label
+
+      expect(label, name).not.toContain('工具调用')
+      expect(label, name).not.toContain(' · ')
+      expect(label, name).toBe(text)
     }
   })
 
@@ -139,7 +149,7 @@ describe('the live panel and the read-back trail', () => {
     const history = stepRows(readBack('future_tool'))
 
     expect(history).toEqual(live)
-    expect(live[1].label).toBe('工具调用 · future_tool')
+    expect(live[1].label).toBe('future_tool')
   })
 
   it('leave a step with no tool as it was', () => {
@@ -161,6 +171,7 @@ describe('the live panel and the read-back trail', () => {
 
       expect(history, name).toBe(live)
       expect(live, name).toContain(text)
+      expect(live, name).not.toContain('工具调用')
       if (text !== name) expect(live, name).not.toContain(name)
     }
   })

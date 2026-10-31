@@ -368,12 +368,23 @@ export function toolDisplayName(name) {
   return Object.hasOwn(TOOL_NAME_ZH, key) ? TOOL_NAME_ZH[key] : name
 }
 
-/** Display rows for the panel. Identity fields are not part of the shape by design. */
+/**
+ * Display rows for the panel. Identity fields are not part of the shape by design.
+ *
+ * A step that used a tool is named by that tool, and by nothing else. The word "工具调用"
+ * used to sit in front of it ("工具调用 · 检索知识库"), which said only that a tool ran —
+ * a thing every row in the list already said — and left the capability itself half
+ * hidden behind a category word. The row now reads "检索知识库": what the learner is
+ * reading is which capability the turn reached for.
+ *
+ * A step with no tool keeps the wording it was given: a plan step stays "模型规划", and
+ * a sentence the server sent is still shown as it was sent.
+ */
 export function stepRows(state) {
   return (state?.steps ?? []).map((step) => ({
     id: `step-${step.sequence}`,
     sequence: step.sequence,
-    label: step.toolName ? `${step.label} · ${toolDisplayName(step.toolName)}` : step.label,
+    label: step.toolName ? toolDisplayName(step.toolName) : step.label,
     status: step.status,
     detail: step.detail,
     durationMillis: step.durationMillis,
