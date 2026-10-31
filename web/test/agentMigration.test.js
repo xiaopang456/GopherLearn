@@ -206,6 +206,25 @@ it('a card the server recorded nothing for is not shown at all', async () => {
   result.unmount()
 })
 
+it('an answer stored before the server kept these fields shows no unnamed line', async () => {
+  vi.stubEnv('DEV', false)
+  // `legacy_unspecified` is what the server wrote for an answer it stored
+  // before it kept the basis and the knowledge status. Nothing was recorded,
+  // so nothing is claimed — not even "未说明".
+  const legacy = mount(AgentResult, { props: { result: { answerBasis: 'legacy_unspecified',
+    knowledgeStatus: 'legacy_unspecified', knowledgeReason: 'none' } } })
+  expect(legacy.text()).not.toContain('未说明')
+  expect(legacy.find('[data-test="agent-result"]').exists()).toBe(false)
+  legacy.unmount()
+
+  // One field having nothing does not silence the others.
+  const mixed = mount(AgentResult, { props: { result: { answerBasis: 'legacy_unspecified',
+    knowledgeStatus: 'grounded' } } })
+  expect(mixed.text()).not.toContain('未说明')
+  expect(mixed.text()).toContain('答案能在你的资料里找到出处')
+  mixed.unmount()
+})
+
 it('sources render original identity/version without fabricated navigation', async () => {
   const citations = mount(CitationList, { props: { sources: normalizeSourceList(original.sources) } })
   await citations.get('[data-test="citation-toggle"]').trigger('click')
