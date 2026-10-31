@@ -5,7 +5,7 @@ import { authStore } from '../auth/store.js'
 export function validateV2Password(value) {
   const runes = Array.from(value).length
   const bytes = new TextEncoder().encode(value).length
-  return runes < 8 || runes > 64 || bytes > 72 ? '原 V2 密码要求 8–64 个 Unicode 字符，且 UTF-8 不超过 72 字节。' : ''
+  return runes < 8 || runes > 64 || bytes > 72 ? '密码需要 8–64 个字符，且 UTF-8 不超过 72 字节。' : ''
 }
 
 // Secrets live only in request/local memory, never in saved form or logs.
