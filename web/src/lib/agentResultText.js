@@ -22,11 +22,12 @@
  * `model` may well take it for a feature name, and a learner reading
  * `invalid_grounding` learns nothing at all.
  *
- * Two values mean "there is nothing to report" rather than "there is something
- * I cannot report": `not_required` (this question did not call for the
- * knowledge store) and `none` (there is no reason behind the state). Those
- * produce no line at all, because a line saying "there was nothing here" is
- * noise on a card that already says what the answer was based on.
+ * Three values mean "there is nothing to report" rather than "there is something
+ * I cannot report": `not_required` (this question did not call for the knowledge
+ * store), `none` (there is no reason behind the state) and `legacy_unspecified`
+ * (an answer stored before the server kept these fields). Those produce no line
+ * at all, because a line saying "there was nothing here" is noise on a card
+ * that already says what the answer was based on.
  */
 
 /** The answer's basis. The server's own list, in the server's own words. */
@@ -66,10 +67,20 @@ const UNNAMED_BASIS = '未说明'
 const UNNAMED_STATUS = '情况未说明'
 const UNNAMED_REASON = '原因未说明'
 
-/** The values that mean "there is nothing here to report". */
+/**
+ * The values that mean "there is nothing here to report".
+ *
+ * `not_required` and `none` are the server saying there was nothing. The third
+ * one, `legacy_unspecified`, is what the server writes for an answer it stored
+ * before it kept these fields (`answer_policy.go`: the answer basis and the
+ * knowledge status both default to it). Such an answer has no basis recorded,
+ * so it has no basis to show — and saying "未说明" about it would be inventing a
+ * sentence about a fact nobody wrote down. It belongs with the other two.
+ */
 const NOTHING_TO_REPORT = Object.freeze({
-  knowledgeStatus: 'not_required',
-  knowledgeReason: 'none',
+  answerBasis: new Set(['legacy_unspecified']),
+  knowledgeStatus: new Set(['not_required', 'legacy_unspecified']),
+  knowledgeReason: new Set(['none', 'legacy_unspecified']),
 })
 
 /**
@@ -92,22 +103,28 @@ function keyOf(value) {
   return value.trim().toLowerCase()
 }
 
+/** Is this value one of the ones that mean "there is nothing here to report"? */
+function saysNothing(field, value) {
+  const key = keyOf(value)
+  if (key === '') return true
+  return NOTHING_TO_REPORT[field].has(key)
+}
+
 /** How the answer was based. `''` when the server recorded nothing. */
 export function answerBasisText(value) {
+  if (saysNothing('answerBasis', value)) return ''
   return wording(ANSWER_BASIS_ZH, value, UNNAMED_BASIS)
 }
 
 /** What the knowledge behind the answer was like. `''` when there was none to report. */
 export function knowledgeStatusText(value) {
-  const key = keyOf(value)
-  if (key === NOTHING_TO_REPORT.knowledgeStatus) return ''
+  if (saysNothing('knowledgeStatus', value)) return ''
   return wording(KNOWLEDGE_STATUS_ZH, value, UNNAMED_STATUS)
 }
 
 /** Why the knowledge behind the answer was in that state. `''` when there was no reason. */
 export function knowledgeReasonText(value) {
-  const key = keyOf(value)
-  if (key === NOTHING_TO_REPORT.knowledgeReason) return ''
+  if (saysNothing('knowledgeReason', value)) return ''
   return wording(KNOWLEDGE_REASON_ZH, value, UNNAMED_REASON)
 }
 
