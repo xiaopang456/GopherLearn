@@ -13,6 +13,13 @@ const original = { runId: 'real-run', answer: '落库正文', answerBasis: 'mode
   sources: [{ citation: 1, doc_id: 'original-doc', doc_version: 7,
     file_name: '原文', title_path: ['标题'], start_line: 2, end_line: 3, snippet: '证据' }],
   usedTopicKeys: ['confirmed-topic'], replayed: true }
+/**
+ * A result whose three fields carry the server's own values, so the card has
+ * something specific to say. `original` above carries two values this client
+ * cannot name — that is the point of the second card test.
+ */
+const informed = { ...original, answerBasis: 'personal_knowledge',
+  knowledgeStatus: 'no_evidence', knowledgeReason: 'no_candidate' }
 let chat, bodies, createBodies, handleStream, handleCreate
 beforeEach(() => {
   vi.stubEnv('VITE_API_BASE_URL', 'https://api.test')
@@ -148,16 +155,63 @@ it('duplicate sends are suppressed; disconnect is failure and cancelled callback
   expect(bodies[1].requestId).not.toBe(bodies[0].requestId)
 })
 
-it('result and sources render original identity/version without fabricated navigation', async () => {
+it('the learner view names the basis in plain words and keeps internal identifiers out', async () => {
+  vi.stubEnv('DEV', false)
+  const result = mount(AgentResult, { props: { result: informed, runId: 'real-run', messageId: BIG } })
+  const text = result.text()
+  expect(text).toContain('来自你上传的资料')
+  expect(text).toContain('资料里没有找到支撑这句话的内容')
+  expect(text).toContain('资料里没有匹配的段落')
+  expect(text).toContain('原请求重放')
+  // The server's own words are not the learner's: they are translated, not shown.
+  expect(text).not.toContain('personal_knowledge')
+  expect(text).not.toContain('no_evidence')
+  expect(text).not.toContain('no_candidate')
+  // Neither is anything that identifies the run or the message.
+  expect(text).not.toContain('real-run')
+  expect(text).not.toContain(BIG)
+  expect(result.find('[data-test="agent-result-debug"]').exists()).toBe(false)
+  result.unmount()
+})
+
+it('a value this client cannot name is worded neutrally instead of shown raw', async () => {
+  vi.stubEnv('DEV', false)
   const result = mount(AgentResult, { props: { result: original, runId: 'real-run', messageId: BIG } })
-  expect(result.text()).toContain(BIG)
-  expect(result.text()).toContain('原请求重放')
-  expect(result.text()).toContain('confirmed-topic')
+  const text = result.text()
+  expect(text).toContain('未说明')
+  expect(text).not.toContain('model')
+  expect(text).not.toContain('not_requested')
+  expect(text).not.toContain('real-run')
+  expect(text).not.toContain(BIG)
+  result.unmount()
+})
+
+it('debug mode still renders the original identifiers, exactly', async () => {
+  vi.stubEnv('DEV', true)
+  const result = mount(AgentResult, { props: { result: original, runId: 'real-run', messageId: BIG } })
+  const text = result.text()
+  expect(text).toContain('real-run')
+  // An id past the safe integer range is shown as it arrived: 9007199254740993123
+  // is not a number this client may turn into 9007199254740993000.
+  expect(text).toContain(BIG)
+  expect(text).not.toContain('9.00719925474099')
+  expect(text).toContain('confirmed-topic')
+  result.unmount()
+})
+
+it('a card the server recorded nothing for is not shown at all', async () => {
+  vi.stubEnv('DEV', false)
+  const result = mount(AgentResult, { props: { result: { replayed: true } } })
+  expect(result.find('[data-test="agent-result"]').exists()).toBe(false)
+  result.unmount()
+})
+
+it('sources render original identity/version without fabricated navigation', async () => {
   const citations = mount(CitationList, { props: { sources: normalizeSourceList(original.sources) } })
   await citations.get('[data-test="citation-toggle"]').trigger('click')
   expect(citations.text()).toContain('original-doc')
   expect(citations.text()).toContain('版本 7')
   expect(citations.text()).toContain('尚未接通')
   expect(citations.find('a').exists()).toBe(false)
-  result.unmount(); citations.unmount()
+  citations.unmount()
 })
