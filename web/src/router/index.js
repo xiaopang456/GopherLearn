@@ -15,6 +15,25 @@ import NotFoundView from '../views/NotFoundView.vue'
 export const LOGIN_ROUTE = { name: 'login', path: '/login' }
 
 /**
+ * The addresses this app used to carry a version suffix on.
+ *
+ * They are redirects, not pages: an old link, a bookmark or a message somebody
+ * copied still lands on the page it meant, and the address it lands on is the one
+ * without the suffix. The suffix itself said nothing a reader needed — the app serves
+ * one set of pages — so it is not part of any address the app publishes any more.
+ *
+ * The query travels with the redirect, so an old link to one document's lines still
+ * opens the same lines of the same version.
+ */
+export const legacyRoutes = [
+  { path: '/register/v2', redirect: { name: 'register' } },
+  { path: '/knowledge/v2-documents', redirect: { name: 'documents' } },
+  { path: '/knowledge/v2-documents/:documentId/source', redirect: { name: 'document-source' } },
+  { path: '/memory/v2', redirect: { name: 'memory' } },
+  { path: '/learning/v2', redirect: { name: 'learning' } },
+]
+
+/**
  * `requiresAuth` is the single source of truth for the guard; the nav rail and
  * the sign-out flow both read it instead of hard-coding paths.
  *
@@ -22,7 +41,8 @@ export const LOGIN_ROUTE = { name: 'login', path: '/login' }
  * baseline entry, and this entry does not serve the interfaces they needed.
  */
 export const appRoutes = [
-  { path: '/register/v2', name: 'v2-register', component: V2RegisterView, meta: { guestOnly: true } },
+  ...legacyRoutes,
+  { path: '/register', name: 'register', component: V2RegisterView, meta: { guestOnly: true } },
   { path: '/login', name: 'login', component: LoginView, meta: { guestOnly: true } },
   {
     path: '/',
@@ -36,10 +56,10 @@ export const appRoutes = [
         name: 'session',
         component: ChatView,
       },
-      { path: 'knowledge/v2-documents', name: 'v2-documents', component: V2DocumentsView },
-      { path: 'knowledge/v2-documents/:documentId/source', name: 'v2-source', component: V2SourceView },
-      { path: 'memory/v2', name: 'v2-memory', component: V2MemoryView },
-      { path: 'learning/v2', name: 'v2-learning', component: V2LearningView },
+      { path: 'knowledge/documents', name: 'documents', component: V2DocumentsView },
+      { path: 'knowledge/documents/:documentId/source', name: 'document-source', component: V2SourceView },
+      { path: 'memory', name: 'memory', component: V2MemoryView },
+      { path: 'learning', name: 'learning', component: V2LearningView },
       {
         // The unknown-path screen lives inside the shell, so it carries the
         // same navigation as every other page — but it stays reachable without

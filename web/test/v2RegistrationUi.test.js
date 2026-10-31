@@ -16,7 +16,7 @@ afterEach(() => { authStore.signOut(); setUnauthorizedHandler(null); vi.unstubAl
 function storage() { return { getItem: () => null, setItem: vi.fn(), removeItem: vi.fn() } }
 async function page() {
   const router = createAppRouter({ history: createMemoryHistory(), authStore })
-  await router.push('/register/v2'); await router.isReady()
+  await router.push('/register'); await router.isReady()
   const wrapper = mount(V2RegisterView, { global: { plugins: [router] } })
   return { wrapper, router }
 }

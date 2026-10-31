@@ -486,7 +486,7 @@ describe('a rejected credential still ends the session everywhere', () => {
       },
     }
     const router = createAppRouter({ authStore: store, history: createMemoryHistory() })
-    await router.push('/knowledge/v2-documents')
+    await router.push('/knowledge/documents')
     await router.isReady()
 
     route({
@@ -502,7 +502,7 @@ describe('a rejected credential still ends the session everywhere', () => {
 
     expect(store.signedIn).toBe(false)
     expect(router.currentRoute.value.name).toBe('login')
-    expect(router.currentRoute.value.query.redirect).toBe('/knowledge/v2-documents')
+    expect(router.currentRoute.value.query.redirect).toBe('/knowledge/documents')
     // and the panel says something safe rather than leaking internals
     expect(knowledge.collectionsError.value).toBe('authentication is required')
   })

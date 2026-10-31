@@ -10,10 +10,10 @@ const route = useRoute()
 const HEADINGS = {
   chat: '对话',
   session: '对话',
-  'v2-documents': '文档',
-  'v2-source': '文档原文',
-  'v2-memory': '记忆治理',
-  'v2-learning': '学习／测验',
+  documents: '文档',
+  'document-source': '文档原文',
+  memory: '记忆治理',
+  learning: '学习／测验',
   'not-found': '找不到页面',
 }
 

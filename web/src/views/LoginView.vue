@@ -101,7 +101,7 @@ async function submit() {
 
       <p class="login__aside">
         还没有账号？
-        <RouterLink :to="{ name: 'v2-register', query: route.query }">
+        <RouterLink :to="{ name: 'register', query: route.query }">
           用邮箱验证码注册
         </RouterLink>
       </p>

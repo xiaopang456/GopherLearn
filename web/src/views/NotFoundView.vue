@@ -21,7 +21,7 @@ const router = useRouter()
       </p>
       <div class="missing__actions">
         <n-button type="primary" @click="router.push({ name: 'chat' })">回到对话</n-button>
-        <n-button @click="router.push({ name: 'v2-documents' })">看看文档</n-button>
+        <n-button @click="router.push({ name: 'documents' })">看看文档</n-button>
       </div>
     </div>
   </div>

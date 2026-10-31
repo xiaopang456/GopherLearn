@@ -106,7 +106,7 @@ function chosen(event) {
 
 function openSource(document) {
   router.push({
-    name: 'v2-source',
+    name: 'document-source',
     params: { documentId: document.id },
     query: { version: String(document.active_version) },
   })

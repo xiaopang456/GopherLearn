@@ -63,7 +63,7 @@ const count = computed(() => items.value.length)
           <span v-if="item.section" class="sources__section">{{ item.section }}</span>
         </p>
         <p v-if="item.unavailable" class="gl-muted">文档 {{ item.document }}，版本 {{ item.version }}；Collection 尚未接通。</p>
-        <button v-if="router && item.original && item.document && item.version" type="button" class="gl-btn" data-test="read-v2-source" @click="router.push({ name: 'v2-source', params: { documentId: item.document }, query: { version: item.version, start_line: String(item.original.start_line), end_line: String(item.original.end_line) } })">按引用版本及行范围读取原文</button>
+        <button v-if="router && item.original && item.document && item.version" type="button" class="gl-btn" data-test="read-v2-source" @click="router.push({ name: 'document-source', params: { documentId: item.document }, query: { version: item.version, start_line: String(item.original.start_line), end_line: String(item.original.end_line) } })">按引用版本及行范围读取原文</button>
         <p v-if="item.snippet" class="sources__snippet">{{ item.snippet }}</p>
       </li>
     </ol>

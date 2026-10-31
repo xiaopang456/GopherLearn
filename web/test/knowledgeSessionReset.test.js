@@ -248,7 +248,7 @@ describe('every exit route performs the same reset', () => {
   it('a 401 from a knowledge call signs out and clears the store', async () => {
     authStore.adopt('tok.stale', { id: 'u-a', email: 'alice@x.test' })
     const router = createAppRouter({ authStore, history: createMemoryHistory() })
-    await router.push('/knowledge/v2-documents')
+    await router.push('/knowledge/documents')
     await router.isReady()
 
     route({

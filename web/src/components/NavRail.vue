@@ -15,9 +15,9 @@ import { authStore } from '../auth/store.js'
  */
 const sections = [
   { name: 'chat', label: '对话', full: '对话', icon: 'chat', to: { name: 'chat' } },
-  { name: 'v2-documents', label: '文档', full: '文档', icon: 'knowledge', to: { name: 'v2-documents' } },
-  { name: 'v2-memory', label: '记忆', full: '记忆治理', icon: 'memory', to: { name: 'v2-memory' } },
-  { name: 'v2-learning', label: '学习', full: '学习／测验', icon: 'learning', to: { name: 'v2-learning' } },
+  { name: 'documents', label: '文档', full: '文档', icon: 'knowledge', to: { name: 'documents' } },
+  { name: 'memory', label: '记忆', full: '记忆治理', icon: 'memory', to: { name: 'memory' } },
+  { name: 'learning', label: '学习', full: '学习／测验', icon: 'learning', to: { name: 'learning' } },
 ]
 
 const route = useRoute()

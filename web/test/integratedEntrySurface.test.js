@@ -23,7 +23,7 @@ import { jsonResponse } from './helpers/transport.js'
  * that entry but are not offered here.
  */
 
-const NAV_TARGETS = ['/chat', '/knowledge/v2-documents', '/memory/v2', '/learning/v2']
+const NAV_TARGETS = ['/chat', '/knowledge/documents', '/memory', '/learning']
 
 let calls
 
@@ -93,8 +93,8 @@ describe('the default navigation', () => {
 
   it('does not route the grounding note back to Collection management', async () => {
     const { app, router } = await mountWith(ShellView, '/chat')
-    const documents = router.resolve({ name: 'v2-documents' })
-    expect(documents.href).toBe('/knowledge/v2-documents')
+    const documents = router.resolve({ name: 'documents' })
+    expect(documents.href).toBe('/knowledge/documents')
     app.unmount()
   })
 })
@@ -103,10 +103,10 @@ describe('the sign-in screen', () => {
   it('sends registration to the original V2 captcha contract', async () => {
     const { app } = await mountWith(LoginView, '/login')
     const hrefs = app.findAll('a').map((link) => link.attributes('href'))
-    expect(hrefs).toContain('/register/v2')
-    // The compatibility surface refuses legacy registration with 501
-    // (registration_not_adapted), so the screen must not offer it.
-    expect(hrefs).not.toContain('/register')
+    // The compatibility surface refuses the legacy registration with 501
+    // (registration_not_adapted), so the screen offers the one registration there is,
+    // at the address without a version suffix.
+    expect(hrefs).toContain('/register')
     app.unmount()
   })
 })

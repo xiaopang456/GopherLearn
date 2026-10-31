@@ -28,7 +28,7 @@ function correct() {
 
 function sourceRoute(source) {
   return {
-    name: 'v2-source',
+    name: 'document-source',
     params: { documentId: source.documentId },
     query: { version: String(source.documentVersion), start_line: String(source.startLine), end_line: String(source.endLine) },
   }

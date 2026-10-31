@@ -86,7 +86,7 @@ it('document screen shows real failed/version state and Collection boundary; ret
 it('citation navigates original version/lines and source screen never substitutes latest', async () => {
   const router = createRouter({ history: createMemoryHistory(), routes: [
     { path: '/', component: { template: '<div />' } },
-    { path: '/source/:documentId', name: 'v2-source', component: V2SourceView },
+    { path: '/source/:documentId', name: 'document-source', component: V2SourceView },
   ] })
   await router.push('/'); await router.isReady()
   const citations = mount(CitationList, { props: { sources: normalizeSourceList([{ citation: 1, doc_id: 'original-doc', doc_version: 7, file_name: '原文', start_line: 2, end_line: 3, snippet: '不能充当原文' }]) }, global: { plugins: [router] } })

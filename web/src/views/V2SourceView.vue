@@ -44,7 +44,7 @@ function inRange(line) {
 }
 
 function back() {
-  router.push({ name: 'v2-documents' })
+  router.push({ name: 'documents' })
 }
 </script>
 

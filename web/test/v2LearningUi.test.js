@@ -27,7 +27,7 @@ it('binds native operations, original public fields and exact version source rou
   await w.get('[data-test=start-form]').trigger('submit'); await flushPromises()
   expect(JSON.parse(calls.at(-1).init.body)).toEqual({ sessionId: sid, topic: 'Redis' })
   expect(w.text()).toContain('第 1 / 3 题')
-  expect(JSON.parse(w.get('[data-test=source]').attributes('data-target'))).toEqual({ name: 'v2-source', params: { documentId: 'doc-uuid' }, query: { version: '2', start_line: '5', end_line: '9' } })
+  expect(JSON.parse(w.get('[data-test=source]').attributes('data-target'))).toEqual({ name: 'document-source', params: { documentId: 'doc-uuid' }, query: { version: '2', start_line: '5', end_line: '9' } })
   responder = () => ({ status_code: 1000, result: { learning: { ...task, currentQuestion: 2, question: { ...question, id: 'q2' } }, attempt, progress: { id: '9007199254740993124', topic: 'Redis', topic_key: 'redis', mastery_score: 80, valid_attempts: 1, level: 'insufficient', confidence: 0.9 } } })
   await w.get('[data-test=answer]').setValue('原答案'); await w.get('[data-test=answer-form]').trigger('submit'); await flushPromises()
   const body = JSON.parse(calls.at(-1).init.body)
@@ -117,9 +117,9 @@ it('keeps uncertain Start after progress lookup and discards a retry from a diff
 it('mounts protected standalone navigation', async () => {
   const authStore = { isAuthenticated: () => false, signOut: () => {} }
   const router = createAppRouter({ history: createMemoryHistory(), authStore })
-  await router.push('/learning/v2'); await router.isReady()
+  await router.push('/learning'); await router.isReady()
   expect(router.currentRoute.value.name).toBe('login')
-  expect(router.currentRoute.value.query.redirect).toBe('/learning/v2')
+  expect(router.currentRoute.value.query.redirect).toBe('/learning')
   authStore.isAuthenticated = () => true
-  await router.push('/learning/v2'); expect(router.currentRoute.value.name).toBe('v2-learning')
+  await router.push('/learning'); expect(router.currentRoute.value.name).toBe('learning')
 })

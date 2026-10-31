@@ -25,7 +25,7 @@ function installFetch(handlerFor) {
   }
 }
 
-async function mountShell(startAt = '/memory/v2', handlerFor = () => jsonResponse({ data: {}, error: null })) {
+async function mountShell(startAt = '/memory', handlerFor = () => jsonResponse({ data: {}, error: null })) {
   authStore.adopt('tok.shell', { id: '1', email: 'who@example.test', displayName: '' })
   const router = createAppRouter({ authStore, history: createMemoryHistory() })
   await router.push(startAt)
@@ -58,7 +58,7 @@ const UNAUTHORIZED = () =>
 
 describe('a token the server rejects', () => {
   it('is cleared from memory and storage', async () => {
-    const app = await mountShell('/memory/v2', UNAUTHORIZED)
+    const app = await mountShell('/memory', UNAUTHORIZED)
 
     expect(authStore.isAuthenticated()).toBe(false)
     expect(authStore.getToken()).toBe('')
@@ -67,7 +67,7 @@ describe('a token the server rejects', () => {
   })
 
   it('navigates to the sign-in screen instead of staying on a dead page', async () => {
-    const app = await mountShell('/memory/v2', UNAUTHORIZED)
+    const app = await mountShell('/memory', UNAUTHORIZED)
 
     expect(routes.currentRoute.value.name).toBe('login')
     app.unmount()
@@ -83,7 +83,7 @@ describe('a token the server rejects', () => {
 
   it('reacts to the machine code even when the status is not 401', async () => {
     const app = await mountShell(
-      '/knowledge/v2-documents',
+      '/knowledge/documents',
       () =>
         jsonResponse(
           { data: null, error: { code: 'unauthorized', message: 'revoked' } },
@@ -97,7 +97,7 @@ describe('a token the server rejects', () => {
   })
 
   it('drops the profile name from the header', async () => {
-    const app = await mountShell('/memory/v2', UNAUTHORIZED)
+    const app = await mountShell('/memory', UNAUTHORIZED)
 
     expect(app.text()).not.toContain('who@example.test')
     app.unmount()
@@ -107,7 +107,7 @@ describe('a token the server rejects', () => {
 describe('a healthy session', () => {
   it('stays put and adopts the profile the server reports', async () => {
     const app = await mountShell(
-      '/memory/v2',
+      '/memory',
       () =>
         jsonResponse({
           data: { id: '1', email: 'fresh@example.test', display_name: '新昵称' },
@@ -115,14 +115,14 @@ describe('a healthy session', () => {
         }),
     )
 
-    expect(routes.currentRoute.value.name).toBe('v2-memory')
+    expect(routes.currentRoute.value.name).toBe('memory')
     expect(authStore.isAuthenticated()).toBe(true)
     expect(app.text()).toContain('fresh@example.test')
     app.unmount()
   })
 
   it('calls /api/v1/me exactly once at boot', async () => {
-    const app = await mountShell('/memory/v2', () =>
+    const app = await mountShell('/memory', () =>
       jsonResponse({ data: { email: 'a@b.test' }, error: null }),
     )
 
@@ -133,19 +133,19 @@ describe('a healthy session', () => {
 
 describe('a transport failure is not a sign-out', () => {
   it('keeps the token and the current route when the network is down', async () => {
-    const app = await mountShell('/memory/v2', () => {
+    const app = await mountShell('/memory', () => {
       throw new TypeError('Failed to fetch')
     })
 
     expect(authStore.isAuthenticated()).toBe(true)
     expect(authStore.getToken()).toBe('tok.shell')
-    expect(routes.currentRoute.value.name).toBe('v2-memory')
+    expect(routes.currentRoute.value.name).toBe('memory')
     app.unmount()
   })
 
   it('keeps the token when the server fails for an unrelated reason', async () => {
     const app = await mountShell(
-      '/learning/v2',
+      '/learning',
       () =>
         jsonResponse(
           { data: null, error: { code: 'internal_error', message: 'db down' } },
@@ -154,7 +154,7 @@ describe('a transport failure is not a sign-out', () => {
     )
 
     expect(authStore.isAuthenticated()).toBe(true)
-    expect(routes.currentRoute.value.name).toBe('v2-learning')
+    expect(routes.currentRoute.value.name).toBe('learning')
     app.unmount()
   })
 })
