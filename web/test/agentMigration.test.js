@@ -89,7 +89,7 @@ it.each([undefined, 'wrong', 'old-candidate'])('persisted replacement wins witho
   expect(reply.serverId).toBe(BIG)
   expect(reply.runId).toBe('real-run')
   expect(reply.originalV2).toEqual(original)
-  expect(reply.sources[0]).toMatchObject({ documentId: 'original-doc', documentVersion: '7', collectionId: '', chunkId: '', navigationUnavailable: true })
+  expect(reply.sources[0]).toMatchObject({ documentId: 'original-doc', documentVersion: '7', collectionId: '', chunkId: '' })
   chat.closeSession(); await chat.openSession(BIG)
   expect(chat.messages.value[0].id).toBe(BIG)
   expect(chat.messages.value[0].content).toBe(reply.content)
@@ -225,12 +225,16 @@ it('an answer stored before the server kept these fields shows no unnamed line',
   mixed.unmount()
 })
 
-it('sources render original identity/version without fabricated navigation', async () => {
+it('sources name the document and its version without leaking an identity or a promise', async () => {
   const citations = mount(CitationList, { props: { sources: normalizeSourceList(original.sources) } })
   await citations.get('[data-test="citation-toggle"]').trigger('click')
-  expect(citations.text()).toContain('original-doc')
+  // The document's name and its version are facts a learner can act on.
+  expect(citations.text()).toContain('原文')
   expect(citations.text()).toContain('版本 7')
-  expect(citations.text()).toContain('尚未接通')
+  // The document id is an internal identity, and the reading entry works, so
+  // there is no "尚未接通" to announce.
+  expect(citations.text()).not.toContain('original-doc')
+  expect(citations.text()).not.toContain('尚未接通')
   expect(citations.find('a').exists()).toBe(false)
   citations.unmount()
 })

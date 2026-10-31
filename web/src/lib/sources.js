@@ -26,7 +26,7 @@ export function normalizeSource(raw) {
     collectionId: '', chunkId: '', title: text(original.file_name),
     section: Array.isArray(original.title_path) ? original.title_path.join(' / ') : '',
     snippet: text(original.snippet), documentVersion: text(original.doc_version),
-    originalV2: original, navigationUnavailable: true,
+    originalV2: original,
   }
   if (source.originalV2) return { ...source }
   return {
