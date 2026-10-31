@@ -32,11 +32,17 @@ type scriptedReply struct {
 	toolName string
 	args     string
 	// raw replaces the whole body, for a provider whose answer cannot be parsed at
-	// all; status answers with an HTTP failure instead; delay stalls the handler so
-	// a real client-side timeout is produced by the transport, not asserted.
+	// all; status answers with an HTTP failure instead; stall keeps the handler
+	// waiting until the request is cancelled, so a real client-side timeout is
+	// produced by the transport, not asserted.
 	raw    string
 	status int
 	delay  time.Duration
+	// stall makes the handler block until the request context is done. It is
+	// used instead of a fixed sleep: a fixed sleep of the same length as the
+	// client timeout is a race, and on a loaded machine the response can win
+	// it and the test fails for no reason.
+	stall bool
 }
 
 type providerScript struct {
@@ -76,6 +82,14 @@ func newProviderScriptWithTimeout(t *testing.T, timeout time.Duration, replies .
 			_, _ = w.Write([]byte(`{"error":{"code":"script_exhausted"}}`))
 			return
 		}
+		if reply.stall {
+			// Wait for the client to give up. The request context is
+			// cancelled when the client closes the connection, so this
+			// returns only after the timeout has fired. A fixed sleep of
+			// the same length as the timeout would be a race.
+			<-r.Context().Done()
+			return
+		}
 		if reply.delay > 0 {
 			time.Sleep(reply.delay)
 		}
@@ -109,8 +123,14 @@ func scriptStatus(status int) scriptedReply { return scriptedReply{status: statu
 
 func scriptRaw(body string) scriptedReply { return scriptedReply{raw: body} }
 
+// scriptDelayed stalls the provider until the client gives up.
+//
+// It used to sleep for the length of the client timeout, which is a race:
+// on a loaded machine the response could arrive just before the timeout
+// fired, and the test failed although nothing was broken. Blocking until the
+// request context is done makes the timeout the only possible outcome.
 func scriptDelayed(timeout time.Duration) scriptedReply {
-	return scriptedReply{content: "太迟了。", delay: timeout}
+	return scriptedReply{content: "太迟了。", stall: true}
 }
 
 // completionBody is the non-streaming shape of one reply.
