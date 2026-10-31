@@ -34,6 +34,7 @@ modes:
   trim       cut the heading and blank lines off the edges of the evidence spans (offline)
   pairs      list the pairs of similar questions for the reviewer (offline)
   alternatives  find a second place in the corpus that could answer each question (offline)
+  retrieve-check  show what our own keyword retrieval finds for each unanswerable question (offline)
 
 validate flags:
   -corpus <file>     corpus manifest (required)
@@ -68,6 +69,13 @@ alternatives flags:
   -meta <file>       sidecar annotations, JSONL (required)
   -out <file>        write the candidates as JSONL (required)
   -limit <n>         candidates per question (default 5)
+
+retrieve-check flags:
+  -corpus <file>     corpus manifest (required)
+  -dataset <file>    question file, JSONL (required)
+  -out <file>        write the retrieved passages as JSONL (required)
+  -limit <n>         passages per question (default 8)
+  -all               check every question, not only the unanswerable ones
 `
 
 func main() {
@@ -90,6 +98,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runPairs(args[1:], stdout, stderr)
 	case "alternatives":
 		return runAlternatives(args[1:], stdout, stderr)
+	case "retrieve-check":
+		return runRetrieveCheck(args[1:], stdout, stderr)
 	case "-h", "-help", "--help", "help":
 		fmt.Fprint(stdout, usage)
 		return 0
@@ -397,6 +407,94 @@ func runAlternatives(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "%d of %d question(s) have at least one other place in the corpus that could answer them\n",
 		found, len(raw))
 	fmt.Fprintf(stdout, "candidates written to %s\n", *outPath)
+	return 0
+}
+
+// runRetrieveCheck shows what our own keyword retrieval finds for each
+// unanswerable question.
+//
+// The point is not to judge the question — the tool does not judge anything —
+// but to hand the reviewer the passages the harness would retrieve, so the
+// reviewer can see for himself whether the corpus knows the answer.
+//
+// This is the keyword channel only: no embedding service, no model, no cost.
+func runRetrieveCheck(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("qcheck retrieve-check", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	corpusPath := flags.String("corpus", "", "corpus manifest")
+	datasetPath := flags.String("dataset", "", "question file")
+	outPath := flags.String("out", "", "retrieved passages output, JSONL")
+	limit := flags.Int("limit", 8, "passages per question")
+	all := flags.Bool("all", false, "check every question, not only the unanswerable ones")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if *corpusPath == "" || *datasetPath == "" || *outPath == "" {
+		fmt.Fprintln(stderr, "qcheck retrieve-check: -corpus, -dataset and -out are required")
+		return 2
+	}
+	if err := pathguard.CheckAll(map[string]string{
+		"corpus": *corpusPath, "dataset": *datasetPath, "out": *outPath,
+	}); err != nil {
+		fmt.Fprintf(stderr, "qcheck retrieve-check: %v\n", err)
+		return 2
+	}
+	corpus, err := dataset.LoadCorpus(*corpusPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "qcheck retrieve-check: %v\n", err)
+		return 2
+	}
+	raw, err := validate.ReadRawQuestions(*datasetPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "qcheck retrieve-check: %v\n", err)
+		return 2
+	}
+	docPaths := map[string]string{}
+	for _, doc := range corpus.Documents {
+		docPaths[doc.File] = doc.Path
+	}
+	docs, err := validate.LoadDocuments(docPaths)
+	if err != nil {
+		fmt.Fprintf(stderr, "qcheck retrieve-check: %v\n", err)
+		return 2
+	}
+
+	file, err := os.Create(*outPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "qcheck retrieve-check: %v\n", err)
+		return 2
+	}
+	encoder := json.NewEncoder(file)
+	encoder.SetEscapeHTML(false)
+
+	checked := 0
+	for _, r := range raw {
+		answerable := false
+		if r.Answerable != nil {
+			answerable = *r.Answerable
+		}
+		if answerable && !*all {
+			continue
+		}
+		q := dataset.Question{
+			ID: r.ID, Question: r.Question, Answerable: answerable,
+			Evidence: r.Evidence, Split: r.Split, Topic: r.Topic, Type: r.Type,
+		}
+		items := validate.RetrieveForQuestion(q, docs, *limit)
+		checked++
+		for _, item := range items {
+			if err := encoder.Encode(item); err != nil {
+				fmt.Fprintf(stderr, "qcheck retrieve-check: %v\n", err)
+				return 2
+			}
+		}
+	}
+	if err := file.Close(); err != nil {
+		fmt.Fprintf(stderr, "qcheck retrieve-check: %v\n", err)
+		return 2
+	}
+	fmt.Fprintf(stdout, "checked %d question(s); the retrieved passages are written to %s\n", checked, *outPath)
+	fmt.Fprintf(stdout, "read them and write the verdict into the \"answerable\" field of each row\n")
 	return 0
 }
 

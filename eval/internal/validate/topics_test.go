@@ -27,7 +27,9 @@ func TestMultiEvidenceQuestionWithTwoQuestionMarksIsReported(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	if got := rulesOf(report, SeverityWarning)[RuleMultiQuestion]; got != 1 {
+	// It is an error, not a warning: the question is dropped and counted
+	// against the output rate.
+	if got := rulesOf(report, SeverityError)[RuleMultiQuestion]; got != 1 {
 		t.Errorf("multi-question findings = %d, want 1: %v", got, report.Findings)
 	}
 }
@@ -45,8 +47,84 @@ func TestMultiEvidenceQuestionWithOneQuestionMarkIsFine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	if got := rulesOf(report, SeverityWarning)[RuleMultiQuestion]; got != 0 {
+	if got := rulesOf(report, SeverityError)[RuleMultiQuestion]; got != 0 {
 		t.Errorf("a proper multi-evidence question was reported: %v", report.Findings)
+	}
+}
+
+// TestCrossDocQuestionNeedsTwoDocuments checks that a cross-document question
+// whose evidence only reaches one document is an error.
+//
+// The point of such a question is that it cannot be answered from one place.
+func TestCrossDocQuestionNeedsTwoDocuments(t *testing.T) {
+	corpus := writeCorpus(t, map[string]string{
+		"a.md": "正文一行\n第二行\n",
+		"b.md": "别处的正文\n",
+	})
+	questions := []dataset.Question{
+		{ID: "q1", Question: "两处说法分别是什么？", Answerable: true, Type: "multi_evidence", Topic: "a",
+			Evidence: []dataset.EvidenceSet{{span("a.md", 1, 2)}}, Split: "dev"},
+	}
+	meta := []Meta{{ID: "q1", Paraphrase: "verbatim", Lang: "zh_qa_zh_source",
+		Params: GenParams{BatchKind: BatchKindCrossDoc}}}
+	report, err := Validate(corpus, questions, meta, Quota{}, DefaultParams())
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if got := rulesOf(report, SeverityError)[RuleCrossDocEvidence]; got != 1 {
+		t.Errorf("cross-doc findings = %d, want 1: %v", got, report.Findings)
+	}
+
+	// With two documents it passes.
+	questions[0].Evidence = []dataset.EvidenceSet{{span("a.md", 1, 2), span("b.md", 1, 1)}}
+	report, err = Validate(corpus, questions, meta, Quota{}, DefaultParams())
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if got := rulesOf(report, SeverityError)[RuleCrossDocEvidence]; got != 0 {
+		t.Errorf("a question with two documents was reported: %v", report.Findings)
+	}
+}
+
+// TestBatchKindsMayDifferInTheirParameters checks that the fingerprint is
+// compared within a batch kind.
+//
+// The multi-evidence and cross-document batches think longer than the
+// ordinary ones, so the kinds legitimately differ; what must not happen is
+// one kind disagreeing with itself.
+func TestBatchKindsMayDifferInTheirParameters(t *testing.T) {
+	corpus := writeCorpus(t, map[string]string{"a.md": "正文一行\n"})
+	questions := []dataset.Question{
+		{ID: "q1", Question: "问题一", Answerable: true, Type: "single_fact", Topic: "a",
+			Evidence: []dataset.EvidenceSet{{span("a.md", 1, 1)}}, Split: "dev"},
+		{ID: "q2", Question: "问题二", Answerable: true, Type: "multi_evidence", Topic: "a",
+			Evidence: []dataset.EvidenceSet{{span("a.md", 1, 1)}}, Split: "dev"},
+	}
+	thinking := true
+	meta := []Meta{
+		{ID: "q1", Paraphrase: "verbatim", Lang: "zh_qa_zh_source", Model: "qwen3.8-max",
+			Params: GenParams{Temperature: 0.7, TopP: 0.8, MaxTokens: 4096, Seed: 1, N: 1,
+				EnableThinking: &thinking, ThinkingBudget: 2048, BatchKind: BatchKindDefault}},
+		{ID: "q2", Paraphrase: "verbatim", Lang: "zh_qa_zh_source", Model: "qwen3.8-max",
+			Params: GenParams{Temperature: 0.7, TopP: 0.8, MaxTokens: 4096, Seed: 1, N: 1,
+				EnableThinking: &thinking, ThinkingBudget: 4096, BatchKind: BatchKindMultiEvidence}},
+	}
+	report, err := Validate(corpus, questions, meta, Quota{}, DefaultParams())
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if got := rulesOf(report, SeverityError)[RuleMetaModelMismatch]; got != 0 {
+		t.Errorf("two kinds with different settings were reported: %v", report.Findings)
+	}
+
+	// Two questions of the same kind with different settings are a defect.
+	meta[1].Params.BatchKind = BatchKindDefault
+	report, err = Validate(corpus, questions, meta, Quota{}, DefaultParams())
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if got := rulesOf(report, SeverityError)[RuleMetaModelMismatch]; got != 1 {
+		t.Errorf("one kind disagreeing with itself was not reported: %v", report.Findings)
 	}
 }
 

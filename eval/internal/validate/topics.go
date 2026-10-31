@@ -17,6 +17,9 @@ const (
 	// several small questions at once. A multi-evidence question is one
 	// question that needs two places to answer; a question that strings
 	// three small questions together with question marks is not that.
+	//
+	// It is an **error**: the question is dropped and counted against the
+	// output rate. Letting it through only moves the cost to the reviewer.
 	RuleMultiQuestion = "question.multi_question"
 	// RuleUnanswerableMetaLeak marks an unanswerable question whose text
 	// names a file, a path or a section of the corpus. A real user does not
@@ -25,6 +28,13 @@ const (
 	// RuleExcludedTopicNear marks a question that sits too close to a
 	// knowledge point the plan excludes from the first question set.
 	RuleExcludedTopicNear = "question.excluded_topic_near"
+	// RuleCrossDocEvidence marks a cross-document question whose evidence
+	// does not actually reach two documents. The point of such a question
+	// is that it needs two places, so one place is not it.
+	RuleCrossDocEvidence = "question.cross_doc_evidence"
+	// RuleCrossDocPairing marks a cross-document batch whose pairs were not
+	// picked deliberately.
+	RuleCrossDocPairing = "question.cross_doc_pairing"
 )
 
 // ExcludedTopic is a knowledge point the first question set must not cover.
@@ -69,6 +79,10 @@ func LoadExcludedTopics(path string) (ExcludedTopics, error) {
 // that row? What level are the intention locks InnoDB uses, and what do they
 // indicate?" is two questions glued together with a question mark. The answer
 // is not one thing, and scoring it against one evidence set is muddy.
+//
+// It is an **error**, not a warning: the question is dropped and counts
+// against the output rate. The model keeps producing them even with the
+// rule spelled out in the prompt, so the line has to be enforced here.
 func checkMultiQuestion(report *Report, q dataset.Question) {
 	if q.Type != "multi_evidence" {
 		return
@@ -78,9 +92,52 @@ func checkMultiQuestion(report *Report, q dataset.Question) {
 		return
 	}
 	report.Findings = append(report.Findings, Finding{
-		Severity: SeverityWarning, Rule: RuleMultiQuestion, ID: q.ID,
+		Severity: SeverityError, Rule: RuleMultiQuestion, ID: q.ID,
 		Detail: fmt.Sprintf("the question has %d question marks; a multi-evidence question is ONE question that needs two places to answer, not several small questions joined together",
 			count)})
+}
+
+// Batch kinds. The kind says which kind of batch a question came from.
+//
+// The kinds need different generation settings (the multi-evidence and
+// cross-document batches think longer), and they are checked differently
+// (a cross-document question has to reach two documents).
+const (
+	// BatchKindDefault is an ordinary single-document batch.
+	BatchKindDefault = "default"
+	// BatchKindMultiEvidence is a batch that asks for questions needing two
+	// places of the same document.
+	BatchKindMultiEvidence = "multi_evidence"
+	// BatchKindCrossDoc is a batch that pairs passages from two documents.
+	BatchKindCrossDoc = "cross_doc"
+	// BatchKindUnanswerable is a batch that hands out an outline instead of
+	// passages.
+	BatchKindUnanswerable = "unanswerable"
+)
+
+// checkCrossDocEvidence marks a cross-document question whose evidence does
+// not reach two documents.
+//
+// The point of a cross-document question is that it cannot be answered from
+// one place. If the model cites one document, it is not a cross-document
+// question and it would measure the same thing as every other question.
+func checkCrossDocEvidence(report *Report, q dataset.Question, m Meta) {
+	if m.Params.BatchKind != BatchKindCrossDoc {
+		return
+	}
+	files := map[string]bool{}
+	for _, set := range q.Evidence {
+		for _, span := range set {
+			files[span.File] = true
+		}
+	}
+	if len(files) >= 2 {
+		return
+	}
+	report.Findings = append(report.Findings, Finding{
+		Severity: SeverityError, Rule: RuleCrossDocEvidence, ID: q.ID,
+		Detail: fmt.Sprintf("this is a cross-document question, but its evidence only reaches %d document(s); it must need two places to answer",
+			len(files))})
 }
 
 // mdFilePattern matches a corpus file name in a question text.

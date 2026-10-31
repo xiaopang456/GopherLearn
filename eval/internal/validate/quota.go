@@ -50,6 +50,11 @@ type GenParams struct {
 	EnableThinking *bool `json:"enable_thinking,omitempty"`
 	// ThinkingBudget caps the tokens the model may spend on reasoning.
 	ThinkingBudget int `json:"thinking_budget,omitempty"`
+	// BatchKind says which kind of batch the question came from. The kinds
+	// need different generation settings (the multi-evidence and cross-document
+	// batches think longer), so the fingerprint is compared **within** a kind
+	// and not across kinds.
+	BatchKind string `json:"batch_kind,omitempty"`
 }
 
 // Fingerprint is the string the consistency check compares: the model name
@@ -61,6 +66,13 @@ func (p GenParams) Fingerprint(model string) string {
 	}
 	return fmt.Sprintf("%s|temperature=%.2f|top_p=%.2f|max_tokens=%d|seed=%d|n=%d|thinking=%s|budget=%d",
 		model, p.Temperature, p.TopP, p.MaxTokens, p.Seed, p.N, thinking, p.ThinkingBudget)
+}
+
+// FingerprintWithKind is the fingerprint including the batch kind, so that
+// two kinds that differ only in their thinking budget do not look like the
+// same set.
+func (p GenParams) FingerprintWithKind(model string) string {
+	return fmt.Sprintf("%s|kind=%s|%s", p.BatchKind, model, p.Fingerprint(model))
 }
 
 // Empty reports whether nothing was recorded.

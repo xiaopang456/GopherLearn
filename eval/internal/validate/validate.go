@@ -204,12 +204,14 @@ func Validate(corpus *dataset.Corpus, questions []dataset.Question, meta []Meta,
 	}
 
 	for _, q := range questions {
+		m := byID[q.ID]
 		checkQuestionText(report, q)
 		checkMultiQuestion(report, q)
 		checkEvidence(report, q, docs)
 		checkUnanswerable(report, q, docs, params)
 		checkUnanswerableMetaLeak(report, q, docs)
 		checkExcludedTopicNear(report, q, docs, params.Excluded)
+		checkCrossDocEvidence(report, q, m)
 		if len(meta) > 0 {
 			checkNuggets(report, q, docs, byID, params)
 		}
@@ -287,7 +289,11 @@ func checkMetaConsistency(report *Report, questions []dataset.Question, meta []M
 	for _, m := range meta {
 		byID[m.ID] = m
 	}
-	fingerprints := map[string]int{}
+	// The fingerprint is compared **within** a batch kind. The kinds need
+	// different generation settings (the multi-evidence and cross-document
+	// batches think longer), so two kinds with different settings are not a
+	// defect; two kinds that disagree with themselves are.
+	fingerprints := map[string]map[string]int{}
 	missing := 0
 	for _, q := range questions {
 		m, ok := byID[q.ID]
@@ -301,7 +307,14 @@ func checkMetaConsistency(report *Report, questions []dataset.Question, meta []M
 			missing++
 			continue
 		}
-		fingerprints[m.Params.Fingerprint(m.Model)]++
+		kind := m.Params.BatchKind
+		if kind == "" {
+			kind = "(unspecified)"
+		}
+		if fingerprints[kind] == nil {
+			fingerprints[kind] = map[string]int{}
+		}
+		fingerprints[kind][m.Params.Fingerprint(m.Model)]++
 	}
 	if missing > 0 {
 		report.Findings = append(report.Findings, Finding{
@@ -309,16 +322,24 @@ func checkMetaConsistency(report *Report, questions []dataset.Question, meta []M
 			Detail: fmt.Sprintf("%d question(s) do not record the generation model and parameters (the model is missing, or the parameters are); the run cannot be reproduced",
 				missing)})
 	}
-	if len(fingerprints) > 1 {
-		combinations := make([]string, 0, len(fingerprints))
-		for fingerprint := range fingerprints {
+	kinds := make([]string, 0, len(fingerprints))
+	for kind := range fingerprints {
+		kinds = append(kinds, kind)
+	}
+	sort.Strings(kinds)
+	for _, kind := range kinds {
+		if len(fingerprints[kind]) <= 1 {
+			continue
+		}
+		combinations := make([]string, 0, len(fingerprints[kind]))
+		for fingerprint := range fingerprints[kind] {
 			combinations = append(combinations, fingerprint)
 		}
 		sort.Strings(combinations)
 		report.Findings = append(report.Findings, Finding{
 			Severity: SeverityError, Rule: RuleMetaModelMismatch,
-			Detail: fmt.Sprintf("the questions were not all produced the same way (%d different model/parameter combinations): %s",
-				len(combinations), strings.Join(combinations, "; "))})
+			Detail: fmt.Sprintf("the questions of batch kind %q were not all produced the same way (%d different model/parameter combinations): %s",
+				kind, len(combinations), strings.Join(combinations, "; "))})
 	}
 }
 
