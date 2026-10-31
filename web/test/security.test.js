@@ -199,7 +199,8 @@ describe('rendering model output as formatted text', () => {
     })
     expect(wrapper.find('b').exists()).toBe(false)
     expect(wrapper.text()).toContain('<b>timeout</b>')
-    expect(wrapper.text()).toContain('model_timeout')
+    // The machine code is not shown to a learner either.
+    expect(wrapper.text()).not.toContain('model_timeout')
   })
 })
 

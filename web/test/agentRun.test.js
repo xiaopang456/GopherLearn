@@ -213,13 +213,30 @@ describe('AgentRunPanel rendering rules', () => {
       run: { error: { code: 'model_timeout', message: '模型超时' } },
     })
     expect(failed.text()).toContain('模型超时')
-    expect(failed.text()).toContain('model_timeout')
+    // A machine code is not something a learner can act on.
+    expect(failed.text()).not.toContain('model_timeout')
+
+    const timedOut = mountPanel({
+      stage: AgentStage.Failed,
+      run: { error: { code: 'timeout', message: '本次 Agent 运行超时' } },
+    })
+    // Where the client knows the code, it says what it means.
+    expect(timedOut.text()).toContain('这次回答超时了')
+    expect(timedOut.text()).not.toContain('timeout')
 
     const cancelled = mountPanel({
       stage: AgentStage.Cancelled,
       run: { error: { code: 'aborted', message: '已停止本次回答的生成。' } },
     })
     expect(cancelled.text()).toContain('已停止')
+
+    // The raw code is kept for the developer.
+    vi.stubEnv('DEV', true)
+    const debugged = mountPanel({
+      stage: AgentStage.Failed,
+      run: { error: { code: 'model_timeout', message: '模型超时' } },
+    })
+    expect(debugged.text()).toContain('model_timeout')
   })
 })
 

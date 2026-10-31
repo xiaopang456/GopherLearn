@@ -1,17 +1,31 @@
 <script setup>
+import { computed } from 'vue'
+
 import AppIcon from './AppIcon.vue'
+import { errorCodeText } from '../lib/displayText.js'
+import { debugUiEnabled } from '../lib/debugUi.js'
 
 /**
  * The one component allowed to render a server-supplied string. It is safe
  * because callers pass `safeErrorMessage()`, which whitelists machine codes and
  * substitutes a generic sentence for anything else — and because the text is
  * interpolated into a text node, never parsed as markup.
+ *
+ * The machine code itself is not shown to a learner: `agent_run_busy` is a word
+ * for a program, and the sentence above it already says what happened. Where
+ * this client knows the code, it says what the code means in Chinese instead —
+ * "上一轮回答还没结束，等它结束再发" tells a learner what to do, where
+ * `agent_run_busy` tells them nothing. The raw code is kept for the developer
+ * and is shown only when the debug switch is on.
  */
-defineProps({
+const props = defineProps({
   code: { type: String, default: '' },
   message: { type: String, default: '' },
   variant: { type: String, default: 'error' }, // error | stopped | info
 })
+
+const explanation = computed(() => errorCodeText(props.code))
+const debug = computed(() => debugUiEnabled())
 </script>
 
 <template>
@@ -19,7 +33,8 @@ defineProps({
     <AppIcon name="alert" :size="18" />
     <div class="notice__body">
       <p class="notice__message">{{ message }}</p>
-      <p v-if="code" class="notice__code">{{ code }}</p>
+      <p v-if="explanation" class="notice__detail">{{ explanation }}</p>
+      <p v-if="code && debug" class="notice__code">{{ code }}</p>
     </div>
   </div>
 </template>
@@ -57,6 +72,13 @@ defineProps({
   overflow-wrap: anywhere;
 }
 
+/* What the machine code means, said in Chinese. */
+.notice__detail {
+  margin: var(--gl-space-1) 0 0;
+  overflow-wrap: anywhere;
+}
+
+/* The code itself: for a developer, and only when the debug switch is on. */
 .notice__code {
   margin: var(--gl-space-1) 0 0;
   font-family: var(--gl-mono);

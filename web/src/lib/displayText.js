@@ -83,6 +83,46 @@ export const DRAFT_ACTION = Object.freeze({
 })
 
 /**
+ * What a machine code means, in a sentence a learner can act on.
+ *
+ * These are the codes this client produces or forwards. A code that is not
+ * here gets no sentence: the notice then shows only what the server said, and
+ * the code itself stays behind the debug switch.
+ */
+export const ERROR_CODE = Object.freeze({
+  agent_run_busy: '上一轮回答还没结束，等它结束再发。',
+  // The agent's own failure reasons (`v2/service/agent/service.go`).
+  timeout: '这次回答超时了，换个问法再试一次。',
+  cancelled: '这次回答已经取消。',
+  client_disconnected: '连接断开了，这次回答没有完成，可以重试。',
+  tool_call_limit: '这次回答用到的工具次数太多，没有完成；可以把问题拆小一点。',
+  model_call_limit: '这次回答用到的模型次数太多，没有完成；可以把问题拆小一点。',
+  graph_step_limit: '这次回答的步骤太多，没有完成；可以把问题拆小一点。',
+  repeated_tool_call: '同一个工具被反复调用，这次回答没有完成；可以换个说法。',
+  unknown_tool: '这次回答用了一个不存在的工具，没有完成；可以换个说法。',
+  incomplete_model_stream: '回答生成到一半断了，这次回答没有保存，可以重试。',
+  runner_failed: '这次回答没有完成，可以重试。',
+  stream_closed: '连接中断了，请重试。',
+  stream_failed: '连接中断了，请重试。',
+  stream_interrupted: '连接中断了，请重试。',
+  stream_connect_failed: '连接中断了，请重试。',
+  stream_empty_body: '服务没有返回内容，请重试。',
+  network_error: '连不上服务器，请检查网络后重试。',
+  unauthorized: '登录状态已失效，请重新登录。',
+  forbidden: '你没有权限做这件事。',
+  not_found: '没有找到对应的内容。',
+  invalid_request: '请求的内容不完整，请检查后重试。',
+  invalid_credentials: '邮箱或密码不对。',
+  email_taken: '这个邮箱已经注册过了。',
+  display_name_taken: '这个昵称已经被用过了。',
+  rate_limited: '操作太频繁了，请稍后再试。',
+  conflict: '这条内容和已有的内容冲突，请换一种说法。',
+  AbortError: '请求已取消。',
+  invalid_response: '服务返回的内容对不上，请重试。',
+  internal_error: '服务出了点问题，请稍后重试。',
+})
+
+/**
  * The wording for one value, or the neutral wording when the table does not know it.
  *
  * The lookup ignores case and surrounding spaces, the way the server resolves a
@@ -128,4 +168,15 @@ export function memoryDurabilityText(durability) {
 /** What a draft-card button does. */
 export function draftActionText(action) {
   return wording(DRAFT_ACTION, action, '确认')
+}
+
+/**
+ * What a machine code means, or `''` when this client has no sentence for it.
+ *
+ * An empty string means "say nothing": the notice then shows only the server's
+ * own message, rather than a sentence the client made up about a code it does
+ * not know.
+ */
+export function errorCodeText(code) {
+  return wording(ERROR_CODE, code, '')
 }

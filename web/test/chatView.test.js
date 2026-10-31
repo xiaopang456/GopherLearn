@@ -123,7 +123,10 @@ describe('chat view wiring', () => {
     expect(turns[0].text()).toContain('一个很长的问题')
     expect(turns[1].text()).toContain('只写了一半')
     expect(turns[1].text()).toContain('上下文过长')
-    expect(turns[1].text()).toContain('invalid_request')
+    // The machine code is replaced by what it means; the code itself is not on
+    // the page.
+    expect(turns[1].text()).toContain('请求的内容不完整')
+    expect(turns[1].text()).not.toContain('invalid_request')
     app.unmount()
   })
 

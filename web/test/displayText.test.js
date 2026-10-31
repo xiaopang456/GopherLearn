@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   draftActionText,
+  errorCodeText,
   learningLevelText,
   learningStatusText,
   memoryDurabilityText,
@@ -33,5 +34,12 @@ describe('the shared wording tables', () => {
     expect(memoryScopeText('everything')).toBe('范围未说明')
     expect(memoryDurabilityText('forever')).toBe('有效期未说明')
     expect(draftActionText('merge')).toBe('确认')
+  })
+
+  it('says nothing about a code it has no sentence for', () => {
+    expect(errorCodeText('agent_run_busy')).toBe('上一轮回答还没结束，等它结束再发。')
+    expect(errorCodeText('timeout')).toContain('这次回答超时了')
+    expect(errorCodeText('v2_2006')).toBe('')
+    expect(errorCodeText('')).toBe('')
   })
 })
