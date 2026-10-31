@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory } from 'vue-router'
 
@@ -13,6 +13,22 @@ import {
   sseFrame,
   sseResponse,
 } from './helpers/transport.js'
+
+/**
+ * The ids the client makes for itself.
+ *
+ * The page carries them in its `data-test` attributes (`message-msg-<uuid>`), and a
+ * UUID is hex digits and dashes — so it can contain "a-1" by coincidence, about one
+ * turn in thirty. The checks below are about the *server's* identifiers, so the
+ * client's own ids are fixed here: a coincidence must not decide whether this file
+ * passes. The case that tells the two apart is "tells the client's own id apart from
+ * the server's identifier".
+ */
+const clientIds = vi.hoisted(() => ({ suffix: 'fixed-local-id' }))
+
+vi.mock('../src/lib/id.js', () => ({
+  localId: (prefix = 'tmp') => `${prefix}-${clientIds.suffix}`,
+}))
 
 /**
  * An agent turn whose text arrives in blocks, seen through the screen.
@@ -144,6 +160,19 @@ function assistantTurn(app) {
   return turns[turns.length - 1]
 }
 
+/**
+ * Whether the markup mentions an identifier as an identifier.
+ *
+ * A match is a whole identifier: the characters on either side of it are not part of
+ * another word. `data-test="message-a-1"` is the server's id on the page, and
+ * `消息：a-1` is the server's id in the text; `data-test="message-msg-ba-1c3d-…"` is
+ * the client's own id and says nothing about the server's.
+ */
+function mentionsIdentifier(markup, id) {
+  const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(?<![0-9A-Za-z])${escaped}(?![0-9A-Za-z])`).test(markup)
+}
+
 /** The reply's own body, with the fold's paragraphs left out. */
 function answerBody(turn) {
   const bodies = turn.findAll('[data-test="markdown-body"]')
@@ -225,13 +254,45 @@ describe('text that arrives while the model is still writing', () => {
 
     // A block id is a correlation handle, and a kind is a server enum: neither is a word a
     // learner can define, so neither may appear on the page at all.
+    //
+    // Both forms of the check are here. The literal one says none of these characters
+    // is anywhere in the markup; the identifier one says the server's identifier is not
+    // on the page as an identifier - in an attribute or in the text. The first is only
+    // possible because this file fixes the client's own ids (see `clientIds`): a UUID is
+    // hex digits and dashes, and it can contain "a-1" by coincidence, which has nothing
+    // to do with the server's identifier. The second holds whatever the client does.
     const dom = app.html()
     for (const internal of ['blk-1', 'blk-2', 'block_id', 'final_block_id', 'answer_candidate', 'run-4', 'a-1']) {
-      expect(dom).not.toContain(internal)
+      expect(dom, internal).not.toContain(internal)
+      expect(mentionsIdentifier(dom, internal), internal).toBe(false)
     }
     for (const jargon of ['round', 'block', 'process', 'candidate', 'failed']) {
       expect(app.text()).not.toContain(jargon)
     }
+    app.unmount()
+  })
+
+  it("tells the client's own id apart from the server's identifier", async () => {
+    // The client generates the id it puts in `data-test`, and a UUID can contain the
+    // server's identifier's characters by coincidence. The server's identifier must
+    // still be caught when it appears on its own - that is what a leak would look like.
+    clientIds.suffix = 'ba-1c3d-4111-8111-111111111111'
+    serve([sseFrame('message.started', { message_id: 'a-1', run_id: RUN }), ...TOOL_STEP, ...ANSWER_STEP, completedFrame()])
+    const { app } = await openAndSend(AGENT)
+    await app.find('[data-test="process-notes-toggle"]').trigger('click')
+    await flushPromises()
+
+    const dom = app.html()
+    // The client's own id is on the page, and it happens to carry the same characters.
+    expect(dom).toContain('message-asst-ba-1c3d-4111-8111-111111111111')
+    expect(mentionsIdentifier(dom, 'a-1')).toBe(false)
+    // The server's identifier is not on the page either.
+    expect(dom).not.toContain('message-a-1')
+    expect(app.text()).not.toContain('a-1')
+
+    // And the check still catches it when it does appear - as an attribute, and as text.
+    expect(mentionsIdentifier('data-test="message-a-1"', 'a-1')).toBe(true)
+    expect(mentionsIdentifier('消息：a-1', 'a-1')).toBe(true)
     app.unmount()
   })
 
