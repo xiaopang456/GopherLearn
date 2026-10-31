@@ -1,5 +1,5 @@
 <script setup>
-import { onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { NButton } from 'naive-ui'
 
 import GlEmpty from '../components/GlEmpty.vue'
@@ -9,6 +9,7 @@ import ServerNotice from '../components/ServerNotice.vue'
 import V2MemoryDraftCard from '../components/V2MemoryDraftCard.vue'
 import { useV2MemoryPage } from '../composables/useV2MemoryPage.js'
 import { memoryDurabilityText, memoryScopeText } from '../lib/displayText.js'
+import { debugUiEnabled } from '../lib/debugUi.js'
 
 const page = useV2MemoryPage()
 const op = page.operation
@@ -18,6 +19,7 @@ const edit = ref(null)
 const reason = ref('')
 const decision = ref('')
 const target = ref('')
+const debug = computed(() => debugUiEnabled())
 watch(() => op.result.value, () => { decision.value = ''; target.value = '' })
 
 function tags(value) { return value.trim() ? value.split(',').map((item) => item.trim()) : [] }
@@ -314,8 +316,8 @@ onBeforeUnmount(page.dispose)
       <div class="gl-disclosure__body">
         <ul class="memory__revision-list">
           <li v-for="item in page.revisions.value.items" :key="item.id">
-            <span class="memory__revision-id">{{ item.id }}</span>
             <span class="memory__revision-reason">{{ item.reason }}</span>
+            <span v-if="debug" class="memory__revision-id">{{ item.id }}</span>
           </li>
         </ul>
       </div>

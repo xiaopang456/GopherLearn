@@ -63,7 +63,9 @@ it('conflict does not choose a winner or implicit target', async () => {
 it('uses original correction/archive/delete/revision fields with string identities', async () => {
   const wrapper = mount(V2MemoryView); await flushPromises()
   await wrapper.get('[data-test=v2-revisions]').trigger('click'); await flushPromises()
-  expect(wrapper.get('[data-test=v2-revision-result]').text()).toContain('actual-revision')
+  expect(wrapper.get('[data-test=v2-revision-result]').text()).toContain('用户决定')
+  // The revision id is an internal identity and stays off the page.
+  expect(wrapper.get('[data-test=v2-revision-result]').text()).not.toContain('actual-revision')
   await wrapper.get('[data-test=v2-edit]').trigger('click')
   await wrapper.get('[aria-label="修改 reason"]').setValue('用户修正')
   await wrapper.get('[data-test=v2-edit-form]').trigger('submit'); await flushPromises()
@@ -104,5 +106,12 @@ it('time_bound/global are explicit, valid_until is exact, and length counts Unic
   await wrapper.get('[data-test=v2-create-form]').trigger('submit'); await flushPromises()
   expect(calls.filter((c) => c.init.method === 'POST')).toHaveLength(1)
   expect(wrapper.text()).toContain('content 超过原 400 字上限')
+  wrapper.unmount()
+})
+it('a development build still shows the revision id', async () => {
+  vi.stubEnv('DEV', true)
+  const wrapper = mount(V2MemoryView); await flushPromises()
+  await wrapper.get('[data-test=v2-revisions]').trigger('click'); await flushPromises()
+  expect(wrapper.get('[data-test=v2-revision-result]').text()).toContain('actual-revision')
   wrapper.unmount()
 })

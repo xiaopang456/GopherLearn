@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { NButton } from 'naive-ui'
 
@@ -9,6 +9,7 @@ import GlPageHeader from '../components/GlPageHeader.vue'
 import GlStatusTag from '../components/GlStatusTag.vue'
 import ServerNotice from '../components/ServerNotice.vue'
 import { recordDevIssue } from '../lib/devlog.js'
+import { debugUiEnabled } from '../lib/debugUi.js'
 import {
   listV2Documents,
   uploadV2Document,
@@ -27,6 +28,7 @@ const busy = ref(false)
 const processingOpen = ref({}) // document id -> panel expanded
 const fileInput = ref(null)
 const updateId = ref('')
+const debug = computed(() => debugUiEnabled())
 
 function toggleProcessing(id) {
   processingOpen.value = { ...processingOpen.value, [id]: !processingOpen.value[id] }
@@ -162,7 +164,10 @@ onMounted(refresh)
           <span v-if="when(document.updated_at)"> · {{ when(document.updated_at) }}</span>
         </p>
 
-        <p v-if="document.error_message" class="docs__error">{{ document.error_message }}</p>
+        <p v-if="document.error_message" class="docs__error">
+          这个文档处理时出错了，可以点「重新处理」再试一次。
+          <span v-if="debug" class="docs__error-raw">{{ document.error_message }}</span>
+        </p>
 
         <div class="docs__actions">
           <n-button
