@@ -28,20 +28,29 @@ import (
 // The rule that survives the corpus:
 //
 //  1. a keyword that occurs in more than UnanswerableMaxDocFreq corpus lines
-//     proves nothing and is dropped;
+//     proves nothing and is dropped, and so does a keyword the corpus never
+//     mentions; what is left are the "distinctive" keywords;
 //  2. a corpus line that carries *every* distinctive keyword is treated as
-//     the answer (error), as long as there are at least two of them: the
-//     corpus talks about the whole question, not about one of its words;
-//  3. a corpus line that carries a single ASCII identifier which is common in
-//     the corpus (UnanswerableStrongTermMinDocFreq lines or more) is also
-//     treated as the answer: the corpus covers that identifier thoroughly, so
-//     a question about it is very likely answerable;
-//  4. a corpus line that carries some of the keywords is only a suspect
-//     (warning): the corpus talks about something nearby, and a human has to
-//     look;
-//  5. a question whose keywords are all absent or all too common cannot be
-//     screened at all; that is reported too, so "not flagged" never silently
-//     means "screened and clean".
+//     the answer (error): the corpus talks about the whole question, not
+//     about one of its words;
+//  3. everything else that comes close is a suspect (warning): the corpus
+//     carries some of the question's words, or it mentions a single widely
+//     used identifier of the question (an ASCII term that shows up in
+//     UnanswerableStrongTermMinDocFreq lines or more). That is the shape of
+//     "the corpus covers this topic", which is worth a human look but is not
+//     proof that the corpus answers the question;
+//  4. a question the screen cannot decide either way is reported as
+//     inconclusive (warning), so "nothing was reported" never silently means
+//     "checked and clean".
+//
+// Why the difference between 2 and 3 matters: the questions the plan asks
+// for are exactly the ones that name a topic the corpus talks about and ask
+// for a detail the corpus does not give ("AOF 的压缩策略默认值是多少" while
+// the corpus only explains AOF in general). Treating a single common
+// identifier as the answer rejects exactly those questions. Measured on two
+// independent sets of questions over the real corpus, this rule reports
+// **no** wrong answers, while still surfacing every close question for a
+// human to look at.
 //
 // The candidate lines are reported with their file and line so a human can
 // look at them.
@@ -114,10 +123,14 @@ func checkUnanswerable(report *Report, q dataset.Question, docs map[string]*Docu
 		low := strings.ToLower(text)
 		var matched []string
 		score := 0
+		matchedStrong := false
 		for _, i := range distinctive {
 			if containsTerm(low, lowered[i]) {
 				matched = append(matched, terms[i])
 				score += termWeight(terms[i])
+				if isASCIITerm(terms[i]) && docFreq[i] >= strongFreq {
+					matchedStrong = true
+				}
 			}
 		}
 		if len(matched) == 0 {
@@ -129,11 +142,12 @@ func checkUnanswerable(report *Report, q dataset.Question, docs map[string]*Docu
 			// The corpus line carries every distinctive keyword of the
 			// question: that is the answer, not a coincidence.
 			answers = append(answers, c)
-		case len(matched) == 1 && isASCIITerm(matched[0]) && docFreq[indexOf(lowered, matched[0])] >= strongFreq:
-			// One widely used identifier: the corpus covers that topic
-			// thoroughly, so the question is very likely answerable.
-			answers = append(answers, c)
 		case len(matched) >= minDistinctive:
+			suspects = append(suspects, c)
+		case matchedStrong:
+			// One widely used identifier and nothing else. The corpus talks
+			// about the topic, which is worth a look but is not proof that it
+			// answers the question.
 			suspects = append(suspects, c)
 		}
 	})
@@ -154,7 +168,12 @@ func checkUnanswerable(report *Report, q dataset.Question, docs map[string]*Docu
 			File: suspects[0].file, Line: suspects[0].line,
 			Detail: fmt.Sprintf("%d corpus line(s) carry some of this question's keywords but not all of them; the corpus may still know the answer: %s",
 				len(suspects), formatCandidates(suspects))})
+		return
 	}
+	report.Findings = append(report.Findings, Finding{
+		Severity: SeverityWarning, Rule: RuleUnanswerableInconclusive, ID: q.ID,
+		Detail: fmt.Sprintf("no corpus line carries the keywords of this question together; the screen cannot confirm that the corpus lacks the answer, so a human has to look (%d corpus lines)",
+			total)})
 }
 
 func sortCandidates(candidates []corpusCandidate) {
@@ -192,16 +211,6 @@ func formatCandidates(candidates []corpusCandidate) string {
 		details = append(details, fmt.Sprintf("%s:%d [%s]", c.file, c.line, strings.Join(c.matched, "、")))
 	}
 	return strings.Join(details, "; ")
-}
-
-// indexOf returns the position of a lowered term, or -1.
-func indexOf(lowered []string, term string) int {
-	for i, t := range lowered {
-		if t == strings.ToLower(term) {
-			return i
-		}
-	}
-	return -1
 }
 
 // isStrongTerm reports whether a keyword is specific enough to be evidence on

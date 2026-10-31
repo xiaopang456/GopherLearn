@@ -368,6 +368,59 @@ func TestUnanswerablePartialMatchIsOnlyASuspect(t *testing.T) {
 	}
 }
 
+// TestUnanswerableCommonIdentifierIsOnlyASuspect pins the rule that the
+// second review round changed.
+//
+// A question that names a topic the corpus talks about a lot ("AOF 的压缩
+// 策略默认值是多少", while the corpus only explains AOF in general) used to
+// be rejected as "the corpus answers it", because some corpus line carries
+// the identifier AOF and nothing else. Those questions are exactly the ones
+// the plan asks for, so treating the identifier alone as the answer burned
+// the generation budget on every unanswerable question.
+func TestUnanswerableCommonIdentifierIsOnlyASuspect(t *testing.T) {
+	var lines []string
+	for i := 0; i < 70; i++ {
+		lines = append(lines, fmt.Sprintf("这一行讲 AOF 的第 %d 个方面。", i))
+	}
+	corpus := writeCorpus(t, map[string]string{"a.md": strings.Join(lines, "\n") + "\n"})
+	questions := []dataset.Question{
+		{ID: "q", Question: "Redis 的 AOF 压缩策略默认是什么？", Answerable: false, Split: "dev"},
+	}
+	report, err := Validate(corpus, questions, nil, Quota{}, DefaultParams())
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if got := rulesOf(report, SeverityError)[RuleUnanswerableHit]; got != 0 {
+		t.Errorf("a common identifier was treated as the answer: %v", report.Findings)
+	}
+	if got := rulesOf(report, SeverityWarning)[RuleUnanswerableSuspect]; got != 1 {
+		t.Errorf("the common identifier was not reported as a suspect: %v", report.Findings)
+	}
+}
+
+// TestUnanswerableQuestionIsNeverSilent checks that a question the screen
+// cannot decide is still reported.
+//
+// The plan promises that "nothing was reported" never means "checked and
+// clean": a question whose keywords turn up nowhere near each other is
+// inconclusive, and that is said out loud.
+func TestUnanswerableQuestionIsNeverSilent(t *testing.T) {
+	corpus := writeCorpus(t, map[string]string{"a.md": "AOF 相关内容。\n"})
+	questions := []dataset.Question{
+		{ID: "q", Question: "Redis 的 AOF 压缩策略默认是什么？", Answerable: false, Split: "dev"},
+	}
+	report, err := Validate(corpus, questions, nil, Quota{}, DefaultParams())
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if len(report.Findings) == 0 {
+		t.Fatal("the question was not reported at all")
+	}
+	if got := rulesOf(report, SeverityWarning)[RuleUnanswerableInconclusive]; got != 1 {
+		t.Errorf("the question was not reported as inconclusive: %v", report.Findings)
+	}
+}
+
 func TestQuotaChecks(t *testing.T) {
 	corpus := writeCorpus(t, map[string]string{"a.md": "正文一行\n第二行\n"})
 	questions := []dataset.Question{
