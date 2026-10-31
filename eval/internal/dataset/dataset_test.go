@@ -319,3 +319,34 @@ func TestDatasetVersionTracksTheBytes(t *testing.T) {
 		t.Fatalf("versions: %s %s %s", a.Version, b.Version, again.Version)
 	}
 }
+
+// TestParseDatasetLenientKeepsTheGoodQuestions checks that a file with one
+// broken question still yields the other questions.
+//
+// ParseDataset throws the whole file away when anything is wrong, which is
+// right for a loader that must not run on a broken file but wrong for the
+// validator: one broken question must not hide every other problem.
+func TestParseDatasetLenientKeepsTheGoodQuestions(t *testing.T) {
+	corpus := loadTestCorpus(t)
+	good := `{"id":"good","question":"q","answerable":true,"evidence_sets":[[{"file":"tide-tables.md","start":1,"end":2}]],"split":"dev"}`
+	good2 := `{"id":"good2","question":"q","answerable":true,"evidence_sets":[[{"file":"tide-tables.md","start":1,"end":2}]],"split":"dev"}`
+	broken := `{"id":"broken","question":"q","answerable":true,"evidence_sets":[[{"file":"ghost.md","start":1,"end":1}]],"split":"dev"}`
+	raw := []byte(good + "\n" + broken + "\n" + good2 + "\n")
+
+	if _, err := ParseDataset(raw, corpus); err == nil {
+		t.Fatal("ParseDataset accepted a file with a broken question")
+	}
+	parsed, issues := ParseDatasetLenient(raw, corpus)
+	if len(issues) != 1 {
+		t.Fatalf("issues = %d, want 1: %v", len(issues), issues)
+	}
+	if issues[0].Line != 2 {
+		t.Errorf("issue reported on line %d, want 2", issues[0].Line)
+	}
+	if len(parsed.Questions) != 2 {
+		t.Fatalf("kept %d questions, want 2", len(parsed.Questions))
+	}
+	if parsed.Questions[0].ID != "good" || parsed.Questions[1].ID != "good2" {
+		t.Errorf("kept the wrong questions: %v", parsed.Questions)
+	}
+}
