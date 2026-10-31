@@ -11,8 +11,9 @@ import {
   restoreStepState,
   stepRows,
   toStepEvent,
+  TOOL_NAME_ZH,
+  toolDisplayName,
 } from '../src/lib/agentSteps.js'
-import { TOOL_NAME_ZH, toolDisplayName } from '../src/lib/toolNames.js'
 
 /**
  * A learner reads the capability, not the identifier the model was given.
@@ -31,10 +32,10 @@ const KNOWN = [
   ['read_history_message', '读取历史消息'],
   // the second set of names the native entry shows the model in some modes
   ['search_uploaded_documents', '检索知识库'],
-  ['search_past_sessions', '查找记忆'],
+  ['search_past_sessions', '查找过往对话'],
   ['save_memory_draft', '提议保存记忆'],
   // the integrated entry's own long-term search
-  ['episode_search', '查找记忆'],
+  ['episode_search', '查找过往对话'],
 ]
 
 describe('the tool display table', () => {
@@ -50,8 +51,17 @@ describe('the tool display table', () => {
 
   it('gives the two spellings of one capability the same words', () => {
     expect(toolDisplayName('knowledge_search')).toBe(toolDisplayName('search_uploaded_documents'))
-    expect(toolDisplayName('memory_search')).toBe(toolDisplayName('search_past_sessions'))
+    expect(toolDisplayName('search_past_sessions')).toBe(toolDisplayName('episode_search'))
     expect(toolDisplayName('propose_memory')).toBe(toolDisplayName('save_memory_draft'))
+  })
+
+  it('tells the search through past conversations apart from the memory search', () => {
+    // Two different things: one walks the memory store, the other walks the
+    // conversations the learner had before. Calling them alike would send the
+    // reader looking in the wrong place.
+    expect(toolDisplayName('search_past_sessions')).toBe('查找过往对话')
+    expect(toolDisplayName('episode_search')).toBe('查找过往对话')
+    expect(toolDisplayName('memory_search')).toBe('查找记忆')
   })
 
   it('resolves a name the way the server does: ignoring case and padding', () => {
