@@ -288,7 +288,10 @@ func checkMetaConsistency(report *Report, questions []dataset.Question, meta []M
 		if !ok {
 			continue
 		}
-		if m.Model == "" && m.Params == (GenParams{}) {
+		// A question that records the model but no parameters is missing
+		// them, not "produced in a different way": counting it as a second
+		// combination would report a difference that is not there.
+		if m.Model == "" || m.Params.Empty() {
 			missing++
 			continue
 		}
@@ -297,7 +300,7 @@ func checkMetaConsistency(report *Report, questions []dataset.Question, meta []M
 	if missing > 0 {
 		report.Findings = append(report.Findings, Finding{
 			Severity: SeverityWarning, Rule: RuleMetaModelMissing,
-			Detail: fmt.Sprintf("%d question(s) do not record the model and the generation parameters they were produced with; the run cannot be reproduced",
+			Detail: fmt.Sprintf("%d question(s) do not record the generation model and parameters (the model is missing, or the parameters are); the run cannot be reproduced",
 				missing)})
 	}
 	if len(fingerprints) > 1 {

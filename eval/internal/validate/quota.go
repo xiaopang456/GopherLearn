@@ -40,13 +40,23 @@ type GenParams struct {
 	TopP        float64 `json:"top_p,omitempty"`
 	MaxTokens   int     `json:"max_tokens,omitempty"`
 	Seed        int64   `json:"seed,omitempty"`
+	// N is how many questions one call asked for. It is 1 for this setup.
+	N int `json:"n,omitempty"`
 }
 
 // Fingerprint is the string the consistency check compares: the model name
 // and the parameters in a fixed order.
 func (p GenParams) Fingerprint(model string) string {
-	return fmt.Sprintf("%s|temperature=%.2f|top_p=%.2f|max_tokens=%d|seed=%d",
-		model, p.Temperature, p.TopP, p.MaxTokens, p.Seed)
+	return fmt.Sprintf("%s|temperature=%.2f|top_p=%.2f|max_tokens=%d|seed=%d|n=%d",
+		model, p.Temperature, p.TopP, p.MaxTokens, p.Seed, p.N)
+}
+
+// Empty reports whether nothing was recorded.
+//
+// A question that records the model but loses its parameters counts as empty
+// too: it is missing the parameters, not "produced in a different way".
+func (p GenParams) Empty() bool {
+	return p == GenParams{}
 }
 
 // Point is one required point of an answer, with the keywords that must be

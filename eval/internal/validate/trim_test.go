@@ -229,6 +229,39 @@ func TestMissingModelIsOnlyAWarning(t *testing.T) {
 	}
 }
 
+// TestLostParametersAreMissingNotAMismatch checks that a question which
+// records the model but loses its parameters is reported as missing, not as
+// "produced in a different way".
+//
+// The second combination would be "the model with zero parameters", which is
+// not a different way of producing a question, it is a question whose
+// parameters were lost on the way.
+func TestLostParametersAreMissingNotAMismatch(t *testing.T) {
+	corpus := writeCorpus(t, map[string]string{"a.md": "正文一行\n"})
+	questions := []dataset.Question{
+		{ID: "q1", Question: "问题一", Answerable: true, Type: "single_fact", Topic: "go",
+			Evidence: []dataset.EvidenceSet{{span("a.md", 1, 1)}}, Split: "dev"},
+		{ID: "q2", Question: "问题二", Answerable: true, Type: "single_fact", Topic: "go",
+			Evidence: []dataset.EvidenceSet{{span("a.md", 1, 1)}}, Split: "dev"},
+	}
+	meta := []Meta{
+		{ID: "q1", Paraphrase: "verbatim", Lang: "zh_qa_zh_source",
+			Model: "qwen3.8-max", Params: GenParams{Temperature: 0.7, TopP: 0.8, MaxTokens: 4096, Seed: 20261031, N: 1}},
+		// The model survived, the parameters did not.
+		{ID: "q2", Paraphrase: "verbatim", Lang: "zh_qa_zh_source", Model: "qwen3.8-max"},
+	}
+	report, err := Validate(corpus, questions, meta, Quota{}, DefaultParams())
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if got := rulesOf(report, SeverityError)[RuleMetaModelMismatch]; got != 0 {
+		t.Errorf("lost parameters were reported as a mismatch: %v", report.Findings)
+	}
+	if got := rulesOf(report, SeverityWarning)[RuleMetaModelMissing]; got != 1 {
+		t.Errorf("lost parameters were not reported as missing: %v", report.Findings)
+	}
+}
+
 // TestTrimRecordsAreWritten checks that the trim log is written as JSONL.
 func TestTrimRecordsAreWritten(t *testing.T) {
 	records := []TrimRecord{
