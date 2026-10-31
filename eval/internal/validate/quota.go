@@ -35,6 +35,10 @@ type Meta struct {
 // They are recorded per question, next to the model name, so a generation run
 // can be reproduced and so a question set that was produced under different
 // conditions cannot slip through unnoticed.
+//
+// The thinking parameters are part of it: for a hybrid thinking model they
+// decide how long the model thinks before it answers, and that is a property
+// of the question set, not of the tool.
 type GenParams struct {
 	Temperature float64 `json:"temperature,omitempty"`
 	TopP        float64 `json:"top_p,omitempty"`
@@ -42,13 +46,21 @@ type GenParams struct {
 	Seed        int64   `json:"seed,omitempty"`
 	// N is how many questions one call asked for. It is 1 for this setup.
 	N int `json:"n,omitempty"`
+	// EnableThinking turns the model's reasoning mode on or off.
+	EnableThinking *bool `json:"enable_thinking,omitempty"`
+	// ThinkingBudget caps the tokens the model may spend on reasoning.
+	ThinkingBudget int `json:"thinking_budget,omitempty"`
 }
 
 // Fingerprint is the string the consistency check compares: the model name
 // and the parameters in a fixed order.
 func (p GenParams) Fingerprint(model string) string {
-	return fmt.Sprintf("%s|temperature=%.2f|top_p=%.2f|max_tokens=%d|seed=%d|n=%d",
-		model, p.Temperature, p.TopP, p.MaxTokens, p.Seed, p.N)
+	thinking := "off"
+	if p.EnableThinking != nil && *p.EnableThinking {
+		thinking = "on"
+	}
+	return fmt.Sprintf("%s|temperature=%.2f|top_p=%.2f|max_tokens=%d|seed=%d|n=%d|thinking=%s|budget=%d",
+		model, p.Temperature, p.TopP, p.MaxTokens, p.Seed, p.N, thinking, p.ThinkingBudget)
 }
 
 // Empty reports whether nothing was recorded.
@@ -56,7 +68,10 @@ func (p GenParams) Fingerprint(model string) string {
 // A question that records the model but loses its parameters counts as empty
 // too: it is missing the parameters, not "produced in a different way".
 func (p GenParams) Empty() bool {
-	return p == GenParams{}
+	// EnableThinking is a pointer so that "false" can be told apart from
+	// "not recorded", so the struct cannot be compared with ==.
+	return p.Temperature == 0 && p.TopP == 0 && p.MaxTokens == 0 &&
+		p.Seed == 0 && p.N == 0 && p.ThinkingBudget == 0 && p.EnableThinking == nil
 }
 
 // Point is one required point of an answer, with the keywords that must be

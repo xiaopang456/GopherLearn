@@ -170,6 +170,9 @@ type Params struct {
 	// single ASCII identifier is enough to treat a line as the answer.
 	// 60 by default.
 	UnanswerableStrongTermMinDocFreq int
+	// Excluded are the knowledge points the first question set must stay
+	// away from. Empty means no topic is excluded.
+	Excluded ExcludedTopics
 }
 
 // DefaultParams returns the parameters the plan documents.
@@ -202,8 +205,11 @@ func Validate(corpus *dataset.Corpus, questions []dataset.Question, meta []Meta,
 
 	for _, q := range questions {
 		checkQuestionText(report, q)
+		checkMultiQuestion(report, q)
 		checkEvidence(report, q, docs)
 		checkUnanswerable(report, q, docs, params)
+		checkUnanswerableMetaLeak(report, q, docs)
+		checkExcludedTopicNear(report, q, docs, params.Excluded)
 		if len(meta) > 0 {
 			checkNuggets(report, q, docs, byID, params)
 		}

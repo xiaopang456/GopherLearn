@@ -33,12 +33,14 @@ modes:
   split      cut the question set into the dev and sealed splits (offline)
   trim       cut the heading and blank lines off the edges of the evidence spans (offline)
   pairs      list the pairs of similar questions for the reviewer (offline)
+  alternatives  find a second place in the corpus that could answer each question (offline)
 
 validate flags:
   -corpus <file>     corpus manifest (required)
   -dataset <file>    question file, JSONL (required)
   -meta <file>       sidecar annotations, JSONL (optional but recommended)
   -quota <file>      quota file, JSON (optional; without it only the per-question rules run)
+  -excluded <file>  knowledge points to stay away from, JSON (optional)
   -report <file>     write the report as JSON (optional)
   -strict            treat warnings as errors
 
@@ -59,6 +61,13 @@ pairs flags:
   -out <file>        write the pairs as TSV (required)
   -min <f>           lowest similarity to list (default 0.6)
   -max <f>           highest similarity to list, exclusive (default 0.75)
+
+alternatives flags:
+  -corpus <file>     corpus manifest (required)
+  -dataset <file>    question file, JSONL (required)
+  -meta <file>       sidecar annotations, JSONL (required)
+  -out <file>        write the candidates as JSONL (required)
+  -limit <n>         candidates per question (default 5)
 `
 
 func main() {
@@ -79,6 +88,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runTrim(args[1:], stdout, stderr)
 	case "pairs":
 		return runPairs(args[1:], stdout, stderr)
+	case "alternatives":
+		return runAlternatives(args[1:], stdout, stderr)
 	case "-h", "-help", "--help", "help":
 		fmt.Fprint(stdout, usage)
 		return 0
@@ -95,6 +106,7 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 	datasetPath := flags.String("dataset", "", "question file")
 	metaPath := flags.String("meta", "", "sidecar annotations")
 	quotaPath := flags.String("quota", "", "quota file")
+	excludedPath := flags.String("excluded", "", "excluded knowledge points, JSON")
 	reportPath := flags.String("report", "", "report output")
 	strict := flags.Bool("strict", false, "treat warnings as errors")
 	if err := flags.Parse(args); err != nil {
@@ -110,6 +122,9 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 	}
 	if *quotaPath != "" {
 		paths["quota"] = *quotaPath
+	}
+	if *excludedPath != "" {
+		paths["excluded"] = *excludedPath
 	}
 	if *reportPath != "" {
 		paths["report"] = *reportPath
@@ -158,7 +173,17 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	report, err := validate.Validate(corpus, questions, meta, quota, validate.DefaultParams())
+	params := validate.DefaultParams()
+	if *excludedPath != "" {
+		excluded, err := validate.LoadExcludedTopics(*excludedPath)
+		if err != nil {
+			fmt.Fprintf(stderr, "qcheck validate: %v\n", err)
+			return 2
+		}
+		params.Excluded = excluded
+	}
+
+	report, err := validate.Validate(corpus, questions, meta, quota, params)
 	if err != nil {
 		fmt.Fprintf(stderr, "qcheck validate: %v\n", err)
 		return 2
@@ -279,6 +304,103 @@ func runSplit(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// runAlternatives finds a second place in the corpus that could answer each
+// question.
+//
+// The candidates come from the question's own required-point keywords, and
+// only from documents the question does not already use: the point of an
+// alternative evidence set is that the same question can be answered from
+// two places. The list is for the reviewer to confirm, not a verdict.
+func runAlternatives(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("qcheck alternatives", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	corpusPath := flags.String("corpus", "", "corpus manifest")
+	datasetPath := flags.String("dataset", "", "question file")
+	metaPath := flags.String("meta", "", "sidecar annotations")
+	outPath := flags.String("out", "", "candidates output, JSONL")
+	limit := flags.Int("limit", 5, "candidates per question")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if *corpusPath == "" || *datasetPath == "" || *metaPath == "" || *outPath == "" {
+		fmt.Fprintln(stderr, "qcheck alternatives: -corpus, -dataset, -meta and -out are required")
+		return 2
+	}
+	if err := pathguard.CheckAll(map[string]string{
+		"corpus": *corpusPath, "dataset": *datasetPath, "meta": *metaPath, "out": *outPath,
+	}); err != nil {
+		fmt.Fprintf(stderr, "qcheck alternatives: %v\n", err)
+		return 2
+	}
+	corpus, err := dataset.LoadCorpus(*corpusPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "qcheck alternatives: %v\n", err)
+		return 2
+	}
+	raw, err := validate.ReadRawQuestions(*datasetPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "qcheck alternatives: %v\n", err)
+		return 2
+	}
+	meta, err := validate.LoadMeta(*metaPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "qcheck alternatives: %v\n", err)
+		return 2
+	}
+	byID := map[string]validate.Meta{}
+	for _, m := range meta {
+		byID[m.ID] = m
+	}
+	docPaths := map[string]string{}
+	for _, doc := range corpus.Documents {
+		docPaths[doc.File] = doc.Path
+	}
+	docs, err := validate.LoadDocuments(docPaths)
+	if err != nil {
+		fmt.Fprintf(stderr, "qcheck alternatives: %v\n", err)
+		return 2
+	}
+
+	file, err := os.Create(*outPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "qcheck alternatives: %v\n", err)
+		return 2
+	}
+	encoder := json.NewEncoder(file)
+	encoder.SetEscapeHTML(false)
+
+	found := 0
+	for _, r := range raw {
+		answerable := false
+		if r.Answerable != nil {
+			answerable = *r.Answerable
+		}
+		q := dataset.Question{
+			ID: r.ID, Question: r.Question, Answerable: answerable,
+			Evidence: r.Evidence, Split: r.Split, Topic: r.Topic, Type: r.Type,
+		}
+		alts := validate.FindAlternatives(q, byID[r.ID], docs, *limit)
+		if len(alts) > 0 {
+			found++
+		}
+		for _, a := range alts {
+			if err := encoder.Encode(a); err != nil {
+				fmt.Fprintf(stderr, "qcheck alternatives: %v\n", err)
+				return 2
+			}
+		}
+	}
+	if err := file.Close(); err != nil {
+		fmt.Fprintf(stderr, "qcheck alternatives: %v\n", err)
+		return 2
+	}
+	fmt.Fprintf(stdout, "%d of %d question(s) have at least one other place in the corpus that could answer them\n",
+		found, len(raw))
+	fmt.Fprintf(stdout, "candidates written to %s\n", *outPath)
+	return 0
+}
+
+// sortedStructuralKeys returns the keys in a stable order.
 func sortedStructuralKeys(m map[string]string) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
