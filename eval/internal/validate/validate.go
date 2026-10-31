@@ -48,6 +48,7 @@ const (
 	// duplicate threshold. It is a list for the reviewer, not a defect.
 	RuleSimilarPair     = "question.similar_pair"
 	RuleQuestionEmpty   = "question.empty"
+	RuleWhyEachNeeded   = "meta.why_each_needed_missing"
 	RuleNuggetMissing   = "nugget.keyword_missing"
 	RuleNuggetNotRun    = "nugget.not_checked"
 	RuleUnanswerableHit = "unanswerable.has_answer"
@@ -205,13 +206,18 @@ func Validate(corpus *dataset.Corpus, questions []dataset.Question, meta []Meta,
 
 	for _, q := range questions {
 		m := byID[q.ID]
+		if m.Author != "" && m.Author != "qwen" && m.Author != "e4" {
+			report.Findings = append(report.Findings, Finding{Severity: SeverityError, Rule: "meta.author_invalid", ID: q.ID, Detail: "author must be qwen or e4"})
+		}
 		checkQuestionText(report, q)
+		checkQuestionLanguage(report, q, m)
 		checkMultiQuestion(report, q)
 		checkEvidence(report, q, docs)
 		checkUnanswerable(report, q, docs, params)
 		checkUnanswerableMetaLeak(report, q, docs)
 		checkExcludedTopicNear(report, q, docs, params.Excluded)
 		checkCrossDocEvidence(report, q, m)
+		checkWhyEachNeeded(report, q, m)
 		if len(meta) > 0 {
 			checkNuggets(report, q, docs, byID, params)
 		}
@@ -303,6 +309,9 @@ func checkMetaConsistency(report *Report, questions []dataset.Question, meta []M
 		// A question that records the model but no parameters is missing
 		// them, not "produced in a different way": counting it as a second
 		// combination would report a difference that is not there.
+		if m.Author == "e4" {
+			continue
+		}
 		if m.Model == "" || m.Params.Empty() {
 			missing++
 			continue
@@ -420,15 +429,28 @@ func checkNuggets(report *Report, q dataset.Question, docs map[string]*Document,
 		window = 3
 	}
 	for _, point := range m.Points {
+		keywords := []string{}
 		for _, keyword := range point.Keywords {
-			if keyword == "" {
-				continue
+			if strings.TrimSpace(keyword) != "" {
+				keywords = append(keywords, keyword)
 			}
-			if !keywordNearEvidence(q, keyword, docs, window) {
-				report.Findings = append(report.Findings, Finding{
-					Severity: SeverityError, Rule: RuleNuggetMissing, ID: q.ID,
-					Detail: fmt.Sprintf("required point %q: keyword %q not found within %d lines of any evidence span",
-						point.Text, keyword, window)})
+		}
+		if len(keywords) == 0 {
+			continue
+		}
+		for i, set := range q.Evidence {
+			found := false
+			single := q
+			single.Evidence = []dataset.EvidenceSet{set}
+			for _, keyword := range keywords {
+				if keywordNearEvidence(single, keyword, docs, window) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				report.Findings = append(report.Findings, Finding{Severity: SeverityError, Rule: RuleNuggetMissing, ID: q.ID,
+					Detail: fmt.Sprintf("required point %q: no alternative keyword %q found near evidence set %d", point.Text, keywords, i)})
 			}
 		}
 	}

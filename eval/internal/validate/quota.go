@@ -15,9 +15,11 @@ import (
 // fields), so the annotations that the design asks for but the schema has no
 // room for live next to it, keyed by question id.
 type Meta struct {
-	ID         string `json:"id"`
-	Paraphrase string `json:"paraphrase,omitempty"`
-	Lang       string `json:"lang,omitempty"`
+	ID            string   `json:"id"`
+	Author        string   `json:"author,omitempty"`
+	WhyEachNeeded []string `json:"why_each_needed,omitempty"`
+	Paraphrase    string   `json:"paraphrase,omitempty"`
+	Lang          string   `json:"lang,omitempty"`
 	// Layer is the measurement layer the question belongs to (L1, L2, ...).
 	// The question file's schema has no room for it, so it lives here.
 	// The first question set is L1 only, but the split already separates by

@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/xiaopang456/GopherLearn/eval/internal/dataset"
 )
@@ -138,6 +139,42 @@ func checkCrossDocEvidence(report *Report, q dataset.Question, m Meta) {
 		Severity: SeverityError, Rule: RuleCrossDocEvidence, ID: q.ID,
 		Detail: fmt.Sprintf("this is a cross-document question, but its evidence only reaches %d document(s); it must need two places to answer",
 			len(files))})
+}
+
+// checkWhyEachNeeded checks presence only; semantic necessity is reviewed by humans.
+func checkWhyEachNeeded(report *Report, q dataset.Question, m Meta) {
+	if q.Type != "multi_evidence" || m.Author == "e4" {
+		return
+	}
+	for _, explanation := range m.WhyEachNeeded {
+		if strings.TrimSpace(explanation) != "" {
+			return
+		}
+	}
+	report.Findings = append(report.Findings, Finding{Severity: SeverityError, Rule: RuleWhyEachNeeded, ID: q.ID, Detail: "multi-evidence questions must include a nonempty why_each_needed self-check in the sidecar; necessity requires human review"})
+}
+
+// checkQuestionLanguage flags prompts declared Chinese that are not predominantly Chinese.
+// Count Han characters against Latin word/identifier tokens, rather than Latin
+// letters, so long technical identifiers do not dominate the count. This is a
+// heuristic; the reviewer still checks language and clarity.
+var latinWord = regexp.MustCompile(`[A-Za-z][A-Za-z0-9_]*`)
+
+func checkQuestionLanguage(report *Report, q dataset.Question, m Meta) {
+	if !strings.HasPrefix(m.Lang, "zh_qa_") {
+		return
+	}
+	han := 0
+	for _, r := range q.Question {
+		if unicode.Is(unicode.Han, r) {
+			han++
+		}
+	}
+	latin := len(latinWord.FindAllString(q.Question, -1))
+	if han < 2 || han <= latin {
+		report.Findings = append(report.Findings, Finding{Severity: SeverityError, Rule: "question.lang_mismatch", ID: q.ID,
+			Detail: fmt.Sprintf("Chinese question expected; found %d Han characters and %d Latin word/identifier tokens", han, latin)})
+	}
 }
 
 // mdFilePattern matches a corpus file name in a question text.
