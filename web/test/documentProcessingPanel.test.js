@@ -85,7 +85,8 @@ describe('DocumentProcessingPanel', () => {
     const wrapper = mountPanel()
     await settle()
     expect(wrapper.get('[data-test="processing-legacy"]').text()).toContain('当前为本地处理模式')
-    expect(wrapper.text()).toContain('indexing')
+    expect(wrapper.text()).toContain('索引中')
+    expect(wrapper.text()).not.toContain('indexing')
     expect(wrapper.find('[data-test="processing-stages"]').exists()).toBe(false)
     await vi.advanceTimersByTimeAsync(1000)
     expect(requests).toHaveLength(2) // local processing is polled while the document is in progress

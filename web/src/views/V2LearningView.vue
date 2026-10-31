@@ -6,6 +6,7 @@ import GlEmpty from '../components/GlEmpty.vue'
 import GlPageHeader from '../components/GlPageHeader.vue'
 import ServerNotice from '../components/ServerNotice.vue'
 import { useV2Learning } from '../composables/useV2Learning.js'
+import { learningLevelText, learningStatusText } from '../lib/displayText.js'
 
 const page = useV2Learning()
 const topic = ref('')
@@ -32,22 +33,6 @@ function sourceRoute(source) {
     params: { documentId: source.documentId },
     query: { version: String(source.documentVersion), start_line: String(source.startLine), end_line: String(source.endLine) },
   }
-}
-
-const STATUS_TEXT = {
-  created: '刚创建',
-  asking: '出题中',
-  waiting_answer: '等你作答',
-  completed: '已完成',
-  cancelled: '已取消',
-  expired: '已过期',
-}
-
-const LEVEL_TEXT = {
-  insufficient: '尚不足',
-  basic: '入门',
-  intermediate: '进阶',
-  advanced: '熟练',
 }
 
 onMounted(page.loadSessions)
@@ -130,7 +115,7 @@ onBeforeUnmount(page.dispose)
         <h2 class="learning__card-title">
           第 {{ page.task.value.currentQuestion }} / {{ page.task.value.totalQuestions }} 题
         </h2>
-        <span class="learning__chip">{{ STATUS_TEXT[page.task.value.status] ?? page.task.value.status }}</span>
+        <span class="learning__chip">{{ learningStatusText(page.task.value.status) }}</span>
         <span class="learning__chip learning__chip--quiet">{{ page.task.value.topic }}</span>
       </header>
 
@@ -230,7 +215,7 @@ onBeforeUnmount(page.dispose)
       <div class="learning__mastery">
         <span class="learning__mastery-value" data-test="mastery-score">{{ page.progress.value.mastery_score }}</span>
         <span class="learning__mastery-label">
-          掌握度 · {{ LEVEL_TEXT[page.progress.value.level] ?? page.progress.value.level }}
+          掌握度 · {{ learningLevelText(page.progress.value.level) }}
           · {{ page.progress.value.valid_attempts }} 次有效作答
         </span>
       </div>

@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { getDocumentProcessing } from '../api/docOps.js'
+import { statusText } from '../lib/displayText.js'
 
 /**
  * The owner's view of how one document is being processed. It shows stages, times and a progress
@@ -103,12 +104,12 @@ onBeforeUnmount(() => { alive = false; stop() })
 
     <template v-if="timeline">
       <p v-if="timeline.mode === 'legacy'" data-test="processing-legacy">
-        当前为本地处理模式 · 状态：{{ timeline.status }}
+        当前为本地处理模式 · 状态：{{ statusText(timeline.status) }}
       </p>
 
       <template v-else>
         <h4 class="proc__title">
-          处理过程 · {{ timeline.status }}
+          处理过程 · {{ statusText(timeline.status) }}
           <span v-if="timeline.attempts > 1" class="proc__attempts" data-test="processing-attempts">共 {{ timeline.attempts }} 次尝试</span>
         </h4>
 

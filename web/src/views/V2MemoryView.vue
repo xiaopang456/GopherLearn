@@ -8,6 +8,7 @@ import GlStatusTag from '../components/GlStatusTag.vue'
 import ServerNotice from '../components/ServerNotice.vue'
 import V2MemoryDraftCard from '../components/V2MemoryDraftCard.vue'
 import { useV2MemoryPage } from '../composables/useV2MemoryPage.js'
+import { memoryDurabilityText, memoryScopeText } from '../lib/displayText.js'
 
 const page = useV2MemoryPage()
 const op = page.operation
@@ -60,10 +61,6 @@ function conflictDecision() {
 function editMemory(memory) {
   edit.value = { id: memory.id, subject: memory.subject, content: memory.content, tags: (memory.tags || []).join(','), reason: '' }
 }
-
-function scopeLabel(scope) { return scope === 'topic' ? '主题' : '全局' }
-
-function durabilityLabel(durability) { return durability === 'time_bound' ? '有期限' : '长期有效' }
 
 onMounted(refresh)
 onBeforeUnmount(page.dispose)
@@ -239,8 +236,8 @@ onBeforeUnmount(page.dispose)
           <h2 class="memory__subject">{{ memory.subject }}</h2>
           <div class="memory__tags">
             <GlStatusTag :status="memory.status" />
-            <span class="memory__chip">{{ scopeLabel(memory.scope) }}</span>
-            <span class="memory__chip">{{ durabilityLabel(memory.durability) }}</span>
+            <span class="memory__chip">{{ memoryScopeText(memory.scope) }}</span>
+            <span class="memory__chip">{{ memoryDurabilityText(memory.durability) }}</span>
           </div>
         </div>
 

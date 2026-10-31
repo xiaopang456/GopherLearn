@@ -3,40 +3,42 @@ import { computed } from 'vue'
 
 import { NTag } from 'naive-ui'
 
+import { statusTag } from '../lib/displayText.js'
+import { debugUiEnabled } from '../lib/debugUi.js'
+
 /**
  * One place that turns a server state into something a person can read.
  *
  * The server speaks in machine words (`ready`, `failed`, `archived`); showing
  * those raw in the UI was one of the things that made the pages look like
- * debug output. Unknown states are passed through unchanged rather than
- * hidden, so a new server state is visible instead of silently dropped.
+ * debug output. The wording and its colour now come from the shared status
+ * table in `displayText.js`, so the document list and the memory list cannot
+ * drift apart — and a state neither of them knows is called "状态未识别"
+ * rather than shown as a raw key.
+ *
+ * A developer reading an unknown state still wants to know which state it was,
+ * so the raw word is shown next to the tag when the debug switch is on.
  */
 const props = defineProps({
   status: { type: String, default: '' },
 })
 
-const TONES = {
-  // document index states
-  ready: { text: '就绪', tone: 'success' },
-  failed: { text: '失败', tone: 'error' },
-  pending: { text: '等待处理', tone: 'warning' },
-  indexing: { text: '索引中', tone: 'info' },
-  cleanup_pending: { text: '待清理', tone: 'warning' },
-  deleting: { text: '删除中', tone: 'info' },
-  deleted: { text: '已删除', tone: 'default' },
-  // memory states
-  active: { text: '生效中', tone: 'success' },
-  archived: { text: '已归档', tone: 'default' },
-  superseded: { text: '已被替代', tone: 'warning' },
-}
-
-const known = computed(() => TONES[props.status] ?? null)
-const text = computed(() => known.value?.text ?? props.status)
-const tone = computed(() => known.value?.tone ?? 'default')
+const tag = computed(() => statusTag(props.status))
+const debug = computed(() => debugUiEnabled())
 </script>
 
 <template>
-  <n-tag :type="tone" size="small" round :bordered="false" data-test="status-tag">
-    {{ text }}
+  <n-tag :type="tag.tone" size="small" round :bordered="false" data-test="status-tag">
+    {{ tag.text }}
+    <span v-if="debug" class="status-tag__raw">{{ props.status }}</span>
   </n-tag>
 </template>
+
+<style scoped>
+.status-tag__raw {
+  margin-left: 0.35em;
+  opacity: 0.7;
+  font-size: 0.72rem;
+  font-weight: 500;
+}
+</style>
