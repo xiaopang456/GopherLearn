@@ -32,7 +32,7 @@
 
 /** The answer's basis. The server's own list, in the server's own words. */
 const ANSWER_BASIS_ZH = Object.freeze({
-  conversation: '来自你们之前的对话',
+  conversation: '来自之前的对话',
   personal_knowledge: '来自你上传的资料',
   general_knowledge: '来自通用知识',
   refused: '没有作答',
