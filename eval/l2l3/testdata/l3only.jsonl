@@ -1,0 +1,3 @@
+{"id":"l3-chat-01","question":"Tell me something cheerful.","split":"dev","l3_only":true,"category":"chitchat","author":"human"}
+{"id":"l3-mem-01","question":"Please save my preference for tables.","split":"dev","l3_only":true,"category":"save_memory","author":"human"}
+{"id":"l3-hist-01","question":"What did we discuss about tides last week?","split":"dev","l3_only":true,"category":"earlier_conversation","author":"human"}

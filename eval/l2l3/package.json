@@ -1,0 +1,9 @@
+{
+  "name": "gopherlearn-eval-l2l3",
+  "private": true,
+  "type": "module",
+  "description": "L2/L3 runner and assertions for the GopherLearn evaluation. No dependencies; Promptfoo is run with npx and is not installed here.",
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  }
+}

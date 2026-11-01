@@ -1,0 +1,202 @@
+// One trial against the system under test: log in, open a new session, ask once, read
+// back the steps the run took, and keep everything as a raw record.
+//
+// Three promises, each pinned by a test:
+//   * It never spends what it was not allowed to. The environment must be named, a
+//     fake run may only talk to a loopback address, a real run needs a budget above
+//     zero, and the budget is written to the ledger *before* the request goes out.
+//   * It never retries. A failed call is a record, not a second attempt; a retry would
+//     make a flaky system look better than it is and cost more than was authorised.
+//   * It never loses a failure. Timeouts, bad bodies and an unreadable step list all
+//     become records with the reason, so scoring can count them.
+
+import crypto from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
+
+import { assertOutsideWorktree } from '../lib/pathguard.mjs'
+import { RECORD_SCHEMA } from '../lib/record.mjs'
+import { SUCCESS_CODE } from '../lib/enums.mjs'
+
+const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]', '::1'])
+
+/**
+ * Read the provider's settings from its configuration and the environment. Nothing has
+ * a default that could spend: the environment is required, and the run budget is 0.
+ */
+export function resolveConfig(config = {}, env = process.env) {
+  const pick = (key, envName, fallback) => config[key] ?? env[envName] ?? fallback
+  return {
+    env: pick('env', 'GL_L23_ENV'),
+    baseUrl: String(pick('baseUrl', 'GL_L23_BASE_URL', '')).replace(/\/+$/, ''),
+    email: pick('email', 'GL_L23_EMAIL'),
+    password: pick('password', 'GL_L23_PASSWORD'),
+    knowledgePolicy: pick('knowledgePolicy', 'GL_L23_POLICY', 'knowledge_preferred'),
+    maxRuns: Number.parseInt(String(pick('maxRuns', 'GL_L23_MAX_RUNS', '0')), 10),
+    ledgerPath: pick('ledgerPath', 'GL_L23_LEDGER'),
+    rawDir: pick('rawDir', 'GL_L23_RAW_DIR'),
+    timeoutMs: Number.parseInt(String(pick('timeoutMs', 'GL_L23_TIMEOUT_MS', '120000')), 10),
+  }
+}
+
+/** Why this configuration may not run, or '' when it may. */
+export function configProblem(cfg) {
+  if (cfg.env !== 'fake' && cfg.env !== 'real') return 'GL_L23_ENV must be set to "fake" or "real"; there is no default, so a real run is never started by accident'
+  let url
+  try {
+    url = new URL(cfg.baseUrl)
+  } catch {
+    return `baseUrl ${JSON.stringify(cfg.baseUrl)} is not a URL`
+  }
+  if (cfg.env === 'fake' && !LOOPBACK.has(url.hostname)) return `a fake run may only talk to a loopback address, not ${url.hostname}`
+  if (cfg.env === 'real' && !(cfg.maxRuns > 0)) return 'a real run needs GL_L23_MAX_RUNS above zero'
+  if (!Number.isInteger(cfg.maxRuns) || cfg.maxRuns < 0) return 'maxRuns must be a non-negative integer'
+  for (const [name, value] of [['ledgerPath', cfg.ledgerPath], ['rawDir', cfg.rawDir]]) {
+    try {
+      assertOutsideWorktree(name, value)
+    } catch (error) {
+      return error.message
+    }
+  }
+  return ''
+}
+
+const safeName = (value) => String(value).replace(/[^A-Za-z0-9_.-]/g, '_')
+
+async function jsonFetch(url, init, timeoutMs) {
+  const response = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) })
+  const text = await response.text()
+  let body
+  try {
+    body = JSON.parse(text)
+  } catch {
+    body = { raw: text.slice(0, 300) }
+  }
+  return { status: response.status, body }
+}
+
+export class TrialRunner {
+  constructor(config) {
+    this.cfg = config
+    this.token = null
+  }
+
+  ledgerRead() {
+    if (!fs.existsSync(this.cfg.ledgerPath)) return []
+    return fs.readFileSync(this.cfg.ledgerPath, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))
+  }
+
+  ledgerAppend(entry) {
+    fs.mkdirSync(path.dirname(this.cfg.ledgerPath), { recursive: true })
+    fs.appendFileSync(this.cfg.ledgerPath, `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`)
+  }
+
+  async login() {
+    if (!this.cfg.email || !this.cfg.password) throw new Error('email and password are not set')
+    const r = await jsonFetch(`${this.cfg.baseUrl}/api/v1/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: this.cfg.email, password: this.cfg.password }),
+    }, 15000)
+    if (r.status !== 200 || !r.body?.data?.token) throw new Error(`login failed: http ${r.status}`)
+    this.token = r.body.data.token
+  }
+
+  writeRecord(record) {
+    const dir = path.join(this.cfg.rawDir, safeName(record.arm))
+    fs.mkdirSync(dir, { recursive: true })
+    const file = path.join(dir, `${safeName(record.qid)}.r${record.rep}.json`)
+    fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`)
+    return file
+  }
+
+  /** Ask one question once. Always returns a record (and has written it), never throws. */
+  async run({ arm, qid, rep, question }) {
+    const base = { schema: RECORD_SCHEMA, arm, qid, rep, env: this.cfg.env }
+    const started = Date.now()
+    const finish = (extra) => {
+      const record = { ...base, durationMs: Date.now() - started, ...extra }
+      this.writeRecord(record)
+      return record
+    }
+
+    const problem = configProblem(this.cfg)
+    if (problem) {
+      // Nothing is sent, and nothing is written outside a checked directory.
+      return { ...base, error: `refused: ${problem}`, durationMs: 0 }
+    }
+    try {
+      if (!this.token) await this.login()
+      const auth = { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' }
+      const nonce = crypto.randomBytes(6).toString('hex')
+
+      // A new session per trial: a session's history reaches the next prompt and can
+      // trigger a summary, which would make trials depend on their neighbours.
+      const session = await jsonFetch(`${this.cfg.baseUrl}/api/v1/sessions`, {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify({ mode: 'learning_agent', title: `l23 ${arm} ${qid}`, requestId: `s-${safeName(arm)}-${safeName(qid)}-${rep}-${nonce}` }),
+      }, 15000)
+      const sessionId = session.body?.data?.id
+      if (session.status !== 200 || !sessionId) {
+        return finish({ error: `create session failed: http ${session.status}` })
+      }
+
+      const used = this.ledgerRead().filter((e) => e.phase === 'run').length
+      if (!(used < this.cfg.maxRuns)) {
+        this.ledgerAppend({ phase: 'refused', arm, qid, rep, used, limit: this.cfg.maxRuns })
+        return finish({ error: `budget guard: ${used} runs already recorded, limit ${this.cfg.maxRuns}; /agent/run not called` })
+      }
+      // Recorded before the request: an attempt is a possible cost whether or not it returns.
+      this.ledgerAppend({ phase: 'run', arm, qid, rep, sessionId })
+
+      const run = await jsonFetch(`${this.cfg.baseUrl}/api/v1/AI/agent/run`, {
+        method: 'POST',
+        headers: auth,
+        // The same requestId would be taken for a replay and not call the model again.
+        body: JSON.stringify({ sessionId, question, requestId: `r-${safeName(arm)}-${safeName(qid)}-${rep}-${nonce}`, knowledgePolicy: this.cfg.knowledgePolicy }),
+      }, this.cfg.timeoutMs)
+      const b = run.body ?? {}
+      this.ledgerAppend({ phase: 'result', arm, qid, rep, http: run.status, statusCode: b.status_code, modelCalls: b.modelCalls, toolCalls: b.toolCalls })
+
+      const record = {
+        http: run.status,
+        statusCode: b.status_code,
+        runId: b.runId,
+        replayed: b.replayed === true,
+        answer: b.answer ?? '',
+        answerBasis: b.answerBasis,
+        knowledgeStatus: b.knowledgeStatus,
+        knowledgeReason: b.knowledgeReason,
+        sources: b.sources ?? [],
+        toolCalls: b.toolCalls,
+        modelCalls: b.modelCalls,
+        projectedInput: b.contextBudget?.projectedInput,
+        memoryDraft: b.memoryDraft != null,
+      }
+      if (run.status !== 200 || b.status_code !== SUCCESS_CODE) {
+        return finish({ ...record, error: `agent/run failed: http ${run.status} status_code ${b.status_code}` })
+      }
+
+      // What the turn did, by name. Reading it calls no model.
+      this.ledgerAppend({ phase: 'steps', arm, qid, rep, runId: b.runId })
+      try {
+        const steps = await jsonFetch(`${this.cfg.baseUrl}/api/v1/AI/agent/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(b.runId)}/steps`, {
+          method: 'GET',
+          headers: auth,
+        }, 15000)
+        if (steps.status === 200 && steps.body?.status_code === SUCCESS_CODE && Array.isArray(steps.body?.run?.steps)) {
+          record.steps = steps.body.run.steps
+        } else {
+          record.stepsError = `http ${steps.status} status_code ${steps.body?.status_code}`
+        }
+      } catch (error) {
+        record.stepsError = String(error?.message ?? error).slice(0, 160)
+      }
+      return finish(record)
+    } catch (error) {
+      this.ledgerAppend({ phase: 'exception', arm, qid, rep, message: String(error?.message ?? error).slice(0, 160) })
+      return finish({ error: `provider exception: ${String(error?.message ?? error).slice(0, 160)}` })
+    }
+  }
+}

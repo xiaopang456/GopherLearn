@@ -1,0 +1,16 @@
+{
+  "schema": "outcomes-meta.v1",
+  "dataset_sha256": "0d3137439f7fb8237303d4b79e74d10801aec73cf8be88f2c1f8287fa67d01ca",
+  "labels_sha256": "8379a89b519286e2111cb62bcbc59463d53343134e705ce810d33000d3443442",
+  "l3_only_sha256": "64d2342628dab04d0fc2c625769090b5d8dbd2e42b1eccf6d320935f2dfdc084",
+  "corpus_hash": "afced229ff98af34c7534cfb041ff063c8e9d14145f4ae1f9420d0da2a0360ba",
+  "records": 48,
+  "outcomes": 48,
+  "envs": [
+    "fake"
+  ],
+  "arms": [
+    "flawed",
+    "good"
+  ]
+}

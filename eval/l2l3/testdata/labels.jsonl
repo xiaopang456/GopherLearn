@@ -1,0 +1,7 @@
+{"id":"q-neap","source":"dev","category":"knowledge_question","expect":["knowledge_search"],"forbid":["memory_draft"],"max_tool_calls":3,"author":"human"}
+{"id":"q-bar","source":"dev","category":"knowledge_question","expect":["knowledge_search"],"forbid":["memory_draft"],"max_tool_calls":3,"author":"human"}
+{"id":"q-wick-glass","source":"dev","category":"knowledge_question","expect":["knowledge_search"],"forbid":["memory_draft"],"max_tool_calls":3,"author":"human"}
+{"id":"q-fuel","source":"dev","category":"knowledge_question","expect":["knowledge_search"],"forbid":["memory_draft"],"max_tool_calls":3,"author":"human"}
+{"id":"l3-chat-01","source":"l3only","category":"chitchat","expect":[],"forbid":["knowledge_search","document_read","memory_draft"],"max_tool_calls":0,"author":"human"}
+{"id":"l3-mem-01","source":"l3only","category":"save_memory","expect":["memory_draft"],"forbid":["knowledge_search","document_read"],"max_tool_calls":1,"author":"human"}
+{"id":"l3-hist-01","source":"l3only","category":"earlier_conversation","expect":["episode_search"],"forbid":["knowledge_search","document_read"],"max_tool_calls":2,"author":"human"}

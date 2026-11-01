@@ -76,6 +76,12 @@ jobs:
       - run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test -count=1 ./...
+      # The L2/L3 runner and assertions (eval/l2l3) are plain Node with no dependencies:
+      # a fake backend plays the model, so nothing here calls a model, Redis or the network.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: node --test "l2l3/test/*.test.mjs"
 
   frontend:
     name: web client
