@@ -803,7 +803,8 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	if err != nil {
 		return nil, fmt.Errorf("initialize agent runner: %v", err)
 	}
-	configuredAgentService, err := agentService.NewDatabaseService(agentRunner)
+	configuredAgentService, err := agentService.NewDatabaseService(agentRunner,
+		agentService.WithThinkingEnabled(conf.AgentConfig.AgentThinkingEnabled))
 	if err != nil {
 		return nil, fmt.Errorf("initialize agent service: %v", err)
 	}

@@ -109,12 +109,30 @@ type Service struct {
 	shadow         EpisodeShadowObserver
 	episodeHistory EpisodeSessionHistoryReader
 
+	// thinkingEnabled is the deployment's choice about the chat model's
+	// thinking. It is the value a request gets when the request says nothing
+	// about thinking, so a deployment can turn thinking on for every run
+	// without a per-request switch existing yet.
+	thinkingEnabled bool
+
 	// leaseDuration and leaseHeartbeat are the run lease parameters. They are
 	// fields rather than constants at the call site so the lease-loss path can
 	// be driven in a test without waiting out a real ten second heartbeat; no
 	// production caller changes them.
 	leaseDuration  time.Duration
 	leaseHeartbeat time.Duration
+}
+
+// ServiceOption configures a Service that NewService built.
+type ServiceOption func(*Service)
+
+// WithThinkingEnabled sets the deployment's thinking choice.
+//
+// It is the default for requests that do not state one, and it is off unless
+// a deployment asks for it: a provider that reads the switch may charge for
+// it, so thinking is never something a run gets by accident.
+func WithThinkingEnabled(enabled bool) ServiceOption {
+	return func(s *Service) { s.thinkingEnabled = enabled }
 }
 
 type RunRequest struct {
@@ -124,7 +142,14 @@ type RunRequest struct {
 	Question        string
 	RequestID       string
 	KnowledgePolicy rag.KnowledgePolicy
-	EnableThinking  bool
+	// EnableThinking is what this request asked for.
+	//
+	// It is a pointer so three states stay different: nil means the request
+	// said nothing and the deployment's choice applies, true means this run
+	// thinks, false means this run does not. A plain bool would collapse "not
+	// asked" into "no", and a deployment that turns thinking on could then
+	// never be answered "off" for one request.
+	EnableThinking *bool
 	// TopicConsent is what the user authorised this answer to read.
 	//
 	// It is the raw client submission, not a decision: the ticket is verified
@@ -167,15 +192,21 @@ type RunResult struct {
 	UsedTopicKeys []string `json:"usedTopicKeys,omitempty"`
 }
 
-func NewService(sessions SessionRepository, runs RunRepository, messages MessageStore, runner *Runner) (*Service, error) {
+func NewService(sessions SessionRepository, runs RunRepository, messages MessageStore, runner *Runner, options ...ServiceOption) (*Service, error) {
 	if sessions == nil || runs == nil || messages == nil || runner == nil {
 		return nil, fmt.Errorf("agent service dependencies must not be nil")
 	}
-	return &Service{
+	service := &Service{
 		sessions: sessions, runs: runs, messages: messages, runner: runner,
 		memory: DiscardMemoryEvents, episodes: DiscardEpisodeEvents, shadow: DiscardEpisodeShadow,
 		leaseDuration: defaultRunLeaseDuration, leaseHeartbeat: defaultRunHeartbeatInterval,
-	}, nil
+	}
+	for _, option := range options {
+		if option != nil {
+			option(service)
+		}
+	}
+	return service, nil
 }
 
 func (s *Service) SetMemoryPublisher(publisher MemoryEventPublisher) {
@@ -206,8 +237,20 @@ func (s *Service) SetEpisodeSessionHistoryReader(reader EpisodeSessionHistoryRea
 	s.episodeHistory = reader
 }
 
-func NewDatabaseService(runner *Runner) (*Service, error) {
-	return NewService(sessiondao.DefaultRepository(), agentdao.DefaultRepository(), DatabaseMessageStore{}, runner)
+func NewDatabaseService(runner *Runner, options ...ServiceOption) (*Service, error) {
+	return NewService(sessiondao.DefaultRepository(), agentdao.DefaultRepository(), DatabaseMessageStore{}, runner, options...)
+}
+
+// resolveThinking answers what this run's thinking state is.
+//
+// The request wins when it stated one; otherwise the deployment's choice
+// applies. The result is what the run is identified by, so two runs that
+// behave the same are the same run and two that do not are not.
+func (s *Service) resolveThinking(requested *bool) bool {
+	if requested != nil {
+		return *requested
+	}
+	return s.thinkingEnabled
 }
 
 func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (RunResult, error) {
@@ -225,11 +268,12 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 		return RunResult{}, ErrAgentSessionRequired
 	}
 	requestKey := strings.TrimSpace(request.RequestID)
+	enableThinking := s.resolveThinking(request.EnableThinking)
 	digestInput := request.Question
 	if request.KnowledgePolicy != "" {
 		digestInput += "\x00knowledge_policy=" + string(request.KnowledgePolicy)
 	}
-	digestInput += fmt.Sprintf("\x00enable_thinking=%t", request.EnableThinking)
+	digestInput += fmt.Sprintf("\x00enable_thinking=%t", enableThinking)
 	inputDigest := sha256.Sum256([]byte(digestInput))
 	now := time.Now()
 	leaseToken := uuid.NewString()
@@ -296,7 +340,7 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 		RunID: run.ID, LeaseToken: run.LeaseToken, InitialStepSequence: acquisition.NextStepSequence,
 		UserID: owned.UserID, UserName: owned.UserName,
 		SessionID: owned.ID, Question: request.Question, KnowledgePolicy: request.KnowledgePolicy,
-		EnableThinking:           request.EnableThinking,
+		EnableThinking:           enableThinking,
 		CurrentSessionHasHistory: currentSessionHasHistory, EpisodeRecallReady: episodeRecallReady,
 		RequestID: request.RequestID, TopicConsent: request.TopicConsent,
 	}, sink)
