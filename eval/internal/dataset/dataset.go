@@ -150,6 +150,26 @@ func LoadDataset(path string, corpus *Corpus) (*Dataset, error) {
 // answerable question without evidence, an unanswerable one with evidence,
 // duplicate ids, unknown fields and unknown splits.
 func ParseDataset(raw []byte, corpus *Corpus) (*Dataset, error) {
+	data, issues := ParseDatasetLenient(raw, corpus)
+	if len(issues) > 0 {
+		return nil, &ValidationError{Issues: issues}
+	}
+	return data, nil
+}
+
+// ParseDatasetLenient parses a question file and reports the problems without
+// throwing away the questions that are fine.
+//
+// ParseDataset returns no dataset at all when anything is wrong, which is the
+// right behaviour for a loader that must not run on a broken file. The
+// validator needs the opposite: a generation round wants to know about every
+// broken question at once, and still wants the content rules to run on the
+// questions that are fine. Throwing the whole file away would hide every
+// content problem behind the first structural one.
+//
+// The returned dataset holds the questions that passed the structural checks;
+// the issues describe the ones that did not.
+func ParseDatasetLenient(raw []byte, corpus *Corpus) (*Dataset, []Issue) {
 	sum := sha256.Sum256(raw)
 	data := &Dataset{Version: hex.EncodeToString(sum[:])}
 	var issues []Issue
@@ -170,16 +190,13 @@ func ParseDataset(raw []byte, corpus *Corpus) (*Dataset, error) {
 			break
 		}
 		if readErr != nil {
-			return nil, fmt.Errorf("read question file: %w", readErr)
+			return data, append(issues, Issue{Message: "read question file: " + readErr.Error()})
 		}
 	}
 	if len(data.Questions) == 0 && len(issues) == 0 {
 		issues = append(issues, Issue{Message: "no questions"})
 	}
-	if len(issues) > 0 {
-		return nil, &ValidationError{Issues: issues}
-	}
-	return data, nil
+	return data, issues
 }
 
 func parseQuestion(text []byte, lineNo int, corpus *Corpus, seen map[string]int) (Question, []Issue) {
