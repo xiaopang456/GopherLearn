@@ -124,6 +124,13 @@ dimension = 1024
 # 指定工具的 tool_choice。后台任务（摘要、情景投影、关系分类等）不读这个开关，
 # 它们走模型级设置，永远是关闭的。
 # 思考会让每次调用更慢也更贵，先按供应商的单价算一遍再打开。
+#
+# **DeepSeek 上必须保持 false**：DeepSeek 在多轮工具调用里要求把每一轮 assistant 的
+# reasoning_content 回传给 API，而 Eino 的 OpenAI 组件只在响应里解析它、请求里不写它。
+# 打开后 Agent 自由路径的每次调用都会被拒（HTTP 400 "The `reasoning_content` in the
+# thinking mode must be passed back to the API."），整轮失败、业务码 5003。
+# 这个组合会在启动时被配置校验直接拒绝，不会跑到运行时才炸。
+# 普通聊天路径不受影响：它不做工具调用，DeepSeek 上可以开思考。
 # agentThinkingEnabled = true
 
 [emailConfig]

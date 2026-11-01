@@ -109,7 +109,7 @@ Copy-Item config.integrated.example.toml config.integrated.toml.local   # PowerS
 | `[ragModelConfig]` | `embeddingModel` / `embeddingBaseUrl` / `dimension` | embedding 的模型名、地址、**向量维度**（必须与模型实际输出一致，且与索引一致） | `dimension = 1024` |
 | `[ragModelConfig]` | `chatModelName` / `baseUrl` / `chatThinkingDialect` | 知识库问答路径使用的 chat 模型；方言决定思考开关怎么写（`qwen` / `deepseek` / `none`） | `chatThinkingDialect = "qwen"` |
 | `[ragModelConfig]` | `rerankEnabled` / `rerankProvider` / `rerankEndpoint` / `rerankModel` / `rerankTimeoutMs` | **重排（可选）**：是否开启、服务形态、地址、模型名、单次调用上限 | 默认全部关闭 |
-| `[agentConfig]` | `agentThinkingEnabled` | **学习 Agent** 的思考开关（可选）：打开后 Agent 的模型调用带上思考开关；强制指定工具的那一次与后台任务仍然不带 | 默认关闭 |
+| `[agentConfig]` | `agentThinkingEnabled` | **学习 Agent** 的思考开关（可选）：打开后 Agent 的模型调用带上思考开关；强制指定工具的那一次与后台任务仍然不带。**DeepSeek 上不能打开**（见下） | 默认关闭 |
 | `[ordinaryChat]` | `GOPHERLEARN_AI_PROVIDER` / `GOPHERLEARN_OPENAI_BASE_URL` / `GOPHERLEARN_OPENAI_API_KEY` / `GOPHERLEARN_OPENAI_MODEL` | **普通聊天**用的模型：类型必须是 `openai_compatible`，另有地址、密钥、模型名 | — |
 | `[ordinaryChat]` | `GOPHERLEARN_OPENAI_ENABLE_THINKING` / `GOPHERLEARN_OPENAI_THINKING_DIALECT` / `GOPHERLEARN_OPENAI_TEMPERATURE` / `GOPHERLEARN_OPENAI_MAX_OUTPUT_TOKENS` / `GOPHERLEARN_OPENAI_TIMEOUT` / `GOPHERLEARN_CONTEXT_*` / `GOPHERLEARN_SUMMARY_*` | 普通聊天的可选参数，留空即用默认值 | 注释掉 |
 | `[mysqlConfig]` | `host` / `port` / `user` / `password` / `databaseName` / `charset` | 本次部署自己的 MySQL schema 与账号 | `gopherlearn-integrated-mysql` / `3306` / `gopherlearn_v2_integration` / `utf8mb4` |
@@ -122,6 +122,18 @@ Copy-Item config.integrated.example.toml config.integrated.toml.local   # PowerS
 > **两路模型配置是分开的，别只填一路。**
 > 学习 Agent 走 `[isolatedEntry]` + `[ragModelConfig]`；普通聊天走 `[ordinaryChat]`。
 > 正式入口在启动时校验这些字段：**缺任一路，对应功能就会在启动时被拒绝**（例如 `[ordinaryChat]` 的类型不是 `openai_compatible`、密钥为空、维度与模型不符）。
+
+> **DeepSeek 上 Agent 的思考必须关着（`agentThinkingEnabled` 保持默认的 false）。**
+> DeepSeek 在多轮工具调用里要求把每一轮 assistant 的 `reasoning_content` 回传给 API，而当前的 Eino OpenAI 组件只在**响应**里解析这个字段、**请求**里不写它（`libs/acl/openai` 构造 `ChatCompletionMessage` 时没有这一项）。于是开启思考后，Agent 自由路径的每一次调用都会被 DeepSeek 拒绝：
+>
+> ```text
+> HTTP 400  The `reasoning_content` in the thinking mode must be passed back to the API.
+> ```
+>
+> 这不是单次调用失败，而是**整轮失败**：HTTP 仍是 200，业务码是 5003，回答为空。实测 6 道题全部如此。
+> 因此 **`chatThinkingDialect = "deepseek"` 与 `agentThinkingEnabled = true` 的组合会在启动时被拒绝**（配置校验直接报错，不让它跑到运行时才炸）。
+> **普通聊天路径不受影响**：它不做工具调用，没有需要回传的 assistant 轮，DeepSeek 上可以开思考。
+> 另外，DeepSeek 一律用 `chatThinkingDialect = "deepseek"`，不要用 `none`——`none` 不发任何思考字段，DeepSeek 会沿用自己的默认（思考开），而 Agent 强制指定工具的那一次要发指定工具名的 `tool_choice`，在思考模式下会被拒。
 
 ### 5.2 普通注册用户只需要
 

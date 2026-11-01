@@ -82,6 +82,46 @@ func NormalizeChatThinkingDialect(value string) (string, error) {
 	}
 }
 
+// ErrInvalidAgentThinkingDialect reports a configuration whose thinking switch
+// and thinking dialect cannot work together.
+var ErrInvalidAgentThinkingDialect = errors.New("agent config: the thinking switch cannot be enabled for this thinking dialect")
+
+// ValidateAgentThinking refuses a configuration that would only fail at run
+// time.
+//
+// The DeepSeek dialect cannot be combined with the Agent's thinking switch.
+// DeepSeek requires that every earlier assistant turn of a multi-turn tool
+// call carries its reasoning_content back to the API, and the Eino OpenAI
+// client does not send that field: it parses reasoning_content out of a
+// response but never writes it into the next request. So every Agent run
+// would end with HTTP 400 and the message
+//
+//	"The `reasoning_content` in the thinking mode must be passed back to the API."
+//
+// which is a failure of the whole turn, not of one call.
+//
+// Failing at startup is the point: the alternative is a deployment that looks
+// healthy and then answers every question with an error. The ordinary chat
+// path is not affected - it makes no tool calls, so it has no assistant turn
+// to pass back, and it can think on DeepSeek.
+func (c *Config) ValidateAgentThinking() error {
+	if c == nil {
+		return fmt.Errorf("config must not be nil")
+	}
+	if !c.AgentConfig.AgentThinkingEnabled {
+		return nil
+	}
+	dialect, err := NormalizeChatThinkingDialect(c.RagModelConfig.RagChatThinkingDialect)
+	if err != nil {
+		return err
+	}
+	if dialect != ChatThinkingDialectDeepSeek {
+		return nil
+	}
+	return fmt.Errorf("%w: agentThinkingEnabled cannot be enabled with the %q thinking dialect; DeepSeek requires the reasoning_content of every earlier assistant turn to be passed back on a multi-turn tool call, the Eino OpenAI client does not pass it back, and every Agent run would fail with HTTP 400 \"The `reasoning_content` in the thinking mode must be passed back to the API.\"; set agentThinkingEnabled = false, or point the chat model at a service that reads the %q dialect",
+		ErrInvalidAgentThinkingDialect, ChatThinkingDialectDeepSeek, ChatThinkingDialectQwen)
+}
+
 type MainConfig struct {
 	Port    int    `toml:"port"`
 	AppName string `toml:"appName"`
@@ -513,6 +553,9 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	if err := loaded.AgentConfig.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid agent config: %w", err)
+	}
+	if err := loaded.ValidateAgentThinking(); err != nil {
 		return nil, fmt.Errorf("invalid agent config: %w", err)
 	}
 	return loaded, nil
