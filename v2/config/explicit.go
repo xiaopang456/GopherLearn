@@ -31,6 +31,9 @@ func LoadExplicit(path string) (*Config, error) {
 	if err := validateRemainder(loaded); err != nil {
 		return nil, err
 	}
+	if err := loaded.ValidateAgentThinking(); err != nil {
+		return nil, err
+	}
 	return loaded, nil
 }
 
@@ -41,6 +44,11 @@ func LoadExplicit(path string) (*Config, error) {
 // model, so a deployment that enables the reranker must not be blocked from
 // creating its schema by a missing token. The rerank section of the file is
 // neither read nor validated here; the running entry is what checks it.
+//
+// The thinking switch is not checked here, and that is deliberate in the same
+// way the reranker is not: this loader creates tables for a configuration the
+// running entry would refuse, and preparing a database is not the same as
+// agreeing to run it.
 func LoadExplicitForSchema(path string) (*Config, error) {
 	loaded, err := loadExplicitFile(path)
 	if err != nil {
