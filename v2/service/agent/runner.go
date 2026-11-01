@@ -105,6 +105,14 @@ type RunnerConfig struct {
 	// the turn whenever it is registered. Only
 	// agent_memory_explicit_actions_v1 sets it.
 	ForcesMemoryDraftBeforeMemoryRead bool
+	// ThinkingDialect names the dialect the chat model's thinking switch is
+	// written in. An empty value means the Qwen dialect, which is what every
+	// deployment used before this field existed.
+	//
+	// It is part of the run configuration because a run is measured against
+	// the request that was sent: a turn whose thinking switch the provider
+	// ignored is not the turn the budget was measured on.
+	ThinkingDialect string
 }
 
 // ToolCallLimits is the per-capability half of the tool budget.
@@ -575,7 +583,7 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 		memoryTrace:    memoryEvidence, perToolCalls: map[string]int{}, progress: newToolProgressLedger(),
 		memorySearchAvailable: memorySearchAvailable,
 	}
-	bounded := &boundedModel{inner: r.chatModel, state: state}
+	bounded := &boundedModel{inner: r.chatModel, state: state, thinkingDialect: r.config.ThinkingDialect}
 
 	var stream *schema.StreamReader[*schema.Message]
 	var answer strings.Builder
@@ -1252,6 +1260,10 @@ type boundedModel struct {
 	inner modelcomponent.ToolCallingChatModel
 	state *runState
 	tools []*schema.ToolInfo
+	// thinkingDialect names the dialect the chat model's thinking switch is
+	// written in. It rides with the model because the option that carries the
+	// switch is applied per call.
+	thinkingDialect string
 }
 
 func (m *boundedModel) before(ctx context.Context) error {
@@ -1292,7 +1304,7 @@ func (m *boundedModel) Generate(ctx context.Context, input []*schema.Message, op
 		}
 		opts = append(opts, modelcomponent.WithToolChoice(schema.ToolChoiceForced))
 	}
-	opts = append(opts, aihelper.ThinkingModelOption(thinkingEnabledForModelCall(m.state.input.EnableThinking, forcedTool)))
+	opts = append(opts, aihelper.ThinkingModelOption(m.thinkingDialect, thinkingEnabledForModelCall(m.state.input.EnableThinking, forcedTool)))
 	message, err := callModel.Generate(ctx, input, opts...)
 	if observation := newPublicModelCall(ctx, m.state, "generate_snapshot"); observation != nil {
 		if observeErr := observation.accept(ctx, message); observeErr != nil {
@@ -1325,7 +1337,7 @@ func (m *boundedModel) Stream(ctx context.Context, input []*schema.Message, opts
 		}
 		opts = append(opts, modelcomponent.WithToolChoice(schema.ToolChoiceForced))
 	}
-	opts = append(opts, aihelper.ThinkingModelOption(thinkingEnabledForModelCall(m.state.input.EnableThinking, forcedTool)))
+	opts = append(opts, aihelper.ThinkingModelOption(m.thinkingDialect, thinkingEnabledForModelCall(m.state.input.EnableThinking, forcedTool)))
 	stream, err := callModel.Stream(ctx, input, opts...)
 	if err != nil {
 		return nil, TypeProviderFailure(err)
@@ -1380,7 +1392,7 @@ func (m *boundedModel) WithTools(tools []*schema.ToolInfo) (modelcomponent.ToolC
 	if err != nil {
 		return nil, err
 	}
-	return &boundedModel{inner: bound, state: m.state, tools: append([]*schema.ToolInfo(nil), tools...)}, nil
+	return &boundedModel{inner: bound, state: m.state, tools: append([]*schema.ToolInfo(nil), tools...), thinkingDialect: m.thinkingDialect}, nil
 }
 
 func bindOnlyTool(chatModel modelcomponent.ToolCallingChatModel, tools []*schema.ToolInfo, name string) (modelcomponent.ToolCallingChatModel, error) {

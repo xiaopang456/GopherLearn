@@ -107,10 +107,10 @@ Copy-Item config.integrated.example.toml config.integrated.toml.local   # PowerS
 | `[isolatedEntry]` | `chatKey` / `chatModel` / `chatBaseURL` | **学习 Agent** 的 chat 模型：地址、模型名、密钥 | `https://provider.invalid/v1` |
 | `[isolatedEntry]` | `embeddingKey` | **embedding** 服务的密钥 | — |
 | `[ragModelConfig]` | `embeddingModel` / `embeddingBaseUrl` / `dimension` | embedding 的模型名、地址、**向量维度**（必须与模型实际输出一致，且与索引一致） | `dimension = 1024` |
-| `[ragModelConfig]` | `chatModelName` / `baseUrl` | 知识库问答路径使用的 chat 模型 | — |
+| `[ragModelConfig]` | `chatModelName` / `baseUrl` / `chatThinkingDialect` | 知识库问答路径使用的 chat 模型；方言决定思考开关怎么写（`qwen` / `deepseek` / `none`） | `chatThinkingDialect = "qwen"` |
 | `[ragModelConfig]` | `rerankEnabled` / `rerankProvider` / `rerankEndpoint` / `rerankModel` / `rerankTimeoutMs` | **重排（可选）**：是否开启、服务形态、地址、模型名、单次调用上限 | 默认全部关闭 |
 | `[ordinaryChat]` | `GOPHERLEARN_AI_PROVIDER` / `GOPHERLEARN_OPENAI_BASE_URL` / `GOPHERLEARN_OPENAI_API_KEY` / `GOPHERLEARN_OPENAI_MODEL` | **普通聊天**用的模型：类型必须是 `openai_compatible`，另有地址、密钥、模型名 | — |
-| `[ordinaryChat]` | `GOPHERLEARN_OPENAI_ENABLE_THINKING` / `GOPHERLEARN_OPENAI_TEMPERATURE` / `GOPHERLEARN_OPENAI_MAX_OUTPUT_TOKENS` / `GOPHERLEARN_OPENAI_TIMEOUT` / `GOPHERLEARN_CONTEXT_*` / `GOPHERLEARN_SUMMARY_*` | 普通聊天的可选参数，留空即用默认值 | 注释掉 |
+| `[ordinaryChat]` | `GOPHERLEARN_OPENAI_ENABLE_THINKING` / `GOPHERLEARN_OPENAI_THINKING_DIALECT` / `GOPHERLEARN_OPENAI_TEMPERATURE` / `GOPHERLEARN_OPENAI_MAX_OUTPUT_TOKENS` / `GOPHERLEARN_OPENAI_TIMEOUT` / `GOPHERLEARN_CONTEXT_*` / `GOPHERLEARN_SUMMARY_*` | 普通聊天的可选参数，留空即用默认值 | 注释掉 |
 | `[mysqlConfig]` | `host` / `port` / `user` / `password` / `databaseName` / `charset` | 本次部署自己的 MySQL schema 与账号 | `gopherlearn-integrated-mysql` / `3306` / `gopherlearn_v2_integration` / `utf8mb4` |
 | `[redisConfig]` | `host` / `port` / `db` / `password` | 独立的 Redis Stack 实例；**必须与该实例的口令逐字一致** | `gopherlearn-integrated-redis` / `6379` / `db = 0` |
 | `[jwtConfig]` | `key` | 令牌签名密钥，**至少 32 字节**；更换后所有已签发令牌失效 | — |

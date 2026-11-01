@@ -82,6 +82,13 @@ embeddingModel = "REPLACE_WITH_EMBEDDING_MODEL_NAME"
 embeddingBaseUrl = "https://embedding.invalid/v1"
 chatModelName = "REPLACE_WITH_CHAT_MODEL_NAME"
 baseUrl = "https://provider.invalid/v1"
+# 思考开关的方言（可选，默认 "qwen"）。
+# qwen   —— 发 enable_thinking（Qwen 扩展）
+# deepseek —— 发 thinking = {type = "enabled"|"disabled"}（DeepSeek 扩展）
+# none   —— 完全不发思考开关
+# 换模型服务时按对方认的写法填：认不出来的字段会被忽略，而被忽略意味着
+# 沿用对方自己的默认值（DeepSeek 的默认值是思考开）。
+# chatThinkingDialect = "qwen"
 # 与 v2/common/redis/key.go:12 的向量维度一致；改它等于改索引 schema。
 dimension = 1024
 
@@ -140,6 +147,8 @@ GOPHERLEARN_OPENAI_MODEL = "REPLACE_WITH_ORDINARY_CHAT_MODEL_NAME"
 # 可选项留空即沿用 internal/openai/config.go 与 internal/app/app.go 的原默认值；
 # 需要覆写时取消注释，取值范围由原校验把关（temperature 0..2、timeout 为正 Go duration）。
 # GOPHERLEARN_OPENAI_ENABLE_THINKING = "false"
+# 思考开关的方言（可选，默认 "qwen"）：qwen / deepseek / none。
+# GOPHERLEARN_OPENAI_THINKING_DIALECT = "qwen"
 # GOPHERLEARN_OPENAI_TEMPERATURE = "0.7"
 # GOPHERLEARN_OPENAI_MAX_OUTPUT_TOKENS = "1024"
 # GOPHERLEARN_OPENAI_TIMEOUT = "60s"

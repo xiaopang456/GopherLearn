@@ -198,7 +198,11 @@ type wireRequest struct {
 	// set it to false" stay different on the wire. It is a Qwen-style extension
 	// rather than part of the OpenAI schema, so unset must send nothing.
 	EnableThinking *bool `json:"enable_thinking,omitempty"`
-	Stream         bool  `json:"stream"`
+	// Thinking is the DeepSeek-style switch. It is sent only in that dialect:
+	// the Qwen dialect keeps the field above, and the none dialect sends
+	// neither.
+	Thinking *wireThinking `json:"thinking,omitempty"`
+	Stream   bool           `json:"stream"`
 	// Tools is sent only when the caller offered definitions, so a plain chat
 	// request keeps the exact byte shape it had before tools existed.
 	Tools []wireToolDefinition `json:"tools,omitempty"`
@@ -206,6 +210,11 @@ type wireRequest struct {
 	// "not stated" and "stated" stay different on the wire even before omitempty
 	// is considered.
 	ToolChoice *string `json:"tool_choice,omitempty"`
+}
+
+// wireThinking is the DeepSeek-style thinking control.
+type wireThinking struct {
+	Type string `json:"type"`
 }
 
 // wireUsage keeps each figure optional. A provider that omits a field, one that
@@ -826,12 +835,32 @@ func (c *Client) body(request model.Request, stream bool) ([]byte, error) {
 		temperature = c.config.Temperature
 	}
 	payload := wireRequest{
-		Model:          c.config.Model,
-		Messages:       make([]wireMessage, 0, len(request.Messages)),
-		Temperature:    temperature,
-		MaxTokens:      maxTokens,
-		EnableThinking: c.config.EnableThinking,
-		Stream:         stream,
+		Model:       c.config.Model,
+		Messages:    make([]wireMessage, 0, len(request.Messages)),
+		Temperature: temperature,
+		MaxTokens:   maxTokens,
+		Stream:      stream,
+	}
+	// The thinking switch is written in the dialect the operator selected.
+	//
+	// The qwen dialect keeps the field it always sent. The deepseek dialect
+	// writes thinking: {type: ...} instead, because DeepSeek does not read
+	// enable_thinking and its own default is thinking on. The none dialect
+	// writes nothing at all.
+	//
+	// An unset operator choice means thinking off in the deepseek dialect: an
+	// operator who did not ask for thinking should not get it, and a provider
+	// whose default is on has to be told otherwise.
+	switch c.config.ThinkingDialect {
+	case ThinkingDialectDeepSeek:
+		state := "disabled"
+		if c.config.EnableThinking != nil && *c.config.EnableThinking {
+			state = "enabled"
+		}
+		payload.Thinking = &wireThinking{Type: state}
+	case ThinkingDialectNone:
+	default:
+		payload.EnableThinking = c.config.EnableThinking
 	}
 	// Tool choice is sent only when the caller stated it, so every request that
 	// says nothing keeps the exact byte shape it had. "none" is the one value

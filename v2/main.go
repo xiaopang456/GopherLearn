@@ -229,11 +229,12 @@ func buildMemoryIndex(repository *memoryDAO.Repository, embedder embedding.Embed
 // Agent memory-tool modes carry per-capability limits. Other modes keep a
 // single total, which is what their measurements were taken under; adding
 // sub-limits there would change behaviour outside this task.
-func agentRunnerConfig(mode memoryrecall.ReadMode, agentConf config.AgentConfig) agentService.RunnerConfig {
+func agentRunnerConfig(mode memoryrecall.ReadMode, agentConf config.AgentConfig, thinkingDialect string) agentService.RunnerConfig {
 	runnerConfig := agentService.RunnerConfig{
 		MaxToolCalls: agentConf.MaxToolCalls, MaxModelCalls: agentConf.MaxModelCalls,
 		MaxGraphSteps: agentConf.MaxGraphSteps,
 		Deadline:      time.Duration(agentConf.DeadlineSeconds) * time.Second,
+		ThinkingDialect: thinkingDialect,
 	}
 	if mode.UsesMemorySearchTool() {
 		runnerConfig.PerTool = agentService.AgentMemoryToolRunnerConfig().PerTool
@@ -843,7 +844,7 @@ func main() {
 		agentTools,
 		agentDAO.DefaultRepository(),
 		contextBuilder,
-		agentRunnerConfig(memoryReadMode, conf.AgentConfig),
+		agentRunnerConfig(memoryReadMode, conf.AgentConfig, conf.RagModelConfig.RagChatThinkingDialect),
 	)
 	if err != nil {
 		log.Printf("initialize agent runner: %v", err)
