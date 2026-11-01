@@ -12,7 +12,8 @@ type ClientConfig = openai.Config
 // settings. No clean Agent assembly or environment lookup is performed here.
 func OrdinaryConfigKeys() []string {
 	return []string{app.EnvProvider, openai.EnvBaseURL, openai.EnvAPIKey, openai.EnvModel,
-		openai.EnvEnableThinking, openai.EnvTemperature, openai.EnvMaxOutputTokens, openai.EnvTimeout,
+		openai.EnvEnableThinking, openai.EnvThinkingDialect,
+		openai.EnvTemperature, openai.EnvMaxOutputTokens, openai.EnvTimeout,
 		app.EnvContextMaxMessages, app.EnvContextMaxRunes, app.EnvSummaryTriggerMessages,
 		app.EnvSummaryTriggerTokens, app.EnvSummaryKeepRecentMessages, app.EnvSummaryMaxInputTokens,
 		app.EnvSummaryMaxOutputTokens, app.EnvSummaryTimeout, app.EnvSummaryStageBudget, app.EnvSummaryFailureCooldown}

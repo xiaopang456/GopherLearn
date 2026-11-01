@@ -536,6 +536,7 @@ volatile storage.
 | `GOPHERLEARN_OPENAI_API_KEY` | bearer token, header only | required in `openai_compatible` |
 | `GOPHERLEARN_OPENAI_MODEL` | model name sent in the request body | required in `openai_compatible` |
 | `GOPHERLEARN_OPENAI_ENABLE_THINKING` | `true`/`false` provider extension; unset means the field is not sent at all | unset |
+| `GOPHERLEARN_OPENAI_THINKING_DIALECT` | dialect the thinking switch is written in: `qwen` (sends `enable_thinking`), `deepseek` (sends `thinking: {type: enabled\|disabled}`), `none` (sends neither); an unknown value stops startup | `qwen` |
 | `GOPHERLEARN_OPENAI_TEMPERATURE` | default sampling temperature, `0`-`2`; unset or `0` omits the field | unset |
 | `GOPHERLEARN_OPENAI_MAX_OUTPUT_TOKENS` | default reply budget | `1024` |
 | `GOPHERLEARN_OPENAI_TIMEOUT` | Go duration for the first byte and for the gap between streamed chunks | `30s` |

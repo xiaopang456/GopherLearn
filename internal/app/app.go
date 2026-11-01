@@ -451,6 +451,7 @@ func agentDeadline(raw string) (time.Duration, error) {
 func providerSettingsPresent(lookup func(string) string) bool {
 	for _, name := range []string{
 		openai.EnvBaseURL, openai.EnvAPIKey, openai.EnvModel, openai.EnvEnableThinking,
+		openai.EnvThinkingDialect,
 		openai.EnvTemperature, openai.EnvMaxOutputTokens, openai.EnvTimeout,
 	} {
 		if strings.TrimSpace(lookup(name)) != "" {
