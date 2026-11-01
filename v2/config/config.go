@@ -216,6 +216,22 @@ type AgentConfig struct {
 	MaxModelCalls                    int    `toml:"maxModelCalls"`
 	MaxGraphSteps                    int    `toml:"maxGraphSteps"`
 	DeadlineSeconds                  int    `toml:"deadlineSeconds"`
+	// AgentThinkingEnabled turns the chat model's thinking on for the Agent's
+	// own model calls.
+	//
+	// It is a deployment setting rather than a per-request one because the
+	// provider decides what a thinking turn costs, in tokens and in latency,
+	// and a deployment that has not priced that should not get it by accident.
+	//
+	// The default is off, which is the behaviour every existing deployment
+	// has; a deployment that switches it on also has to say which dialect the
+	// provider reads (see RagModelConfig.RagChatThinkingDialect), because the
+	// switch only reaches the provider if it is written in that dialect.
+	//
+	// A forced tool call still runs without thinking either way: the provider
+	// rejects a forced tool choice in thinking mode, so the choice is made per
+	// call rather than per deployment.
+	AgentThinkingEnabled             bool   `toml:"agentThinkingEnabled"`
 	KnowledgeDefaultTopK             int    `toml:"knowledgeDefaultTopK"`
 	KnowledgeMaxTopK                 int    `toml:"knowledgeMaxTopK"`
 	KnowledgeMaxResultTokens         int    `toml:"knowledgeMaxResultTokens"`
@@ -390,6 +406,10 @@ func defaultConfig() *Config {
 		IndexTimeoutSeconds: 300,
 	}, AgentConfig: AgentConfig{
 		MaxToolCalls: 3, MaxModelCalls: 4, MaxGraphSteps: 10, DeadlineSeconds: 45,
+		// Thinking is off until a deployment turns it on: a provider that reads
+		// the switch may charge for it, and a default that costs money is a
+		// default nobody agreed to.
+		AgentThinkingEnabled: false,
 		KnowledgeDefaultTopK: 5, KnowledgeMaxTopK: 8, KnowledgeMaxResultTokens: 700,
 		KnowledgeMaxObservationTokens: 2200, KnowledgeMaxRunTokens: 6500,
 		DocumentReadMaxLines: 240, DocumentReadMaxBytes: 32 * 1024, DocumentReadMaxObservationTokens: 3000,

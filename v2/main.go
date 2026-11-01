@@ -850,7 +850,8 @@ func main() {
 		log.Printf("initialize agent runner: %v", err)
 		return
 	}
-	configuredAgentService, err := agentService.NewDatabaseService(agentRunner)
+	configuredAgentService, err := agentService.NewDatabaseService(agentRunner,
+		agentService.WithThinkingEnabled(conf.AgentConfig.AgentThinkingEnabled))
 	if err != nil {
 		log.Printf("initialize agent service: %v", err)
 		return
