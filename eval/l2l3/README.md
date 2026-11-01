@@ -108,10 +108,11 @@ node eval/l2l3/check.mjs --labels L --dataset D --l3-only N
 **没有授权不要对真实系统运行。** 授权之后：
 
 1. 设置 `GL_L23_ENV=real`（没有默认值，`fake` 时只许连回环地址）。
-2. 预算：`GL_L23_MAX_RUNS` 必须大于 0，provider 在每次请求**之前**把这次尝试写进账本，到上限就拒绝；不重试。试算：题数 × 臂数 × 重复次数 = `/agent/run` 次数，每次约 3.4 次聊天模型调用（含后台任务），另有判分调用（判分模型尚未实现）。
-3. 所有模型调用经一个带硬上限、记 token 账本的计数代理（本仓库不提供，需自备）。
-4. 每个臂用独立的数据库和 Redis（或运行前完整重置）。
-5. 用 `promptfoo/build-config.mjs <run-spec.json> <输出目录>` 生成配置并写 `run.json`；`npx promptfoo@0.125.1 eval -c … --no-cache -j 1` 运行。**生成的配置没有用真实的 Promptfoo 跑过**（CI 不安装它）；第一次真实使用前先用 `npx promptfoo@0.125.1 validate` 检查。
+2. 设置 `GL_L23_CORPUS`，值是语料清单 `corpus.json` 的路径。**漏设它不会得到「判定不通过」，而是每条断言都报错**：断言在加载语料时直接抛 `GL_L23_CORPUS (the corpus manifest) is not set`，跑完看到的是一片 `error`，看起来像模型全错，其实一次都没真正判过。题里含上传文档的，还要设 `GL_L23_UPLOAD_NAMES`（上传名对照 JSON 的路径）；不设只查不到上传文档，不影响其他断言。开整批之前先用一条已知语料的题验一次，确认判定里有 `pass` 也有 `fail`。
+3. 预算：`GL_L23_MAX_RUNS` 必须大于 0，provider 在每次请求**之前**把这次尝试写进账本，到上限就拒绝；不重试。试算：题数 × 臂数 × 重复次数 = `/agent/run` 次数，每次约 3.4 次聊天模型调用（含后台任务），另有判分调用（判分模型尚未实现）。
+4. 所有模型调用经一个带硬上限、记 token 账本的计数代理（本仓库不提供，需自备）。
+5. 每个臂用独立的数据库和 Redis（或运行前完整重置）。
+6. 用 `promptfoo/build-config.mjs <run-spec.json> <输出目录>` 生成配置并写 `run.json`；`npx promptfoo@0.125.1 eval -c … --no-cache -j 1` 运行。**生成的配置没有用真实的 Promptfoo 跑过**（CI 不安装它）；第一次真实使用前先用 `npx promptfoo@0.125.1 validate` 检查。
 
 ## 已知限制
 
