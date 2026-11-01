@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 
@@ -83,6 +84,104 @@ test('the configuration refuses what it should not generate', { skip: skip() }, 
   assert.throws(() => buildConfig({ ...s, repeat: 0 }, questions), /positive integer/)
   // The sealed set is never loaded: a question file with a non-dev row is refused whole.
   assert.throws(() => loadQuestions({ ...s, datasetPath: path.join(l1data, 'dataset.jsonl') }), /not in the dev split \(first: q-graft-when\)/)
+})
+
+/** The synthetic sealed question only. */
+function sealedOnlyDataset(dir) {
+  const rows = fs.readFileSync(path.join(l1data, 'dataset.jsonl'), 'utf8').split(/\r?\n/).filter(Boolean).filter((l) => JSON.parse(l).split === 'sealed')
+  const file = path.join(dir, 'sealed.jsonl')
+  fs.writeFileSync(file, `${rows.join('\n')}\n`)
+  return file
+}
+
+const sealedSpec = (dir, over = {}) => spec(dir, { split: 'sealed', datasetPath: sealedOnlyDataset(dir), labelsPath: undefined, l3OnlyPath: undefined, ...over })
+
+test('the sealed split is refused unless it is asked for, and then it is the only split loaded', { skip: skip() }, (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'l23-sealed-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+
+  // By default a sealed question file is refused, and the message says how to ask for it.
+  assert.throws(() => loadQuestions(spec(dir, { datasetPath: sealedOnlyDataset(dir) })), /not in the dev split \(first: q-graft-when\).*--split sealed/)
+  assert.throws(() => loadQuestions(spec(dir, { split: 'dev', datasetPath: sealedOnlyDataset(dir) })), /not in the dev split/)
+
+  // Asked for explicitly, only sealed questions load, and only the answer layer is built.
+  const s = sealedSpec(dir)
+  const questions = loadQuestions(s)
+  assert.deepEqual([...questions.keys()], ['q-graft-when'])
+  const config = buildConfig(s, questions)
+  assert.deepEqual(config.tests.map((x) => x.description), ['q-graft-when (L2)'])
+})
+
+test('a sealed run takes sealed questions only, and no L3 files', { skip: skip() }, (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'l23-sealed-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+
+  // A file that mixes in development questions is refused whole.
+  assert.throws(() => loadQuestions(sealedSpec(dir, { datasetPath: devOnlyDataset(dir) })), /not in the sealed split \(first: q-neap\)/)
+  assert.throws(() => loadQuestions(sealedSpec(dir, { datasetPath: path.join(l1data, 'dataset.jsonl') })), /not in the sealed split/)
+  // The sealed set has no L3 labels; passing them would quietly build L3 tests for dev ids.
+  assert.throws(() => loadQuestions(sealedSpec(dir, { labelsPath: path.join(testdata, 'labels.jsonl') })), /answer layer only/)
+  assert.throws(() => loadQuestions(sealedSpec(dir, { l3OnlyPath: path.join(testdata, 'l3only.jsonl') })), /answer layer only/)
+  // No question file at all is not a sealed run.
+  assert.throws(() => loadQuestions(sealedSpec(dir, { datasetPath: undefined })), /needs a datasetPath/)
+  // Only the two names exist.
+  assert.throws(() => loadQuestions(spec(dir, { split: 'Sealed' })), /split must be "dev" or "sealed"/)
+  assert.throws(() => loadQuestions(spec(dir, { split: 'test' })), /split must be "dev" or "sealed"/)
+})
+
+test('the command line: --split is explicit, and run.json records the split', { skip: skip() }, (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'l23-sealed-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const script = path.join(here, '..', 'promptfoo', 'build-config.mjs')
+  const write = (name, s) => {
+    const file = path.join(dir, name)
+    fs.writeFileSync(file, JSON.stringify(s))
+    return file
+  }
+  const run = (...args) => spawnSync(process.execPath, [script, ...args], { encoding: 'utf8' })
+  const pin = (raw) => JSON.parse(fs.readFileSync(path.join(raw, 'run.json'), 'utf8'))
+
+  // Without the flag a sealed spec's file is refused, and nothing is written.
+  const noFlag = sealedSpec(dir, { split: undefined, rawDir: path.join(dir, 'raw-a') })
+  let result = run(write('a.json', noFlag), path.join(dir, 'out-a'))
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /not in the dev split/)
+  assert.equal(fs.existsSync(path.join(dir, 'raw-a')), false)
+
+  // With the flag it runs, says so loudly, and pins the split.
+  result = run('--split', 'sealed', write('b.json', noFlag), path.join(dir, 'out-b'))
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /SEALED RUN/)
+  assert.match(result.stdout, /1 sealed test\(s\)/)
+  assert.equal(pin(path.join(dir, 'raw-a')).split, 'sealed')
+
+  // The spec may name the split itself; the flag and the spec must agree.
+  result = run(write('c.json', sealedSpec(dir, { rawDir: path.join(dir, 'raw-c') })), path.join(dir, 'out-c'))
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(pin(path.join(dir, 'raw-c')).split, 'sealed')
+  result = run('--split', 'dev', write('d.json', sealedSpec(dir, { rawDir: path.join(dir, 'raw-d') })), path.join(dir, 'out-d'))
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /disagrees/)
+
+  // A development run pins "dev", and its raw directory cannot be reused for a sealed run (or the reverse).
+  const devSpec = spec(dir, { rawDir: path.join(dir, 'raw-dev') })
+  result = run(write('e.json', devSpec), path.join(dir, 'out-e'))
+  assert.equal(result.status, 0, result.stderr)
+  assert.doesNotMatch(result.stdout, /SEALED/)
+  assert.equal(pin(path.join(dir, 'raw-dev')).split, 'dev')
+  result = run('--split', 'sealed', write('f.json', sealedSpec(dir, { rawDir: path.join(dir, 'raw-dev') })), path.join(dir, 'out-f'))
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /already holds a dev run/)
+  result = run(write('g.json', spec(dir, { rawDir: path.join(dir, 'raw-c') })), path.join(dir, 'out-g'))
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /already holds a sealed run/)
+
+  // Bad command lines.
+  assert.match(run('--split').stderr, /needs a value/)
+  assert.match(run('--split', 'all', write('h.json', devSpec), path.join(dir, 'out-h')).stderr, /split must be/)
+  assert.match(run('--split', 'dev', '--split', 'dev', write('i.json', devSpec), path.join(dir, 'out-i')).stderr, /twice/)
+  assert.match(run('--seal', write('j.json', devSpec), path.join(dir, 'out-j')).stderr, /unknown option/)
+  assert.match(run(write('k.json', devSpec)).stderr, /usage/)
 })
 
 test('buildTests skips a question that has neither a gold answer nor a label', () => {
