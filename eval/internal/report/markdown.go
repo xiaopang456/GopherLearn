@@ -25,6 +25,9 @@ func (r *Report) Markdown() string {
 	mrrHeader := "MRR（首个" + mrrCriterion + "的结果）"
 
 	b.WriteString("# L1 检索评测报告\n\n")
+	if note := strings.TrimSpace(r.Input.Manifest.Note); note != "" {
+		b.WriteString("> **备注：" + note + "**\n\n")
+	}
 	if r.Input.Manifest.Environment != runner.EnvReal {
 		b.WriteString("> **离线替身环境（" + r.Input.Manifest.Environment + "）**：本报告只证明链路与指标计算正确，" +
 			"其中的数字不是检索质量结论，不得引用。\n\n")
@@ -74,7 +77,7 @@ func (r *Report) Markdown() string {
 	b.WriteString("- 候选池：重排之前的融合候选（至多 24 条），按与命中@K 相同的口径计覆盖率。\n")
 	b.WriteString("- **排得不好**：候选池已覆盖证据，前 K 个结果却没有命中（证据被召回后又被排出）。**召回不到**：连候选池也没有覆盖证据。\n\n")
 
-	b.WriteString("## 表 3　配对比较（挑战者 − 基线，基线为同 K 的 hybrid）\n\n")
+	b.WriteString("## 表 3　配对比较（挑战者 − 基线，基线见各行）\n\n")
 	if len(r.Comparisons) == 0 {
 		b.WriteString("没有可比较的单元格对。\n\n")
 	} else {
@@ -89,22 +92,62 @@ func (r *Report) Markdown() string {
 		b.WriteString("\n")
 		fmt.Fprintf(&b, "- 区间：按文档做簇的自助法（cluster bootstrap），重抽样 %d 次，种子 %d，取 2.5%% 与 97.5%% 分位；"+
 			"同一文档的问题不独立，所以重抽的是文档而不是问题。只有一个文档时无法给出区间（n/a）。\n", r.Input.Resamples, r.Input.Seed)
+		b.WriteString("- 基线一般是同 K 的 hybrid；纯向量+重排（vector+rerank）另与同规则、同 K 的混合+重排比较，看重排决定顺序之后关键词通道还有没有贡献。\n")
 		b.WriteString("- McNemar 精确检验只看两边命中不一致的题：双侧、对称二项，无不一致题时 p = 1。\n")
 		b.WriteString("- 最小可检测效应：在 α = 0.05、检验效能 80% 的正态近似下，这么多题大约能可靠分辨的最小差值；" +
 			"它是规划用的估计，不是检验结果。差值小于它时，“没有显著差异”不等于“没有差异”。\n")
 		b.WriteString("- 命中率差用命中@K 的口径，MRR 差用 MRR 的口径，两者不能互换解读。\n\n")
 	}
 
-	b.WriteString("## 表 4　不可答题的 top-1 分数分布（仅描述）\n\n")
-	b.WriteString("| 单元格 | K | 不可答题 | 空结果 | 不可答题 top-1 分数（最小 / 中位 / 最大） | 可答题 top-1 中位 |\n")
-	b.WriteString("|---|--:|--:|--:|--:|--:|\n")
+	b.WriteString("## 表 4　不可答题的信号分布（仅描述）\n\n")
+	b.WriteString("| 单元格 | K | 信号（越强的方向） | 不可答题 / 空结果 | 不可答题信号 最小 / 中位 / 最大 | 可答题信号 中位 | 可分性 AUC |\n")
+	b.WriteString("|---|--:|---|--:|--:|--:|--:|\n")
 	for _, c := range r.Cells {
 		if c.Unanswerable == 0 {
 			continue
 		}
-		fmt.Fprintf(&b, "| %s | %d | %d | %d | %s | %s |\n", c.Cell, c.TopK, c.Unanswerable, c.UnanswerableEmpty, triple(c.UnanswerableTopOne), optional(c.AnswerableTopOneMed))
+		if c.Signal == nil {
+			fmt.Fprintf(&b, "| %s | %d | 记录里没有这个通道的原始分数 | %d / %d | n/a | n/a | n/a |\n", c.Cell, c.TopK, c.Unanswerable, c.UnanswerableEmpty)
+			continue
+		}
+		fmt.Fprintf(&b, "| %s | %d | %s | %d / %d | %s | %s | %s |\n", c.Cell, c.TopK, signalText(c.Signal), c.Unanswerable, c.UnanswerableEmpty,
+			triple(c.Signal.UnanswerableMinMedMax), optional(c.Signal.AnswerableMedian), optional(c.Signal.AUC))
 	}
-	b.WriteString("\n- 不同方法的分数含义不同（向量距离、融合分、重排分），不能跨方法比较；这里只记录分布，不据此定拒答阈值。\n")
+	b.WriteString("\n- **信号**：向量距离（最近的那块的余弦距离，越小越像）、重排分数（最佳结果的重排分，越大越相关）、关键词分数（关键词通道自己的分，越大越相关）。不用检索服务返回的融合分数：它是归一化的，单通道时第一名恒为 1，说明不了查询与资料有多像。\n")
+	b.WriteString("- **可分性 AUC**：随机取一道可答题、一道不可答题，可答题的信号更强的概率（相等算一半）。0.5 表示这个信号分不开两类，越接近 1 越能分开。它只是描述，**不据此定拒答阈值**；不同信号的数值不能互相比较。\n")
+	b.WriteString("- 不可答题**不计入**命中@K、MRR、覆盖率、纯度和配对比较，只在本表描述。\n\n")
+
+	if len(r.ByType) > 0 {
+		b.WriteString("## 表 5　按题型拆分\n\n")
+		fmt.Fprintf(&b, "| 单元格 | 题型 | 可答题 | %s | 平均覆盖率@K | 完整覆盖（覆盖率 = 1） | %s |\n", hitHeader, mrrHeader)
+		b.WriteString("|---|---|--:|--:|--:|--:|--:|\n")
+		for _, t := range r.ByType {
+			fmt.Fprintf(&b, "| %s | %s | %d | %s | %.3f | %s | %.3f |\n", t.Cell, t.Type, t.Answerable, rate(t.Hits, t.Answerable), t.MeanCoverage, rate(t.FullCoverage, t.Answerable), t.MRR)
+		}
+		b.WriteString("\n- 多证据题的覆盖率按该题最佳证据集的**全部**证据行计，完整覆盖指整组证据都被前 K 个结果取到；命中@K 仍按覆盖率 ≥ 阈值判定，所以只取到一部分证据也可能命中，要看完整覆盖才知道证据是否取全。\n")
+	}
+	if len(r.ByGroup) > 0 {
+		b.WriteString("\n## 表 6　按语言与表述类型拆分（只列 K = 3 与 K = 5，全部见 scores.json）\n\n")
+		fmt.Fprintf(&b, "| 单元格 | 拆分依据 | 取值 | 可答题 | %s | 平均覆盖率@K | %s |\n", hitHeader, mrrHeader)
+		b.WriteString("|---|---|---|--:|--:|--:|--:|\n")
+		for _, g := range r.ByGroup {
+			if k := kOf(g.Cell); k != "3" && k != "5" {
+				continue
+			}
+			fmt.Fprintf(&b, "| %s | %s | %s | %d | %s | %.3f | %.3f |\n", g.Cell, dimensionName(g.Dimension), g.Value, g.Answerable, rate(g.Hits, g.Answerable), g.MeanCoverage, g.MRR)
+		}
+		b.WriteString("\n- 拆分依据来自题目的侧车（语言：中文问中文资料 / 中文问英文资料；表述：贴近原文 / 换种说法 / 口语）。组内题数不多，区间很宽，下面的配对比较要连同题数一起读。\n\n")
+		b.WriteString("## 表 7　各组内的配对比较（挑战者 − 基线，基线为同 K 的 hybrid；只列 K = 3 与 K = 5）\n\n")
+		fmt.Fprintf(&b, "| 挑战者 | K | 拆分依据 | 取值 | 题数 | 命中率差（%s）[95%% CI] | 仅挑战者命中 / 仅基线命中 | McNemar 精确 p | MRR 差 [95%% CI] |\n", fmt.Sprintf(hitCriterion, threshold))
+		b.WriteString("|---|--:|---|---|--:|--:|--:|--:|--:|\n")
+		for _, c := range r.GroupComparisons {
+			if k := kOf(c.Challenger); k != "3" && k != "5" {
+				continue
+			}
+			fmt.Fprintf(&b, "| %s | %s | %s | %s | %d | %s | %d / %d | %.4f | %s |\n", c.Challenger, kOf(c.Challenger), dimensionName(c.Dimension), c.Value, c.N, diff(c.Hit), c.Discordant.AOnly, c.Discordant.BOnly, c.McNemarP, diff(c.MRR))
+		}
+		b.WriteString("\n- 区间同样是按文档分簇的自助法；只有一个文档的组给不出区间（n/a）。\n")
+	}
 	return b.String()
 }
 
@@ -162,4 +205,23 @@ func rerankText(m runner.Manifest) string {
 		return "未启用"
 	}
 	return "`" + m.Rerank.Model + "`"
+}
+
+func signalText(sig *SignalStats) string {
+	names := map[string]string{SignalVectorDistance: "向量距离", SignalRerankScore: "重排分数", SignalLexicalScore: "关键词分数"}
+	direction := "越大越强"
+	if sig.Stronger == "lower" {
+		direction = "越小越强"
+	}
+	return names[sig.Name] + "（" + direction + "）"
+}
+
+func dimensionName(dimension string) string {
+	switch dimension {
+	case "lang":
+		return "语言"
+	case "paraphrase":
+		return "表述"
+	}
+	return dimension
 }

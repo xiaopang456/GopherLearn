@@ -13,7 +13,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/cloudwego/eino/components/embedding"
 
@@ -73,6 +76,10 @@ type Options struct {
 	Now func() time.Time
 	// Progress receives one line per question; nil discards.
 	Progress io.Writer
+	// Note is a one-line remark recorded in the manifest and shown at the top of
+	// every report scored from the run, for example that the run used an unfrozen
+	// question set and must not be quoted as a baseline.
+	Note string
 	// Commit names the commit under test and is recorded in the manifest. When
 	// empty the toolchain's build information is used, and "unknown" when it has
 	// none (it often has not: stamping is off under "go run" and in some worktrees).
@@ -96,6 +103,7 @@ type Manifest struct {
 	SchemaVersion int      `json:"schema_version"`
 	RunID         string   `json:"run_id"`
 	StartedAt     string   `json:"started_at"`
+	Note          string   `json:"note,omitempty"`
 	Environment   string   `json:"environment"`
 	Split         string   `json:"split"`
 	Commit        string   `json:"commit"`
@@ -154,6 +162,9 @@ const (
 // retried; a failure is recorded and the run moves on.
 func Execute(ctx context.Context, cfg *config.Config, corpus *dataset.Corpus, ds *dataset.Dataset, env Env, opts Options) (*Result, error) {
 	if err := cfg.CheckPaths(); err != nil {
+		return nil, err
+	}
+	if err := ValidateNote(opts.Note); err != nil {
 		return nil, err
 	}
 	if env.Kind != EnvFake && env.Kind != EnvReal {
@@ -313,7 +324,7 @@ func buildManifest(runID string, started time.Time, cfg *config.Config, corpus *
 	fp safety.Fingerprint, decision safety.Decision, cells []matrix.Cell, estimate Estimate, questions int) Manifest {
 	m := Manifest{
 		SchemaVersion: 1, RunID: runID, StartedAt: started.Format(time.RFC3339), Environment: env.Kind, Split: opts.Split,
-		Commit: firstNonEmpty(opts.Commit, vcsRevision()), ConfigDigest: cfg.Digest(), Fingerprint: fp.Hash(), IndexDecision: decision.String(),
+		Note: strings.TrimSpace(opts.Note), Commit: firstNonEmpty(opts.Commit, vcsRevision()), ConfigDigest: cfg.Digest(), Fingerprint: fp.Hash(), IndexDecision: decision.String(),
 		Chunker: env.Chunker, HitThreshold: cfg.Metrics.HitThreshold, Limits: cfg.Limits, Estimate: estimate,
 	}
 	for _, c := range cells {
@@ -348,6 +359,23 @@ func vcsRevision() string {
 		}
 	}
 	return revision + dirty
+}
+
+// MaxNoteLength bounds a run's note.
+const MaxNoteLength = 200
+
+// ValidateNote accepts an empty note or one line of at most MaxNoteLength runes
+// without control characters, so it can sit in a report's first lines unchanged.
+func ValidateNote(note string) error {
+	if utf8.RuneCountInString(note) > MaxNoteLength {
+		return fmt.Errorf("runner: the note is longer than %d characters", MaxNoteLength)
+	}
+	for _, r := range note {
+		if unicode.IsControl(r) {
+			return errors.New("runner: the note must be one line without control characters")
+		}
+	}
+	return nil
 }
 
 func firstNonEmpty(values ...string) string {

@@ -14,21 +14,22 @@ import (
 // scored. It carries no chunk text, so a results directory never holds the
 // user's document content.
 type Hit struct {
-	Rank        int     `json:"rank"`
-	File        string  `json:"file"`
-	DocID       string  `json:"doc_id"`
-	Version     int     `json:"version"`
-	ChunkIndex  int     `json:"chunk_index"`
-	Start       int     `json:"start"`
-	End         int     `json:"end"`
-	Score       float64 `json:"score"`
-	Distance    float64 `json:"distance,omitempty"`
-	FusionScore float64 `json:"fusion_score,omitempty"`
-	VectorRank  int     `json:"vector_rank,omitempty"`
-	LexicalRank int     `json:"lexical_rank,omitempty"`
-	MatchKind   string  `json:"match_kind,omitempty"`
-	RerankScore float64 `json:"rerank_score,omitempty"`
-	RerankRank  int     `json:"rerank_rank,omitempty"`
+	Rank         int     `json:"rank"`
+	File         string  `json:"file"`
+	DocID        string  `json:"doc_id"`
+	Version      int     `json:"version"`
+	ChunkIndex   int     `json:"chunk_index"`
+	Start        int     `json:"start"`
+	End          int     `json:"end"`
+	Score        float64 `json:"score"`
+	Distance     float64 `json:"distance,omitempty"`
+	FusionScore  float64 `json:"fusion_score,omitempty"`
+	VectorRank   int     `json:"vector_rank,omitempty"`
+	LexicalRank  int     `json:"lexical_rank,omitempty"`
+	MatchKind    string  `json:"match_kind,omitempty"`
+	LexicalScore float64 `json:"lexical_score,omitempty"`
+	RerankScore  float64 `json:"rerank_score,omitempty"`
+	RerankRank   int     `json:"rerank_rank,omitempty"`
 }
 
 // Record is the outcome of one question in one cell.
@@ -61,7 +62,7 @@ func hitsOf(results []rag.RetrievalResult) []Hit {
 		hits[i] = Hit{
 			Rank: i + 1, File: r.DocumentName, DocID: r.DocID, Version: r.DocVersion, ChunkIndex: r.ChunkIndex,
 			Start: r.StartLine, End: r.EndLine, Score: r.Score, Distance: r.Distance, FusionScore: r.FusionScore,
-			VectorRank: r.VectorRank, LexicalRank: r.LexicalRank, MatchKind: r.MatchKind,
+			VectorRank: r.VectorRank, LexicalRank: r.LexicalRank, LexicalScore: r.LexicalScore, MatchKind: r.MatchKind,
 			RerankScore: r.RerankScore, RerankRank: r.RerankRank,
 		}
 	}

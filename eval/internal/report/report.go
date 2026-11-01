@@ -30,6 +30,9 @@ type Input struct {
 	Threshold float64
 	Seed      int64
 	Resamples int
+	// Groups maps a question id to its properties (see GroupDimensions). Nil means the
+	// run is not split.
+	Groups map[string]map[string]string
 }
 
 // CellStats are the aggregates of one cell over the answerable questions.
@@ -57,11 +60,10 @@ type CellStats struct {
 	Misranked   int `json:"misranked"`
 	NotRecalled int `json:"not_recalled"`
 
-	// Unanswerable questions: only the top-1 score distribution is recorded.
-	Unanswerable        int       `json:"unanswerable"`
-	UnanswerableEmpty   int       `json:"unanswerable_empty"`
-	UnanswerableTopOne  []float64 `json:"unanswerable_top1_min_med_max,omitempty"`
-	AnswerableTopOneMed *float64  `json:"answerable_top1_median,omitempty"`
+	// Unanswerable questions are not scored; they are described by a raw signal.
+	Unanswerable      int          `json:"unanswerable"`
+	UnanswerableEmpty int          `json:"unanswerable_empty"`
+	Signal            *SignalStats `json:"signal,omitempty"`
 }
 
 // Comparison is one paired comparison of a challenger cell against a baseline.
@@ -80,11 +82,30 @@ type Comparison struct {
 	CoverageMDE *float64           `json:"coverage_min_detectable"`
 }
 
+// TypeStats are the aggregates of one cell over the answerable questions of one
+// question type (single_fact, comparison, multi_evidence ...). A multi-evidence
+// question is covered only to the extent that all of its evidence was retrieved,
+// so FullCoverage — every line of the best evidence set — is reported beside the
+// thresholded hit.
+type TypeStats struct {
+	Cell         string  `json:"cell"`
+	Type         string  `json:"type"`
+	Answerable   int     `json:"answerable"`
+	Hits         int     `json:"hits"`
+	FullCoverage int     `json:"full_coverage"`
+	MeanCoverage float64 `json:"mean_coverage"`
+	MRR          float64 `json:"mrr"`
+}
+
 // Report is the scored run.
 type Report struct {
 	Input       Input
 	Cells       []CellStats
+	ByType      []TypeStats
 	Comparisons []Comparison
+	// ByGroup and GroupComparisons are filled only when the run is split (Input.Groups).
+	ByGroup          []GroupStats
+	GroupComparisons []GroupComparison
 	// Incomplete is true when some (cell, question) has no record.
 	Incomplete bool
 	// Answerable and Unanswerable count the split's questions.
@@ -109,7 +130,6 @@ func Build(in Input) (*Report, error) {
 	for _, q := range in.Questions {
 		known[q.ID] = q
 	}
-	type key struct{ cell, question string }
 	byKey := map[key]runner.Record{}
 	for _, r := range in.Records {
 		if _, ok := known[r.QuestionID]; !ok {
@@ -141,7 +161,10 @@ func Build(in Input) (*Report, error) {
 		}
 		st := CellStats{Cell: cell, Method: meta.Method, Rule: meta.Rule, TopK: meta.TopK}
 		var coverage, purity, rr float64
-		var answerableTop, unansweredTop []float64
+		var answerableSignal, unansweredSignal []float64
+		kind := signalKind(meta)
+		typeAgg := map[string]*TypeStats{}
+		typeCov, typeRR := map[string]float64{}, map[string]float64{}
 		for _, q := range in.Questions {
 			rec, have := byKey[key{cell, q.ID}]
 			if !q.Answerable {
@@ -152,8 +175,9 @@ func Build(in Input) (*Report, error) {
 				st.Unanswerable++
 				if len(rec.Results) == 0 {
 					st.UnanswerableEmpty++
-				} else {
-					unansweredTop = append(unansweredTop, rec.Results[0].Score)
+				}
+				if v, ok := signalFor(kind, rec); ok {
+					unansweredSignal = append(unansweredSignal, v)
 				}
 				continue
 			}
@@ -162,11 +186,25 @@ func Build(in Input) (*Report, error) {
 				continue
 			}
 			st.Answerable++
-			if len(rec.Results) > 0 {
-				answerableTop = append(answerableTop, rec.Results[0].Score)
+			if v, ok := signalFor(kind, rec); ok {
+				answerableSignal = append(answerableSignal, v)
 			}
 			out := metrics.Evaluate(q.Evidence, spans(rec.Results), spans(rec.Pool), rec.ErrorKind != "", in.Threshold)
 			outcomes[key{cell, q.ID}] = out
+			ts := typeAgg[q.Type]
+			if ts == nil {
+				ts = &TypeStats{Cell: cell, Type: q.Type}
+				typeAgg[q.Type] = ts
+			}
+			ts.Answerable++
+			typeCov[q.Type] += out.Coverage
+			typeRR[q.Type] += out.ReciprocalRank
+			if out.Hit {
+				ts.Hits++
+			}
+			if out.Coverage >= 1-1e-9 {
+				ts.FullCoverage++
+			}
 			coverage += out.Coverage
 			purity += out.Purity
 			rr += out.ReciprocalRank
@@ -194,27 +232,31 @@ func Build(in Input) (*Report, error) {
 		if st.Missing > 0 {
 			rep.Incomplete = true
 		}
-		if len(unansweredTop) > 0 {
-			sort.Float64s(unansweredTop)
-			st.UnanswerableTopOne = []float64{unansweredTop[0], median(unansweredTop), unansweredTop[len(unansweredTop)-1]}
-		}
-		if len(answerableTop) > 0 {
-			sort.Float64s(answerableTop)
-			m := median(answerableTop)
-			st.AnswerableTopOneMed = &m
-		}
+		st.Signal = buildSignal(kind, unansweredSignal, answerableSignal)
 		rep.Cells = append(rep.Cells, st)
+		types := make([]string, 0, len(typeAgg))
+		for t := range typeAgg {
+			types = append(types, t)
+		}
+		sort.Strings(types)
+		for _, t := range types {
+			ts := typeAgg[t]
+			ts.MeanCoverage = typeCov[t] / float64(ts.Answerable)
+			ts.MRR = typeRR[t] / float64(ts.Answerable)
+			rep.ByType = append(rep.ByType, *ts)
+		}
 	}
 
 	for _, pair := range comparisonPairs(in.Manifest.Cells, info) {
 		cmp, ok := compare(in, pair[0], pair[1], func(cell, question string) (metrics.Outcome, bool) {
 			out, have := outcomes[key{cell, question}]
 			return out, have
-		})
+		}, nil)
 		if ok {
 			rep.Comparisons = append(rep.Comparisons, cmp)
 		}
 	}
+	rep.addGroups(in, info, outcomes)
 	return rep, nil
 }
 
@@ -252,19 +294,29 @@ func comparisonPairs(cells []string, info map[string]runner.Record) [][2]string 
 		if !have[base] {
 			continue
 		}
-		if r.Method == config.MethodHybridRerank && r.Rule == matrix.RuleProduction && r.RerankStatus == "bypassed" {
+		if matrix.IsRerankMethod(r.Method) && r.Rule == matrix.RuleProduction && r.RerankStatus == "bypassed" {
 			continue
 		}
 		pairs = append(pairs, [2]string{c, base})
+		// Vector+rerank is also set against hybrid+rerank under the same rule and K: with a
+		// reranker deciding the order, does the keyword channel add anything?
+		if r.Method == config.MethodVectorRerank {
+			other := fmt.Sprintf("%s/%s/k=%d", config.MethodHybridRerank, r.Rule, r.TopK)
+			if have[other] {
+				pairs = append(pairs, [2]string{c, other})
+			}
+		}
 	}
 	return pairs
 }
 
-func compare(in Input, challenger, baseline string, outcome func(cell, question string) (metrics.Outcome, bool)) (Comparison, bool) {
+// compare pairs two cells over the answerable questions both have a record for; include,
+// when set, narrows it to a group of questions.
+func compare(in Input, challenger, baseline string, outcome func(cell, question string) (metrics.Outcome, bool), include func(dataset.Question) bool) (Comparison, bool) {
 	var hit, cov, mrr []metrics.Pair
 	var a, b []bool
 	for _, q := range in.Questions {
-		if !q.Answerable {
+		if !q.Answerable || (include != nil && !include(q)) {
 			continue
 		}
 		oa, okA := outcome(challenger, q.ID)
@@ -307,22 +359,25 @@ func boolFloat(b bool) float64 {
 // JSON is the machine-readable form of the aggregates.
 func (r *Report) JSON() ([]byte, error) {
 	payload := struct {
-		RunID       string       `json:"run_id"`
-		Environment string       `json:"environment"`
-		Split       string       `json:"split"`
-		Threshold   float64      `json:"hit_threshold"`
-		Seed        int64        `json:"bootstrap_seed"`
-		Resamples   int          `json:"bootstrap_resamples"`
-		Incomplete  bool         `json:"incomplete"`
-		Answerable  int          `json:"answerable"`
-		Unanswer    int          `json:"unanswerable"`
-		Cells       []CellStats  `json:"cells"`
-		Comparisons []Comparison `json:"comparisons"`
+		RunID            string            `json:"run_id"`
+		Environment      string            `json:"environment"`
+		Split            string            `json:"split"`
+		Threshold        float64           `json:"hit_threshold"`
+		Seed             int64             `json:"bootstrap_seed"`
+		Resamples        int               `json:"bootstrap_resamples"`
+		Incomplete       bool              `json:"incomplete"`
+		Answerable       int               `json:"answerable"`
+		Unanswer         int               `json:"unanswerable"`
+		Cells            []CellStats       `json:"cells"`
+		ByType           []TypeStats       `json:"by_type"`
+		ByGroup          []GroupStats      `json:"by_group,omitempty"`
+		Comparisons      []Comparison      `json:"comparisons"`
+		GroupComparisons []GroupComparison `json:"group_comparisons,omitempty"`
 	}{
 		RunID: r.Input.Manifest.RunID, Environment: r.Input.Manifest.Environment, Split: r.Input.Manifest.Split,
 		Threshold: r.Input.Threshold, Seed: r.Input.Seed, Resamples: r.Input.Resamples,
 		Incomplete: r.Incomplete, Answerable: r.Answerable, Unanswer: r.Unanswerable,
-		Cells: r.Cells, Comparisons: r.Comparisons,
+		Cells: r.Cells, ByType: r.ByType, ByGroup: r.ByGroup, Comparisons: r.Comparisons, GroupComparisons: r.GroupComparisons,
 	}
 	data, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
@@ -335,7 +390,7 @@ func (r *Report) JSON() ([]byte, error) {
 // report.md and scores.json into a directory named for the scoring settings, and
 // returns the report and that directory. Scoring the same run with the same
 // settings rewrites the same bytes.
-func Score(runDir string, cfg *config.Config, corpus *dataset.Corpus, ds *dataset.Dataset) (*Report, string, error) {
+func Score(runDir string, cfg *config.Config, corpus *dataset.Corpus, ds *dataset.Dataset, groupsPath string) (*Report, string, error) {
 	var manifest runner.Manifest
 	raw, err := os.ReadFile(filepath.Join(runDir, runner.ManifestFile))
 	if err != nil {
@@ -367,14 +422,29 @@ func Score(runDir string, cfg *config.Config, corpus *dataset.Corpus, ds *datase
 			summary = &s
 		}
 	}
+	questions := ds.Filter(manifest.Split)
+	var groups map[string]map[string]string
+	groupsKey := ""
+	if groupsPath != "" {
+		wanted := make(map[string]bool, len(questions))
+		for _, q := range questions {
+			wanted[q.ID] = true
+		}
+		if groups, err = LoadGroups(groupsPath, wanted); err != nil {
+			return nil, "", err
+		}
+		encoded, _ := json.Marshal(groups) // a map of strings: Marshal cannot fail, and orders the keys
+		groupKey := sha256.Sum256(encoded)
+		groupsKey = hex.EncodeToString(groupKey[:4])
+	}
 	rep, err := Build(Input{
-		Manifest: manifest, Summary: summary, Records: records, Questions: ds.Filter(manifest.Split),
+		Manifest: manifest, Summary: summary, Records: records, Questions: questions, Groups: groups,
 		Threshold: cfg.Metrics.HitThreshold, Seed: cfg.Metrics.BootstrapSeed, Resamples: cfg.Metrics.BootstrapResamples,
 	})
 	if err != nil {
 		return nil, "", err
 	}
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%v|%d|%d", ds.Version, cfg.Metrics.HitThreshold, cfg.Metrics.BootstrapSeed, cfg.Metrics.BootstrapResamples)))
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%v|%d|%d|%s", ds.Version, cfg.Metrics.HitThreshold, cfg.Metrics.BootstrapSeed, cfg.Metrics.BootstrapResamples, groupsKey)))
 	outDir := filepath.Join(runDir, "scores-"+hex.EncodeToString(sum[:4]))
 	if err := os.MkdirAll(outDir, 0o700); err != nil {
 		return nil, "", err

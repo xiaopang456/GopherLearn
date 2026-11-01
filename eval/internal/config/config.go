@@ -27,6 +27,10 @@ const (
 	MethodKeyword      = "keyword"
 	MethodHybrid       = "hybrid"
 	MethodHybridRerank = "hybrid+rerank"
+	// MethodVectorRerank reranks the vector channel's own candidates, with no keyword
+	// channel in the pool. Next to hybrid+rerank it shows what the keyword channel adds
+	// once a reranker is deciding the order.
+	MethodVectorRerank = "vector+rerank"
 )
 
 // maxTopK bounds a TopK cell. A forced rerank is further limited to the
@@ -160,9 +164,9 @@ func (m Matrix) validate() error {
 	seen := map[string]bool{}
 	for _, method := range m.Methods {
 		switch method {
-		case MethodVector, MethodKeyword, MethodHybrid, MethodHybridRerank:
+		case MethodVector, MethodKeyword, MethodHybrid, MethodHybridRerank, MethodVectorRerank:
 		default:
-			return fmt.Errorf("matrix.methods: unknown method %q (want %s, %s, %s or %s)", method, MethodVector, MethodKeyword, MethodHybrid, MethodHybridRerank)
+			return fmt.Errorf("matrix.methods: unknown method %q (want %s, %s, %s, %s or %s)", method, MethodVector, MethodKeyword, MethodHybrid, MethodHybridRerank, MethodVectorRerank)
 		}
 		if seen[method] {
 			return fmt.Errorf("matrix.methods: %q is listed twice", method)
@@ -181,8 +185,8 @@ func (m Matrix) validate() error {
 			return fmt.Errorf("matrix.topK: %d is listed twice", k)
 		}
 		topSeen[k] = true
-		if seen[MethodHybridRerank] && k > maxRerankTopK {
-			return fmt.Errorf("matrix.topK: %d is above %d, the reranker's candidate pool, so %q cannot run at it; drop the method or the value", k, maxRerankTopK, MethodHybridRerank)
+		if (seen[MethodHybridRerank] || seen[MethodVectorRerank]) && k > maxRerankTopK {
+			return fmt.Errorf("matrix.topK: %d is above %d, the reranker's candidate pool, so the rerank methods cannot run at it; drop the method or the value", k, maxRerankTopK)
 		}
 	}
 	return nil

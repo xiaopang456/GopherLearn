@@ -93,3 +93,44 @@ func TestNeedsFlags(t *testing.T) {
 		t.Error("hybrid+rerank at k=3 needs the reranker")
 	}
 }
+
+func TestVectorRerankCellsFollowTheSameRulesAsHybridRerank(t *testing.T) {
+	cells := Expand(config.Matrix{Methods: []string{config.MethodVectorRerank}, TopK: []int{3, 8, 12}})
+	if got := ids(cells); got != "vector+rerank/production/k=3 vector+rerank/production/k=8 vector+rerank/production/k=12 vector+rerank/forced/k=12" {
+		t.Fatalf("cells = %s", got)
+	}
+	production := Cell{Method: config.MethodVectorRerank, Rule: RuleProduction, TopK: 5}.Options()
+	want := rag.RetrieveOptions{TopK: 5, Mode: rag.RetrievalModeVector, Rerank: rag.RerankDefault, WantCandidates: true}
+	if production != want {
+		t.Errorf("production options = %+v, want %+v", production, want)
+	}
+	forced := Cell{Method: config.MethodVectorRerank, Rule: RuleForced, TopK: 12}.Options()
+	if forced.Mode != rag.RetrievalModeVector || forced.Rerank != rag.RerankForceOn {
+		t.Errorf("forced options = %+v: the keyword channel must stay out of the pool", forced)
+	}
+	if !(Cell{Method: config.MethodVectorRerank, Rule: RuleProduction, TopK: 8}).UsesReranker() || (Cell{Method: config.MethodVectorRerank, Rule: RuleProduction, TopK: 9}).UsesReranker() {
+		t.Error("the production rule reranks up to K = 8 only")
+	}
+	if !IsRerankMethod(config.MethodVectorRerank) || !IsRerankMethod(config.MethodHybridRerank) || IsRerankMethod(config.MethodHybrid) {
+		t.Error("IsRerankMethod")
+	}
+}
+
+func TestRerankPoolsCountsTheDifferentlyBuiltPools(t *testing.T) {
+	both := Expand(config.Matrix{Methods: []string{config.MethodHybridRerank, config.MethodVectorRerank, config.MethodHybrid}, TopK: []int{3}})
+	if n := RerankPools(both); n != 2 {
+		t.Errorf("hybrid+rerank and vector+rerank build two pools, got %d", n)
+	}
+	one := Expand(config.Matrix{Methods: []string{config.MethodHybridRerank, config.MethodHybrid}, TopK: []int{3}})
+	if n := RerankPools(one); n != 1 {
+		t.Errorf("got %d", n)
+	}
+	// A rerank method whose every cell is above the production limit never calls the reranker.
+	never := Expand(config.Matrix{Methods: []string{config.MethodVectorRerank}, TopK: []int{9}})
+	if n := RerankPools(never[:1]); n != 0 || NeedsReranker(never[:1]) {
+		t.Errorf("a bypassed production cell uses no reranker: %d", n)
+	}
+	if n := RerankPools(nil); n != 0 {
+		t.Errorf("empty: %d", n)
+	}
+}

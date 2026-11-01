@@ -50,6 +50,7 @@ run flags:
   -env fake|real   required; fake results prove plumbing only, never quality
   -split dev|sealed  questions to run (default dev; sealed is held back for the final report)
   -rebuild         replace an evaluation index in Redis whose fingerprint differs
+  -note <text>     one-line remark shown at the top of every report scored from the run
   -commit <sha>    commit under test, recorded in the manifest (go build does not always stamp it)
   -verbose         keep the retrieval service's own log lines (one per retrieval)
 `
@@ -195,6 +196,7 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	split := flags.String("split", dataset.SplitDev, "questions to run: dev or sealed")
 	rebuild := flags.Bool("rebuild", false, "replace an evaluation index whose fingerprint differs")
 	commit := flags.String("commit", "", "commit under test, recorded in the manifest (for example $(git rev-parse HEAD))")
+	note := flags.String("note", "", "one-line remark recorded in the manifest and shown at the top of every report (for example that the question set is unfrozen)")
 	verbose := flags.Bool("verbose", false, "keep the retrieval service's own log lines (one per retrieval)")
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -232,7 +234,7 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		env = realEnv
 	}
 
-	result, err := runner.Execute(ctx, in.cfg, in.corpus, in.questions, env, runner.Options{Split: *split, Rebuild: *rebuild, Progress: stdout, Commit: *commit})
+	result, err := runner.Execute(ctx, in.cfg, in.corpus, in.questions, env, runner.Options{Split: *split, Rebuild: *rebuild, Progress: stdout, Commit: *commit, Note: *note})
 	if result != nil {
 		fmt.Fprintf(stdout, "run directory   %s\n", result.Dir)
 		fmt.Fprintf(stdout, "records         %d (%d with errors); complete: %v\n", result.Records, result.Errors, result.Complete)
@@ -262,6 +264,7 @@ func fakeEnv() runner.Env {
 func runScore(args []string, stdout, stderr io.Writer) int {
 	flags, configPath := newFlags("score", stderr)
 	runDir := flags.String("run", "", "run directory to score (required)")
+	groups := flags.String("groups", "", "question sidecar (JSONL with id, lang, paraphrase) to split the report by; rows of questions outside the run are skipped without being decoded")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -277,7 +280,7 @@ func runScore(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "l1 score: %v\n", err)
 		return 1
 	}
-	rep, outDir, err := report.Score(*runDir, in.cfg, in.corpus, in.questions)
+	rep, outDir, err := report.Score(*runDir, in.cfg, in.corpus, in.questions, *groups)
 	if err != nil {
 		fmt.Fprintf(stderr, "l1 score: %v\n", err)
 		return 1

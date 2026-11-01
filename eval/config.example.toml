@@ -21,9 +21,9 @@ productConfig = 'D:\gopherlearn-eval\product.toml.local'
 evalUserID = 900001
 
 [matrix]
-# vector | keyword | hybrid | hybrid+rerank
-methods = ["vector", "keyword", "hybrid", "hybrid+rerank"]
-# hybrid+rerank cannot run above 24: the reranker only sees 24 candidates.
+# vector | keyword | hybrid | vector+rerank | hybrid+rerank
+methods = ["vector", "keyword", "hybrid", "hybrid+rerank"]  # add "vector+rerank" to also run it
+# vector+rerank and hybrid+rerank cannot run above 24: the reranker only sees 24 candidates.
 topK = [3, 5, 8, 12, 20]
 
 [metrics]

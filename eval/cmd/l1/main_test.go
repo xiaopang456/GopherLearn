@@ -245,3 +245,32 @@ func TestRunRecordsTheCommitItIsGiven(t *testing.T) {
 		t.Fatalf("manifest: %s %v", data, err)
 	}
 }
+
+func TestNoteReachesTheReportHeader(t *testing.T) {
+	cfgPath := stageInputs(t)
+	const note = "预跑，题集未冻结，不作为正式基线"
+	if code, _, stderr := runCLI("run", "-config", cfgPath, "-env", "fake", "-note", note); code != 0 {
+		t.Fatalf("run: exit %d, stderr: %s", code, stderr)
+	}
+	results := filepath.Join(filepath.Dir(cfgPath), "results")
+	runs, _ := os.ReadDir(results)
+	if len(runs) != 1 {
+		t.Fatalf("%d runs", len(runs))
+	}
+	runDir := filepath.Join(results, runs[0].Name())
+	if code, _, stderr := runCLI("score", "-config", cfgPath, "-run", runDir); code != 0 {
+		t.Fatalf("score: exit %d, stderr: %s", code, stderr)
+	}
+	reports, _ := filepath.Glob(filepath.Join(runDir, "scores-*", "report.md"))
+	if len(reports) != 1 {
+		t.Fatalf("reports: %v", reports)
+	}
+	data, err := os.ReadFile(reports[0])
+	head := strings.Join(strings.SplitN(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n", 5)[:4], "\n")
+	if err != nil || !strings.Contains(head, "> **备注："+note+"**") {
+		t.Fatalf("the note must be in the first lines of the report: %v\n%.300s", err, data)
+	}
+	if code, _, stderr := runCLI("run", "-config", cfgPath, "-env", "fake", "-note", "a\nb"); code == 0 || !strings.Contains(stderr, "note") {
+		t.Errorf("a multi-line note: exit %d, %q", code, stderr)
+	}
+}

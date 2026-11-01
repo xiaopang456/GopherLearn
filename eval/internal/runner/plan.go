@@ -74,7 +74,10 @@ func MakePlan(ctx context.Context, in PlanInput) (Estimate, error) {
 	}
 	est.EmbeddingCalls = est.IndexEmbeddingCalls + est.QueryEmbeddingCalls
 	if matrix.NeedsReranker(cells) {
-		est.RerankQueryCalls = est.DistinctQueries
+		// One call per distinct question for each differently built pool: hybrid+rerank and
+		// vector+rerank rerank different candidates, so they are cached apart. The figure is
+		// an upper bound: a question whose two pools happen to be identical costs one.
+		est.RerankQueryCalls = est.DistinctQueries * matrix.RerankPools(cells)
 		est.RerankHealthCalls = 1
 	}
 	est.RerankCalls = est.RerankQueryCalls + est.RerankHealthCalls

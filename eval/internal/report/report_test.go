@@ -210,20 +210,6 @@ func TestComparisonPairsSkipBypassedCellsAndNeedABaseline(t *testing.T) {
 	}
 }
 
-func TestUnanswerableScoresAreOnlyDescribed(t *testing.T) {
-	rep, _ := Build(handInput(runner.EnvReal))
-	h := cellByID(rep, "hybrid/k=3")
-	if h.Unanswerable != 1 || h.UnanswerableEmpty != 0 || len(h.UnanswerableTopOne) != 3 {
-		t.Fatalf("%+v", h)
-	}
-	near(t, "unanswerable top-1", h.UnanswerableTopOne[1], 0.2)
-	if h.AnswerableTopOneMed == nil {
-		t.Fatal("no answerable median")
-	}
-	// answerable top-1 scores for hybrid: 0.9, 0.8, 0.7, 0.6 -> median 0.75
-	near(t, "answerable median", *h.AnswerableTopOneMed, 0.75)
-}
-
 // ---- the labels the reader depends on --------------------------------------
 
 func TestMarkdownStatesTheTwoCriteriaSeparately(t *testing.T) {
@@ -367,7 +353,7 @@ func runFake(t *testing.T) (*config.Config, *dataset.Corpus, *dataset.Dataset, s
 
 func TestScoreWritesDeterministicFilesAndLabelsTheRun(t *testing.T) {
 	cfg, corpus, ds, runDir := runFake(t)
-	rep, out, err := Score(runDir, cfg, corpus, ds)
+	rep, out, err := Score(runDir, cfg, corpus, ds, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,12 +376,12 @@ func TestScoreWritesDeterministicFilesAndLabelsTheRun(t *testing.T) {
 	}
 
 	// Scoring is repeatable: the same run and settings rewrite the same bytes.
-	if _, out2, err := Score(runDir, cfg, corpus, ds); err != nil || out2 != out || read("report.md") != md || read("scores.json") != js {
+	if _, out2, err := Score(runDir, cfg, corpus, ds, ""); err != nil || out2 != out || read("report.md") != md || read("scores.json") != js {
 		t.Fatalf("scoring twice gave different output (err %v)", err)
 	}
 	// A different setting goes to a different directory and leaves the first alone.
 	cfg.Metrics.HitThreshold = 0.8
-	if _, out3, err := Score(runDir, cfg, corpus, ds); err != nil || out3 == out || read("report.md") != md {
+	if _, out3, err := Score(runDir, cfg, corpus, ds, ""); err != nil || out3 == out || read("report.md") != md {
 		t.Fatalf("a new threshold must not overwrite the earlier report (err %v)", err)
 	}
 }
@@ -407,17 +393,17 @@ func TestScoreRefusesAChangedQuestionFileOrCorpus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := Score(runDir, cfg, corpus, edited); err == nil || !strings.Contains(err.Error(), "question file changed") {
+	if _, _, err := Score(runDir, cfg, corpus, edited, ""); err == nil || !strings.Contains(err.Error(), "question file changed") {
 		t.Errorf("a changed question file: %v", err)
 	}
 
 	other := *corpus
 	other.Documents = append([]dataset.Document(nil), corpus.Documents[:2]...)
-	if _, _, err := Score(runDir, cfg, &other, ds); err == nil || !strings.Contains(err.Error(), "corpus changed") {
+	if _, _, err := Score(runDir, cfg, &other, ds, ""); err == nil || !strings.Contains(err.Error(), "corpus changed") {
 		t.Errorf("a changed corpus: %v", err)
 	}
 
-	if _, _, err := Score(filepath.Join(filepath.Dir(runDir), "no-such-run"), cfg, corpus, ds); err == nil {
+	if _, _, err := Score(filepath.Join(filepath.Dir(runDir), "no-such-run"), cfg, corpus, ds, ""); err == nil {
 		t.Error("a missing run directory must fail")
 	}
 }
@@ -433,11 +419,113 @@ func TestScoreFlagsAnIncompleteRun(t *testing.T) {
 	if err := os.WriteFile(path, []byte(strings.Join(lines[:len(lines)-10], "\n")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rep, _, err := Score(runDir, cfg, corpus, ds)
+	rep, _, err := Score(runDir, cfg, corpus, ds, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !rep.Incomplete {
 		t.Fatal("a run with missing records must be reported as incomplete")
+	}
+}
+
+// ---- note and per-type table ------------------------------------------------
+
+func typed(id, typ string, sets ...dataset.EvidenceSet) dataset.Question {
+	return dataset.Question{ID: id, Question: id, Answerable: true, Split: dataset.SplitDev, Type: typ, Evidence: sets}
+}
+
+// Hybrid at k=3, by type, worked out by hand:
+//
+//	single_fact t1: a.md 1-10 fully covered           -> coverage 1.0, hit, full, RR 1
+//	single_fact t2: a.md 20-29, result 20-24          -> coverage 0.5, hit, not full, RR 1
+//	multi_evidence m1: a.md 40-44 + b.md 1-5 (10 lines), only a.md 40-44 -> coverage 0.5, hit, not full
+//	multi_evidence m2: same evidence, both spans retrieved               -> coverage 1.0, hit, full
+//	comparison c1: b.md 10-13, nothing relevant       -> coverage 0, miss
+func typeInput() Input {
+	multi := dataset.EvidenceSet{span("a.md", 40, 44), span("b.md", 1, 5)}
+	questions := []dataset.Question{
+		typed("t1", "single_fact", dataset.EvidenceSet{span("a.md", 1, 10)}),
+		typed("t2", "single_fact", dataset.EvidenceSet{span("a.md", 20, 29)}),
+		typed("m1", "multi_evidence", multi),
+		typed("m2", "multi_evidence", multi),
+		typed("c1", "comparison", dataset.EvidenceSet{span("b.md", 10, 13)}),
+		{ID: "u1", Question: "u1", Answerable: false, Split: dataset.SplitDev, Type: "unanswerable"},
+	}
+	cell := "hybrid/k=3"
+	records := []runner.Record{
+		rec(cell, "t1", []runner.Hit{hit("a.md", 1, 10, 0.9)}, nil, ""),
+		rec(cell, "t2", []runner.Hit{hit("a.md", 20, 24, 0.8)}, nil, ""),
+		rec(cell, "m1", []runner.Hit{hit("a.md", 40, 44, 0.7)}, nil, ""),
+		rec(cell, "m2", []runner.Hit{hit("a.md", 40, 44, 0.7), hit("b.md", 1, 5, 0.6)}, nil, ""),
+		rec(cell, "c1", []runner.Hit{hit("x.md", 1, 5, 0.5)}, nil, ""),
+		rec(cell, "u1", []runner.Hit{hit("a.md", 1, 1, 0.2)}, nil, ""),
+	}
+	var manifest runner.Manifest
+	manifest.Environment, manifest.Split, manifest.RunID = runner.EnvReal, dataset.SplitDev, "run-types"
+	manifest.Cells = []string{cell}
+	return Input{Manifest: manifest, Records: records, Questions: questions, Threshold: 0.5, Seed: 3, Resamples: 200}
+}
+
+func TestByTypeReportsFullCoverageOfMultiEvidenceQuestions(t *testing.T) {
+	rep, err := Build(typeInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]TypeStats{}
+	for _, s := range rep.ByType {
+		got[s.Type] = s
+	}
+	if _, ok := got["unanswerable"]; ok || len(got) != 3 {
+		t.Fatalf("by-type rows must cover answerable types only: %v", got)
+	}
+	multi := got["multi_evidence"]
+	if multi.Answerable != 2 || multi.Hits != 2 || multi.FullCoverage != 1 {
+		t.Fatalf("multi_evidence = %+v: both are hits at 0.5 but only one has all its evidence", multi)
+	}
+	near(t, "multi mean coverage", multi.MeanCoverage, 0.75)
+	near(t, "multi MRR", multi.MRR, 1)
+	single := got["single_fact"]
+	if single.Answerable != 2 || single.Hits != 2 || single.FullCoverage != 1 {
+		t.Fatalf("single_fact = %+v", single)
+	}
+	near(t, "single mean coverage", single.MeanCoverage, 0.75)
+	comparison := got["comparison"]
+	if comparison.Answerable != 1 || comparison.Hits != 0 || comparison.FullCoverage != 0 || comparison.MeanCoverage != 0 || comparison.MRR != 0 {
+		t.Fatalf("comparison = %+v", comparison)
+	}
+	// The unanswerable question counts toward none of the cell's answerable totals.
+	if c := cellByID(rep, "hybrid/k=3"); c.Answerable != 5 || c.Unanswerable != 1 {
+		t.Fatalf("cell = %+v", c)
+	}
+
+	md := rep.Markdown()
+	for _, want := range []string{
+		"## 表 5　按题型拆分",
+		"| hybrid/k=3 | multi_evidence | 2 | 1.000 (2/2) | 0.750 | 0.500 (1/2) | 1.000 |",
+		"完整覆盖指整组证据都被前 K 个结果取到",
+		"不可答题**不计入**命中@K、MRR、覆盖率、纯度和配对比较",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("report lacks %q", want)
+		}
+	}
+	data, err := rep.JSON()
+	if err != nil || !strings.Contains(string(data), `"by_type"`) || !strings.Contains(string(data), `"full_coverage": 1`) {
+		t.Errorf("scores.json lacks the by-type rows: %v", err)
+	}
+}
+
+func TestTheNoteLeadsTheReport(t *testing.T) {
+	in := typeInput()
+	in.Manifest.Note = "预跑，题集未冻结，不作为正式基线"
+	rep, _ := Build(in)
+	lines := strings.Split(rep.Markdown(), "\n")
+	if lines[0] != "# L1 检索评测报告" || lines[2] != "> **备注：预跑，题集未冻结，不作为正式基线**" {
+		t.Fatalf("the note must sit right under the title, got %q", lines[:3])
+	}
+	in.Manifest.Note = "  "
+	rep, _ = Build(in)
+	if strings.Contains(rep.Markdown(), "备注") {
+		t.Error("a blank note must not print an empty remark")
 	}
 }

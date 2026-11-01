@@ -52,8 +52,11 @@ func (c Cell) Options() rag.RetrieveOptions {
 		opts.Mode = rag.RetrievalModeKeyword
 	case config.MethodHybrid:
 		opts.Mode = rag.RetrievalModeHybrid
-	case config.MethodHybridRerank:
+	case config.MethodHybridRerank, config.MethodVectorRerank:
 		opts.Mode = rag.RetrievalModeHybrid
+		if c.Method == config.MethodVectorRerank {
+			opts.Mode = rag.RetrievalModeVector
+		}
 		if c.Rule == RuleForced {
 			opts.Rerank = rag.RerankForceOn
 		} else {
@@ -63,9 +66,27 @@ func (c Cell) Options() rag.RetrieveOptions {
 	return opts
 }
 
+// IsRerankMethod reports whether a method reranks (hybrid+rerank or vector+rerank).
+func IsRerankMethod(method string) bool {
+	return method == config.MethodHybridRerank || method == config.MethodVectorRerank
+}
+
+// RerankPools is how many differently built candidate pools the matrix sends to the
+// reranker for one question: one per rerank method that can actually call it. The
+// rerank result is cached by (question, pool), so each pool is one paid call per question.
+func RerankPools(cells []Cell) int {
+	methods := map[string]bool{}
+	for _, c := range cells {
+		if c.UsesReranker() {
+			methods[c.Method] = true
+		}
+	}
+	return len(methods)
+}
+
 // UsesReranker reports whether the cell can call the reranker.
 func (c Cell) UsesReranker() bool {
-	return c.Method == config.MethodHybridRerank && (c.Rule == RuleForced || c.TopK <= rag.DefaultRerankMaxTopK)
+	return IsRerankMethod(c.Method) && (c.Rule == RuleForced || c.TopK <= rag.DefaultRerankMaxTopK)
 }
 
 // Expand lists the cells in a fixed order: methods as configured, TopK ascending.
@@ -80,7 +101,7 @@ func Expand(m config.Matrix) []Cell {
 	var cells []Cell
 	for _, method := range m.Methods {
 		for _, k := range topK {
-			if method != config.MethodHybridRerank {
+			if !IsRerankMethod(method) {
 				cells = append(cells, Cell{Method: method, Rule: RuleNone, TopK: k})
 				continue
 			}

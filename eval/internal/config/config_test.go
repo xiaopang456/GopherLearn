@@ -302,3 +302,33 @@ func TestLoadProductRequiresTheEmbeddingKeyAndAValidProductFile(t *testing.T) {
 		t.Fatalf("err = %v, want it to name RAG_RERANK_AUTH_TOKEN", err)
 	}
 }
+
+func TestVectorRerankIsAMethodAndSharesTheRerankPoolLimit(t *testing.T) {
+	cfg, err := Load(writeConfig(t, validBody(t, `
+[matrix]
+methods = ["vector", "hybrid+rerank", "vector+rerank"]
+topK = [3, 24]
+`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Matrix.HasMethod(MethodVectorRerank) {
+		t.Fatalf("methods = %v", cfg.Matrix.Methods)
+	}
+	_, err = Load(writeConfig(t, validBody(t, `
+[matrix]
+methods = ["vector+rerank"]
+topK = [3, 30]
+`)))
+	if err == nil || !strings.Contains(err.Error(), "candidate pool") {
+		t.Fatalf("err = %v: vector+rerank cannot run above the reranker's pool of 24 either", err)
+	}
+	// Without a rerank method a large K is fine.
+	if _, err := Load(writeConfig(t, validBody(t, `
+[matrix]
+methods = ["vector"]
+topK = [3, 30]
+`))); err != nil {
+		t.Fatal(err)
+	}
+}

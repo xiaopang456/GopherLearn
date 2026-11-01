@@ -815,3 +815,92 @@ func mustRead(t *testing.T, path string) []byte {
 }
 
 func jsonUnmarshal(data []byte, v any) error { return json.Unmarshal(data, v) }
+
+// ---- the run note -----------------------------------------------------------
+
+func TestAnoteIsRecordedInTheManifest(t *testing.T) {
+	cfg := testConfig(t, []string{config.MethodHybrid}, []int{5}, config.Limits{})
+	corpus, ds := loadFixture(t)
+	const note = "预跑，题集未冻结，不作为正式基线"
+	result, err := Execute(context.Background(), cfg, corpus, ds, newEnv(t).Env, Options{Split: dataset.SplitDev, Now: fixedClock, Note: "  " + note + " "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest Manifest
+	if err := jsonUnmarshal(mustRead(t, filepath.Join(result.Dir, ManifestFile)), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Note != note {
+		t.Fatalf("manifest note = %q", manifest.Note)
+	}
+	// With no note the key is absent, not an empty string.
+	cfg2 := testConfig(t, []string{config.MethodHybrid}, []int{5}, config.Limits{})
+	plain, err := Execute(context.Background(), cfg2, corpus, ds, newEnv(t).Env, Options{Split: dataset.SplitDev, Now: fixedClock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(mustRead(t, filepath.Join(plain.Dir, ManifestFile))), `"note"`) {
+		t.Error("a run without a note must not write a note key")
+	}
+}
+
+func TestValidateNote(t *testing.T) {
+	for note, ok := range map[string]bool{
+		"":                                   true,
+		"预跑，题集未冻结":                           true,
+		strings.Repeat("字", MaxNoteLength):   true,
+		strings.Repeat("字", MaxNoteLength+1): false,
+		"two\nlines":                         false,
+		"tab\there":                          false,
+		"bell\a":                             false,
+	} {
+		if err := ValidateNote(note); (err == nil) != ok {
+			t.Errorf("ValidateNote(%q) = %v, want ok=%v", note, err, ok)
+		}
+	}
+}
+
+func TestABadNoteRefusesBeforeAnythingIsSpentOrWritten(t *testing.T) {
+	cfg := testConfig(t, nil, nil, config.Limits{})
+	corpus, ds := loadFixture(t)
+	env := newEnv(t)
+	_, err := Execute(context.Background(), cfg, corpus, ds, env.Env, Options{Split: dataset.SplitDev, Now: fixedClock, Note: "a\nb"})
+	if err == nil || env.embedder.Calls() != 0 {
+		t.Fatalf("err = %v, %d embedding calls", err, env.embedder.Calls())
+	}
+	if _, statErr := os.Stat(cfg.Paths.ResultsDir); !os.IsNotExist(statErr) {
+		t.Fatal("a refused run left a results directory behind")
+	}
+}
+
+func TestVectorRerankKeepsTheKeywordChannelOutAndIsPlannedAsItsOwnPool(t *testing.T) {
+	cfg := testConfig(t, []string{config.MethodHybridRerank, config.MethodVectorRerank}, []int{3}, config.Limits{})
+	env := newEnv(t)
+	corpus, ds := loadFixture(t)
+	plan, err := MakePlan(context.Background(), PlanInput{Config: cfg, Corpus: corpus, Questions: ds.Filter(dataset.SplitDev), Chunker: env.Chunker, MaxSourceBytes: env.MaxSourceBytes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.RerankQueryCalls != 2*plan.DistinctQueries || plan.RerankCalls != 2*plan.DistinctQueries+1 {
+		t.Fatalf("plan = %+v: two rerank methods build two pools per question", plan)
+	}
+	result, records := execute(t, cfg, env.Env, dataset.SplitDev)
+	if result.Errors != 0 {
+		t.Fatalf("%d errors", result.Errors)
+	}
+
+	for _, r := range byCell(records, "vector+rerank/production/k=3") {
+		if r.RerankStatus != "applied" {
+			t.Errorf("%s: rerank status %q", r.QuestionID, r.RerankStatus)
+		}
+		for _, h := range append(append([]Hit{}, r.Pool...), r.Results...) {
+			if h.LexicalRank != 0 || h.MatchKind != "vector" {
+				t.Fatalf("%s: %+v came from the keyword channel", r.QuestionID, h)
+			}
+		}
+	}
+	// The plan is an upper bound and the run stays within it; the pools differ for at least one question.
+	if result.RerankCalls > plan.RerankCalls || result.RerankCalls <= plan.DistinctQueries+1 {
+		t.Errorf("rerank calls %d, plan %d, questions %d", result.RerankCalls, plan.RerankCalls, plan.DistinctQueries)
+	}
+}
