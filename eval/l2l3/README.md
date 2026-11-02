@@ -11,7 +11,7 @@
                        (Node)      (每次尝试一个 JSON)    (Node，离线)     (每次尝试一行)      (Go)
 ```
 
-- **provider**（`provider/`）：登录 → 每次尝试新建会话、换新 `requestId` → `POST /api/v1/AI/agent/run` → 读该轮步骤（`GET …/runs/:runId/steps`）→ 写一条原始记录。Promptfoo 只是运行外壳（`provider/gl_provider.mjs` 是它的自定义 provider）。
+- **provider**（`provider/`）：登录 → 每次尝试新建会话、换新 `requestId` → `POST /api/v1/AI/agent/run` → 读该轮步骤（`GET …/runs/:runId/steps`）→ 写一条原始记录 → 删除这次的会话（`DELETE /api/v1/sessions/:id`；产品限制每个用户最多 100 个会话，不删就跑不了超过 100 次的阶段；`deleteSessions=false` 或 `GL_L23_DELETE_SESSIONS=false` 可关，删除结果写进账本 `cleanup` 阶段，不算运行次数）。Promptfoo 只是运行外壳（`provider/gl_provider.mjs` 是它的自定义 provider）。
 - **断言**（`lib/`）：纯函数 `(记录, 题目) → 判定`。同一套函数既被 Promptfoo 的断言调用（`promptfoo/assertions.cjs`），也被离线评分调用（`score.mjs`），所以两边不会对同一次尝试给出不同判定。**离线评分是权威结果**，Promptfoo 里的通过 / 失败只是它的一个视图。
 - **评分**（`score.mjs`）：读原始记录 + 题集，写 `outcomes.jsonl`。离线、可重复，同样的输入得到同样的字节。运行目录里的 `run.json` 记着它对应的题集与语料哈希，哈希对不上就拒绝评分。
 - **统计与报告**（Go，`cmd/l23`）：单次成功率、pass^k、配对比较，复用 L1 的聚类自助法和 McNemar 精确检验。
@@ -54,7 +54,7 @@ cd eval && go test ./cmd/l23 ./internal/l23
 node eval/l2l3/check.mjs --labels L --dataset D --l3-only N
 ```
 
-**原始记录 `record.v1`**：`arm`、`qid`、`rep`、`env`、`http`、`statusCode`、`runId`、`replayed`、`answer`、`answerBasis`、`knowledgeStatus`、`knowledgeReason`、`sources`、`toolCalls`、`modelCalls`、`steps`（`stepsError` 在读取失败时出现）、`enableThinking`（请求里发的 `true` / `false`，没发则为 `null`）、`error`、`durationMs`。服务端的提示语 `statusMsg`、运行状态 `runStatus` 和结束原因 `terminationReason`（来自读步骤接口里的 `termination_reason`）有就记。失败（超时、非 JSON、读不到步骤）都会留成记录，不丢。一次 `/agent/run` 失败但服务给出了运行编号时，会再读一次这次运行的视图（不调用模型），因为同一个状态码和提示语下有多种原因，只有 `terminationReason` 能把 `unknown_tool` 与 `model_call_limit` 等区分开；评分把这类失败归为 `run_failed:<原因>`，没有原因时仍是 `run_failed`。
+**原始记录 `record.v1`**：`arm`、`qid`、`rep`、`env`、`http`、`statusCode`、`runId`、`replayed`、`answer`、`answerBasis`、`knowledgeStatus`、`knowledgeReason`、`sources`、`toolCalls`、`modelCalls`、`steps`（`stepsError` 在读取失败时出现）、`enableThinking`（请求里发的 `true` / `false`，没发则为 `null`）、`error`、`durationMs`。服务端的提示语 `statusMsg`、运行状态 `runStatus` 和结束原因 `terminationReason`（来自读步骤接口里的 `termination_reason`）有就记。失败（超时、非 JSON、读不到步骤）都会留成记录，不丢。一次 `/agent/run` 失败但服务给出了运行编号时，会再读一次这次运行的视图（不调用模型）；服务端对"启动后才失败"的运行（5003）不返回运行编号，这时 provider 会读该会话的运行列表（`GET …/sessions/:sessionId/runs`，每次尝试一个独立会话，取最新一条）找回编号并写进 `runId`（同时记 `runIdFrom: "session_runs"`），再读它的视图；因为同一个状态码和提示语下有多种原因，只有 `terminationReason` 能把 `unknown_tool` 与 `model_call_limit` 等区分开；评分把这类失败归为 `run_failed:<原因>`，没有原因时仍是 `run_failed`。
 
 **结果 `outcome.v1`**：每次尝试一行，含 L2、L3 两层各自的 `verdict`、归类 `class`、各断言明细和代价。字段由 `test/e2e.test.mjs` 写成 `testdata/outcomes.fixture.jsonl`，Go 测试读同一份文件，两边任一改了格式都会失败。
 

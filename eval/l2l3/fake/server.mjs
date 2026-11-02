@@ -9,7 +9,7 @@
 //
 // A script is { scenarios: [{ question, reps: [rep, ...] }] }. The n-th time a question
 // is asked it uses reps[n] (the last rep repeats). A rep is
-//   { body, http?, steps?, stepsHttp?, stepsBody?, rawText?, delayMs?, inspect? }
+//   { body, http?, steps?, stepsHttp?, stepsBody?, rawText?, delayMs?, inspect?, omitRunId? }
 // where `body` is the /agent/run response fields (status_code defaults to 1000).
 
 import http from 'node:http'
@@ -25,6 +25,8 @@ export async function startFakeBackend(script = { scenarios: [] }, { port = 0 } 
     sessions: 0,
     runs: 0,
     stepReads: 0,
+    runListReads: 0,
+    deletedSessions: [],
     requestIds: [],
     requests: [],
     runBodies: [], // the JSON each /agent/run request carried
@@ -89,8 +91,29 @@ export async function startFakeBackend(script = { scenarios: [] }, { port = 0 } 
       const runId = `run-${stats.runs}`
       runs.set(runId, { rep, sessionId: body.sessionId })
       const response = { status_code: SUCCESS, runId, ...rep.body }
+      // The real service answers a run that failed after it started without its id.
+      if (rep.omitRunId) delete response.runId
       if (replay) response.replayed = true
       return send(res, rep.http ?? 200, response)
+    }
+
+    const deleteMatch = req.method === 'DELETE' && url.pathname.match(/^\/api\/v1\/sessions\/([^/]+)$/)
+    if (deleteMatch) {
+      const id = decodeURIComponent(deleteMatch[1])
+      stats.deletedSessions.push(id)
+      return send(res, sessions.delete(id) ? 200 : 404, { data: null, error: null })
+    }
+
+    const listMatch = req.method === 'GET' && url.pathname.match(/^\/api\/v1\/AI\/agent\/sessions\/([^/]+)\/runs$/)
+    if (listMatch) {
+      stats.runListReads += 1
+      const sessionId = decodeURIComponent(listMatch[1])
+      const held = [...runs.entries()].filter(([, run]) => run.sessionId === sessionId)
+      return send(res, 200, {
+        status_code: SUCCESS,
+        runs: held.map(([runId, run], index) => ({ run_id: runId, status: 'failed', started_at: `2026-01-01T00:00:0${index}Z`, steps: run.rep.steps ?? [] })),
+        truncated: false,
+      })
     }
 
     const stepsMatch = req.method === 'GET' && url.pathname.match(/^\/api\/v1\/AI\/agent\/sessions\/([^/]+)\/runs\/([^/]+)\/steps$/)
