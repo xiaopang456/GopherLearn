@@ -35,7 +35,10 @@ func TestSandboxIntegration(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	if err = s.db.AutoMigrate(&model.Session{}, &model.Message{}, &model.SessionSummary{}); err != nil {
+	if err = s.db.AutoMigrate(&model.User{}, &model.Session{}, &model.Message{}, &model.SessionSummary{}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.db.Create(&model.User{ID: 7, Username: "learner"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	snap := validSnapshot()

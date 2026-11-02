@@ -19,6 +19,18 @@ func restoreIntoEmpty(ctx context.Context, db *gorm.DB, snapshot Snapshot) error
 		return err
 	}
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// The sandbox is seeded with exactly one evaluation user. A matching
+		// session username alone does not establish ownership.
+		var users, owned int64
+		if err := tx.Model(&model.User{}).Count(&users).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&model.User{}).Where("id = ? AND username = ?", snapshot.Session.UserID, snapshot.Session.UserName).Count(&owned).Error; err != nil {
+			return err
+		}
+		if users != 1 || owned != 1 {
+			return fmt.Errorf("target evaluation user does not match snapshot")
+		}
 		for _, value := range []any{&model.Session{}, &model.Message{}, &model.SessionSummary{}} {
 			var count int64
 			if err := tx.Model(value).Count(&count).Error; err != nil {

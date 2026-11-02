@@ -14,7 +14,10 @@ func TestRestoreRequiresEmptyTablesAndIsAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = db.AutoMigrate(&model.Session{}, &model.Message{}, &model.SessionSummary{}); err != nil {
+	if err = db.AutoMigrate(&model.User{}, &model.Session{}, &model.Message{}, &model.SessionSummary{}); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.Create(&model.User{ID: 7, Username: "learner"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	s := validSnapshot()
@@ -37,12 +40,35 @@ func TestRestoreRequiresEmptyTablesAndIsAtomic(t *testing.T) {
 	}
 }
 
+func TestRestoreRejectsDifferentUser(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = db.AutoMigrate(&model.User{}, &model.Session{}, &model.Message{}, &model.SessionSummary{}); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.Create(&model.User{ID: 7, Username: "other"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err = restoreIntoEmpty(context.Background(), db, validSnapshot()); err == nil {
+		t.Fatal("accepted wrong user")
+	}
+	var count int64
+	if err = db.Model(&model.Session{}).Count(&count).Error; err != nil || count != 0 {
+		t.Fatalf("count=%d error=%v", count, err)
+	}
+}
+
 func TestRestoreRollsBackOnInsertFailure(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = db.AutoMigrate(&model.Session{}, &model.Message{}, &model.SessionSummary{}); err != nil {
+	if err = db.AutoMigrate(&model.User{}, &model.Session{}, &model.Message{}, &model.SessionSummary{}); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.Create(&model.User{ID: 7, Username: "learner"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err = db.Callback().Create().Before("gorm:create").Register("fail-messages", func(tx *gorm.DB) {
