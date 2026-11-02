@@ -125,13 +125,12 @@ dimension = 1024
 # 它们走模型级设置，永远是关闭的。
 # 思考会让每次调用更慢也更贵，先按供应商的单价算一遍再打开。
 #
-# **DeepSeek 上必须保持 false**：DeepSeek 在多轮工具调用里要求每一轮 assistant 都带一个
-# reasoning_content 字段。客户端会把**思考过**的那一轮带回去，但「强制指定工具」的那一次
-# 是关着思考跑的（DeepSeek 不接受思考模式下的指定工具名），它本来就没有思考内容；
-# 紧接着开思考的自由路径带着这一轮发出去，就少了这个字段。
-# 打开后 Agent 自由路径的每次调用都会被拒（HTTP 400 "The `reasoning_content` in the
-# thinking mode must be passed back to the API."），整轮失败、业务码 5003。
-# 这个组合会在启动时被配置校验直接拒绝，不会跑到运行时才炸。
+# DeepSeek 上也可以打开：DeepSeek 在多轮工具调用里要求每一轮 assistant 都带一个
+# reasoning_content 字段。「强制指定工具」的那一次是关着思考跑的（DeepSeek 不接受
+# 思考模式下的指定工具名），它本来就没有思考内容；客户端会给**这一轮**补一个空的
+# reasoning_content（空字符串，因为这一轮确实没有思考内容，DeepSeek 接受空字符串、
+# 不接受缺失或 null），所以自由路径的请求能被接受。
+# 这个补字段只在「方言是 deepseek 且思考打开」时注册，其它情况下请求体与之前逐字节一致。
 # 普通聊天路径不受影响：它不做工具调用，DeepSeek 上可以开思考。
 # agentThinkingEnabled = true
 

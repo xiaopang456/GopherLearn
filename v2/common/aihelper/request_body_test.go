@@ -23,6 +23,12 @@ import (
 // the wire, and the client decides the order and the spelling. These cases
 // pin the result, so a change in the client shows up here instead of in
 // production.
+//
+// The model is built the way the product builds it - the dialect's switch on
+// the model, the per-request options on the call - because that is the only
+// way these cases pin what a deployment sends. The DeepSeek cases carry the
+// reasoning_content patch, because that is what a DeepSeek deployment with
+// thinking on sends.
 func TestTheRequestBodyOnTheWireIsPinned(t *testing.T) {
 	// A configured budget would add a field to the qwen table, which is a
 	// different request. The budget has its own test; this one pins the
@@ -46,12 +52,28 @@ func TestTheRequestBodyOnTheWireIsPinned(t *testing.T) {
 
 	const toolSchema = `{"properties":{"query":{"description":"the query","type":"string"}},"required":["query"],"type":"object"}`
 
+	// The turn DeepSeek asks about: an assistant turn that asked for a tool.
+	const toolCallTurn = `{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"knowledge_search","arguments":"{\"query\":\"golang\"}"}}]}`
+
+	assistantWithToolCall := schema.AssistantMessage("", []schema.ToolCall{{
+		ID:       "call_1",
+		Type:     "function",
+		Function: schema.FunctionCall{Name: "knowledge_search", Arguments: `{"query":"golang"}`},
+	}})
+	assistantThatThought := schema.AssistantMessage("", []schema.ToolCall{{
+		ID:       "call_1",
+		Type:     "function",
+		Function: schema.FunctionCall{Name: "knowledge_search", Arguments: `{"query":"golang"}`},
+	}})
+	assistantThatThought.ReasoningContent = "I looked it up"
+
 	cases := []struct {
-		name    string
-		dialect string
-		enabled bool
-		opts    []model.Option
-		want    string
+		name     string
+		dialect  string
+		enabled  bool
+		opts     []model.Option
+		messages []*schema.Message
+		want     string
 	}{
 		{
 			name:    "qwen dialect, thinking off",
@@ -113,6 +135,38 @@ func TestTheRequestBodyOnTheWireIsPinned(t *testing.T) {
 				`{"type":"function","function":{"name":"knowledge_search","description":"the knowledge_search tool","parameters":` + toolSchema + `}},` +
 				`{"type":"function","function":{"name":"memory_recall","description":"the memory_recall tool","parameters":` + toolSchema + `}}]}`,
 		},
+		{
+			name:    "deepseek dialect, thinking off",
+			dialect: config.ChatThinkingDialectDeepSeek,
+			want:    `{"messages":[{"role":"user","content":"hello"}],"model":"test","thinking":{"type":"disabled"}}`,
+		},
+		{
+			name:     "deepseek dialect, thinking on, an assistant turn that asked for a tool gets the field",
+			dialect:  config.ChatThinkingDialectDeepSeek,
+			enabled:  true,
+			messages: []*schema.Message{assistantWithToolCall},
+			want:     `{"messages":[{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"knowledge_search","arguments":"{\"query\":\"golang\"}"}}],"reasoning_content":""}],"model":"test","thinking":{"type":"enabled"}}`,
+		},
+		{
+			name:     "deepseek dialect, thinking on, an assistant turn that thought keeps its own content",
+			dialect:  config.ChatThinkingDialectDeepSeek,
+			enabled:  true,
+			messages: []*schema.Message{assistantThatThought},
+			want:     `{"messages":[{"role":"assistant","reasoning_content":"I looked it up","tool_calls":[{"id":"call_1","type":"function","function":{"name":"knowledge_search","arguments":"{\"query\":\"golang\"}"}}]}],"model":"test","thinking":{"type":"enabled"}}`,
+		},
+		{
+			name:     "qwen dialect, thinking on, an assistant turn that asked for a tool is left alone",
+			dialect:  config.ChatThinkingDialectQwen,
+			enabled:  true,
+			messages: []*schema.Message{assistantWithToolCall},
+			want:     `{"enable_thinking":true,"messages":[{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"knowledge_search","arguments":"{\"query\":\"golang\"}"}}]}],"model":"test"}`,
+		},
+		{
+			name:     "deepseek dialect, thinking off, an assistant turn that asked for a tool is left alone",
+			dialect:  config.ChatThinkingDialectDeepSeek,
+			messages: []*schema.Message{assistantWithToolCall},
+			want:     `{"messages":[{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"knowledge_search","arguments":"{\"query\":\"golang\"}"}}]}],"model":"test","thinking":{"type":"disabled"}}`,
+		},
 	}
 
 	for _, tc := range cases {
@@ -134,13 +188,20 @@ func TestTheRequestBodyOnTheWireIsPinned(t *testing.T) {
 				BaseURL:     server.URL,
 				Model:       "test",
 				APIKey:      "sk-test",
-				ExtraFields: ThinkingExtraFields(tc.dialect, tc.enabled),
+				ExtraFields: ThinkingExtraFields(tc.dialect, false),
 			})
 			if err != nil {
 				t.Fatalf("create chat model: %v", err)
 			}
 
-			if _, err := llm.Generate(context.Background(), []*schema.Message{schema.UserMessage("hello")}, tc.opts...); err != nil {
+			messages := tc.messages
+			if messages == nil {
+				messages = []*schema.Message{schema.UserMessage("hello")}
+			}
+			opts := append([]model.Option{}, tc.opts...)
+			opts = append(opts, ThinkingModelOptions(tc.dialect, tc.enabled)...)
+
+			if _, err := llm.Generate(context.Background(), messages, opts...); err != nil {
 				t.Fatalf("generate: %v", err)
 			}
 			if len(captured) != 1 {

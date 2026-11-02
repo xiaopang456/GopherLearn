@@ -63,7 +63,7 @@ func ThinkingExtraFields(dialect string, enabled bool) map[string]any {
 	}
 }
 
-// ThinkingModelOption applies the per-request thinking choice to any Eino
+// ThinkingModelOptions applies the per-request thinking choice to any Eino
 // OpenAI-compatible model call, including calls made inside ReAct.
 //
 // The dialect travels with the call rather than being read from the
@@ -73,8 +73,33 @@ func ThinkingExtraFields(dialect string, enabled bool) map[string]any {
 // The extra fields replace the model's own table rather than merging into it
 // (the Eino client's WithExtraFields assigns), so the table this returns is
 // the whole table the request carries.
-func ThinkingModelOption(dialect string, enabled bool) model.Option {
-	return openai.WithExtraFields(ThinkingExtraFields(dialect, enabled))
+//
+// The second option is the reasoning_content patch, and it is registered only
+// where it is needed: the DeepSeek dialect with thinking on. Every other
+// combination sends the request exactly as it did before the patch existed.
+func ThinkingModelOptions(dialect string, enabled bool) []model.Option {
+	opts := []model.Option{openai.WithExtraFields(ThinkingExtraFields(dialect, enabled))}
+	if needsDeepSeekReasoningPatch(dialect, enabled) {
+		opts = append(opts, openai.WithRequestPayloadModifier(deepSeekReasoningPatch))
+	}
+	return opts
+}
+
+// needsDeepSeekReasoningPatch reports whether this request is one that
+// DeepSeek will refuse without a reasoning_content field on the earlier
+// assistant turns.
+//
+// DeepSeek requires the field on every earlier assistant turn of a multi-turn
+// tool call while thinking is on, and it refuses the request when the field
+// is missing or null. The Agent mixes the two thinking modes inside one run:
+// the turn that asks for one specific tool runs without thinking, so it has no
+// reasoning content of its own, and the free turn that follows carries it
+// with thinking on.
+//
+// Only the DeepSeek dialect with thinking on has that problem. A request in
+// any other dialect, or with thinking off, is not touched at all.
+func needsDeepSeekReasoningPatch(dialect string, enabled bool) bool {
+	return dialect == config.ChatThinkingDialectDeepSeek && enabled
 }
 
 func NewToolCallingChatModel(ctx context.Context) (model.ToolCallingChatModel, error) {
