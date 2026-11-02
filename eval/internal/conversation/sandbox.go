@@ -118,6 +118,19 @@ func NewSandbox(ctx context.Context) (*Sandbox, error) {
 		return fail(fmt.Errorf("sandbox port is not loopback-only"))
 	}
 	s.addr = net.JoinHostPort(host, p)
+	// The image first runs a temporary socket-only server during bootstrap.
+	// Wait for TCP inside the owned container before opening the host port.
+	for {
+		_, readyErr := docker(ctx, "exec", "-e", "MYSQL_PWD="+s.password, s.id, "mysqladmin", "--protocol=tcp", "-h127.0.0.1", "-uroot", "ping", "--silent")
+		if readyErr == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return fail(fmt.Errorf("sandbox readiness timed out: %w", ctx.Err()))
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
 	dsn := fmt.Sprintf("root:%s@tcp(%s)/eval_sandbox?charset=utf8mb4&parseTime=True&loc=UTC", s.password, s.addr)
 	for {
 		db, openErr := gorm.Open(mysql.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent), DisableAutomaticPing: true})
