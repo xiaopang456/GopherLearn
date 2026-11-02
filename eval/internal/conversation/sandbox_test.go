@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"GopherAI/model"
+	agent "GopherAI/service/agent"
 )
 
 func TestSandboxRejectsForgedIdentity(t *testing.T) {
@@ -69,5 +70,61 @@ func TestSandboxIntegration(t *testing.T) {
 	}
 	if _, _, err = s.ObserveJobs(ctx); err == nil {
 		t.Fatal("observed altered instance")
+	}
+}
+
+type syntheticGenerator struct{ calls int }
+
+func (g *syntheticGenerator) GenerateSummary(_ context.Context, _ string, _ []model.Message) (string, error) {
+	g.calls++
+	return `{"schema_version":2,"current_goal":"practice"}`, nil
+}
+func TestSandboxWarmupIntegration(t *testing.T) {
+	if os.Getenv("GL_SANDBOX_TEST") != "1" {
+		t.Skip("requires a local Docker daemon and preloaded MySQL image")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	s, err := NewSandbox(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		cctx, c := context.WithTimeout(context.Background(), 15*time.Second)
+		defer c()
+		if err := s.Close(cctx); err != nil {
+			t.Error(err)
+		}
+	}()
+	if err = s.db.AutoMigrate(&model.User{}, &model.Session{}, &model.Message{}, &model.SessionSummary{}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.db.Create(&model.User{ID: 7, Username: "learner"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err = s.db.Create(&model.Session{ID: "session", UserID: 7, UserName: "learner", Mode: model.SessionModeAgent}).Error; err != nil {
+		t.Fatal(err)
+	}
+	turns := make([]Turn, 40)
+	for i := range turns {
+		turns[i] = testTurn(i)
+	}
+	g := &syntheticGenerator{}
+	got, err := s.Prepare(ctx, 7, "session", "learner", turns, g, agent.DefaultSummaryConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 40 || g.calls != 12 {
+		t.Fatalf("turns=%d calls=%d", len(got), g.calls)
+	}
+	snap, err := s.Capture(ctx, 7, "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Messages) != 80 || snap.Summary.CoveredMessageID != 71 {
+		t.Fatalf("messages=%d summary=%+v", len(snap.Messages), snap.Summary)
+	}
+	if _, err = s.Prepare(ctx, 7, "session", "learner", turns, g, agent.DefaultSummaryConfig()); err == nil {
+		t.Fatal("prepared a nonempty session")
 	}
 }
