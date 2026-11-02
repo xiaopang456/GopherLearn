@@ -27,10 +27,20 @@ export function computeHashes({ datasetPath, labelsPath, l3OnlyPath, corpusManif
   }
 }
 
-/** Write run.json beside the raw records, when the run's configuration is generated. */
+/**
+ * Write run.json beside the raw records, when the run's configuration is generated. It
+ * says which split the run is over, and a directory that already holds a run of the
+ * other split is refused: the records of a development run and a sealed run never mix.
+ */
 export function writePin(rawDir, paths) {
+  const split = paths.split ?? 'dev'
+  const pinPath = path.join(rawDir, 'run.json')
+  if (fs.existsSync(pinPath)) {
+    const earlier = JSON.parse(fs.readFileSync(pinPath, 'utf8')).split ?? 'dev'
+    if (earlier !== split) throw new Error(`${rawDir} already holds a ${earlier} run; a ${split} run needs its own directory`)
+  }
   fs.mkdirSync(rawDir, { recursive: true })
-  fs.writeFileSync(path.join(rawDir, 'run.json'), `${JSON.stringify(computeHashes(paths), null, 2)}\n`)
+  fs.writeFileSync(pinPath, `${JSON.stringify({ split, ...computeHashes(paths) }, null, 2)}\n`)
 }
 
 /** All raw records under `rawDir`, in a fixed order (arm, qid, rep). */
