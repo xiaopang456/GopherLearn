@@ -42,7 +42,18 @@ export function resolveConfig(config = {}, env = process.env) {
     // A file whose existence means "stop": whoever watches the run (the counting proxy, a person)
     // creates it, and no further request is made while it is there.
     stopFile: pick('stopFile', 'GL_L23_STOP_FILE'),
+    // Whether the session a trial opened is deleted once the trial is over. The product keeps at most
+    // 100 sessions per user, so a stage of more than 100 trials cannot run without it. On unless false.
+    deleteSessions: parseFlag(pick('deleteSessions', 'GL_L23_DELETE_SESSIONS'), true),
   }
+}
+
+/** A boolean setting: true / false (or their strings); unset takes the default; anything else is kept so it can be refused. */
+function parseFlag(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback
+  if (value === true || value === 'true') return true
+  if (value === false || value === 'false') return false
+  return value
 }
 
 /** true / false (or their strings) are choices; unset stays undefined; anything else is kept so it can be refused. */
@@ -66,6 +77,7 @@ export function configProblem(cfg) {
   if (cfg.env === 'real' && !(cfg.maxRuns > 0)) return 'a real run needs GL_L23_MAX_RUNS above zero'
   if (!Number.isInteger(cfg.maxRuns) || cfg.maxRuns < 0) return 'maxRuns must be a non-negative integer'
   if (cfg.enableThinking !== undefined && typeof cfg.enableThinking !== 'boolean') return `enableThinking must be true or false when given, not ${JSON.stringify(cfg.enableThinking)}`
+  if (typeof cfg.deleteSessions !== 'boolean') return `deleteSessions must be true or false when given, not ${JSON.stringify(cfg.deleteSessions)}`
   for (const [name, value] of [['ledgerPath', cfg.ledgerPath], ['rawDir', cfg.rawDir]]) {
     try {
       assertOutsideWorktree(name, value)
@@ -118,6 +130,32 @@ export class TrialRunner {
     this.token = r.body.data.token
   }
 
+  /**
+   * The id of the run a session holds, read from the session's run list. A run that failed after it started
+   * answers without its id, but the run exists; each trial has a session of its own, so the newest run is its run.
+   * Returns '' when it cannot be found. Reading the list calls no model.
+   */
+  async latestRunId(auth, sessionId) {
+    try {
+      const list = await jsonFetch(`${this.cfg.baseUrl}/api/v1/AI/agent/sessions/${encodeURIComponent(sessionId)}/runs`, { method: 'GET', headers: auth }, 15000)
+      const runs = list.status === 200 && list.body?.status_code === SUCCESS_CODE && Array.isArray(list.body.runs) ? list.body.runs : []
+      const newest = [...runs].filter((r) => typeof r?.run_id === 'string' && r.run_id !== '').sort((a, b) => String(a.started_at ?? '').localeCompare(String(b.started_at ?? ''))).at(-1)
+      return newest?.run_id ?? ''
+    } catch {
+      return ''
+    }
+  }
+
+  /** Delete the trial's session through the product's own API. A failure is written to the ledger, never thrown. */
+  async deleteSession(auth, sessionId) {
+    try {
+      const r = await jsonFetch(`${this.cfg.baseUrl}/api/v1/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE', headers: auth }, 15000)
+      this.ledgerAppend({ phase: 'cleanup', sessionId, http: r.status })
+    } catch (error) {
+      this.ledgerAppend({ phase: 'cleanup', sessionId, error: String(error?.message ?? error).slice(0, 160) })
+    }
+  }
+
   writeRecord(record) {
     const dir = path.join(this.cfg.rawDir, safeName(record.arm))
     fs.mkdirSync(dir, { recursive: true })
@@ -148,9 +186,11 @@ export class TrialRunner {
     if (this.fakeSessionProvider && this.cfg.env !== 'fake') {
       return finish({ error: 'refused: injected sessions are currently supported only with a fake backend' })
     }
+    let sessionId = null
+    let auth = null
     try {
       if (!this.token) await this.login()
-      const auth = { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' }
+      auth = { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' }
       const nonce = crypto.randomBytes(6).toString('hex')
 
       // A new session per trial: a session's history reaches the next prompt and can
@@ -160,7 +200,7 @@ export class TrialRunner {
         headers: auth,
         body: JSON.stringify({ mode: 'learning_agent', title: `l23 ${arm} ${qid}`, requestId: `s-${safeName(arm)}-${safeName(qid)}-${rep}-${nonce}` }),
       }, 15000)
-      const sessionId = session.body?.data?.id
+      sessionId = session.body?.data?.id
       if (session.status !== 200 || !sessionId) {
         return finish({ error: `create session failed: http ${session.status}` })
       }
@@ -214,15 +254,27 @@ export class TrialRunner {
       if (typeof b.status_msg === 'string' && b.status_msg !== '') record.statusMsg = b.status_msg.slice(0, 200)
       const failed = run.status !== 200 || b.status_code !== SUCCESS_CODE
 
+      // A run that failed after it started (5003) answers without its id. The session still holds the run,
+      // so its id is taken from the session's run list; without it the run view below cannot be read.
+      let runId = b.runId
+      if (failed && !runId && run.status === 200) {
+        const found = await this.latestRunId(auth, sessionId)
+        if (found) {
+          runId = found
+          record.runId = found
+          record.runIdFrom = 'session_runs'
+        }
+      }
+
       // What the turn did, by name, and how it ended. Reading it calls no model. A run that
       // failed after it started has a run view too, and its termination reason is the only
       // place that tells "unknown_tool" from the other failures that share a status code.
-      if (failed && !(run.status === 200 && b.runId)) {
+      if (failed && !(run.status === 200 && runId)) {
         return finish({ ...record, error: `agent/run failed: http ${run.status} status_code ${b.status_code}` })
       }
-      this.ledgerAppend({ phase: 'steps', arm, qid, rep, runId: b.runId })
+      this.ledgerAppend({ phase: 'steps', arm, qid, rep, runId })
       try {
-        const steps = await jsonFetch(`${this.cfg.baseUrl}/api/v1/AI/agent/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(b.runId)}/steps`, {
+        const steps = await jsonFetch(`${this.cfg.baseUrl}/api/v1/AI/agent/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(runId)}/steps`, {
           method: 'GET',
           headers: auth,
         }, 15000)
@@ -242,6 +294,9 @@ export class TrialRunner {
     } catch (error) {
       this.ledgerAppend({ phase: 'exception', arm, qid, rep, message: String(error?.message ?? error).slice(0, 160) })
       return finish({ error: `provider exception: ${String(error?.message ?? error).slice(0, 160)}` })
+    } finally {
+      // After the record is written: the run view was read above, so nothing needs the session any more.
+      if (sessionId && auth && this.cfg.deleteSessions) await this.deleteSession(auth, sessionId)
     }
   }
 }

@@ -85,7 +85,7 @@ test('the ledger records the run before the request is answered, and every phase
   await new Promise((resolve) => setTimeout(resolve, 150))
   assert.deepEqual(h.ledger().map((e) => e.phase), ['run'], 'the attempt must be on the ledger while the request is still in flight')
   await pending
-  assert.deepEqual(h.ledger().map((e) => e.phase), ['run', 'result', 'steps'])
+  assert.deepEqual(h.ledger().map((e) => e.phase), ['run', 'result', 'steps', 'cleanup'])
 })
 
 test('the budget stops the run before the request, and says so in a record', async (t) => {
@@ -164,6 +164,103 @@ test('a failed run keeps the service message and how the run ended, so unknown_t
   assert.equal(h.fake.stats.runs, 3)
   assert.equal(h.fake.stats.stepReads, 3)
   assert.equal(h.ledger().filter((e) => e.phase === 'run').length, 3)
+})
+
+test('every trial deletes its own session once the record is written, whatever the outcome', async (t) => {
+  if (skipIfTmpInRepo(t)) return
+  const h = await harness(t, [
+    scenario('fine?'),
+    scenario('busy?', { body: { status_code: 4001, status_msg: 'busy' } }),
+    scenario('junk?', { rawText: 'not json at all' }),
+  ])
+  await h.runner.run({ arm: 'a', qid: 'q1', rep: 0, question: 'fine?' })
+  await h.runner.run({ arm: 'a', qid: 'q2', rep: 0, question: 'busy?' })
+  await h.runner.run({ arm: 'a', qid: 'q3', rep: 0, question: 'junk?' })
+  assert.equal(h.fake.stats.sessions, 3)
+  assert.deepEqual(h.fake.stats.deletedSessions, ['sess-1', 'sess-2', 'sess-3'])
+  assert.equal(h.ledger().filter((e) => e.phase === 'cleanup' && e.http === 200).length, 3)
+  // Deleting is not a run: the budget counts runs only.
+  assert.equal(h.ledger().filter((e) => e.phase === 'run').length, 3)
+})
+
+test('a trial refused by the budget still deletes the session it opened', async (t) => {
+  if (skipIfTmpInRepo(t)) return
+  const h = await harness(t, [scenario('q?')], { maxRuns: 1 })
+  await h.runner.run({ arm: 'a', qid: 'q1', rep: 0, question: 'q?' })
+  const refused = await h.runner.run({ arm: 'a', qid: 'q2', rep: 0, question: 'q?' })
+  assert.match(refused.error, /budget guard/)
+  assert.equal(h.fake.stats.sessions, 2)
+  assert.equal(h.fake.stats.deletedSessions.length, 2)
+})
+
+test('deleteSessions=false keeps the sessions, and anything but a boolean is refused', async (t) => {
+  if (skipIfTmpInRepo(t)) return
+  const h = await harness(t, [scenario('q?')], { deleteSessions: false })
+  await h.runner.run({ arm: 'a', qid: 'q1', rep: 0, question: 'q?' })
+  assert.equal(h.fake.stats.sessions, 1)
+  assert.deepEqual(h.fake.stats.deletedSessions, [])
+  assert.equal(resolveConfig({}, {}).deleteSessions, true)
+  assert.equal(resolveConfig({}, { GL_L23_DELETE_SESSIONS: 'false' }).deleteSessions, false)
+  assert.match(configProblem({ ...h.runner.cfg, deleteSessions: 'maybe' }), /deleteSessions must be true or false/)
+})
+
+test('a failed delete is written to the ledger and does not change the record', async (t) => {
+  if (skipIfTmpInRepo(t)) return
+  const h = await harness(t, [scenario('q?')])
+  const record = await h.runner.run({ arm: 'a', qid: 'q1', rep: 0, question: 'q?' })
+  assert.equal(record.error, undefined)
+  // The session is already gone on the second delete: the fake answers 404, which the ledger keeps.
+  await h.runner.deleteSession({ Authorization: 'Bearer fake-token' }, 'sess-1')
+  assert.deepEqual(h.ledger().filter((e) => e.phase === 'cleanup').map((e) => e.http), [200, 404])
+})
+
+test('a run that failed without an id in its answer is found through the session, and its run view is read', async (t) => {
+  if (skipIfTmpInRepo(t)) return
+  const failedView = (reason) => ({ status_code: 1000, run: { run_id: 'x', status: 'failed', termination_reason: reason, steps: [toolStep] } })
+  const h = await harness(t, [
+    scenario('limit?', { omitRunId: true, body: { status_code: 5003, status_msg: '模型运行失败' }, stepsBody: failedView('tool_call_limit') }),
+  ])
+  const record = await h.runner.run({ arm: 'a', qid: 'q1', rep: 0, question: 'limit?' })
+  assert.equal(record.statusCode, 5003)
+  assert.equal(record.runId, 'run-1')
+  assert.equal(record.runIdFrom, 'session_runs')
+  assert.equal(record.terminationReason, 'tool_call_limit')
+  assert.equal(record.runStatus, 'failed')
+  assert.match(record.error, /status_code 5003/)
+  // One /agent/run, one read of the run list, one read of the run view, no retry; then the session is deleted.
+  assert.equal(h.fake.stats.runs, 1)
+  assert.equal(h.fake.stats.runListReads, 1)
+  assert.equal(h.fake.stats.stepReads, 1)
+  assert.deepEqual(h.fake.stats.deletedSessions, ['sess-1'])
+  assert.equal(h.ledger().find((e) => e.phase === 'steps').runId, 'run-1')
+})
+
+test('the run list is read only when a failed answer came without an id', async (t) => {
+  if (skipIfTmpInRepo(t)) return
+  const h = await harness(t, [
+    scenario('fine?'),
+    scenario('with-id?', { body: { status_code: 5003 }, stepsBody: { status_code: 1000, run: { run_id: 'x', status: 'failed', steps: [] } } }),
+    scenario('http500?', { http: 500, omitRunId: true, body: { status_code: 4001 } }),
+  ])
+  await h.runner.run({ arm: 'a', qid: 'q1', rep: 0, question: 'fine?' })
+  await h.runner.run({ arm: 'a', qid: 'q2', rep: 0, question: 'with-id?' })
+  const http500 = await h.runner.run({ arm: 'a', qid: 'q3', rep: 0, question: 'http500?' })
+  assert.equal(h.fake.stats.runListReads, 0)
+  assert.equal(http500.runId, undefined)
+})
+
+test('a failed run whose id cannot be found stays a plain failure with the service message', async (t) => {
+  if (skipIfTmpInRepo(t)) return
+  const h = await harness(t, [scenario('gone?', { omitRunId: true, body: { status_code: 5003, status_msg: 'x' } })])
+  const originalFetch = globalThis.fetch
+  // The run list is unreadable: the record keeps the failure and nothing else.
+  globalThis.fetch = (input, init) => (String(input).endsWith('/runs') ? Promise.reject(new Error('boom')) : originalFetch(input, init))
+  t.after(() => { globalThis.fetch = originalFetch })
+  const record = await h.runner.run({ arm: 'a', qid: 'q1', rep: 0, question: 'gone?' })
+  assert.equal(record.runId, undefined)
+  assert.equal(record.statusMsg, 'x')
+  assert.match(record.error, /status_code 5003/)
+  assert.equal(h.fake.stats.stepReads, 0)
 })
 
 test('a stop file ends the run: nothing is sent while it exists, and the trial leaves no run in the ledger', async (t) => {
