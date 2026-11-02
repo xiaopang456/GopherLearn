@@ -35,6 +35,12 @@ func (a BackgroundAudit) ValidateBackground() error {
 	if !a.Complete || a.Started.IsZero() || a.Answered.IsZero() || a.Answered.Before(a.Started) {
 		return fmt.Errorf("background observation incomplete")
 	}
+	if _, err := CountJobs(a.Before); err != nil {
+		return fmt.Errorf("before jobs: %w", err)
+	}
+	if _, err := CountJobs(a.After); err != nil {
+		return fmt.Errorf("after jobs: %w", err)
+	}
 	for _, j := range a.Before {
 		if j.ID == "" || j.Kind == "" || j.Status != "pending" || j.Attempts != 0 {
 			return fmt.Errorf("job already executed before question")
