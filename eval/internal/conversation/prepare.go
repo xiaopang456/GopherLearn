@@ -1,0 +1,66 @@
+// Package conversation implements offline history preparation without running an agent.
+package conversation
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"GopherAI/common/rag"
+	"GopherAI/model"
+	agent "GopherAI/service/agent"
+)
+
+type Turn struct {
+	User      string `json:"user"`
+	Assistant string `json:"assistant"`
+}
+type MessageWriter interface {
+	Create(context.Context, *model.Message) (*model.Message, error)
+}
+type SummaryProvider interface {
+	SessionSummary(context.Context, agent.RunContext) (agent.SummarySnapshot, error)
+}
+
+type PreparedTurn struct {
+	UserID      uint
+	AssistantID uint
+	Summary     agent.SummarySnapshot
+}
+
+// Prepare appends each user message, runs the product summary policy, and then
+// appends the supplied assistant message. It never creates agent runs or events.
+// A failure stops immediately; callers must discard the isolated destination.
+func Prepare(ctx context.Context, writer MessageWriter, summary SummaryProvider, owner int64, sessionID, username string, turns []Turn) ([]PreparedTurn, error) {
+	if writer == nil || summary == nil || owner <= 0 || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(username) == "" || len(turns) == 0 {
+		return nil, fmt.Errorf("invalid preparation parameters")
+	}
+	for i, t := range turns {
+		if strings.TrimSpace(t.User) == "" || strings.TrimSpace(t.Assistant) == "" {
+			return nil, fmt.Errorf("turn %d has an empty message", i+1)
+		}
+	}
+	results := make([]PreparedTurn, 0, len(turns))
+	for i, t := range turns {
+		user, err := writer.Create(ctx, &model.Message{SessionID: sessionID, UserName: username, Content: t.User, IsUser: true, AnswerBasis: rag.AnswerBasisConversation, KnowledgeStatus: rag.KnowledgeStatusNotRequired, KnowledgeReason: rag.KnowledgeReasonNone})
+		if err != nil {
+			return results, fmt.Errorf("turn %d user: %w", i+1, err)
+		}
+		if user == nil || user.ID == 0 {
+			return results, fmt.Errorf("turn %d user was not persisted", i+1)
+		}
+		s, err := summary.SessionSummary(ctx, agent.RunContext{UserID: owner, UserName: username, SessionID: sessionID, Question: t.User})
+		if err != nil {
+			return results, fmt.Errorf("turn %d summary: %w", i+1, err)
+		}
+		assistant, err := writer.Create(ctx, &model.Message{SessionID: sessionID, UserName: username, Content: t.Assistant})
+		if err != nil {
+			return results, fmt.Errorf("turn %d assistant: %w", i+1, err)
+		}
+		if assistant == nil || assistant.ID <= user.ID {
+			return results, fmt.Errorf("turn %d assistant id is invalid", i+1)
+		}
+		results = append(results, PreparedTurn{UserID: user.ID, AssistantID: assistant.ID, Summary: s})
+	}
+	return results, nil
+}
