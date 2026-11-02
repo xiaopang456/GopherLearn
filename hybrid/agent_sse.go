@@ -143,17 +143,22 @@ func (s *httpSurface) agentStream(w http.ResponseWriter, r *http.Request, uid in
 		return
 	}
 	var input struct {
-		Content         string                              `json:"content"`
-		RequestID       string                              `json:"requestId"`
-		KnowledgePolicy rag.KnowledgePolicy                 `json:"knowledgePolicy"`
-		TopicConsent    agentService.TopicConsentSubmission `json:"topicConsent"`
-		StreamSteps     bool                                `json:"stream_steps"`
+		Content         string              `json:"content"`
+		RequestID       string              `json:"requestId"`
+		KnowledgePolicy rag.KnowledgePolicy `json:"knowledgePolicy"`
+		// EnableThinking is what this request asks the chat model to do. It
+		// is optional and a pointer, so an absent field leaves the
+		// deployment's own setting in place while true and false state this
+		// turn's choice.
+		EnableThinking *bool                               `json:"enableThinking"`
+		TopicConsent   agentService.TopicConsentSubmission `json:"topicConsent"`
+		StreamSteps    bool                                `json:"stream_steps"`
 	}
 	if err := conversation.DecodeRequest(w, r, &input); err != nil {
 		apiError(w, 400, "invalid_request", "request body is invalid")
 		return
 	}
-	request := agentService.RunRequest{UserID: uid, UserName: name, SessionID: sessionID(r), Question: input.Content, RequestID: input.RequestID, KnowledgePolicy: input.KnowledgePolicy, TopicConsent: input.TopicConsent}
+	request := agentService.RunRequest{UserID: uid, UserName: name, SessionID: sessionID(r), Question: input.Content, RequestID: input.RequestID, KnowledgePolicy: input.KnowledgePolicy, EnableThinking: input.EnableThinking, TopicConsent: input.TopicConsent}
 	if err := agentService.ValidateRunRequestForAssembly(request); err != nil {
 		apiError(w, 400, "invalid_request", "Agent request is invalid")
 		return
