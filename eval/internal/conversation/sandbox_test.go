@@ -2,7 +2,9 @@ package conversation
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,6 +38,13 @@ func TestSandboxIntegration(t *testing.T) {
 			t.Error(err)
 		}
 	}()
+	conn, err := s.ConnectionInfo(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conn.Host != "127.0.0.1" || conn.Password == "" || strings.Contains(fmt.Sprint(conn), conn.Password) {
+		t.Fatal("invalid or exposed sandbox credentials")
+	}
 	if err = s.db.AutoMigrate(&model.User{}, &model.Session{}, &model.Message{}, &model.SessionSummary{}); err != nil {
 		t.Fatal(err)
 	}

@@ -27,6 +27,40 @@ type Sandbox struct {
 	db                        *gorm.DB
 }
 
+// Connection describes only the disposable database created by this process.
+// Password must not be included in manifests, logs, or test failure messages.
+type Connection struct {
+	Host     string
+	Port     string
+	Database string
+	User     string
+	Password string
+}
+
+func (c Connection) String() string {
+	return fmt.Sprintf("%s:%s/%s (user %s, password redacted)", c.Host, c.Port, c.Database, c.User)
+}
+
+// ConnectionInfo verifies both container and database identity before exposing
+// credentials to the local product service. A caller must not persist them.
+func (s *Sandbox) ConnectionInfo(ctx context.Context) (Connection, error) {
+	var result Connection
+	if err := s.verify(ctx); err != nil {
+		return result, err
+	}
+	if s.db == nil {
+		return result, fmt.Errorf("sandbox database unavailable")
+	}
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error { return s.checkMarker(tx) }); err != nil {
+		return result, err
+	}
+	host, port, err := net.SplitHostPort(s.addr)
+	if err != nil || host != "127.0.0.1" {
+		return result, fmt.Errorf("invalid sandbox endpoint")
+	}
+	return Connection{Host: host, Port: port, Database: "eval_sandbox", User: "root", Password: s.password}, nil
+}
+
 func docker(ctx context.Context, args ...string) (string, error) {
 	out, err := exec.CommandContext(ctx, "docker", args...).Output()
 	if err != nil {
