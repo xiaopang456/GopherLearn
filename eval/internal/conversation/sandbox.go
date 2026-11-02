@@ -34,12 +34,13 @@ type Connection struct {
 	Port     string
 	Database string
 	User     string
-	Password string
+	Password string `json:"-"`
 }
 
 func (c Connection) String() string {
 	return fmt.Sprintf("%s:%s/%s (user %s, password redacted)", c.Host, c.Port, c.Database, c.User)
 }
+func (c Connection) GoString() string { return c.String() }
 
 // ConnectionInfo verifies both container and database identity before exposing
 // credentials to the local product service. A caller must not persist them.

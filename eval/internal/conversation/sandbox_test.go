@@ -2,6 +2,7 @@ package conversation
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -42,7 +43,11 @@ func TestSandboxIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if conn.Host != "127.0.0.1" || conn.Password == "" || strings.Contains(fmt.Sprint(conn), conn.Password) {
+	encoded, err := json.Marshal(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conn.Host != "127.0.0.1" || conn.Password == "" || strings.Contains(fmt.Sprint(conn), conn.Password) || strings.Contains(fmt.Sprintf("%#v", conn), conn.Password) || strings.Contains(string(encoded), conn.Password) {
 		t.Fatal("invalid or exposed sandbox credentials")
 	}
 	if err = s.db.AutoMigrate(&model.User{}, &model.Session{}, &model.Message{}, &model.SessionSummary{}); err != nil {
