@@ -95,7 +95,7 @@ dimension = 1024
 # 重排（可选，默认关闭）。关闭时行为与不部署重排完全一致。
 #
 # 方式 A（推荐，无需显卡）：远程重排 API。填三行 + 设置环境变量
-# RAG_RERANK_AUTH_TOKEN（密钥，不写进本文件）。详见 README §5.5。
+# RAG_RERANK_AUTH_TOKEN（密钥，不写进本文件）。详见 README §5.2 与 docs/CONFIGURATION.md。
 # rerankEnabled = true
 # rerankProvider = "dashscope"
 # 地址与上面的 chat / embedding 服务同域名，把业务空间 ID 换上去：

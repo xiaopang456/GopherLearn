@@ -1,6 +1,6 @@
 # GopherLearn 发布说明（开发预览版）
 
-> 当前版本：**v0.2.1**。v0.1.1 起可以开启检索重排序，见 [README §5.5](../README.md#55-开启重排可选)。
+> 当前版本：**v0.2.1**。v0.1.1 起可以开启检索重排序，见 [README §5.2 可选功能](../README.md#52-可选功能) 与 [配置参考 · 重排](CONFIGURATION.md#重排可选)。
 
 ## v0.2.1 · 界面说法中文化与地址简化
 
@@ -113,8 +113,8 @@ GopherLearn 是一个个人 AI 学习助手，参考并基于 [GopherAI](https:/
 
 ## 怎么跑起来
 
-**完整步骤在仓库根目录的 [README.md](../README.md)**：环境要求 → 配置说明 → 本地启动（八步，
-每步标明运行目录）→ Docker 部署 → 注册与使用 → 常见问题。
+**完整步骤在仓库根目录的 [README.md](../README.md)**：快速开始（六步，每步链接到详细小节）→ 环境要求 → 配置说明 → 本地启动（八步，
+每步标明运行目录）→ Docker 部署 → 注册与使用 → 常见问题。配置的完整字段表在 [CONFIGURATION.md](CONFIGURATION.md)。
 
 最短路径（仓库根目录）：
 
@@ -157,7 +157,7 @@ VITE_DEV_API_ORIGIN=http://127.0.0.1:18082 npm --prefix web run dev
   这是刻意的：重排配错时宁可起不来，也不要在问答中途悄悄降级。
 - **重排密钥的给法与聊天、embedding 密钥不同**：聊天与 embedding 的密钥写在配置文件的
   `[isolatedEntry]` 段里，而重排密钥**只从环境变量 `RAG_RERANK_AUTH_TOKEN` 读取**，
-  不写进配置文件（见 README §5.4 与 §5.5）。
+  不写进配置文件（见 README §5.2 与 §5.3，以及 [配置参考 · 重排](CONFIGURATION.md#重排可选)）。
 
 ## 许可与来源
 
@@ -170,6 +170,7 @@ VITE_DEV_API_ORIGIN=http://127.0.0.1:18082 npm --prefix web run dev
 
 | 文件 | 内容 |
 |---|---|
+| [CONFIGURATION.md](CONFIGURATION.md) | 配置参考：完整字段表、默认值、思考开关与方言、重排详细步骤、启动失败提示表 |
 | [INTEGRATED-REFERENCE.md](INTEGRATED-REFERENCE.md) | 正式入口技术参考：学习测验接口合同、三个模块的验证命令 |
 | [INTEGRATED-DEPLOYMENT.md](INTEGRATED-DEPLOYMENT.md) | 整合栈部署参考：启动命令、配置模板与忽略规则、每一类主张由谁保证、搜索索引接缝 |
 | [CREDENTIAL-HANDLING.md](CREDENTIAL-HANDLING.md) | 凭据处理：口令放在哪、不放在哪、哪些做法不要用 |

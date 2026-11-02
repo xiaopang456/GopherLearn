@@ -13,12 +13,28 @@ GopherLearn 是一个个人 AI 学习助手，参考并基于 [GopherAI](https:/
 
 > 本文面向第一次接触这个项目的人：怎么配置、怎么跑起来、怎么用。
 > 更细的技术合同与历史说明在 [`docs/`](docs/) 下：
+> [配置参考](docs/CONFIGURATION.md)、
 > [正式入口技术参考](docs/INTEGRATED-REFERENCE.md)、
 > [整合栈部署参考](docs/INTEGRATED-DEPLOYMENT.md)、
 > [凭据处理](docs/CREDENTIAL-HANDLING.md)、
 > [历史基线开发参考](docs/LEGACY-DEVELOPMENT-REFERENCE.md)、
 > [发布说明](docs/PUBLIC-RELEASE-NOTES.md)、
 > [真实模型验证计划](docs/REAL-MODEL-VALIDATION-PLAN.md)。
+
+---
+
+## 快速开始
+
+从零到能用，六步。每一步都链接到后面更详细的说明：
+
+1. **准备 MySQL 与 Redis Stack** —— 一个 MySQL 8.0+ 和一个带 RediSearch 的 Redis Stack，见 [§4 环境要求](#4-环境要求) 与 [§6 步骤 1](#步骤-1--准备依赖与基础设施)。
+2. **复制配置模板** —— `cp config.integrated.example.toml config.integrated.toml.local`，见 [§5 配置说明](#5-配置说明)。
+3. **填必填的几项** —— 只有密钥、地址、口令、目录要改，其余照抄示例，见 [§5.1 最少要填的配置](#51-最少要填的配置)。
+4. **建库、建账号、建表** —— 正式入口不自己改 schema，要带外建，见 [§6 步骤 3](#步骤-3--建库并建账号) 与 [§6 步骤 4](#步骤-4--建表一次性命令)。
+5. **启动后端与前端** —— 两条 `go run` / `npm run dev`，见 [§6 步骤 5](#步骤-5--编译并启动正式后端) 与 [§6 步骤 6](#步骤-6--安装并启动前端)。
+6. **注册，开始使用** —— 邮箱验证码注册，见 [§8 注册与使用](#8-注册与使用)。
+
+> 只想先跑起来：直接照抄 [§5.1 的完整示例](#51-最少要填的配置) 里的那段 TOML，把密钥和口令换成你自己的。
 
 ---
 
@@ -55,21 +71,17 @@ GopherLearn 面向"用自己的资料学习"这件事，提供两种会话形态
 
 ## 3. 当前版本与已知限制
 
-**已验证到什么程度**：核心链路（普通聊天、文档问答与引用、Agent 工具往返、出题、判分与掌握度）已经用**真实模型**做过一次小规模验收——15 次真实模型请求，过程中发现并修掉了若干缺陷。对外可见的行为差异与错误码见 [发布说明 §行为变化与错误码](docs/PUBLIC-RELEASE-NOTES.md#行为变化与错误码)。
+这是**开发预览版**：核心链路已经跑通，前端样式与交互还会继续迭代。
 
-**仍然存在的限制**，请在评估时一并考虑：
+**部署和使用前请知道这几条**：
 
-- **这是开发预览版**，前端界面与交互还会迭代。
-- **检索重排序默认关闭**：需要时可以开启，见 [§5.5](#55-开启重排可选)。
-- **当前只支持 `.md` 与 `.txt`**（单文件上限 5 MiB，`knowledgeConfig.maxFileSizeBytes`）。**不支持 PDF**——PDF 解析没有实现，别按"能传就行"来预期。
-- **指代文档请用精确文件名**（例如 `seagull7-facts.md`）。检索工具只认文档 id 或**精确文件名**；用标题指代会把所有切片过滤掉，回答会退化成模型的通用知识，并显示"没有找到笔记证据"的提示。
-- **检索与判分的普遍质量没有被证明**：只验证过单账号、单个自建文档、一个主题、一次判分。
-- **长期稳定性没有被证明**：本轮只跑了几分钟，没有长时间运行、并发或故障注入的验证。
-- **四类后台行为没有真实执行过**：滚动摘要、记忆抽取、情景记忆投影、dream 归并——本轮真实调用中它们**一次都没有发生**（触发条件不成立或任务未入队），因此不能说它们"可用"。
-- **重排默认关闭**：本轮配置为不启用 rerank。**需要时可以在部署里开启**——推荐走远程重排 API（三行配置 + 一个环境变量，无需显卡），步骤见 [§5.5](#55-开启重排可选)。
-- **开启重排后，远程重排的启动自检失败会阻止服务启动**：启动时会发一次真实的最小重排请求来确认密钥、模型名与网络通路，失败就不起来，并给出具体原因。
-- **重排密钥的给法与聊天、embedding 密钥不同**：聊天与 embedding 的密钥写在配置文件里，**重排密钥只从环境变量 `RAG_RERANK_AUTH_TOKEN` 读取**，不写进配置文件。
-- **模型调用消耗部署者配置的 API 额度**。注册用户不消耗你的额度。
+- **文档只支持 `.md` 与 `.txt`**（单文件上限 5 MiB），不支持 PDF。
+- **模型调用消耗部署者配置的 API 额度**，注册用户不消耗你的额度。
+- **检索重排默认关闭**，需要更准的检索时按 [§5.2 可选功能](#52-可选功能) 开启。
+- **指代文档要用精确文件名**（例如 `notes.md`），检索工具只认文档 id 或精确文件名。
+- **检索与判分的普遍质量没有被证明**，只做过单账号、单个自建文档、一次判分的小规模验证。
+
+验证到什么程度、还有哪些技术层面的限制，见 [发布说明 · 已经验证过的能力](docs/PUBLIC-RELEASE-NOTES.md#已经验证过的能力)与 [发布说明 · 已知限制](docs/PUBLIC-RELEASE-NOTES.md#已知限制)。
 
 ---
 
@@ -90,8 +102,6 @@ GopherLearn 面向"用自己的资料学习"这件事，提供两种会话形态
 
 ## 5. 配置说明
 
-### 5.1 部署者需要配置的字段
-
 先复制模板：
 
 ```bash
@@ -100,170 +110,112 @@ cp config.integrated.example.toml config.integrated.toml.local      # Bash
 Copy-Item config.integrated.example.toml config.integrated.toml.local   # PowerShell
 ```
 
-模板里全是占位符，下面是要替换的字段（字段名以 `config.integrated.example.toml` 为准）：
+配置**只从一个文件读进来**（`config.integrated.toml.local`）。下面三节分别讲：**最少要填什么**、**可选功能怎么开**、**配置与密钥从哪来**。
 
-| 段 | 键 | 用途 | 模板值 |
-|---|---|---|---|
-| `[isolatedEntry]` | `chatKey` / `chatModel` / `chatBaseURL` | **学习 Agent** 的 chat 模型：地址、模型名、密钥 | `https://provider.invalid/v1` |
-| `[isolatedEntry]` | `embeddingKey` | **embedding** 服务的密钥 | — |
-| `[ragModelConfig]` | `embeddingModel` / `embeddingBaseUrl` / `dimension` | embedding 的模型名、地址、**向量维度**（必须与模型实际输出一致，且与索引一致） | `dimension = 1024` |
-| `[ragModelConfig]` | `chatModelName` / `baseUrl` / `chatThinkingDialect` | 知识库问答路径使用的 chat 模型；方言决定思考开关怎么写（`qwen` / `deepseek` / `none`） | `chatThinkingDialect = "qwen"` |
-| `[ragModelConfig]` | `rerankEnabled` / `rerankProvider` / `rerankEndpoint` / `rerankModel` / `rerankTimeoutMs` | **重排（可选）**：是否开启、服务形态、地址、模型名、单次调用上限 | 默认全部关闭 |
-| `[agentConfig]` | `agentThinkingEnabled` | **学习 Agent** 的思考开关（可选）：打开后 Agent 的模型调用带上思考开关；强制指定工具的那一次与后台任务仍然不带。DeepSeek 方言也可以打开（见下） | 默认关闭 |
-| `[ordinaryChat]` | `GOPHERLEARN_AI_PROVIDER` / `GOPHERLEARN_OPENAI_BASE_URL` / `GOPHERLEARN_OPENAI_API_KEY` / `GOPHERLEARN_OPENAI_MODEL` | **普通聊天**用的模型：类型必须是 `openai_compatible`，另有地址、密钥、模型名 | — |
-| `[ordinaryChat]` | `GOPHERLEARN_OPENAI_ENABLE_THINKING` / `GOPHERLEARN_OPENAI_THINKING_DIALECT` / `GOPHERLEARN_OPENAI_TEMPERATURE` / `GOPHERLEARN_OPENAI_MAX_OUTPUT_TOKENS` / `GOPHERLEARN_OPENAI_TIMEOUT` / `GOPHERLEARN_CONTEXT_*` / `GOPHERLEARN_SUMMARY_*` | 普通聊天的可选参数，留空即用默认值 | 注释掉 |
-| `[mysqlConfig]` | `host` / `port` / `user` / `password` / `databaseName` / `charset` | 本次部署自己的 MySQL schema 与账号 | `gopherlearn-integrated-mysql` / `3306` / `gopherlearn_v2_integration` / `utf8mb4` |
-| `[redisConfig]` | `host` / `port` / `db` / `password` | 独立的 Redis Stack 实例；**必须与该实例的口令逐字一致** | `gopherlearn-integrated-redis` / `6379` / `db = 0` |
-| `[jwtConfig]` | `key` | 令牌签名密钥，**至少 32 字节**；更换后所有已签发令牌失效 | — |
-| `[knowledgeConfig]` | `storageDir` | 上传原文件的存放目录（需要可写） | `data/gopherlearn-integrated/knowledge` |
-| `[mainConfig]` | `host` / `port` | 后端监听地址 | `127.0.0.1` / `18082` |
-| `[emailConfig]` | `email` / `authcode` / `host` / `port` | 发件邮箱、SMTP 授权码、SMTP 地址与端口 | `smtp.qq.com` / `587` |
+### 5.1 最少要填的配置
 
-> **两路模型配置是分开的，别只填一路。**
-> 学习 Agent 走 `[isolatedEntry]` + `[ragModelConfig]`；普通聊天走 `[ordinaryChat]`。
-> 正式入口在启动时校验这些字段：**缺任一路，对应功能就会在启动时被拒绝**（例如 `[ordinaryChat]` 的类型不是 `openai_compatible`、密钥为空、维度与模型不符）。
+部署者真正**必须**给的，就是下面这些。除两个口令外，少一个都会在**启动时被拒绝**；那两个口令启动时不检查，但填不对就连不上。
 
-> **DeepSeek 上 Agent 的思考是可以打开的（`agentThinkingEnabled = true`）。**
-> DeepSeek 在多轮工具调用里要求每一轮 assistant 都带一个 `reasoning_content` 字段，少了或为 `null` 都会被拒：
->
-> ```text
-> HTTP 400  The `reasoning_content` in the thinking mode must be passed back to the API.
-> ```
->
-> 客户端会把**思考过**的那一轮的思考内容带回去。还有一种轮次本来就没有思考内容：Agent 先问一个指定工具，那一次调用是**关着思考**的（DeepSeek 不接受「思考模式 + 指定工具名」的 `tool_choice`），所以那一轮没有思考内容；紧接着的自由路径是开着思考的，它把那一轮带出去。
->
-> 客户端会**给这一轮补一个空的 `reasoning_content`**——空字符串，因为这一轮确实没有思考内容，DeepSeek 接受空字符串、不接受缺失或 `null`。这个补字段发生在请求体序列化之后、发出之前：只动需要补的那一轮消息，其它内容（字段顺序、数字格式、空格）一个字节都不变；已经带着 `reasoning_content` 的消息（不管值是真实思考内容、空字符串还是 `null`）一律不碰。
->
-> 补字段只在**方言是 `deepseek` 且这次请求思考开着**的时候才注册。方言不是 `deepseek`，或者思考关着，请求体与之前**逐字节一致**，走的是原来那条路径。
->
-> **普通聊天路径不受影响**：它不做工具调用，没有需要回传的 assistant 轮，DeepSeek 上可以开思考。
-> 另外，DeepSeek 一律用 `chatThinkingDialect = "deepseek"`，不要用 `none`——`none` 不发任何思考字段，DeepSeek 会沿用自己的默认（思考开），而 Agent 强制指定工具的那一次要发指定工具名的 `tool_choice`，在思考模式下会被拒。
-
-### 5.2 普通注册用户只需要
-
-- 自己的收件邮箱；
-- 邮箱收到的六位验证码；
-- 自己设的账号密码。
-
-**不需要**提供模型 API Key，**不需要**提供邮箱 SMTP 授权码——这些只由部署者配置一次。
-
-### 5.3 邮件配置是干什么的
-
-`[emailConfig]` 全仓库**只用于一件事：发送注册验证码**。
-
-- 不配：服务器照常启动，**已有账号照常使用**，登录、会话、文档、记忆、学习、Agent 全部可用；只有"新用户注册"走不通，此时 `POST /api/v1/user/captcha` 会返回业务码 `2012`（"邮件服务未配置"），并给出可定位的说明，而不是含糊的"服务繁忙"。
-- 配了：`host` / `port` 可选，默认 `smtp.qq.com:587`；也可以指向你自己的中继。
-
-### 5.4 配置是从哪里读进来的
-
-- 正式入口**只读 `-config` 指向的那一个 TOML 文件**。它**不读 `.env` 文件，也不读环境变量里的凭据**（`v2/internal/isolated/settings.go` 里写得很直白：`environment credentials are not read`）。
-- **唯一的例外是重排令牌 `RAG_RERANK_AUTH_TOKEN`**：它是密钥，不能写进配置文件，所以开启重排时从环境变量读这一个（见 [§5.5](#55-开启重排可选)）。聊天与 embedding 的密钥仍然只从配置文件读。
-- 因此：**`.env.provider.local` 是历史基线入口的东西，正式入口不会自动读取它**。要让正式入口拿到模型配置，只能写进 `config.integrated.toml.local`。
-- 真实配置请放在 `config.integrated.toml.local`：后缀 `.local` 同时命中 `.gitignore` 与 `.dockerignore` 的 `*.local` 规则，不会被提交，也不会进构建上下文。
-- 模板文件里只有占位符；**任何真实凭据都不要写进模板、日志或报告**。
-
-### 5.5 开启重排（可选）
-
-重排是**第二阶段召回**：先把候选切片按向量相似度取回来，再用交叉编码器对"问题 × 切片"逐对打分重排。**默认关闭**，关闭时行为与现在完全一致。
-
-#### 方式 A · 远程重排 API（推荐，无需显卡）
-
-远程重排是大多数部署应该选的路：**三行配置 + 一个环境变量**，不需要显卡、不需要本地模型、不需要额外容器。
-
-**第 1 步 · 在配置文件里写地址与模型名**
-
-```toml
-[ragModelConfig]
-rerankEnabled = true
-# 服务形态：dashscope = 远程重排 API（阿里云百炼）；local = 本地模型服务
-rerankProvider = "dashscope"
-# 远程服务给出的完整重排地址（不是服务根地址）。
-# 百炼的地址与你的 chat / embedding 服务是同一个域名，把业务空间 ID 换上去即可：
-rerankEndpoint = "https://<你的业务空间ID>.cn-beijing.maas.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
-# 要用的重排模型名，例如 qwen3-rerank
-rerankModel = "qwen3-rerank"
-# 单次调用上限（毫秒）。留空即用默认值：远程 5 秒、本地 30 秒
-# rerankTimeoutMs = 5000
-```
-
-> **远程默认 5 秒是实测出来的**：24 条候选连测 5 次，中位数 **0.52 秒**、最慢 **0.89 秒**，
-> 5 秒留足了抖动与限流余量，又不会让一个卡住的请求把一次问答吊在那里。
-> **本地跑 CPU 时请调大**（默认 30 秒仍可能不够，见下面的方式 B）。
-
-> **地址怎么填**：重排地址就是上面那串 `.../api/v1/services/rerank/text-rerank/text-rerank`，
-> **和你 `[ragModelConfig]` 里 chat / embedding 用的域名是同一个**（同一个业务空间、同一把 Key）。
-> 把 `<你的业务空间ID>` 换成你 chat 地址里那一段即可。
-
-**第 2 步 · 把 API Key 放进环境变量**
-
-重排令牌是密钥，**不写进配置文件**。启动前设置：
-
-```bash
-# Bash
-export RAG_RERANK_AUTH_TOKEN='<你的重排服务 API Key>'
-```
-
-```powershell
-# PowerShell
-$env:RAG_RERANK_AUTH_TOKEN = '<你的重排服务 API Key>'
-```
-
-至少 32 字节。**不设这个变量就不会启动**，并会明确告诉你缺它（见下面"启动失败时怎么读提示"）。
-
-**第 3 步 · 照常启动**
-
-```bash
-cd hybrid
-go build -o ..\bin\gopherlearn-integrated.exe .\cmd\gopherlearn-integrated
-..\bin\gopherlearn-integrated.exe -config ..\config.integrated.toml.local
-```
-
-启动时会发**一次**最小重排请求做自检（1 个问题 + 1 条切片）：这一步同时证明密钥、模型名与网络通路都是通的，它消耗部署者的一点额度。**自检失败就不会启动**，具体原因见下面的"启动失败时怎么读提示"。
-
-**要知道的两件事**：
-
-- **切片正文会发给这家 provider**。embedding 已经把你的切片发给 embedding provider 了，重排是同一类数据外流——如果你要求数据完全不出本机，请用下面的方式 B。
-- **重排消耗部署者的额度**，和 chat / embedding 是同一笔账；注册用户不消耗你的额度。
-
-#### 方式 B · 本地重排服务（数据不出本机）
-
-本地跑一个 `text-embeddings-inference` 容器，进程只监听本机：
-
-```bash
-docker run -d --name gopherlearn-reranker -p 127.0.0.1:18083:80 \
-  --gpus all \
-  ghcr.io/huggingface/text-embeddings-inference:120-1.9 \
-  --model-id BAAI/bge-reranker-v2-m3 \
-  --revision 953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e \
-  --api-key '<与 RAG_RERANK_AUTH_TOKEN 相同的值>'
-```
-
-```toml
-[ragModelConfig]
-rerankEnabled = true
-rerankProvider = "local"
-rerankEndpoint = "http://127.0.0.1:18083"
-```
-
-- **显卡**：有 NVIDIA 显卡就加 `--gpus all`；没有就**去掉这一行**，服务会退回 CPU 运行——能跑，但慢得多：实测一次 24 条候选在 CPU 上要十几秒。**CPU 场景请把 `rerankTimeoutMs` 调大**（默认 30 秒，必要时调到 60 秒以上），否则重排会超时降级成"看似开启实则没生效"。
-- **端口**：容器内是 80，宿主映射成 18083；后端在容器里跑时把地址换成 `http://host.docker.internal:18083`。
-- **令牌**：容器用 `--api-key` 收同一个口令，后端用 `RAG_RERANK_AUTH_TOKEN` 发同一个口令。
-
-#### 启动失败时怎么读提示
-
-开启重排但起不来时，终端会给出**一句话的原因**，而不是笼统的"启动失败"：
-
-| 提示里的关键词 | 意思 | 怎么办 |
+| 段 | 必填的键 | 说明 |
 |---|---|---|
-| `the rerank configuration is invalid` | 配置本身有问题：provider 拼错、缺 `rerankModel`、超时为负 | 按 [§5.1](#51-部署者需要配置的字段) 核对 `ragModelConfig` 的重排字段 |
-| `RAG_RERANK_AUTH_TOKEN` | 没设这个环境变量，或它不足 32 字节 | 按上面第 2 步设置环境变量 |
-| `the rerank service refused the credential` | 服务不认这个 Key | 核对 Key 是否用在这个服务上（本地服务要同时配 `--api-key`） |
-| `the rerank service is rate limiting` | 被限流 | 稍后重试，或提高该 provider 的额度 |
-| `the rerank service did not answer inside the configured timeout` | 太慢 | 调大 `rerankTimeoutMs`，或换一个更快的重排服务 |
-| `the rerank service serves a different model` | 本地服务跑的不是钉死的那个模型 | 用上面的 `--model-id` / `--revision` 重启容器 |
-| `the rerank service is unavailable` | 地址不通、服务没起 | 核对地址、端口与服务是否在运行 |
+| `[isolatedEntry]` | `isolated`、`migrate`、`chatKey`、`chatModel`、`chatBaseURL`、`embeddingKey` | `isolated` 必须写 `true`，`migrate` 必须写 `false`；四个模型项不能为空 |
+| `[ragModelConfig]` | `embeddingModel`、`embeddingBaseUrl`、`dimension`、`chatModelName`、`baseUrl` | `dimension` 必须与 embedding 模型实际输出的维度一致，写错会让已有向量对不上 |
+| `[mysqlConfig]` | `host`、`port`、`user`、`databaseName`、`charset`、`password` | 本次部署自己的 schema 与账号 |
+| `[redisConfig]` | `host`、`port`、`db`、`password` | 独立的 Redis Stack 实例；口令必须与实例的 `requirepass` **逐字一致** |
+| `[mainConfig]` | `host`、`port` | 后端监听地址 |
+| `[knowledgeConfig]` | `storageDir` | 上传原文件的存放目录，需要可写 |
+| `[jwtConfig]` | `key` | 令牌签名密钥，**至少 32 字节**；换掉它会让所有已签发令牌失效 |
+| `[ordinaryChat]` | `GOPHERLEARN_AI_PROVIDER`、`GOPHERLEARN_OPENAI_BASE_URL`、`GOPHERLEARN_OPENAI_API_KEY`、`GOPHERLEARN_OPENAI_MODEL` | 普通聊天的模型；provider 必须是 `openai_compatible` |
 
----
+**三处模型配置分别管什么**——这是最容易填错的地方：
+
+- `[isolatedEntry]` —— **学习 Agent** 的 chat 模型（地址、模型名、密钥），外加 **embedding 服务的密钥**；
+- `[ragModelConfig]` —— **embedding 服务**的模型名、地址与向量维度，**Agent 侧 chat 模型的模型名**（和上一段用同一个模型时就写一样的），以及**思考开关的方言**；
+- `[ordinaryChat]` —— **普通聊天**的模型（地址、模型名、密钥）。
+
+**大多数部署三处填同一个模型就行**：学习 Agent 与普通聊天用同一个 chat 模型，embedding 用同一家（也可以是另一家）的 embedding 模型。
+
+下面是一个**可以直接抄**的例子（DeepSeek 聊天 + 百炼 embedding）：只有密钥和口令要换成你自己的，其余值照抄即可。
+
+```toml
+[isolatedEntry]
+isolated = true
+migrate = false
+# 学习 Agent 的 chat 模型
+chatKey = "<你的 DeepSeek API Key>"
+chatModel = "deepseek-flash"
+chatBaseURL = "https://api.deepseek.com/v1"
+# embedding 服务的密钥
+embeddingKey = "<你的百炼 API Key>"
+
+[ragModelConfig]
+# embedding 的模型名、地址与向量维度
+embeddingModel = "qwen3.7-text-embedding"
+embeddingBaseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+dimension = 1024
+# Agent 侧 chat 模型的模型名：和上面同一个模型就写一样的
+chatModelName = "deepseek-flash"
+baseUrl = "https://api.deepseek.com/v1"
+# 思考开关的方言：DeepSeek 用 deepseek（默认的 qwen 写法它不认）
+chatThinkingDialect = "deepseek"
+
+[ordinaryChat]
+GOPHERLEARN_AI_PROVIDER = "openai_compatible"
+GOPHERLEARN_OPENAI_BASE_URL = "https://api.deepseek.com/v1"
+GOPHERLEARN_OPENAI_API_KEY = "<你的 DeepSeek API Key>"
+GOPHERLEARN_OPENAI_MODEL = "deepseek-flash"
+
+[mysqlConfig]
+host = "127.0.0.1"
+port = 13360
+user = "gopherlearn_v2_integration"
+password = "<你的应用口令>"
+databaseName = "gopherlearn_v2_integration"
+charset = "utf8mb4"
+
+[redisConfig]
+host = "127.0.0.1"
+port = 16360
+db = 0
+# 必须与 Redis 实例的 requirepass 逐字一致
+password = "<与 redis.integrated.conf.local 里的 requirepass 一样的值>"
+
+[jwtConfig]
+# 至少 32 字节；换掉它会让所有已签发的令牌失效
+key = "<换成你自己的随机串，至少 32 字节>"
+
+[knowledgeConfig]
+# 上传原文件的存放目录，需要可写
+storageDir = "data/gopherlearn-integrated/knowledge"
+
+[mainConfig]
+host = "127.0.0.1"
+port = 18082
+```
+
+> 换 provider 时改四处：`chatModel` / `chatBaseURL` / `baseUrl` / `chatModelName` 换成你的模型名与地址，两把密钥换成你的，`chatThinkingDialect` 改成对方认的写法（默认 `qwen`）。
+> 完整字段表、每个字段的默认值与校验规则见 [配置参考](docs/CONFIGURATION.md)。
+
+### 5.2 可选功能
+
+**检索重排（默认关闭）** —— 开启后候选切片会再用交叉编码器重排，检索更准，也多一次模型调用。
+改 `[ragModelConfig]` 的 `rerankEnabled`、`rerankProvider`、`rerankEndpoint`、`rerankModel`，并把重排密钥放进环境变量 `RAG_RERANK_AUTH_TOKEN`（**密钥不写进配置文件**）。
+远程 API 与本地模型服务两种形态、地址怎么填、超时怎么调，见 [配置参考 · 重排](docs/CONFIGURATION.md#重排可选)。
+
+**深度思考（默认关闭）** —— 开启后学习 Agent 的模型调用会带上思考开关，答案更慢也更贵。
+改 `[agentConfig]` 的 `agentThinkingEnabled = true`；思考开关具体怎么写由 `[ragModelConfig]` 的 `chatThinkingDialect` 决定（DeepSeek 用 `deepseek`）。
+方言的取值与含义、以及 DeepSeek 上多轮工具调用的那个特殊要求，见 [配置参考 · 思考开关与方言](docs/CONFIGURATION.md#思考开关与方言)。
+
+**注册邮件（默认不配置）** —— 只有「邮箱验证码注册」需要它。
+配 `[emailConfig]` 的 `email` 与 `authcode`（SMTP 授权码，不是登录密码），`host` / `port` 留空则用 `smtp.qq.com:587`。
+不配也能启动，已有账号与其它功能不受影响，只是新用户注册走不通（接口返回业务码 `2012`）。
+
+### 5.3 配置从哪里读、密钥放哪里
+
+- 正式入口**只读 `-config` 指向的那一个 TOML 文件**：它不读 `.env`，也不读环境变量里的凭据（`v2/internal/isolated/settings.go` 写得很直白：`environment credentials are not read`）。
+- **唯一的例外是重排令牌 `RAG_RERANK_AUTH_TOKEN`**：它是密钥，不能写进配置文件，所以开启重排时只从环境变量读这一个。聊天与 embedding 的密钥仍然只从配置文件读。
+- 真实配置请放在 `config.integrated.toml.local`：后缀 `.local` 同时命中 `.gitignore` 与 `.dockerignore` 的 `*.local` 规则，不会被提交，也不会进构建上下文。
+- 模板文件里只有占位符；**任何真实凭据都不要写进模板、日志或报告**。更多见 [凭据处理](docs/CREDENTIAL-HANDLING.md)。
 
 ## 6. 本地启动
 
@@ -301,7 +253,7 @@ docker run -d --name gopherlearn-redis -p 127.0.0.1:16360:6379 \
 cp config.integrated.example.toml config.integrated.toml.local
 ```
 
-按 [§5.1](#51-部署者需要配置的字段) 填好占位符。**本地运行**时记得把主机名与端口改成**宿主**上的地址：
+按 [§5.1 最少要填的配置](#51-最少要填的配置) 填好占位符。**本地运行**时主机名与端口要指向**宿主**上的地址——§5.1 的示例已经是本地值：
 
 ```toml
 [mainConfig]
@@ -485,6 +437,7 @@ docker compose -p gopherlearn-integrated -f compose.integrated.yml down
 ## 8. 注册与使用
 
 1. **注册**：邮箱 → 发送验证码 → 填入六位码与密码。验证码由**部署者**配置的 SMTP 发出。
+   注册者**不需要**提供模型 API Key，**不需要**提供 SMTP 授权码——那两样只由部署者配置一次。
 2. **普通聊天**：左侧「对话」→ 新建对话 → 提问。回答逐段返回；关掉页面再回来，消息仍在。
 3. **文档问答**：左侧「文档」→ 上传 `.md` / `.txt` → 观察状态从 `pending` 走到 `ready`（这一步会真实调用 embedding）→ 之后在**学习 Agent** 会话里用**精确文件名**提问，回答会带 `[n]` 引用，展开可看原文行范围。
 4. **学习 Agent**：左侧「对话」→「新建学习 Agent 会话」，提问时可看到工具调用与工具结果。
