@@ -41,6 +41,12 @@ func LoadExplicit(path string) (*Config, error) {
 // model, so a deployment that enables the reranker must not be blocked from
 // creating its schema by a missing token. The rerank section of the file is
 // neither read nor validated here; the running entry is what checks it.
+//
+// The thinking switch is not checked here, because it is not checked anywhere:
+// every dialect works with it. What this loader skips is the reranker, in the
+// same way - this loader creates tables for a configuration the running entry
+// would refuse, and preparing a database is not the same as agreeing to run
+// it.
 func LoadExplicitForSchema(path string) (*Config, error) {
 	loaded, err := loadExplicitFile(path)
 	if err != nil {

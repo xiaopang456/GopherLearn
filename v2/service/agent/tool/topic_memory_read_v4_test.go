@@ -177,7 +177,8 @@ func TestTopicMemoryReadV4InputStillOffersNoAuthorityHandles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	params, err := info.ParamsOneOf.ToOpenAPIV3()
+	// The JSON Schema form, which is also what the provider receives.
+	params, err := info.ParamsOneOf.ToJSONSchema()
 	if err != nil {
 		t.Fatal(err)
 	}

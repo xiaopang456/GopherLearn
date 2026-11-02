@@ -195,7 +195,7 @@ func TestServiceReplaysCompletedRequestWithoutRepeatingSideEffects(t *testing.T)
 		t.Fatalf("policy conflict result=%+v err=%v", result, err)
 	}
 	thinkingConflict := request
-	thinkingConflict.EnableThinking = true
+	thinkingConflict.EnableThinking = boolPointer(true)
 	result, err = service.Run(context.Background(), thinkingConflict, DiscardEvents)
 	if !errors.Is(err, ErrRunRequestConflict) || result.RunID != first.RunID {
 		t.Fatalf("thinking conflict result=%+v err=%v", result, err)

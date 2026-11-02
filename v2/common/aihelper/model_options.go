@@ -1,13 +1,16 @@
 package aihelper
 
 import (
- "fmt"
- "context"
- "os"
- "strconv"
- "strings"
- "github.com/cloudwego/eino-ext/components/model/openai"
- "github.com/cloudwego/eino/components/model"
+	"context"
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+
+	"GopherAI/config"
+
+	"github.com/cloudwego/eino-ext/components/model/openai"
+	"github.com/cloudwego/eino/components/model"
 )
 
 type thinkingContextKey struct{}
@@ -24,32 +27,95 @@ func thinkingEnabled(ctx context.Context) bool {
 	return enabled
 }
 
-func thinkingExtraFields(enabled bool) map[string]any {
-	fields := map[string]any{"enable_thinking": enabled}
-	if budget, err := strconv.Atoi(strings.TrimSpace(os.Getenv("OPENAI_THINKING_BUDGET"))); err == nil && budget > 0 {
+// ThinkingExtraFields builds the fields that express the caller's thinking
+// choice in the dialect the provider understands.
+//
+// The dialect decides the shape, the caller decides the state:
+//
+//   - qwen sends enable_thinking, and thinking_budget as well when one is
+//     configured and thinking is on;
+//   - deepseek sends thinking: {type: enabled|disabled};
+//   - none sends nothing.
+//
+// The qwen branch is byte-for-byte what this file sent before the dialect
+// existed, so a deployment that never names one behaves exactly as it did.
+//
+// A provider that does not know the field ignores it rather than rejecting
+// the request, but an ignored field leaves the provider's own default in
+// force, and DeepSeek's default is thinking on. That is why the dialect is a
+// setting rather than something derived from the endpoint.
+func ThinkingExtraFields(dialect string, enabled bool) map[string]any {
+	switch dialect {
+	case config.ChatThinkingDialectDeepSeek:
+		state := "disabled"
 		if enabled {
+			state = "enabled"
+		}
+		return map[string]any{"thinking": map[string]any{"type": state}}
+	case config.ChatThinkingDialectNone:
+		return map[string]any{}
+	default:
+		fields := map[string]any{"enable_thinking": enabled}
+		if budget, err := strconv.Atoi(strings.TrimSpace(os.Getenv("OPENAI_THINKING_BUDGET"))); err == nil && budget > 0 {
 			fields["thinking_budget"] = budget
 		}
+		return fields
 	}
-	return fields
 }
 
-// ThinkingModelOption applies the per-request Qwen thinking choice to any
-// Eino OpenAI-compatible model call, including calls made inside ReAct.
-func ThinkingModelOption(enabled bool) model.Option {
-	return openai.WithExtraFields(thinkingExtraFields(enabled))
+// ThinkingModelOptions applies the per-request thinking choice to any Eino
+// OpenAI-compatible model call, including calls made inside ReAct.
+//
+// The dialect travels with the call rather than being read from the
+// environment: one process may hold more than one model identity, and a
+// request must not depend on which one happens to be configured.
+//
+// The extra fields replace the model's own table rather than merging into it
+// (the Eino client's WithExtraFields assigns), so the table this returns is
+// the whole table the request carries.
+//
+// The second option is the reasoning_content patch, and it is registered only
+// where it is needed: the DeepSeek dialect with thinking on. Every other
+// combination sends the request exactly as it did before the patch existed.
+func ThinkingModelOptions(dialect string, enabled bool) []model.Option {
+	opts := []model.Option{openai.WithExtraFields(ThinkingExtraFields(dialect, enabled))}
+	if needsDeepSeekReasoningPatch(dialect, enabled) {
+		opts = append(opts, openai.WithRequestPayloadModifier(deepSeekReasoningPatch))
+	}
+	return opts
+}
+
+// needsDeepSeekReasoningPatch reports whether this request is one that
+// DeepSeek will refuse without a reasoning_content field on the earlier
+// assistant turns.
+//
+// DeepSeek requires the field on every earlier assistant turn of a multi-turn
+// tool call while thinking is on, and it refuses the request when the field
+// is missing or null. The Agent mixes the two thinking modes inside one run:
+// the turn that asks for one specific tool runs without thinking, so it has no
+// reasoning content of its own, and the free turn that follows carries it
+// with thinking on.
+//
+// Only the DeepSeek dialect with thinking on has that problem. A request in
+// any other dialect, or with thinking off, is not touched at all.
+func needsDeepSeekReasoningPatch(dialect string, enabled bool) bool {
+	return dialect == config.ChatThinkingDialectDeepSeek && enabled
 }
 
 func NewToolCallingChatModel(ctx context.Context) (model.ToolCallingChatModel, error) {
 	key := os.Getenv("OPENAI_API_KEY")
 	modelName := os.Getenv("OPENAI_MODEL_NAME")
 	baseURL := os.Getenv("OPENAI_BASE_URL")
+	dialect, err := config.NormalizeChatThinkingDialect(os.Getenv("OPENAI_THINKING_DIALECT"))
+	if err != nil {
+		return nil, fmt.Errorf("create openai model failed: %v", err)
+	}
 
 	llm, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
 		BaseURL:     baseURL,
 		Model:       modelName,
 		APIKey:      key,
-		ExtraFields: thinkingExtraFields(false),
+		ExtraFields: ThinkingExtraFields(dialect, false),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create openai model failed: %v", err)

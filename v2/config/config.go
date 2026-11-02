@@ -46,6 +46,42 @@ const (
 // what is wrong and where to fix it.
 var ErrRerankConfig = errors.New("invalid rerank configuration")
 
+// Chat thinking dialects. The value is written in the configuration file as
+// ragModelConfig.chatThinkingDialect and selects how the chat model's thinking
+// switch reaches the wire.
+//
+// The vocabulary lives here because the configuration file is what names it;
+// the packages that build the request are what apply it.
+const (
+	// ChatThinkingDialectQwen sends the Qwen-style extension: enable_thinking,
+	// plus thinking_budget when one is configured. This is the default and it
+	// is what an unset value means.
+	ChatThinkingDialectQwen = "qwen"
+	// ChatThinkingDialectDeepSeek sends the DeepSeek-style extension:
+	// thinking: {type: enabled|disabled}.
+	ChatThinkingDialectDeepSeek = "deepseek"
+	// ChatThinkingDialectNone sends no thinking switch at all.
+	ChatThinkingDialectNone = "none"
+)
+
+// NormalizeChatThinkingDialect resolves an empty value to the default and
+// refuses anything else.
+//
+// A typo has to stop startup rather than select a dialect nobody reviewed: a
+// provider that does not know the field ignores it, and the deployment would
+// then answer with thinking state nobody chose.
+func NormalizeChatThinkingDialect(value string) (string, error) {
+	switch trimmed := strings.TrimSpace(value); trimmed {
+	case "":
+		return ChatThinkingDialectQwen, nil
+	case ChatThinkingDialectQwen, ChatThinkingDialectDeepSeek, ChatThinkingDialectNone:
+		return trimmed, nil
+	default:
+		return "", fmt.Errorf("unknown chat thinking dialect %q; supported dialects are %q, %q and %q",
+			value, ChatThinkingDialectQwen, ChatThinkingDialectDeepSeek, ChatThinkingDialectNone)
+	}
+}
+
 type MainConfig struct {
 	Port    int    `toml:"port"`
 	AppName string `toml:"appName"`
@@ -109,7 +145,18 @@ type RagModelConfig struct {
 	RagDocDir           string `toml:"docDir"`
 	RagBaseUrl          string `toml:"baseUrl"`
 	RagDimension        int    `toml:"dimension"`
-	RagRerankEnabled    bool   `toml:"rerankEnabled"`
+	// RagChatThinkingDialect selects how the chat model's thinking switch is
+	// expressed on the wire. See the ChatThinkingDialect* constants.
+	//
+	// It is a setting rather than something derived from the endpoint because a
+	// deployment may reach one provider through a gateway or a local proxy, and
+	// a request that names a switch the provider does not know is a request
+	// whose thinking state nobody can predict.
+	//
+	// An empty value means the Qwen dialect, which is the behaviour every
+	// existing deployment has.
+	RagChatThinkingDialect string `toml:"chatThinkingDialect"`
+	RagRerankEnabled       bool   `toml:"rerankEnabled"`
 	// RagRerankProvider selects the rerank service shape: RerankProviderLocal
 	// for a locally served cross-encoder, RerankProviderDashScope for a hosted
 	// endpoint. An empty value means the local provider.
@@ -165,10 +212,38 @@ const (
 func (c KnowledgeConfig) CandidateMode() bool { return false }
 
 type AgentConfig struct {
-	MaxToolCalls                     int    `toml:"maxToolCalls"`
-	MaxModelCalls                    int    `toml:"maxModelCalls"`
-	MaxGraphSteps                    int    `toml:"maxGraphSteps"`
-	DeadlineSeconds                  int    `toml:"deadlineSeconds"`
+	MaxToolCalls    int `toml:"maxToolCalls"`
+	MaxModelCalls   int `toml:"maxModelCalls"`
+	MaxGraphSteps   int `toml:"maxGraphSteps"`
+	DeadlineSeconds int `toml:"deadlineSeconds"`
+	// AgentThinkingEnabled turns the chat model's thinking on for the Agent's
+	// own model calls.
+	//
+	// It is a deployment setting rather than a per-request one because the
+	// provider decides what a thinking turn costs, in tokens and in latency,
+	// and a deployment that has not priced that should not get it by accident.
+	//
+	// The default is off, which is the behaviour every existing deployment
+	// has; a deployment that switches it on also has to say which dialect the
+	// provider reads (see RagModelConfig.RagChatThinkingDialect), because the
+	// switch only reaches the provider if it is written in that dialect.
+	//
+	// A forced tool call still runs without thinking either way: the provider
+	// rejects a forced tool choice in thinking mode, so the choice is made per
+	// call rather than per deployment.
+	//
+	// Every dialect can be combined with this switch. DeepSeek needs a
+	// reasoning_content field on every earlier assistant turn of a multi-turn
+	// tool call while thinking is on, and it refuses the request when the
+	// field is missing or null. The Agent mixes the two thinking modes inside
+	// one run - the turn that asks for one specific tool runs without
+	// thinking, because DeepSeek refuses a named tool_choice while thinking is
+	// on - so that turn has no reasoning content of its own to pass back. The
+	// client adds an empty one for exactly that turn, and a turn that thought
+	// keeps its own content. The patch rides along with the thinking switch
+	// and is registered only for the DeepSeek dialect with thinking on, so
+	// every other deployment sends the request it sent before.
+	AgentThinkingEnabled             bool   `toml:"agentThinkingEnabled"`
 	KnowledgeDefaultTopK             int    `toml:"knowledgeDefaultTopK"`
 	KnowledgeMaxTopK                 int    `toml:"knowledgeMaxTopK"`
 	KnowledgeMaxResultTokens         int    `toml:"knowledgeMaxResultTokens"`
@@ -343,6 +418,10 @@ func defaultConfig() *Config {
 		IndexTimeoutSeconds: 300,
 	}, AgentConfig: AgentConfig{
 		MaxToolCalls: 3, MaxModelCalls: 4, MaxGraphSteps: 10, DeadlineSeconds: 45,
+		// Thinking is off until a deployment turns it on: a provider that reads
+		// the switch may charge for it, and a default that costs money is a
+		// default nobody agreed to.
+		AgentThinkingEnabled: false,
 		KnowledgeDefaultTopK: 5, KnowledgeMaxTopK: 8, KnowledgeMaxResultTokens: 700,
 		KnowledgeMaxObservationTokens: 2200, KnowledgeMaxRunTokens: 6500,
 		DocumentReadMaxLines: 240, DocumentReadMaxBytes: 32 * 1024, DocumentReadMaxObservationTokens: 3000,
@@ -461,6 +540,7 @@ func applyRagEnv(c *RagModelConfig) error {
 	}{
 		{"OPENAI_MODEL_NAME", func(value string) { c.RagChatModelName = value }},
 		{"OPENAI_BASE_URL", func(value string) { c.RagBaseUrl = value }},
+		{"OPENAI_THINKING_DIALECT", func(value string) { c.RagChatThinkingDialect = value }},
 		{"EMBEDDING_MODEL_NAME", func(value string) { c.RagEmbeddingModel = value }},
 		{"EMBEDDING_BASE_URL", func(value string) { c.RagEmbeddingBaseURL = value }},
 	}
@@ -518,6 +598,9 @@ func (c RagModelConfig) Validate() error {
 	}
 	if strings.TrimSpace(c.RagEmbeddingModel) == "" || strings.TrimSpace(c.RagEmbeddingBaseURL) == "" || c.RagDimension <= 0 {
 		return fmt.Errorf("embedding model name, base URL and positive dimension are required")
+	}
+	if _, err := NormalizeChatThinkingDialect(c.RagChatThinkingDialect); err != nil {
+		return err
 	}
 	if !c.RagRerankEnabled {
 		return nil

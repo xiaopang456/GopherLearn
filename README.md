@@ -107,10 +107,11 @@ Copy-Item config.integrated.example.toml config.integrated.toml.local   # PowerS
 | `[isolatedEntry]` | `chatKey` / `chatModel` / `chatBaseURL` | **学习 Agent** 的 chat 模型：地址、模型名、密钥 | `https://provider.invalid/v1` |
 | `[isolatedEntry]` | `embeddingKey` | **embedding** 服务的密钥 | — |
 | `[ragModelConfig]` | `embeddingModel` / `embeddingBaseUrl` / `dimension` | embedding 的模型名、地址、**向量维度**（必须与模型实际输出一致，且与索引一致） | `dimension = 1024` |
-| `[ragModelConfig]` | `chatModelName` / `baseUrl` | 知识库问答路径使用的 chat 模型 | — |
+| `[ragModelConfig]` | `chatModelName` / `baseUrl` / `chatThinkingDialect` | 知识库问答路径使用的 chat 模型；方言决定思考开关怎么写（`qwen` / `deepseek` / `none`） | `chatThinkingDialect = "qwen"` |
 | `[ragModelConfig]` | `rerankEnabled` / `rerankProvider` / `rerankEndpoint` / `rerankModel` / `rerankTimeoutMs` | **重排（可选）**：是否开启、服务形态、地址、模型名、单次调用上限 | 默认全部关闭 |
+| `[agentConfig]` | `agentThinkingEnabled` | **学习 Agent** 的思考开关（可选）：打开后 Agent 的模型调用带上思考开关；强制指定工具的那一次与后台任务仍然不带。DeepSeek 方言也可以打开（见下） | 默认关闭 |
 | `[ordinaryChat]` | `GOPHERLEARN_AI_PROVIDER` / `GOPHERLEARN_OPENAI_BASE_URL` / `GOPHERLEARN_OPENAI_API_KEY` / `GOPHERLEARN_OPENAI_MODEL` | **普通聊天**用的模型：类型必须是 `openai_compatible`，另有地址、密钥、模型名 | — |
-| `[ordinaryChat]` | `GOPHERLEARN_OPENAI_ENABLE_THINKING` / `GOPHERLEARN_OPENAI_TEMPERATURE` / `GOPHERLEARN_OPENAI_MAX_OUTPUT_TOKENS` / `GOPHERLEARN_OPENAI_TIMEOUT` / `GOPHERLEARN_CONTEXT_*` / `GOPHERLEARN_SUMMARY_*` | 普通聊天的可选参数，留空即用默认值 | 注释掉 |
+| `[ordinaryChat]` | `GOPHERLEARN_OPENAI_ENABLE_THINKING` / `GOPHERLEARN_OPENAI_THINKING_DIALECT` / `GOPHERLEARN_OPENAI_TEMPERATURE` / `GOPHERLEARN_OPENAI_MAX_OUTPUT_TOKENS` / `GOPHERLEARN_OPENAI_TIMEOUT` / `GOPHERLEARN_CONTEXT_*` / `GOPHERLEARN_SUMMARY_*` | 普通聊天的可选参数，留空即用默认值 | 注释掉 |
 | `[mysqlConfig]` | `host` / `port` / `user` / `password` / `databaseName` / `charset` | 本次部署自己的 MySQL schema 与账号 | `gopherlearn-integrated-mysql` / `3306` / `gopherlearn_v2_integration` / `utf8mb4` |
 | `[redisConfig]` | `host` / `port` / `db` / `password` | 独立的 Redis Stack 实例；**必须与该实例的口令逐字一致** | `gopherlearn-integrated-redis` / `6379` / `db = 0` |
 | `[jwtConfig]` | `key` | 令牌签名密钥，**至少 32 字节**；更换后所有已签发令牌失效 | — |
@@ -121,6 +122,22 @@ Copy-Item config.integrated.example.toml config.integrated.toml.local   # PowerS
 > **两路模型配置是分开的，别只填一路。**
 > 学习 Agent 走 `[isolatedEntry]` + `[ragModelConfig]`；普通聊天走 `[ordinaryChat]`。
 > 正式入口在启动时校验这些字段：**缺任一路，对应功能就会在启动时被拒绝**（例如 `[ordinaryChat]` 的类型不是 `openai_compatible`、密钥为空、维度与模型不符）。
+
+> **DeepSeek 上 Agent 的思考是可以打开的（`agentThinkingEnabled = true`）。**
+> DeepSeek 在多轮工具调用里要求每一轮 assistant 都带一个 `reasoning_content` 字段，少了或为 `null` 都会被拒：
+>
+> ```text
+> HTTP 400  The `reasoning_content` in the thinking mode must be passed back to the API.
+> ```
+>
+> 客户端会把**思考过**的那一轮的思考内容带回去。还有一种轮次本来就没有思考内容：Agent 先问一个指定工具，那一次调用是**关着思考**的（DeepSeek 不接受「思考模式 + 指定工具名」的 `tool_choice`），所以那一轮没有思考内容；紧接着的自由路径是开着思考的，它把那一轮带出去。
+>
+> 客户端会**给这一轮补一个空的 `reasoning_content`**——空字符串，因为这一轮确实没有思考内容，DeepSeek 接受空字符串、不接受缺失或 `null`。这个补字段发生在请求体序列化之后、发出之前：只动需要补的那一轮消息，其它内容（字段顺序、数字格式、空格）一个字节都不变；已经带着 `reasoning_content` 的消息（不管值是真实思考内容、空字符串还是 `null`）一律不碰。
+>
+> 补字段只在**方言是 `deepseek` 且这次请求思考开着**的时候才注册。方言不是 `deepseek`，或者思考关着，请求体与之前**逐字节一致**，走的是原来那条路径。
+>
+> **普通聊天路径不受影响**：它不做工具调用，没有需要回传的 assistant 轮，DeepSeek 上可以开思考。
+> 另外，DeepSeek 一律用 `chatThinkingDialect = "deepseek"`，不要用 `none`——`none` 不发任何思考字段，DeepSeek 会沿用自己的默认（思考开），而 Agent 强制指定工具的那一次要发指定工具名的 `tool_choice`，在思考模式下会被拒。
 
 ### 5.2 普通注册用户只需要
 

@@ -18,6 +18,14 @@ type RunRequest struct {
 	Question        string              `json:"question" binding:"required"`
 	RequestID       string              `json:"requestId" binding:"required"`
 	KnowledgePolicy rag.KnowledgePolicy `json:"knowledgePolicy"`
+	// EnableThinking is what this request asks the chat model to do.
+	//
+	// It is optional on the wire, and it is a pointer so that three states
+	// stay different: absent means the deployment's own setting applies, true
+	// asks this run to think, false asks it not to. A plain bool would
+	// collapse "did not ask" into "no", and a deployment that thinks by
+	// default could then never be answered "off" for one turn.
+	EnableThinking *bool `json:"enableThinking"`
 	// TopicConsent is the user's read-side confirmation. It is optional on the
 	// wire: a client that never asks for suggestions, or a deployment that does
 	// not run the confirmed mode, simply omits it.
@@ -183,7 +191,8 @@ func Run(c *gin.Context) {
 	result, err := service.Run(c.Request.Context(), serviceagent.RunRequest{
 		UserID: c.GetInt64("userID"), UserName: c.GetString("userName"),
 		SessionID: req.SessionID, Question: req.Question, RequestID: req.RequestID, KnowledgePolicy: req.KnowledgePolicy,
-		TopicConsent: req.TopicConsent,
+		EnableThinking: req.EnableThinking,
+		TopicConsent:   req.TopicConsent,
 	}, serviceagent.DiscardEvents)
 	res.RunID = result.RunID
 	if err != nil {
@@ -229,7 +238,8 @@ func RunStream(c *gin.Context) {
 	_, _ = service.Run(c.Request.Context(), serviceagent.RunRequest{
 		UserID: c.GetInt64("userID"), UserName: c.GetString("userName"),
 		SessionID: req.SessionID, Question: req.Question, RequestID: req.RequestID, KnowledgePolicy: req.KnowledgePolicy,
-		TopicConsent: req.TopicConsent,
+		EnableThinking: req.EnableThinking,
+		TopicConsent:   req.TopicConsent,
 	}, sink)
 }
 

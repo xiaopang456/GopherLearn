@@ -395,10 +395,15 @@ func (s *httpSurface) messages(w http.ResponseWriter, r *http.Request, uid int64
 }
 func (s *httpSurface) agentMessage(w http.ResponseWriter, r *http.Request, uid int64, name, sid string) {
 	var input struct {
-		Content         string                              `json:"content"`
-		RequestID       string                              `json:"requestId"`
-		KnowledgePolicy rag.KnowledgePolicy                 `json:"knowledgePolicy"`
-		TopicConsent    agentService.TopicConsentSubmission `json:"topicConsent"`
+		Content         string              `json:"content"`
+		RequestID       string              `json:"requestId"`
+		KnowledgePolicy rag.KnowledgePolicy `json:"knowledgePolicy"`
+		// EnableThinking is what this request asks the chat model to do. It
+		// is optional and a pointer, so an absent field leaves the
+		// deployment's own setting in place while true and false state this
+		// turn's choice.
+		EnableThinking *bool                               `json:"enableThinking"`
+		TopicConsent   agentService.TopicConsentSubmission `json:"topicConsent"`
 	}
 	if err := conversation.DecodeRequest(w, r, &input); err != nil {
 		apiError(w, 400, "invalid_request", "request body is invalid")
@@ -406,7 +411,7 @@ func (s *httpSurface) agentMessage(w http.ResponseWriter, r *http.Request, uid i
 	}
 	result, err := s.agent.Agent.Run(r.Context(), agentService.RunRequest{
 		UserID: uid, UserName: name, SessionID: sid, Question: input.Content,
-		RequestID: input.RequestID, KnowledgePolicy: input.KnowledgePolicy, TopicConsent: input.TopicConsent,
+		RequestID: input.RequestID, KnowledgePolicy: input.KnowledgePolicy, EnableThinking: input.EnableThinking, TopicConsent: input.TopicConsent,
 	}, agentService.DiscardEvents)
 	if err == nil {
 		conversation.WriteEnvelope(w, 200, result)

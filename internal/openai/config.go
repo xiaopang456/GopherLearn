@@ -24,10 +24,43 @@ const (
 	EnvAPIKey          = "GOPHERLEARN_OPENAI_API_KEY"
 	EnvModel           = "GOPHERLEARN_OPENAI_MODEL"
 	EnvEnableThinking  = "GOPHERLEARN_OPENAI_ENABLE_THINKING"
+	EnvThinkingDialect = "GOPHERLEARN_OPENAI_THINKING_DIALECT"
 	EnvTemperature     = "GOPHERLEARN_OPENAI_TEMPERATURE"
 	EnvMaxOutputTokens = "GOPHERLEARN_OPENAI_MAX_OUTPUT_TOKENS"
 	EnvTimeout         = "GOPHERLEARN_OPENAI_TIMEOUT"
 )
+
+// Thinking dialects: how the thinking switch is written on the wire.
+//
+// The names are the same as the ones the V2 chat configuration uses, but the
+// two live in separate Go modules, so the vocabulary is stated twice rather
+// than shared. A deployment configures each client separately anyway: they
+// have their own base URL, key and model.
+const (
+	// ThinkingDialectQwen sends the Qwen-style extension: enable_thinking.
+	// This is the default and what an unset value means.
+	ThinkingDialectQwen = "qwen"
+	// ThinkingDialectDeepSeek sends the DeepSeek-style extension:
+	// thinking: {type: enabled|disabled}.
+	ThinkingDialectDeepSeek = "deepseek"
+	// ThinkingDialectNone sends no thinking switch at all.
+	ThinkingDialectNone = "none"
+)
+
+// NormalizeThinkingDialect resolves an empty value to the default and refuses
+// anything else. A typo has to stop startup: a provider that does not know
+// the field ignores it, and the deployment would then answer with a thinking
+// state nobody chose.
+func NormalizeThinkingDialect(value string) (string, error) {
+	switch trimmed := strings.TrimSpace(value); trimmed {
+	case "":
+		return ThinkingDialectQwen, nil
+	case ThinkingDialectQwen, ThinkingDialectDeepSeek, ThinkingDialectNone:
+		return trimmed, nil
+	default:
+		return "", ErrInvalidThinkingDialect
+	}
+}
 
 var (
 	// ErrMissingBaseURL reports openai_compatible mode without an endpoint.
@@ -53,6 +86,8 @@ var (
 	ErrInvalidTemperature = errors.New("openai: " + EnvTemperature + " must be a number between 0 and 2")
 	// ErrInvalidEnableThinking reports a value that is not a boolean.
 	ErrInvalidEnableThinking = errors.New("openai: " + EnvEnableThinking + " must be true or false")
+	// ErrInvalidThinkingDialect reports a dialect name nobody supports.
+	ErrInvalidThinkingDialect = errors.New("openai: " + EnvThinkingDialect + " must be qwen, deepseek or none")
 )
 
 // Defaults for the optional knobs. The timeout is generous enough for a long
@@ -85,6 +120,15 @@ type Config struct {
 	// extended field. nil means unset, and then the field never goes on the wire:
 	// it is not part of the OpenAI schema, so a strict provider could reject it.
 	EnableThinking *bool
+	// ThinkingDialect names the dialect the thinking switch is written in. An
+	// empty value means the Qwen dialect, which is the behaviour every
+	// deployment had before this field existed.
+	//
+	// It is a setting rather than something derived from the endpoint because a
+	// deployment may reach one provider through a gateway or a local proxy, and
+	// a request that names a switch the provider does not know is a request
+	// whose thinking state nobody can predict.
+	ThinkingDialect string
 	// WrapTransport lets a caller observe and bound the HTTP requests this client
 	// actually makes. nil - the default, and what every environment configuration
 	// produces - leaves both internal clients built exactly as before.
@@ -149,6 +193,13 @@ func ConfigFromEnvironment(lookup func(string) string) (Config, error) {
 			return Config{}, ErrInvalidEnableThinking
 		}
 		config.EnableThinking = &parsed
+	}
+	if raw := strings.TrimSpace(lookup(EnvThinkingDialect)); raw != "" {
+		dialect, err := NormalizeThinkingDialect(raw)
+		if err != nil {
+			return Config{}, err
+		}
+		config.ThinkingDialect = dialect
 	}
 	if raw := strings.TrimSpace(lookup(EnvTemperature)); raw != "" {
 		parsed, err := strconv.ParseFloat(raw, 64)
