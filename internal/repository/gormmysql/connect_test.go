@@ -16,6 +16,28 @@ import (
 // stubDSN is never dialed: every test that uses it injects a dial function.
 const stubDSN = "stub-user:stub-password@tcp(127.0.0.1:3306)/gopherlearn_stub"
 
+// migrationBudget is the startup budget the tests that run a real schema
+// migration work under.
+//
+// Connect puts the dial and the schema migration under one deadline, and the
+// product's default for it is five seconds. That default is about a network
+// round trip to MySQL and it is deliberate: a deployment that cannot reach
+// its database must fail at startup instead of hanging, and an operator who
+// needs longer has GOPHERLEARN_MYSQL_CONNECT_TIMEOUT.
+//
+// It is the wrong budget for these tests, which build a fresh schema on a
+// local SQLite file instead of talking to a server. Every AutoMigrate
+// statement is its own transaction with its own fsync, so the build is
+// disk-bound rather than network-bound, and on a loaded CI runner it takes
+// longer than five seconds. The failure that produced was "migrate
+// knowledge: context deadline exceeded" - the budget ran out, not the
+// migration being wrong.
+//
+// So the tests inject a budget of their own and the product default stays at
+// five seconds. Raising the default to make a test pass would slow every
+// real startup down for a problem only the test has.
+const migrationBudget = 2 * time.Minute
+
 func TestNormalizeDSNRequiresAParseableValue(t *testing.T) {
 	cases := []struct {
 		name string
@@ -174,7 +196,8 @@ func TestConnectSanitizesDialAndMigrationFailures(t *testing.T) {
 func TestConnectBuildsAWorkingRepositoryThroughTheInjectedDial(t *testing.T) {
 	db := newPlainTestDB(t)
 	stores, err := Connect(context.Background(), stubDSN, Options{
-		Dial: func(context.Context, string) (*gorm.DB, error) { return db, nil },
+		ConnectTimeout: migrationBudget,
+		Dial:           func(context.Context, string) (*gorm.DB, error) { return db, nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -268,13 +291,42 @@ func TestConnMaxIdleTimeResolution(t *testing.T) {
 func TestConnectWithInjectedDialDoesNotReachTheProductionDial(t *testing.T) {
 	db := newTestDB(t)
 	reached := false
-	if _, err := Connect(t.Context(), stubDSN, Options{Dial: func(_ context.Context, _ string) (*gorm.DB, error) {
-		reached = true
-		return db, nil
-	}}); err != nil {
+	if _, err := Connect(t.Context(), stubDSN, Options{
+		ConnectTimeout: migrationBudget,
+		Dial: func(_ context.Context, _ string) (*gorm.DB, error) {
+			reached = true
+			return db, nil
+		}}); err != nil {
 		t.Fatal(err)
 	}
 	if !reached {
 		t.Fatal("the injected dial was not used, so a substituted seam would not be testable")
+	}
+}
+
+// TestConnectHonoursTheInjectedConnectTimeout pins the seam the migration
+// tests above depend on: the deadline Connect works under is the one it was
+// given, not the product default. Without it, a test that injects a longer
+// budget would be relying on an option nothing checks.
+func TestConnectHonoursTheInjectedConnectTimeout(t *testing.T) {
+	db := newTestDB(t)
+	injected := 90 * time.Second
+	var budget time.Duration
+	_, err := Connect(t.Context(), stubDSN, Options{
+		ConnectTimeout: injected,
+		Dial: func(ctx context.Context, _ string) (*gorm.DB, error) {
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				t.Error("the dial received a context without a deadline")
+				return db, nil
+			}
+			budget = time.Until(deadline)
+			return db, nil
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if budget <= 0 || budget > injected {
+		t.Fatalf("dial budget = %v, want a deadline within the injected %v", budget, injected)
 	}
 }
