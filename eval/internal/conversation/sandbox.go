@@ -89,6 +89,12 @@ func NewSandbox(ctx context.Context) (*Sandbox, error) {
 			sqlDB, dbErr := db.DB()
 			if dbErr == nil && sqlDB.PingContext(ctx) == nil {
 				s.db = db
+				if err := s.createMarker(ctx); err != nil {
+					return fail(err)
+				}
+				if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error { return s.checkMarker(tx) }); err != nil {
+					return fail(err)
+				}
 				return s, nil
 			}
 			if dbErr == nil {
@@ -101,6 +107,48 @@ func NewSandbox(ctx context.Context) (*Sandbox, error) {
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
+}
+
+// The marker is created through docker exec inside the verified container,
+// rather than via the host port. A redirected host port cannot be mistaken for
+// this instance unless it also holds the newly generated unpredictable nonce.
+func (s *Sandbox) createMarker(ctx context.Context) error {
+	if err := s.verify(ctx); err != nil {
+		return err
+	}
+	query := "CREATE TABLE eval_instance_guard (nonce VARCHAR(32) NOT NULL); INSERT INTO eval_instance_guard (nonce) VALUES ('" + s.nonce + "')"
+	_, err := docker(ctx, "exec", "-e", "MYSQL_PWD="+s.password, s.id, "mysql", "-uroot", "eval_sandbox", "-e", query)
+	if err != nil {
+		return fmt.Errorf("create sandbox marker: %w", err)
+	}
+	return nil
+}
+func (s *Sandbox) checkMarker(tx *gorm.DB) error {
+	var values []string
+	if err := tx.Table("eval_instance_guard").Pluck("nonce", &values).Error; err != nil {
+		return fmt.Errorf("read sandbox marker: %w", err)
+	}
+	if len(values) != 1 || values[0] != s.nonce {
+		return fmt.Errorf("sandbox database marker mismatch")
+	}
+	return nil
+}
+
+// Restore checks both the Docker identity and the database marker before any
+// writes. The marker check and restore use the same transaction/connection.
+func (s *Sandbox) Restore(ctx context.Context, snapshot Snapshot) error {
+	if err := s.verify(ctx); err != nil {
+		return err
+	}
+	if s.db == nil {
+		return fmt.Errorf("sandbox database unavailable")
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := s.checkMarker(tx); err != nil {
+			return err
+		}
+		return restoreIntoEmpty(ctx, tx, snapshot)
+	})
 }
 func (s *Sandbox) verify(ctx context.Context) error {
 	if err := s.verifyIdentity(ctx); err != nil {

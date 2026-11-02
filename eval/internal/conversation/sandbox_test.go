@@ -39,14 +39,20 @@ func TestSandboxIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	snap := validSnapshot()
-	if err = restoreIntoEmpty(ctx, s.db, snap); err != nil {
+	if err = s.Restore(ctx, snap); err != nil {
 		t.Fatal(err)
 	}
 	got, err := Capture(ctx, s.db, snap.Session.UserID, snap.Session.ID)
 	if err != nil || len(got.Messages) != 2 {
 		t.Fatalf("capture: %+v %v", got, err)
 	}
-	if err = restoreIntoEmpty(ctx, s.db, snap); err == nil {
+	if err = s.Restore(ctx, snap); err == nil {
 		t.Fatal("accepted nonempty database")
+	}
+	if err = s.db.Exec("UPDATE eval_instance_guard SET nonce = ?", "wrong").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Restore(ctx, snap); err == nil {
+		t.Fatal("accepted altered database marker")
 	}
 }
