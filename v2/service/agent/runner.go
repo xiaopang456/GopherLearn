@@ -1304,7 +1304,7 @@ func (m *boundedModel) Generate(ctx context.Context, input []*schema.Message, op
 		}
 		opts = append(opts, modelcomponent.WithToolChoice(schema.ToolChoiceForced))
 	}
-	opts = append(opts, aihelper.ThinkingModelOption(m.thinkingDialect, thinkingEnabledForModelCall(m.state.input.EnableThinking, forcedTool)))
+	opts = append(opts, aihelper.ThinkingModelOptions(m.thinkingDialect, thinkingEnabledForModelCall(m.state.input.EnableThinking, forcedTool))...)
 	message, err := callModel.Generate(ctx, input, opts...)
 	if observation := newPublicModelCall(ctx, m.state, "generate_snapshot"); observation != nil {
 		if observeErr := observation.accept(ctx, message); observeErr != nil {
@@ -1337,7 +1337,7 @@ func (m *boundedModel) Stream(ctx context.Context, input []*schema.Message, opts
 		}
 		opts = append(opts, modelcomponent.WithToolChoice(schema.ToolChoiceForced))
 	}
-	opts = append(opts, aihelper.ThinkingModelOption(m.thinkingDialect, thinkingEnabledForModelCall(m.state.input.EnableThinking, forcedTool)))
+	opts = append(opts, aihelper.ThinkingModelOptions(m.thinkingDialect, thinkingEnabledForModelCall(m.state.input.EnableThinking, forcedTool))...)
 	stream, err := callModel.Stream(ctx, input, opts...)
 	if err != nil {
 		return nil, TypeProviderFailure(err)
