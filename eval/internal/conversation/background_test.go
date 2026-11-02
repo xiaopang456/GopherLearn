@@ -21,6 +21,7 @@ func TestBackgroundAuditFailsClosed(t *testing.T) {
 			a.Calls = []BackgroundCall{{Role: "background", Started: start.Add(time.Millisecond)}}
 		},
 		"unknown role":         func(a *BackgroundAudit) { a.Calls = []BackgroundCall{{Role: "unknown", Started: answer}} },
+		"unrecognised role":    func(a *BackgroundAudit) { a.Calls = []BackgroundCall{{Role: "other", Started: answer}} },
 		"unknown after status": func(a *BackgroundAudit) { a.After = []JobState{{ID: "x", Kind: "memory", Status: "unexpected"}} },
 	}
 	for name, mutate := range tests {

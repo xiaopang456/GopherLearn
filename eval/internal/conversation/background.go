@@ -50,7 +50,12 @@ func (a BackgroundAudit) ValidateBackground() error {
 		return fmt.Errorf("background job executed before answer")
 	}
 	for _, c := range a.Calls {
-		if c.Started.IsZero() || c.Role == "" || c.Role == "unknown" {
+		if c.Started.IsZero() {
+			return fmt.Errorf("unattributed model call")
+		}
+		switch c.Role {
+		case "answer", "summary", "background", "embedding", "rerank":
+		default:
 			return fmt.Errorf("unattributed model call")
 		}
 		if c.Started.Before(a.Started) {
