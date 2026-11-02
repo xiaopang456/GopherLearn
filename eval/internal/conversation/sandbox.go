@@ -1,6 +1,7 @@
 package conversation
 
 import (
+	"GopherAI/model"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -229,6 +230,34 @@ func (s *Sandbox) ObserveJobs(ctx context.Context) ([]JobState, map[string]JobCo
 		return nil, nil, err
 	}
 	return jobs, counts, nil
+}
+
+// InitSynthetic creates the small schema for the offline demo only. It does
+// not replace the full product migration required for HTTP evaluation.
+func (s *Sandbox) InitSynthetic(ctx context.Context) error {
+	if err := s.verify(ctx); err != nil {
+		return err
+	}
+	if s.db == nil {
+		return fmt.Errorf("sandbox database unavailable")
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := s.checkMarker(tx); err != nil {
+			return err
+		}
+		for _, table := range []string{"users", "sessions", "messages", "session_summaries"} {
+			if tx.Migrator().HasTable(table) {
+				return fmt.Errorf("synthetic schema already exists")
+			}
+		}
+		if err := tx.AutoMigrate(&model.User{}, &model.Session{}, &model.Message{}, &model.SessionSummary{}); err != nil {
+			return err
+		}
+		if err := tx.Create(&model.User{ID: 7, Username: "synthetic-learner"}).Error; err != nil {
+			return err
+		}
+		return tx.Create(&model.Session{ID: "synthetic-evaluation", UserID: 7, UserName: "synthetic-learner", Mode: model.SessionModeAgent, Title: "Synthetic learning conversation"}).Error
+	})
 }
 func (s *Sandbox) verify(ctx context.Context) error {
 	if err := s.verifyIdentity(ctx); err != nil {
