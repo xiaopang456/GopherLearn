@@ -108,6 +108,7 @@ node eval/l2l3/check.mjs --labels L --dataset D --l3-only N
 **没有授权不要对真实系统运行。** 授权之后：
 
 0. 思考开关：run-spec 里臂的 `enableThinking`（或环境变量 `GL_L23_ENABLE_THINKING`，取 `true` / `false`）会原样写进每次 `/agent/run` 的请求；不写就不发，由部署默认值决定。同一个 `requestId` 下换思考选择会得到 `409`，provider 每次都用新的 `requestId`，不受影响。
+0. 停止文件：臂的 `stopFile`（或环境变量 `GL_L23_STOP_FILE`）指向一个文件，只要它存在，provider 就不再发任何请求（连会话都不开），这次尝试也不留记录；计数代理或人创建它来叫停整次运行，删掉它才会继续。
 1. 设置 `GL_L23_ENV=real`（没有默认值，`fake` 时只许连回环地址）。
 2. 设置 `GL_L23_CORPUS`，值是语料清单 `corpus.json` 的路径。**漏设它不会得到「判定不通过」，而是每条断言都报错**：断言在加载语料时直接抛 `GL_L23_CORPUS (the corpus manifest) is not set`，跑完看到的是一片 `error`，看起来像模型全错，其实一次都没真正判过。题里含上传文档的，还要设 `GL_L23_UPLOAD_NAMES`（上传名对照 JSON 的路径）；不设只查不到上传文档，不影响其他断言。开整批之前先用一条已知语料的题验一次，确认判定里有 `pass` 也有 `fail`。
 3. 预算：`GL_L23_MAX_RUNS` 必须大于 0，provider 在每次请求**之前**把这次尝试写进账本，到上限就拒绝；不重试。试算：题数 × 臂数 × 重复次数 = `/agent/run` 次数，每次约 3.4 次聊天模型调用（含后台任务），另有判分调用（判分模型尚未实现）。

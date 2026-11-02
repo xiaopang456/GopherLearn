@@ -39,6 +39,9 @@ export function resolveConfig(config = {}, env = process.env) {
     // Whether each request says the model should think. Left out unless a boolean is given;
     // then it is sent explicitly on every request, whatever the deployment default is.
     enableThinking: parseThinking(pick('enableThinking', 'GL_L23_ENABLE_THINKING')),
+    // A file whose existence means "stop": whoever watches the run (the counting proxy, a person)
+    // creates it, and no further request is made while it is there.
+    stopFile: pick('stopFile', 'GL_L23_STOP_FILE'),
   }
 }
 
@@ -136,6 +139,10 @@ export class TrialRunner {
     if (problem) {
       // Nothing is sent, and nothing is written outside a checked directory.
       return { ...base, error: `refused: ${problem}`, durationMs: 0 }
+    }
+    if (this.cfg.stopFile && fs.existsSync(this.cfg.stopFile)) {
+      // Nothing is sent and nothing is recorded as a run: the trial simply did not happen.
+      return { ...base, error: `refused: the stop file ${this.cfg.stopFile} exists; the run was stopped`, durationMs: 0 }
     }
     try {
       if (!this.token) await this.login()

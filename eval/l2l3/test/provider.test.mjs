@@ -166,6 +166,31 @@ test('a failed run keeps the service message and how the run ended, so unknown_t
   assert.equal(h.ledger().filter((e) => e.phase === 'run').length, 3)
 })
 
+test('a stop file ends the run: nothing is sent while it exists, and the trial leaves no run in the ledger', async (t) => {
+  if (skipIfTmpInRepo(t)) return
+  const stopFile = path.join(tmp(), 'STOP.json')
+  t.after(() => fs.rmSync(path.dirname(stopFile), { recursive: true, force: true }))
+  const h = await harness(t, [scenario('q?')], { stopFile })
+  const first = await h.runner.run({ arm: 'a', qid: 'q1', rep: 0, question: 'q?' })
+  assert.equal(first.error, undefined)
+  assert.equal(h.fake.stats.runs, 1)
+
+  fs.writeFileSync(stopFile, '{}')
+  const sessionsBefore = h.fake.stats.sessions
+  const stopped = await h.runner.run({ arm: 'a', qid: 'q2', rep: 0, question: 'q?' })
+  assert.match(stopped.error, /refused: the stop file .* exists/)
+  assert.equal(h.fake.stats.runs, 1, '/agent/run was not called')
+  assert.equal(h.fake.stats.sessions, sessionsBefore, 'not even a session was opened')
+  assert.equal(h.ledger().filter((e) => e.phase === 'run').length, 1)
+  assert.equal(fs.existsSync(path.join(h.config.rawDir, 'a', 'q2.r0.json')), false, 'a refused trial writes no record')
+
+  // Removing the file (a person decided) lets the run go on.
+  fs.rmSync(stopFile)
+  const resumed = await h.runner.run({ arm: 'a', qid: 'q3', rep: 0, question: 'q?' })
+  assert.equal(resumed.error, undefined)
+  assert.equal(h.fake.stats.runs, 2)
+})
+
 test('enableThinking is sent as given on every request, and left out when it is not given', async (t) => {
   if (skipIfTmpInRepo(t)) return
   const on = await harness(t, [scenario('q?')], { enableThinking: true })
