@@ -32,7 +32,7 @@ cd eval && go test ./cmd/l23 ./internal/l23
 
 ## 数据格式
 
-**题集**：L1 的开发集文件（`answerable`、`evidence_sets`，格式见 eval/README.md）；**只接受 `split: "dev"` 的行**，混入封存集的行会让 `build-config.mjs` 整个拒绝。
+**题集**：L1 的开发集文件（`answerable`、`evidence_sets`，格式见 eval/README.md）；**默认只接受 `split: "dev"` 的行**，混入封存集的行会让 `build-config.mjs` 整个拒绝。封存集要显式开关才能用，见下面的"封存集"。
 
 **L3 标注**（`labels.jsonl`，每题一行，按 id 关联，不改 L1 题集）：
 
@@ -114,7 +114,16 @@ node eval/l2l3/check.mjs --labels L --dataset D --l3-only N
 3. 预算：`GL_L23_MAX_RUNS` 必须大于 0，provider 在每次请求**之前**把这次尝试写进账本，到上限就拒绝；不重试。试算：题数 × 臂数 × 重复次数 = `/agent/run` 次数，每次约 3.4 次聊天模型调用（含后台任务），另有判分调用（判分模型尚未实现）。
 4. 所有模型调用经一个带硬上限、记 token 账本的计数代理（本仓库不提供，需自备）。
 5. 每个臂用独立的数据库和 Redis（或运行前完整重置）。
-6. 用 `promptfoo/build-config.mjs <run-spec.json> <输出目录>` 生成配置并写 `run.json`；`npx promptfoo@0.125.1 eval -c … --no-cache -j 1` 运行。**生成的配置没有用真实的 Promptfoo 跑过**（CI 不安装它）；第一次真实使用前先用 `npx promptfoo@0.125.1 validate` 检查。
+6. 用 `promptfoo/build-config.mjs [--split dev|sealed] <run-spec.json> <输出目录>` 生成配置并写 `run.json`；`npx promptfoo@0.125.1 eval -c … --no-cache -j 1` 运行。**生成的配置没有用真实的 Promptfoo 跑过**（CI 不安装它）；第一次真实使用前先用 `npx promptfoo@0.125.1 validate` 检查。
+
+## 封存集
+
+封存集只在里程碑（基线、发版）运行，**默认拒绝**。要运行它，必须显式写 `--split sealed`（或在 run-spec 里写 `"split": "sealed"`；命令行与 spec 不一致就拒绝）。规则：
+
+- `datasetPath` 只能是封存集题集：里面有任何不是 `split: "sealed"` 的行，整个拒绝（反过来，开发集运行里出现封存集的行也整个拒绝，报错里会提示需要 `--split sealed`）；
+- 封存集运行**只评回答层（L2）**：run-spec 里不许有 `labelsPath` 和 `l3OnlyPath`；
+- `run.json` 记录这次运行属于哪个 split；同一个原始记录目录不能先后用于开发集和封存集运行；
+- 命令会打印一行 `SEALED RUN`，提醒这是里程碑运行、不要据结果调参。
 
 ## 已知限制
 
