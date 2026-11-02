@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 
@@ -43,16 +44,29 @@ const reasoningContentFragment = `,"reasoning_content":""`
 // A body this patch cannot read is a body this patch must not guess at. The
 // request goes out unchanged and the failure is logged; the request is not
 // failed over a patch.
+//
+// The same holds for a body the patch would break: the patched bytes are
+// checked before they leave, and a body that is not valid JSON any more is
+// thrown away in favour of the original.
 func deepSeekReasoningPatch(_ context.Context, _ []*schema.Message, rawBody []byte) ([]byte, error) {
 	patched, err := patchMissingReasoningContent(rawBody)
 	if err != nil {
 		// The log line names the failure and nothing else. The request body
 		// is the user's content and does not belong in a log.
-		log.Printf("[aihelper] deepseek reasoning_content patch skipped: error_type=%T", err)
+		if errors.Is(err, errInvalidPatchedBody) {
+			log.Printf("[aihelper] deepseek reasoning patch produced invalid json, sent original")
+		} else {
+			log.Printf("[aihelper] deepseek reasoning_content patch skipped: error_type=%T", err)
+		}
 		return rawBody, nil
 	}
 	return patched, nil
 }
+
+// errInvalidPatchedBody reports that the patched request body would not be
+// valid JSON, so the patch was thrown away and the original body is the one
+// that goes out.
+var errInvalidPatchedBody = errors.New("the patched request body is not valid json")
 
 // patchMissingReasoningContent adds an empty reasoning_content field to every
 // assistant turn that carries tool calls and has no such field.
@@ -62,16 +76,32 @@ func deepSeekReasoningPatch(_ context.Context, _ []*schema.Message, rawBody []by
 // generic map and encoding it again would change the field order and the
 // number formats of every other value in the request, which is more than the
 // patch is allowed to do.
+//
+// Whatever happens, the bytes that come back are the ones that may be sent:
+// the patched body when the patch worked, and the original body when it did
+// not. An error says which of the two it is, and the caller sends the
+// original either way.
 func patchMissingReasoningContent(body []byte) ([]byte, error) {
+	return patchMissingReasoningContentWith(body, []byte(reasoningContentFragment))
+}
+
+// patchMissingReasoningContentWith is the patch with the inserted text
+// spelled out.
+//
+// The text is a parameter so that the test can hand it text that would make
+// the body invalid and check that the request still goes out unchanged. The
+// production path always inserts reasoningContentFragment.
+func patchMissingReasoningContentWith(body, fragment []byte) ([]byte, error) {
 	members, err := topLevelMembers(body)
 	if err != nil {
-		return nil, err
+		return body, err
 	}
+	// The last messages member wins, the same way the JSON decoders in this
+	// stack read a body with the key twice.
 	var messages *jsonMember
 	for i := range members {
 		if members[i].key == "messages" {
 			messages = &members[i]
-			break
 		}
 	}
 	if messages == nil {
@@ -81,16 +111,16 @@ func patchMissingReasoningContent(body []byte) ([]byte, error) {
 	}
 	elements, err := arrayElements(body, messages.valueStart, messages.valueEnd)
 	if err != nil {
-		return nil, err
+		return body, err
 	}
 
-	patched := make([]byte, 0, len(body)+len(reasoningContentFragment)*len(elements))
+	patched := make([]byte, 0, len(body)+len(fragment)*len(elements))
 	patched = append(patched, body[:messages.valueStart]...)
 	copied := messages.valueStart
 	for _, element := range elements {
 		insertAt, needed, err := reasoningContentInsertion(body, element)
 		if err != nil {
-			return nil, err
+			return body, err
 		}
 		if !needed {
 			patched = append(patched, body[copied:element.end]...)
@@ -98,12 +128,21 @@ func patchMissingReasoningContent(body []byte) ([]byte, error) {
 			continue
 		}
 		patched = append(patched, body[copied:insertAt]...)
-		patched = append(patched, reasoningContentFragment...)
+		patched = append(patched, fragment...)
 		patched = append(patched, body[insertAt:element.end]...)
 		copied = element.end
 	}
 	patched = append(patched, body[copied:messages.valueEnd]...)
 	patched = append(patched, body[messages.valueEnd:]...)
+
+	// The way out is checked as well as the way in. The patch edits bytes, so
+	// a body it cannot read correctly could leave a document that is not JSON
+	// any more. A request that is not JSON is a request the provider refuses
+	// with a message nobody can act on, and the original body is the better
+	// thing to send.
+	if !json.Valid(patched) {
+		return body, errInvalidPatchedBody
+	}
 	return patched, nil
 }
 

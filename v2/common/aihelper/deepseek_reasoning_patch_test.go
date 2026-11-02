@@ -3,6 +3,7 @@ package aihelper
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"GopherAI/config"
@@ -120,16 +121,48 @@ func TestTheReasoningContentPatchSurvivesABodyItCannotRead(t *testing.T) {
 	}
 }
 
-// A body the patch cannot read is also a body it does not touch: the
-// failure stops the patch, it does not half-apply it.
+// A body the patch cannot read is also a body it does not touch: the failure
+// stops the patch, it does not half-apply it.
 func TestTheReasoningContentPatchAppliesNothingWhenItCannotReadTheBody(t *testing.T) {
 	body := `{"messages":[{"role":"assistant","tool_calls":[{"type":"function"}]},{"role":123}]}`
 	patched, err := patchMissingReasoningContent([]byte(body))
 	if err == nil {
 		t.Fatalf("expected the unreadable body to be reported")
 	}
-	if patched != nil {
-		t.Fatalf("expected no patched body, got %s", patched)
+	if string(patched) != body {
+		t.Fatalf("a failed patch must hand back the original body\n got: %s\nwant: %s", patched, body)
+	}
+}
+
+// The way out is checked as well as the way in. A patch that would leave a
+// body that is not valid JSON any more is thrown away, and the original body
+// is what goes out.
+func TestThePatchIsDiscardedWhenItWouldProduceInvalidJson(t *testing.T) {
+	body := `{"messages":[{"role":"assistant","tool_calls":[{"type":"function"}]}],"model":"m"}`
+	// The fragment is missing its closing quote, so the body it produces is
+	// not JSON.
+	patched, err := patchMissingReasoningContentWith([]byte(body), []byte(`,"reasoning_content:"`))
+	if !errors.Is(err, errInvalidPatchedBody) {
+		t.Fatalf("error = %v, want %v", err, errInvalidPatchedBody)
+	}
+	if string(patched) != body {
+		t.Fatalf("the broken patch was not discarded\n got: %s\nwant: %s", patched, body)
+	}
+}
+
+// The same thing end to end: a body the patch cannot make valid is sent
+// unchanged, and the caller never sees an error.
+func TestARequestThatWouldBreakIsSentUnchanged(t *testing.T) {
+	// The number has a leading zero, which is not valid JSON. The patch can
+	// still read the body, and the patched body would still not be JSON, so
+	// it is thrown away.
+	body := `{"messages":[{"role":"assistant","tool_calls":[{"type":"function"}],"n":01}],"model":"m"}`
+	patched, err := deepSeekReasoningPatch(context.Background(), nil, []byte(body))
+	if err != nil {
+		t.Fatalf("the patch failed the request: %v", err)
+	}
+	if string(patched) != body {
+		t.Fatalf("the request went out changed\n got: %s\nwant: %s", patched, body)
 	}
 }
 
