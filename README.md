@@ -124,11 +124,13 @@ Copy-Item config.integrated.example.toml config.integrated.toml.local   # PowerS
 > 正式入口在启动时校验这些字段：**缺任一路，对应功能就会在启动时被拒绝**（例如 `[ordinaryChat]` 的类型不是 `openai_compatible`、密钥为空、维度与模型不符）。
 
 > **DeepSeek 上 Agent 的思考必须关着（`agentThinkingEnabled` 保持默认的 false）。**
-> DeepSeek 在多轮工具调用里要求把每一轮 assistant 的 `reasoning_content` 回传给 API，而当前的 Eino OpenAI 组件只在**响应**里解析这个字段、**请求**里不写它（`libs/acl/openai` 构造 `ChatCompletionMessage` 时没有这一项）。于是开启思考后，Agent 自由路径的每一次调用都会被 DeepSeek 拒绝：
+> DeepSeek 在多轮工具调用里要求每一轮 assistant 都带一个 `reasoning_content` 字段，少了或为 `null` 都会被拒：
 >
 > ```text
 > HTTP 400  The `reasoning_content` in the thinking mode must be passed back to the API.
 > ```
+>
+> 客户端会把**思考过**的那一轮的思考内容带回去，但还有另一种轮次带不回去：Agent 先问一个指定工具，那一次调用是**关着思考**的（DeepSeek 不接受「思考模式 + 指定工具名」的 `tool_choice`），所以那一轮本来就没有思考内容。紧接着的自由路径是开着思考的，它带着那一轮发出去，就少了这个字段——**每一次都是 400**。
 >
 > 这不是单次调用失败，而是**整轮失败**：HTTP 仍是 200，业务码是 5003，回答为空。实测 6 道题全部如此。
 > 因此 **`chatThinkingDialect = "deepseek"` 与 `agentThinkingEnabled = true` 的组合会在启动时被拒绝**（配置校验直接报错，不让它跑到运行时才炸）。

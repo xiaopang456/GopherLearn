@@ -90,15 +90,24 @@ var ErrInvalidAgentThinkingDialect = errors.New("agent config: the thinking swit
 // time.
 //
 // The DeepSeek dialect cannot be combined with the Agent's thinking switch.
+//
 // DeepSeek requires that every earlier assistant turn of a multi-turn tool
-// call carries its reasoning_content back to the API, and the Eino OpenAI
-// client does not send that field: it parses reasoning_content out of a
-// response but never writes it into the next request. So every Agent run
-// would end with HTTP 400 and the message
+// call carries a reasoning_content field, and it rejects the request when the
+// field is missing or null:
 //
 //	"The `reasoning_content` in the thinking mode must be passed back to the API."
 //
-// which is a failure of the whole turn, not of one call.
+// The client does pass the content back now: a turn that thought carries its
+// own reasoning_content into the next request. The gap is the other kind of
+// turn. The Agent asks for one specific tool first, and that call runs with
+// the thinking switch off, because DeepSeek refuses a named tool_choice while
+// thinking is on. So that assistant turn never had any reasoning content, and
+// the next request - the free one, with thinking on - carries a turn without
+// the field. The field has to be there; an empty string is accepted, but the
+// SDK drops empty strings, so the client cannot send one.
+//
+// Every Agent run therefore ends with HTTP 400 and the message above, which
+// is a failure of the whole turn, not of one call.
 //
 // Failing at startup is the point: the alternative is a deployment that looks
 // healthy and then answers every question with an error. The ordinary chat
@@ -118,7 +127,7 @@ func (c *Config) ValidateAgentThinking() error {
 	if dialect != ChatThinkingDialectDeepSeek {
 		return nil
 	}
-	return fmt.Errorf("%w: agentThinkingEnabled cannot be enabled with the %q thinking dialect; DeepSeek requires the reasoning_content of every earlier assistant turn to be passed back on a multi-turn tool call, the Eino OpenAI client does not pass it back, and every Agent run would fail with HTTP 400 \"The `reasoning_content` in the thinking mode must be passed back to the API.\"; set agentThinkingEnabled = false, or point the chat model at a service that reads the %q dialect",
+	return fmt.Errorf("%w: agentThinkingEnabled cannot be enabled with the %q thinking dialect; DeepSeek requires the reasoning_content field on every earlier assistant turn of a multi-turn tool call, the turn that asks for the forced tool runs without thinking and therefore has no reasoning content to pass back, and every Agent run would fail with HTTP 400 \"The `reasoning_content` in the thinking mode must be passed back to the API.\"; set agentThinkingEnabled = false, or point the chat model at a service that reads the %q dialect",
 		ErrInvalidAgentThinkingDialect, ChatThinkingDialectDeepSeek, ChatThinkingDialectQwen)
 }
 
@@ -196,7 +205,7 @@ type RagModelConfig struct {
 	// An empty value means the Qwen dialect, which is the behaviour every
 	// existing deployment has.
 	RagChatThinkingDialect string `toml:"chatThinkingDialect"`
-	RagRerankEnabled    bool   `toml:"rerankEnabled"`
+	RagRerankEnabled       bool   `toml:"rerankEnabled"`
 	// RagRerankProvider selects the rerank service shape: RerankProviderLocal
 	// for a locally served cross-encoder, RerankProviderDashScope for a hosted
 	// endpoint. An empty value means the local provider.
@@ -252,10 +261,10 @@ const (
 func (c KnowledgeConfig) CandidateMode() bool { return false }
 
 type AgentConfig struct {
-	MaxToolCalls                     int    `toml:"maxToolCalls"`
-	MaxModelCalls                    int    `toml:"maxModelCalls"`
-	MaxGraphSteps                    int    `toml:"maxGraphSteps"`
-	DeadlineSeconds                  int    `toml:"deadlineSeconds"`
+	MaxToolCalls    int `toml:"maxToolCalls"`
+	MaxModelCalls   int `toml:"maxModelCalls"`
+	MaxGraphSteps   int `toml:"maxGraphSteps"`
+	DeadlineSeconds int `toml:"deadlineSeconds"`
 	// AgentThinkingEnabled turns the chat model's thinking on for the Agent's
 	// own model calls.
 	//
