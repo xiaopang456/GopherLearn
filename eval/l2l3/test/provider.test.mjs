@@ -127,11 +127,71 @@ test('nothing is retried: a failed call is one request and one record', async (t
   const busy = await h.runner.run({ arm: 'a', qid: 'q2', rep: 0, question: 'busy?' })
   const junk = await h.runner.run({ arm: 'a', qid: 'q3', rep: 0, question: 'junk?' })
   assert.equal(h.fake.stats.runs, 3)
-  assert.equal(h.fake.stats.stepReads, 0, 'the steps of a run that failed are not read')
+  // /agent/run was called once per trial and never again. Only a run the service answered
+  // with a run id gets its view read (once, no model); a 500 or a non-JSON body does not.
+  assert.equal(h.fake.stats.stepReads, 1)
   assert.match(boom.error, /agent\/run failed: http 500/)
   assert.match(busy.error, /status_code 4001/)
   assert.match(junk.error, /agent\/run failed/)
+  assert.equal(boom.steps, undefined)
   assert.equal(junk.steps, undefined)
+  assert.equal(busy.statusMsg, 'busy')
+})
+
+test('a failed run keeps the service message and how the run ended, so unknown_tool is told from the other failures', async (t) => {
+  if (skipIfTmpInRepo(t)) return
+  const failedView = (reason) => ({ status_code: 1000, run: { run_id: 'x', status: 'failed', termination_reason: reason, steps: [toolStep] } })
+  const shared = 'Agent 达到安全执行边界，本次任务未完成'
+  const h = await harness(t, [
+    scenario('tool?', { body: { status_code: 5003, status_msg: shared }, stepsBody: failedView('unknown_tool') }),
+    scenario('limit?', { body: { status_code: 5003, status_msg: shared }, stepsBody: failedView('model_call_limit') }),
+    scenario('bare?', { body: { status_code: 5003 }, stepsBody: { status_code: 1000, run: { run_id: 'x', status: 'failed', steps: [] } } }),
+  ])
+  const unknownTool = await h.runner.run({ arm: 'a', qid: 'q1', rep: 0, question: 'tool?' })
+  const limit = await h.runner.run({ arm: 'a', qid: 'q2', rep: 0, question: 'limit?' })
+  const bare = await h.runner.run({ arm: 'a', qid: 'q3', rep: 0, question: 'bare?' })
+
+  // Both look the same from the status code and message; the termination reason separates them.
+  assert.equal(unknownTool.statusCode, 5003)
+  assert.equal(unknownTool.statusMsg, shared)
+  assert.equal(limit.statusMsg, shared)
+  assert.equal(unknownTool.terminationReason, 'unknown_tool')
+  assert.equal(limit.terminationReason, 'model_call_limit')
+  assert.equal(unknownTool.runStatus, 'failed')
+  assert.equal(bare.terminationReason, undefined)
+  for (const record of [unknownTool, limit, bare]) assert.match(record.error, /status_code 5003/)
+  // One /agent/run per trial, one read of the run view, no retry.
+  assert.equal(h.fake.stats.runs, 3)
+  assert.equal(h.fake.stats.stepReads, 3)
+  assert.equal(h.ledger().filter((e) => e.phase === 'run').length, 3)
+})
+
+test('enableThinking is sent as given on every request, and left out when it is not given', async (t) => {
+  if (skipIfTmpInRepo(t)) return
+  const on = await harness(t, [scenario('q?')], { enableThinking: true })
+  const rec = await on.runner.run({ arm: 'a', qid: 'q1', rep: 0, question: 'q?' })
+  await on.runner.run({ arm: 'a', qid: 'q1', rep: 1, question: 'q?' })
+  assert.deepEqual(on.fake.stats.runBodies.map((b) => b.enableThinking), [true, true])
+  assert.equal(rec.enableThinking, true)
+
+  const off = await harness(t, [scenario('q?')], { enableThinking: false })
+  const recOff = await off.runner.run({ arm: 'a', qid: 'q1', rep: 0, question: 'q?' })
+  assert.equal(off.fake.stats.runBodies[0].enableThinking, false)
+  assert.equal(recOff.enableThinking, false)
+
+  const unset = await harness(t, [scenario('q?')])
+  const recUnset = await unset.runner.run({ arm: 'a', qid: 'q1', rep: 0, question: 'q?' })
+  assert.equal('enableThinking' in unset.fake.stats.runBodies[0], false, 'not sent at all')
+  assert.equal(recUnset.enableThinking, null)
+
+  // The environment variable is read as a boolean; anything else is refused before a request.
+  assert.equal(resolveConfig({}, { GL_L23_ENABLE_THINKING: 'true' }).enableThinking, true)
+  assert.equal(resolveConfig({}, { GL_L23_ENABLE_THINKING: 'false' }).enableThinking, false)
+  assert.equal(resolveConfig({}, {}).enableThinking, undefined)
+  const bad = await harness(t, [scenario('q?')], { enableThinking: 'maybe' })
+  const refused = await bad.runner.run({ arm: 'a', qid: 'q1', rep: 0, question: 'q?' })
+  assert.match(refused.error, /enableThinking must be true or false/)
+  assert.equal(bad.fake.stats.runs, 0)
 })
 
 test('a timeout is kept as a record, once', async (t) => {

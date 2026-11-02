@@ -72,6 +72,23 @@ test('a call that did not produce an answer is an error on every layer, never a 
   }
 })
 
+test('a failed run is classed by how the service says it ended, so unknown_tool is counted apart', async () => {
+  const failed = (extra) => record({ statusCode: 5003, error: 'agent/run failed: http 200 status_code 5003', ...extra })
+  const classes = []
+  for (const extra of [{ terminationReason: 'unknown_tool' }, { terminationReason: 'model_call_limit' }, {}, { terminationReason: 'Weird Reason!' }]) {
+    const outcome = await judgeTrial(failed(extra), both(), ctx)
+    assert.equal(outcome.layers.l2.verdict, 'error')
+    assert.equal(outcome.layers.l3.verdict, 'error')
+    assert.equal(outcome.layers.l2.class, outcome.layers.l3.class)
+    classes.push(outcome.layers.l2.class)
+  }
+  // A reason that is not a plain token is not trusted as a class.
+  assert.deepEqual(classes, ['run_failed:unknown_tool', 'run_failed:model_call_limit', 'run_failed', 'run_failed'])
+  // A successful call that carries a termination reason is still judged on its answer.
+  const ok = await judgeTrial({ ...withTools('knowledge_search'), terminationReason: 'completed' }, both(), ctx)
+  assert.equal(ok.layers.l2.verdict, 'pass')
+})
+
 test('a missing field in a failed call is fine: the failure is what is reported', async () => {
   const outcome = await judgeTrial({ schema: 'record.v1', arm: 'a', qid: 'q1', rep: 0, env: 'fake', http: 500, error: 'boom' }, both(), ctx)
   assert.equal(outcome.layers.l2.class, 'run_failed')

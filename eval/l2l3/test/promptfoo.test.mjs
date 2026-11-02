@@ -72,6 +72,16 @@ test('the generated configuration fixes what is easy to get wrong', { skip: skip
   assert.equal(config.tests.find((x) => x.vars.id === 'q-tungsten').description, 'q-tungsten (L2)')
 })
 
+test('an arm that names enableThinking passes it to its provider; one that does not leaves it out', { skip: skip() }, (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'l23-cfg-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const s = spec(dir, { arms: [{ label: 'on', baseUrl: 'http://127.0.0.1:9', enableThinking: true }, { label: 'off', baseUrl: 'http://127.0.0.1:10', enableThinking: false }, { label: 'unset', baseUrl: 'http://127.0.0.1:11' }] })
+  const config = buildConfig(s, loadQuestions(s))
+  assert.equal(config.providers[0].config.enableThinking, true)
+  assert.equal(config.providers[1].config.enableThinking, false)
+  assert.equal('enableThinking' in config.providers[2].config, false)
+})
+
 test('the configuration refuses what it should not generate', { skip: skip() }, (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'l23-cfg-'))
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
@@ -81,6 +91,7 @@ test('the configuration refuses what it should not generate', { skip: skip() }, 
   assert.throws(() => buildConfig({ ...s, arms: [] }, questions), /at least one arm/)
   assert.throws(() => buildConfig({ ...s, arms: [{ label: 'x', baseUrl: 'u' }, { label: 'x', baseUrl: 'v' }] }, questions), /distinct/)
   assert.throws(() => buildConfig({ ...s, repeat: 0 }, questions), /positive integer/)
+  assert.throws(() => buildConfig({ ...s, arms: [{ label: 'x', baseUrl: 'u', enableThinking: 'yes' }] }, questions), /enableThinking of an arm must be true or false/)
   // The sealed set is never loaded: a question file with a non-dev row is refused whole.
   assert.throws(() => loadQuestions({ ...s, datasetPath: path.join(l1data, 'dataset.jsonl') }), /not in the dev split \(first: q-graft-when\)/)
 })

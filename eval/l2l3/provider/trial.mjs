@@ -36,7 +36,18 @@ export function resolveConfig(config = {}, env = process.env) {
     ledgerPath: pick('ledgerPath', 'GL_L23_LEDGER'),
     rawDir: pick('rawDir', 'GL_L23_RAW_DIR'),
     timeoutMs: Number.parseInt(String(pick('timeoutMs', 'GL_L23_TIMEOUT_MS', '120000')), 10),
+    // Whether each request says the model should think. Left out unless a boolean is given;
+    // then it is sent explicitly on every request, whatever the deployment default is.
+    enableThinking: parseThinking(pick('enableThinking', 'GL_L23_ENABLE_THINKING')),
   }
+}
+
+/** true / false (or their strings) are choices; unset stays undefined; anything else is kept so it can be refused. */
+function parseThinking(value) {
+  if (value === undefined || value === null || value === '') return undefined
+  if (value === true || value === 'true') return true
+  if (value === false || value === 'false') return false
+  return value
 }
 
 /** Why this configuration may not run, or '' when it may. */
@@ -51,6 +62,7 @@ export function configProblem(cfg) {
   if (cfg.env === 'fake' && !LOOPBACK.has(url.hostname)) return `a fake run may only talk to a loopback address, not ${url.hostname}`
   if (cfg.env === 'real' && !(cfg.maxRuns > 0)) return 'a real run needs GL_L23_MAX_RUNS above zero'
   if (!Number.isInteger(cfg.maxRuns) || cfg.maxRuns < 0) return 'maxRuns must be a non-negative integer'
+  if (cfg.enableThinking !== undefined && typeof cfg.enableThinking !== 'boolean') return `enableThinking must be true or false when given, not ${JSON.stringify(cfg.enableThinking)}`
   for (const [name, value] of [['ledgerPath', cfg.ledgerPath], ['rawDir', cfg.rawDir]]) {
     try {
       assertOutsideWorktree(name, value)
@@ -154,7 +166,13 @@ export class TrialRunner {
         method: 'POST',
         headers: auth,
         // The same requestId would be taken for a replay and not call the model again.
-        body: JSON.stringify({ sessionId, question, requestId: `r-${safeName(arm)}-${safeName(qid)}-${rep}-${nonce}`, knowledgePolicy: this.cfg.knowledgePolicy }),
+        body: JSON.stringify({
+          sessionId,
+          question,
+          requestId: `r-${safeName(arm)}-${safeName(qid)}-${rep}-${nonce}`,
+          knowledgePolicy: this.cfg.knowledgePolicy,
+          ...(this.cfg.enableThinking === undefined ? {} : { enableThinking: this.cfg.enableThinking }),
+        }),
       }, this.cfg.timeoutMs)
       const b = run.body ?? {}
       this.ledgerAppend({ phase: 'result', arm, qid, rep, http: run.status, statusCode: b.status_code, modelCalls: b.modelCalls, toolCalls: b.toolCalls })
@@ -173,26 +191,38 @@ export class TrialRunner {
         modelCalls: b.modelCalls,
         projectedInput: b.contextBudget?.projectedInput,
         memoryDraft: b.memoryDraft != null,
+        // What the request said about thinking: true / false as sent, null when it left the choice to the deployment.
+        enableThinking: this.cfg.enableThinking ?? null,
       }
-      if (run.status !== 200 || b.status_code !== SUCCESS_CODE) {
+      // The service's own sentence for a failure. Several causes share it, so the run
+      // view below is what says which one it was.
+      if (typeof b.status_msg === 'string' && b.status_msg !== '') record.statusMsg = b.status_msg.slice(0, 200)
+      const failed = run.status !== 200 || b.status_code !== SUCCESS_CODE
+
+      // What the turn did, by name, and how it ended. Reading it calls no model. A run that
+      // failed after it started has a run view too, and its termination reason is the only
+      // place that tells "unknown_tool" from the other failures that share a status code.
+      if (failed && !(run.status === 200 && b.runId)) {
         return finish({ ...record, error: `agent/run failed: http ${run.status} status_code ${b.status_code}` })
       }
-
-      // What the turn did, by name. Reading it calls no model.
       this.ledgerAppend({ phase: 'steps', arm, qid, rep, runId: b.runId })
       try {
         const steps = await jsonFetch(`${this.cfg.baseUrl}/api/v1/AI/agent/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(b.runId)}/steps`, {
           method: 'GET',
           headers: auth,
         }, 15000)
-        if (steps.status === 200 && steps.body?.status_code === SUCCESS_CODE && Array.isArray(steps.body?.run?.steps)) {
-          record.steps = steps.body.run.steps
+        const view = steps.body?.run
+        if (steps.status === 200 && steps.body?.status_code === SUCCESS_CODE && Array.isArray(view?.steps)) {
+          record.steps = view.steps
+          if (typeof view.status === 'string') record.runStatus = view.status
+          if (typeof view.termination_reason === 'string' && view.termination_reason !== '') record.terminationReason = view.termination_reason.slice(0, 64)
         } else {
           record.stepsError = `http ${steps.status} status_code ${steps.body?.status_code}`
         }
       } catch (error) {
         record.stepsError = String(error?.message ?? error).slice(0, 160)
       }
+      if (failed) return finish({ ...record, error: `agent/run failed: http ${run.status} status_code ${b.status_code}` })
       return finish(record)
     } catch (error) {
       this.ledgerAppend({ phase: 'exception', arm, qid, rep, message: String(error?.message ?? error).slice(0, 160) })

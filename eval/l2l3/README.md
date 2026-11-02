@@ -54,7 +54,7 @@ cd eval && go test ./cmd/l23 ./internal/l23
 node eval/l2l3/check.mjs --labels L --dataset D --l3-only N
 ```
 
-**原始记录 `record.v1`**：`arm`、`qid`、`rep`、`env`、`http`、`statusCode`、`runId`、`replayed`、`answer`、`answerBasis`、`knowledgeStatus`、`knowledgeReason`、`sources`、`toolCalls`、`modelCalls`、`steps`（`stepsError` 在读取失败时出现）、`error`、`durationMs`。失败（超时、非 JSON、读不到步骤）都会留成记录，不丢。
+**原始记录 `record.v1`**：`arm`、`qid`、`rep`、`env`、`http`、`statusCode`、`runId`、`replayed`、`answer`、`answerBasis`、`knowledgeStatus`、`knowledgeReason`、`sources`、`toolCalls`、`modelCalls`、`steps`（`stepsError` 在读取失败时出现）、`enableThinking`（请求里发的 `true` / `false`，没发则为 `null`）、`error`、`durationMs`。服务端的提示语 `statusMsg`、运行状态 `runStatus` 和结束原因 `terminationReason`（来自读步骤接口里的 `termination_reason`）有就记。失败（超时、非 JSON、读不到步骤）都会留成记录，不丢。一次 `/agent/run` 失败但服务给出了运行编号时，会再读一次这次运行的视图（不调用模型），因为同一个状态码和提示语下有多种原因，只有 `terminationReason` 能把 `unknown_tool` 与 `model_call_limit` 等区分开；评分把这类失败归为 `run_failed:<原因>`，没有原因时仍是 `run_failed`。
 
 **结果 `outcome.v1`**：每次尝试一行，含 L2、L3 两层各自的 `verdict`、归类 `class`、各断言明细和代价。字段由 `test/e2e.test.mjs` 写成 `testdata/outcomes.fixture.jsonl`，Go 测试读同一份文件，两边任一改了格式都会失败。
 
@@ -107,6 +107,7 @@ node eval/l2l3/check.mjs --labels L --dataset D --l3-only N
 
 **没有授权不要对真实系统运行。** 授权之后：
 
+0. 思考开关：run-spec 里臂的 `enableThinking`（或环境变量 `GL_L23_ENABLE_THINKING`，取 `true` / `false`）会原样写进每次 `/agent/run` 的请求；不写就不发，由部署默认值决定。同一个 `requestId` 下换思考选择会得到 `409`，provider 每次都用新的 `requestId`，不受影响。
 1. 设置 `GL_L23_ENV=real`（没有默认值，`fake` 时只许连回环地址）。
 2. 设置 `GL_L23_CORPUS`，值是语料清单 `corpus.json` 的路径。**漏设它不会得到「判定不通过」，而是每条断言都报错**：断言在加载语料时直接抛 `GL_L23_CORPUS (the corpus manifest) is not set`，跑完看到的是一片 `error`，看起来像模型全错，其实一次都没真正判过。题里含上传文档的，还要设 `GL_L23_UPLOAD_NAMES`（上传名对照 JSON 的路径）；不设只查不到上传文档，不影响其他断言。开整批之前先用一条已知语料的题验一次，确认判定里有 `pass` 也有 `fail`。
 3. 预算：`GL_L23_MAX_RUNS` 必须大于 0，provider 在每次请求**之前**把这次尝试写进账本，到上限就拒绝；不重试。试算：题数 × 臂数 × 重复次数 = `/agent/run` 次数，每次约 3.4 次聊天模型调用（含后台任务），另有判分调用（判分模型尚未实现）。

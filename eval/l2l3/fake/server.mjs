@@ -27,6 +27,7 @@ export async function startFakeBackend(script = { scenarios: [] }, { port = 0 } 
     stepReads: 0,
     requestIds: [],
     requests: [],
+    runBodies: [], // the JSON each /agent/run request carried
     asked: new Map(), // question -> how many times it was asked
   }
   const sessions = new Map()
@@ -75,6 +76,7 @@ export async function startFakeBackend(script = { scenarios: [] }, { port = 0 } 
     if (req.method === 'POST' && url.pathname === '/api/v1/AI/agent/run') {
       stats.runs += 1
       stats.requestIds.push(body.requestId)
+      stats.runBodies.push(body)
       const replay = seenRequestIds.has(body.requestId)
       seenRequestIds.add(body.requestId)
       const scenario = byQuestion.get(body.question)

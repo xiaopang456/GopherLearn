@@ -48,6 +48,16 @@ function layerOf(assertions) {
   }
 }
 
+/**
+ * The class of a call that produced no answer. The status code is shared by several
+ * causes, so when the service said how the run ended (its termination reason) the class
+ * carries it: `run_failed:unknown_tool` is counted apart from `run_failed:model_call_limit`.
+ */
+function failureLabel(record) {
+  const reason = record.terminationReason
+  return typeof reason === 'string' && /^[a-z0-9_]{1,64}$/.test(reason) ? `run_failed:${reason}` : 'run_failed'
+}
+
 function brokenLayer(label, reason) {
   return { verdict: Verdict.Error, class: label, assertions: [{ name: 'record', verdict: Verdict.Error, label, reason }] }
 }
@@ -77,7 +87,7 @@ export async function judgeTrial(record, question, context) {
 
   const problems = recordProblems(record)
   const failure = problems.length === 0 ? runFailure(record) : ''
-  const broken = problems.length > 0 ? brokenLayer('bad_record', problems.join('; ')) : failure ? brokenLayer('run_failed', failure) : null
+  const broken = problems.length > 0 ? brokenLayer('bad_record', problems.join('; ')) : failure ? brokenLayer(failureLabel(record), failure) : null
 
   if (question.layers.l2) {
     outcome.layers.l2 = broken ?? layerOf(question.answerable

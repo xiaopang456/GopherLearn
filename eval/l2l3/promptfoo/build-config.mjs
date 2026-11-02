@@ -47,6 +47,7 @@ export function buildConfig(spec, questions) {
   if (!Array.isArray(spec.arms) || spec.arms.length === 0) throw new Error('the run spec needs at least one arm')
   const labels = spec.arms.map((a) => a.label)
   if (new Set(labels).size !== labels.length || labels.some((l) => !l)) throw new Error('arm labels must be present and distinct')
+  if (spec.arms.some((a) => a.enableThinking !== undefined && typeof a.enableThinking !== 'boolean')) throw new Error('enableThinking of an arm must be true or false when given')
   const repeat = spec.repeat ?? 3
   if (!Number.isInteger(repeat) || repeat < 1) throw new Error('repeat must be a positive integer')
 
@@ -62,6 +63,7 @@ export function buildConfig(spec, questions) {
         env: spec.env,
         baseUrl: arm.baseUrl,
         knowledgePolicy: arm.knowledgePolicy ?? 'knowledge_preferred',
+        ...(arm.enableThinking === undefined ? {} : { enableThinking: arm.enableThinking }),
         maxRuns: spec.maxRuns ?? 0,
         ledgerPath: spec.ledgerPath,
         rawDir: spec.rawDir,
