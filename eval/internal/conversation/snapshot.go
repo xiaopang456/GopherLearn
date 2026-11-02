@@ -32,6 +32,11 @@ func (s Snapshot) Validate() error {
 		if m.IsUser != (i%2 == 0) {
 			return fmt.Errorf("invalid message role at %d", i+1)
 		}
+		// These fields are omitted by the product JSON tags. Reject instead of
+		// silently losing run provenance or episode citations during export.
+		if m.PersistenceKey != nil || m.AgentRunID != nil || m.AgentRunRole != nil || len(m.EpisodeSources) != 0 {
+			return fmt.Errorf("message %d has unsupported provenance", i+1)
+		}
 		previous = m.ID
 		ids[m.ID] = m
 	}

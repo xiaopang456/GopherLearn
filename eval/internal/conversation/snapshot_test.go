@@ -23,8 +23,9 @@ func TestSnapshotChecksReferences(t *testing.T) {
 			s.Summary.CoveredMessageID = 1
 			s.Summary.Content = `{"schema_version":2,"confirmed_decisions":[{"text":"x","evidence_message_ids":[2]}]}`
 		},
-		"reordered ids": func(s *Snapshot) { s.Messages[1].ID = 1 },
-		"partial turn":  func(s *Snapshot) { s.Messages = s.Messages[:1] },
+		"reordered ids":  func(s *Snapshot) { s.Messages[1].ID = 1 },
+		"partial turn":   func(s *Snapshot) { s.Messages = s.Messages[:1] },
+		"run provenance": func(s *Snapshot) { v := "run"; s.Messages[0].AgentRunID = &v },
 	}
 	for name, change := range tests {
 		t.Run(name, func(t *testing.T) {
