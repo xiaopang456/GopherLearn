@@ -22,11 +22,11 @@ function binomial(n, k) {
 }
 // Repeated attempts remain grouped by scenario. Missing repeats never silently
 // become extra independent observations or count as an all-success scenario.
-export function pairedReport(rows, left, right, { seed = 20261102, resamples = 2000 } = {}) {
+export function pairedReport(rows, left, right, { seed = 20261102, resamples = 2000, expectedIds = [] } = {}) {
   if (left.arm === right.arm && left.condition === right.condition) throw new Error('comparison selectors are identical')
   if (!Number.isInteger(resamples) || resamples < 100 || resamples > 100000 || !Number.isInteger(seed)) throw new Error('invalid bootstrap settings')
   const a = selected(rows, left), b = selected(rows, right)
-  const ids = [...new Set([...a.keys(), ...b.keys()])].sort()
+  const ids = [...new Set([...a.keys(), ...b.keys(), ...expectedIds])].sort()
   const complete = ids.filter(id => a.get(id)?.size === 3 && b.get(id)?.size === 3)
   const differences = [], missing = ids.filter(id => !complete.includes(id))
   let onlyLeft = 0, onlyRight = 0, pending = 0, errors = 0
@@ -45,4 +45,21 @@ export function pairedReport(rows, left, right, { seed = 20261102, resamples = 2
     ci = [draws[Math.floor(.025 * resamples)], draws[Math.floor(.975 * resamples)]]
   }
   return { schema: 'l4.comparison.v1', left, right, repeats: 3, complete_scenarios: complete.length, missing_scenarios: missing, mean_difference: differences.length ? mean(differences) : null, ci95: ci, only_left_all_pass: onlyLeft, only_right_all_pass: onlyRight, mcnemar_exact_p: onlyLeft + onlyRight ? binomial(onlyLeft + onlyRight, Math.min(onlyLeft, onlyRight)) : null, pending_attempts: pending, error_attempts: errors, seed, resamples, note: 'Complete scenario pairs only; pending and errors are not successes. Missing pairs are listed, not imputed.' }
+}
+
+export function singleReport(rows, selector, expectedIds = []) {
+  const groups = selected(rows, selector)
+  const ids = [...new Set([...groups.keys(), ...expectedIds])].sort()
+  let pass = 0, fail = 0, pending = 0, errors = 0, all = 0, pass2 = 0, complete = 0
+  const missing = []
+  for (const id of ids) {
+    const values = [...(groups.get(id)?.values() ?? [])]
+    const c = values.filter(r => r.verdict === 'pass').length
+    pass += c; fail += values.filter(r => r.verdict === 'fail').length
+    pending += values.filter(r => r.verdict === 'needs_judge').length
+    errors += values.filter(r => r.verdict === 'error').length
+    if (values.length !== 3) { missing.push(id); continue }
+    complete++; all += Number(c === 3); pass2 += c * (c - 1) / 6
+  }
+  return { selector, scenarios: ids.length, expected_attempts: ids.length * 3, observed_attempts: pass + fail + pending + errors, pass, fail, needs_judge: pending, errors, success_rate_conservative: ids.length ? pass / (ids.length * 3) : null, success_rate_adjudicated: pass + fail ? pass / (pass + fail) : null, pass3_conservative: ids.length ? all / ids.length : null, pass2_complete_only: complete ? pass2 / complete : null, complete_scenarios: complete, missing_scenarios: missing }
 }

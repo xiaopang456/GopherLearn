@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url'
 import { assertOutsideWorktree } from '../l2l3/lib/pathguard.mjs'
 import { checkScenario } from './scenarios.mjs'
 import { scoreAttempt } from './score.mjs'
-import { pairedReport } from './statistics.mjs'
+import { pairedReport, singleReport } from './statistics.mjs'
 const hash = data => crypto.createHash('sha256').update(data).digest('hex')
 const lines = file => fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line))
 export function main(args) {
@@ -38,14 +38,19 @@ export function main(args) {
     const data = outcomes.map(r => JSON.stringify(r) + '\n').join('')
     fs.mkdirSync(opts.out)
     fs.writeFileSync(path.join(opts.out, 'outcomes.jsonl'), data, { flag: 'wx' })
-    fs.writeFileSync(path.join(opts.out, 'manifest.json'), JSON.stringify({ schema: 'l4.score.v1', split, dataset_sha256: hash(fs.readFileSync(opts.dataset)), records_sha256: hash(fs.readFileSync(opts.records)), outcomes_sha256: hash(data), count: outcomes.length, notice: 'Offline scoring; fake results are not quality evidence.' }, null, 2), { flag: 'wx' })
+    fs.writeFileSync(path.join(opts.out, 'manifest.json'), JSON.stringify({ schema: 'l4.score.v1', split, dataset_sha256: hash(fs.readFileSync(opts.dataset)), records_sha256: hash(fs.readFileSync(opts.records)), outcomes_sha256: hash(data), count: outcomes.length, scenarios: scenarios.map(s => ({ id: s.id, conditions: s.category === 'irrelevant' ? ['control', 'distractor'] : ['main'] })), notice: 'Offline scoring; fake results are not quality evidence.' }, null, 2), { flag: 'wx' })
   } else {
     const manifest = JSON.parse(fs.readFileSync(path.join(opts.run, 'manifest.json'), 'utf8'))
     const data = fs.readFileSync(path.join(opts.run, 'outcomes.jsonl'))
     if (manifest.schema !== 'l4.score.v1' || manifest.split !== split || hash(data) !== manifest.outcomes_sha256) throw new Error('run manifest mismatch')
     const selector = text => { const parts = String(text).split(':'); if (parts.length !== 2 || parts.some(p => !p)) throw new Error('selector must be arm:condition'); return { arm: parts[0], condition: parts[1] } }
-    const report = pairedReport(lines(path.join(opts.run, 'outcomes.jsonl')), selector(opts.left), selector(opts.right))
-    fs.writeFileSync(opts.out, JSON.stringify({ ...report, split, notice: manifest.notice }, null, 2), { flag: 'wx' })
+    const rows = lines(path.join(opts.run, 'outcomes.jsonl')), left = selector(opts.left), right = opts.right ? selector(opts.right) : null
+    if (!Array.isArray(manifest.scenarios)) throw new Error('missing expected scenario inventory')
+    const expectedIds = manifest.scenarios.filter(s => s.conditions.includes(left.condition) && (!right || s.conditions.includes(right.condition))).map(s => s.id)
+    const report = right ? pairedReport(rows, left, right, { expectedIds }) : { schema: 'l4.single.v1' }
+    const single = [singleReport(rows, left, expectedIds)]
+    if (right) single.push(singleReport(rows, right, expectedIds))
+    fs.writeFileSync(opts.out, JSON.stringify({ ...report, single, split, notice: manifest.notice }, null, 2), { flag: 'wx' })
   }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
