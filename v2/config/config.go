@@ -82,21 +82,6 @@ func NormalizeChatThinkingDialect(value string) (string, error) {
 	}
 }
 
-// The thinking switch and the thinking dialect are checked together by
-// RagModelConfig.Validate, which every loader calls. There is no rule that
-// refuses a combination of the two.
-//
-// DeepSeek needs a reasoning_content field on every earlier assistant turn of
-// a multi-turn tool call while thinking is on, and it refuses the request
-// when the field is missing or null. The Agent mixes the two thinking modes
-// inside one run - the turn that asks for one specific tool runs without
-// thinking, because DeepSeek refuses a named tool_choice while thinking is on
-// - so that turn has no reasoning content of its own to pass back. The client
-// adds an empty one for exactly that turn, and a turn that thought keeps its
-// own content. The patch rides along with the thinking switch and is
-// registered only for the DeepSeek dialect with thinking on, so every other
-// deployment sends the request it sent before.
-
 type MainConfig struct {
 	Port    int    `toml:"port"`
 	AppName string `toml:"appName"`
@@ -246,6 +231,18 @@ type AgentConfig struct {
 	// A forced tool call still runs without thinking either way: the provider
 	// rejects a forced tool choice in thinking mode, so the choice is made per
 	// call rather than per deployment.
+	//
+	// Every dialect can be combined with this switch. DeepSeek needs a
+	// reasoning_content field on every earlier assistant turn of a multi-turn
+	// tool call while thinking is on, and it refuses the request when the
+	// field is missing or null. The Agent mixes the two thinking modes inside
+	// one run - the turn that asks for one specific tool runs without
+	// thinking, because DeepSeek refuses a named tool_choice while thinking is
+	// on - so that turn has no reasoning content of its own to pass back. The
+	// client adds an empty one for exactly that turn, and a turn that thought
+	// keeps its own content. The patch rides along with the thinking switch
+	// and is registered only for the DeepSeek dialect with thinking on, so
+	// every other deployment sends the request it sent before.
 	AgentThinkingEnabled             bool   `toml:"agentThinkingEnabled"`
 	KnowledgeDefaultTopK             int    `toml:"knowledgeDefaultTopK"`
 	KnowledgeMaxTopK                 int    `toml:"knowledgeMaxTopK"`
