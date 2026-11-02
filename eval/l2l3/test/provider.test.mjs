@@ -310,3 +310,26 @@ test('the Promptfoo provider wraps a trial and reports a failure as an error', a
   assert.match(bad.error, /agent\/run failed/)
   assert.equal(bad.metadata.record.rep, 0)
 })
+
+test('a fake trial may use an injected prepared session and still keeps the run ledger', async (t) => {
+  if (skipIfTmpInRepo(t)) return
+  const h = await harness(t, [scenario('q?')])
+  const calls = []
+  const runner = new TrialRunner(resolveConfig(h.config, {}), { fakeSessionProvider: async (key) => { calls.push(key); return { status: 200, body: { data: { id: 'prepared-session' } } } } })
+  const record = await runner.run({ arm: 'a', qid: 'q1', rep: 0, question: 'q?' })
+  assert.equal(record.error, undefined)
+  assert.equal(h.fake.stats.sessions, 0)
+  assert.equal(h.fake.stats.runBodies[0].sessionId, 'prepared-session')
+  assert.deepEqual(calls, [{ arm: 'a', qid: 'q1', rep: 0 }])
+  assert.equal(h.ledger()[0].phase, 'run')
+})
+
+test('an injected fake session cannot be used with a real backend', async (t) => {
+  if (skipIfTmpInRepo(t)) return
+  const h = await harness(t, [scenario('q?')])
+  const runner = new TrialRunner(resolveConfig({ ...h.config, env: 'real' }, {}), { fakeSessionProvider: async () => { throw new Error('must not call') } })
+  const record = await runner.run({ arm: 'a', qid: 'q1', rep: 0, question: 'q?' })
+  assert.match(record.error, /only with a fake backend/)
+  assert.equal(h.fake.stats.runs, 0)
+  assert.equal(h.fake.stats.logins, 0)
+})

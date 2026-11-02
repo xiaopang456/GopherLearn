@@ -91,9 +91,10 @@ async function jsonFetch(url, init, timeoutMs) {
 }
 
 export class TrialRunner {
-  constructor(config) {
+  constructor(config, { fakeSessionProvider } = {}) {
     this.cfg = config
     this.token = null
+    this.fakeSessionProvider = fakeSessionProvider
   }
 
   ledgerRead() {
@@ -144,6 +145,9 @@ export class TrialRunner {
       // Nothing is sent and nothing is recorded as a run: the trial simply did not happen.
       return { ...base, error: `refused: the stop file ${this.cfg.stopFile} exists; the run was stopped`, durationMs: 0 }
     }
+    if (this.fakeSessionProvider && this.cfg.env !== 'fake') {
+      return finish({ error: 'refused: injected sessions are currently supported only with a fake backend' })
+    }
     try {
       if (!this.token) await this.login()
       const auth = { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' }
@@ -151,7 +155,7 @@ export class TrialRunner {
 
       // A new session per trial: a session's history reaches the next prompt and can
       // trigger a summary, which would make trials depend on their neighbours.
-      const session = await jsonFetch(`${this.cfg.baseUrl}/api/v1/sessions`, {
+      const session = this.fakeSessionProvider ? await this.fakeSessionProvider({ arm, qid, rep }) : await jsonFetch(`${this.cfg.baseUrl}/api/v1/sessions`, {
         method: 'POST',
         headers: auth,
         body: JSON.stringify({ mode: 'learning_agent', title: `l23 ${arm} ${qid}`, requestId: `s-${safeName(arm)}-${safeName(qid)}-${rep}-${nonce}` }),
@@ -159,6 +163,10 @@ export class TrialRunner {
       const sessionId = session.body?.data?.id
       if (session.status !== 200 || !sessionId) {
         return finish({ error: `create session failed: http ${session.status}` })
+      }
+
+      if (this.cfg.stopFile && fs.existsSync(this.cfg.stopFile)) {
+        return finish({ error: 'refused: the stop file appeared while preparing the session' })
       }
 
       const used = this.ledgerRead().filter((e) => e.phase === 'run').length
