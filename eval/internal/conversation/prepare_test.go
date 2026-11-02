@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	sessiondao "GopherAI/dao/session"
 	"GopherAI/model"
@@ -60,7 +61,7 @@ func TestPreparationUsesProductPolicyAfterUserMessage(t *testing.T) {
 	}
 	turns := make([]Turn, 40)
 	for i := range turns {
-		turns[i] = Turn{User: fmt.Sprintf("u%d", i), Assistant: fmt.Sprintf("a%d", i)}
+		turns[i] = testTurn(i)
 	}
 	got, err := Prepare(context.Background(), s, p, 7, "synthetic", "learner", turns)
 	if err != nil {
@@ -76,12 +77,31 @@ func TestPreparationUsesProductPolicyAfterUserMessage(t *testing.T) {
 		if v.UserID != uint(2*i+1) || v.AssistantID != uint(2*i+2) {
 			t.Fatalf("wrong order: %+v", v)
 		}
+		if !s.rows[2*i].CreatedAt.Equal(turns[i].UserAt) || !s.rows[2*i+1].CreatedAt.Equal(turns[i].AssistantAt) {
+			t.Fatal("timestamps changed")
+		}
 	}
+}
+func TestPreparationRejectsUnorderedTimesBeforeWriting(t *testing.T) {
+	s := &storage{}
+	p, _ := agent.NewRollingSummaryProvider(s, s, s, agent.DefaultSummaryConfig())
+	bad := testTurn(1)
+	bad.UserAt = testTurn(0).UserAt
+	_, err := Prepare(context.Background(), s, p, 7, "synthetic", "learner", []Turn{testTurn(0), bad})
+	if err == nil || len(s.rows) != 0 {
+		t.Fatalf("err=%v rows=%d", err, len(s.rows))
+	}
+}
+func testTurn(i int) Turn {
+	t := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(i) * time.Minute)
+	return Turn{User: fmt.Sprintf("u%d", i), Assistant: fmt.Sprintf("a%d", i), UserAt: t, AssistantAt: t.Add(time.Second)}
 }
 func TestPreparationRejectsEmptyTurnsBeforeWriting(t *testing.T) {
 	s := &storage{}
 	p, _ := agent.NewRollingSummaryProvider(s, s, s, agent.DefaultSummaryConfig())
-	_, err := Prepare(context.Background(), s, p, 7, "synthetic", "learner", []Turn{{User: "ok", Assistant: "ok"}, {User: "", Assistant: "x"}})
+	bad := testTurn(1)
+	bad.User = ""
+	_, err := Prepare(context.Background(), s, p, 7, "synthetic", "learner", []Turn{testTurn(0), bad})
 	if err == nil || len(s.rows) != 0 {
 		t.Fatalf("err=%v rows=%d", err, len(s.rows))
 	}
@@ -94,7 +114,7 @@ func (failingSummary) SessionSummary(context.Context, agent.RunContext) (agent.S
 }
 func TestSummaryFailureContinuesAndRecordsDegradation(t *testing.T) {
 	s := &storage{}
-	got, err := Prepare(context.Background(), s, failingSummary{}, 7, "synthetic", "learner", []Turn{{User: "u", Assistant: "a"}})
+	got, err := Prepare(context.Background(), s, failingSummary{}, 7, "synthetic", "learner", []Turn{testTurn(0)})
 	if err != nil || len(got) != 1 || len(s.rows) != 2 || !got[0].SummaryDegraded || got[0].Summary.CoveredMessageID != 3 {
 		t.Fatalf("got=%+v err=%v rows=%d", got, err, len(s.rows))
 	}

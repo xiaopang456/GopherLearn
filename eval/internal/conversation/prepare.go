@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"GopherAI/common/rag"
 	"GopherAI/model"
@@ -12,8 +13,10 @@ import (
 )
 
 type Turn struct {
-	User      string `json:"user"`
-	Assistant string `json:"assistant"`
+	User        string    `json:"user"`
+	Assistant   string    `json:"assistant"`
+	UserAt      time.Time `json:"user_at"`
+	AssistantAt time.Time `json:"assistant_at"`
 }
 type MessageWriter interface {
 	Create(context.Context, *model.Message) (*model.Message, error)
@@ -37,14 +40,19 @@ func Prepare(ctx context.Context, writer MessageWriter, summary SummaryProvider,
 	if writer == nil || summary == nil || owner <= 0 || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(username) == "" || len(turns) == 0 {
 		return nil, fmt.Errorf("invalid preparation parameters")
 	}
+	var previous time.Time
 	for i, t := range turns {
 		if strings.TrimSpace(t.User) == "" || strings.TrimSpace(t.Assistant) == "" {
 			return nil, fmt.Errorf("turn %d has an empty message", i+1)
 		}
+		if t.UserAt.IsZero() || t.AssistantAt.IsZero() || !t.AssistantAt.After(t.UserAt) || (!previous.IsZero() && !t.UserAt.After(previous)) {
+			return nil, fmt.Errorf("turn %d has invalid message timestamps", i+1)
+		}
+		previous = t.AssistantAt
 	}
 	results := make([]PreparedTurn, 0, len(turns))
 	for i, t := range turns {
-		user, err := writer.Create(ctx, &model.Message{SessionID: sessionID, UserName: username, Content: t.User, IsUser: true, AnswerBasis: rag.AnswerBasisConversation, KnowledgeStatus: rag.KnowledgeStatusNotRequired, KnowledgeReason: rag.KnowledgeReasonNone})
+		user, err := writer.Create(ctx, &model.Message{SessionID: sessionID, UserName: username, Content: t.User, IsUser: true, CreatedAt: t.UserAt.UTC(), AnswerBasis: rag.AnswerBasisConversation, KnowledgeStatus: rag.KnowledgeStatusNotRequired, KnowledgeReason: rag.KnowledgeReasonNone})
 		if err != nil {
 			return results, fmt.Errorf("turn %d user: %w", i+1, err)
 		}
@@ -56,7 +64,7 @@ func Prepare(ctx context.Context, writer MessageWriter, summary SummaryProvider,
 		if ctx.Err() != nil {
 			return results, ctx.Err()
 		}
-		assistant, err := writer.Create(ctx, &model.Message{SessionID: sessionID, UserName: username, Content: t.Assistant})
+		assistant, err := writer.Create(ctx, &model.Message{SessionID: sessionID, UserName: username, Content: t.Assistant, CreatedAt: t.AssistantAt.UTC()})
 		if err != nil {
 			return results, fmt.Errorf("turn %d assistant: %w", i+1, err)
 		}
