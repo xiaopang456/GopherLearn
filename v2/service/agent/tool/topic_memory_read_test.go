@@ -446,7 +446,11 @@ func TestTopicMemoryReadSchemaOffersNoHandles(t *testing.T) {
 	}
 	// The parameters alone, without the prose description: what matters is
 	// what the model may send, not which words the instructions use.
-	params, err := info.ParamsOneOf.ToOpenAPIV3()
+	//
+	// This is the JSON Schema form, which is also what the provider receives:
+	// the OpenAI-compatible client sends `jsonschema.Schema` as the tool
+	// parameters, so asserting on it pins the bytes that go on the wire.
+	params, err := info.ParamsOneOf.ToJSONSchema()
 	if err != nil {
 		t.Fatal(err)
 	}

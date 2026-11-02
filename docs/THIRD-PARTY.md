@@ -25,7 +25,7 @@ Modules that actually contribute packages to this build:
 | `github.com/cespare/xxhash/v2` | `v2.3.0` | MIT |
 | `github.com/dgryski/go-rendezvous` | `v0.0.0-20200823014737-9f7001d12a5f` | MIT |
 | `github.com/redis/go-redis/v9` | `v9.16.0` | BSD-3-Clause |
-| `github.com/cloudwego/eino` | `v0.5.14` | Apache-2.0 |
+| `github.com/cloudwego/eino` | `v0.7.13` | Apache-2.0 |
 | `github.com/bytedance/gopkg` | `v0.1.3` | Apache-2.0 |
 | `github.com/bytedance/sonic` | `v1.15.2` | Apache-2.0 |
 | `github.com/bytedance/sonic/loader` | `v0.5.1` | Apache-2.0 |
@@ -38,15 +38,7 @@ Modules that actually contribute packages to this build:
 | `github.com/mailru/easyjson` | `v0.7.7` | MIT |
 | `gopkg.in/yaml.v3` | `v3.0.1` | MIT |
 | `github.com/wk8/go-ordered-map/v2` | `v2.1.8` | Apache-2.0 |
-| `github.com/eino-contrib/jsonschema` | `v1.0.2` | MIT |
-| `github.com/josharian/intern` | `v1.0.0` | MIT |
-| `gopkg.in/yaml.v2` | `v2.4.0` | Apache-2.0 |
-| `github.com/go-openapi/swag` | `v0.19.5` | Apache-2.0 |
-| `github.com/go-openapi/jsonpointer` | `v0.19.5` | Apache-2.0 |
-| `github.com/invopop/yaml` | `v0.1.0` | MIT |
-| `github.com/mohae/deepcopy` | `v0.0.0-20170929034955-c48cc78d4826` | MIT |
-| `github.com/perimeterx/marshmallow` | `v1.1.4` | MIT |
-| `github.com/getkin/kin-openapi` | `v0.118.0` | MIT |
+| `github.com/eino-contrib/jsonschema` | `v1.0.3` | MIT |
 | `github.com/pkg/errors` | `v0.9.1` | BSD-3-Clause |
 | `github.com/goph/emperror` | `v0.17.2` | MIT |
 | `github.com/dustin/go-humanize` | `v1.0.1` | MIT |
@@ -82,15 +74,16 @@ Modules that actually contribute packages to this build:
 | `filippo.io/edwards25519` | `v1.1.0` | BSD-3-Clause |
 | `github.com/go-sql-driver/mysql` | `v1.8.1` | MPL-2.0 |
 | `gorm.io/driver/mysql` | `v1.6.0` | MIT |
-| `gopkg.in/gomail.v2` | `v2.0.0-20160411212932-81ebce5c23df` | MIT |
 | `github.com/google/uuid` | `v1.6.0` | BSD-3-Clause |
 | `github.com/evanphx/json-patch` | `v0.5.2` | BSD-3-Clause |
-| `github.com/meguminnnnnnnnn/go-openai` | `v0.1.0` | Apache-2.0 |
-| `github.com/cloudwego/eino-ext/libs/acl/openai` | `v0.1.1` | no LICENSE file at module root |
-| `github.com/cloudwego/eino-ext/components/model/openai` | `v0.1.4` | no LICENSE file at module root |
+| `github.com/meguminnnnnnnnn/go-openai` | `v0.1.2` | Apache-2.0 |
+| `github.com/cloudwego/eino-ext/libs/acl/openai` | `v0.1.17` | no LICENSE file at module root |
+| `github.com/cloudwego/eino-ext/components/model/openai` | `v0.1.13` | no LICENSE file at module root |
+| `gopkg.in/gomail.v2` | `v2.0.0-20160411212932-81ebce5c23df` | MIT |
 | `github.com/golang-jwt/jwt/v4` | `v4.5.2` | MIT |
 | `github.com/volcengine/volcengine-go-sdk` | `v1.1.44` | Apache-2.0 |
 | `github.com/volcengine/volc-sdk-golang` | `v1.0.23` | no LICENSE file at module root |
+| `gopkg.in/yaml.v2` | `v2.4.0` | Apache-2.0 |
 | `github.com/jmespath/go-jmespath` | `v0.4.0` | Apache-2.0 |
 | `golang.org/x/sync` | `v0.21.0` | BSD-3-Clause |
 | `github.com/cloudwego/eino-ext/components/embedding/ark` | `v0.1.0` | no LICENSE file at module root |
@@ -106,7 +99,7 @@ Modules that actually contribute packages to this build:
 | `github.com/cespare/xxhash/v2` | `v2.3.0` | MIT |
 | `github.com/dgryski/go-rendezvous` | `v0.0.0-20200823014737-9f7001d12a5f` | MIT |
 | `github.com/redis/go-redis/v9` | `v9.16.0` | BSD-3-Clause |
-| `github.com/cloudwego/eino` | `v0.5.14` | Apache-2.0 |
+| `github.com/cloudwego/eino` | `v0.7.13` | Apache-2.0 |
 | `github.com/bytedance/gopkg` | `v0.1.3` | Apache-2.0 |
 | `github.com/bytedance/sonic` | `v1.15.2` | Apache-2.0 |
 | `github.com/bytedance/sonic/loader` | `v0.5.1` | Apache-2.0 |
@@ -119,15 +112,7 @@ Modules that actually contribute packages to this build:
 | `github.com/mailru/easyjson` | `v0.7.7` | MIT |
 | `gopkg.in/yaml.v3` | `v3.0.1` | MIT |
 | `github.com/wk8/go-ordered-map/v2` | `v2.1.8` | Apache-2.0 |
-| `github.com/eino-contrib/jsonschema` | `v1.0.2` | MIT |
-| `github.com/josharian/intern` | `v1.0.0` | MIT |
-| `gopkg.in/yaml.v2` | `v2.4.0` | Apache-2.0 |
-| `github.com/go-openapi/swag` | `v0.19.5` | Apache-2.0 |
-| `github.com/go-openapi/jsonpointer` | `v0.19.5` | Apache-2.0 |
-| `github.com/invopop/yaml` | `v0.1.0` | MIT |
-| `github.com/mohae/deepcopy` | `v0.0.0-20170929034955-c48cc78d4826` | MIT |
-| `github.com/perimeterx/marshmallow` | `v1.1.4` | MIT |
-| `github.com/getkin/kin-openapi` | `v0.118.0` | MIT |
+| `github.com/eino-contrib/jsonschema` | `v1.0.3` | MIT |
 | `github.com/pkg/errors` | `v0.9.1` | BSD-3-Clause |
 | `github.com/goph/emperror` | `v0.17.2` | MIT |
 | `github.com/dustin/go-humanize` | `v1.0.1` | MIT |
@@ -163,15 +148,16 @@ Modules that actually contribute packages to this build:
 | `filippo.io/edwards25519` | `v1.1.0` | BSD-3-Clause |
 | `github.com/go-sql-driver/mysql` | `v1.8.1` | MPL-2.0 |
 | `gorm.io/driver/mysql` | `v1.6.0` | MIT |
-| `github.com/evanphx/json-patch` | `v0.5.2` | BSD-3-Clause |
-| `github.com/meguminnnnnnnnn/go-openai` | `v0.1.0` | Apache-2.0 |
-| `github.com/cloudwego/eino-ext/libs/acl/openai` | `v0.1.1` | no LICENSE file at module root |
-| `github.com/cloudwego/eino-ext/components/model/openai` | `v0.1.4` | no LICENSE file at module root |
 | `github.com/google/uuid` | `v1.6.0` | BSD-3-Clause |
+| `github.com/evanphx/json-patch` | `v0.5.2` | BSD-3-Clause |
+| `github.com/meguminnnnnnnnn/go-openai` | `v0.1.2` | Apache-2.0 |
+| `github.com/cloudwego/eino-ext/libs/acl/openai` | `v0.1.17` | no LICENSE file at module root |
+| `github.com/cloudwego/eino-ext/components/model/openai` | `v0.1.13` | no LICENSE file at module root |
 | `gopkg.in/gomail.v2` | `v2.0.0-20160411212932-81ebce5c23df` | MIT |
 | `github.com/golang-jwt/jwt/v4` | `v4.5.2` | MIT |
 | `github.com/volcengine/volcengine-go-sdk` | `v1.1.44` | Apache-2.0 |
 | `github.com/volcengine/volc-sdk-golang` | `v1.0.23` | no LICENSE file at module root |
+| `gopkg.in/yaml.v2` | `v2.4.0` | Apache-2.0 |
 | `github.com/jmespath/go-jmespath` | `v0.4.0` | Apache-2.0 |
 | `golang.org/x/sync` | `v0.21.0` | BSD-3-Clause |
 | `github.com/cloudwego/eino-ext/components/embedding/ark` | `v0.1.0` | no LICENSE file at module root |
