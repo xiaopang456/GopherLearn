@@ -42,17 +42,29 @@ func TestSandboxIntegration(t *testing.T) {
 	if err = s.Restore(ctx, snap); err != nil {
 		t.Fatal(err)
 	}
-	got, err := Capture(ctx, s.db, snap.Session.UserID, snap.Session.ID)
+	got, err := s.Capture(ctx, snap.Session.UserID, snap.Session.ID)
 	if err != nil || len(got.Messages) != 2 {
 		t.Fatalf("capture: %+v %v", got, err)
 	}
 	if err = s.Restore(ctx, snap); err == nil {
 		t.Fatal("accepted nonempty database")
 	}
+	for _, q := range []string{"CREATE TABLE episode_projection_jobs (id VARCHAR(36), status VARCHAR(24), attempts INT)", "CREATE TABLE memory_extraction_jobs (id VARCHAR(36), status VARCHAR(24), attempts INT)", "INSERT INTO episode_projection_jobs VALUES ('task','pending',0)"} {
+		if err = s.db.Exec(q).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, counts, err := s.ObserveJobs(ctx)
+	if err != nil || counts["episode"].Pending != 1 {
+		t.Fatalf("counts=%v err=%v", counts, err)
+	}
 	if err = s.db.Exec("UPDATE eval_instance_guard SET nonce = ?", "wrong").Error; err != nil {
 		t.Fatal(err)
 	}
 	if err = s.Restore(ctx, snap); err == nil {
 		t.Fatal("accepted altered database marker")
+	}
+	if _, _, err = s.ObserveJobs(ctx); err == nil {
+		t.Fatal("observed altered instance")
 	}
 }

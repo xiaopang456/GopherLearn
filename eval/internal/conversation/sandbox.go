@@ -150,6 +150,51 @@ func (s *Sandbox) Restore(ctx context.Context, snapshot Snapshot) error {
 		return restoreIntoEmpty(ctx, tx, snapshot)
 	})
 }
+
+// Capture and ObserveJobs enforce the same instance checks as Restore.
+func (s *Sandbox) Capture(ctx context.Context, userID int64, sessionID string) (Snapshot, error) {
+	var snapshot Snapshot
+	if err := s.verify(ctx); err != nil {
+		return snapshot, err
+	}
+	if s.db == nil {
+		return snapshot, fmt.Errorf("sandbox database unavailable")
+	}
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := s.checkMarker(tx); err != nil {
+			return err
+		}
+		var err error
+		snapshot, err = Capture(ctx, tx, userID, sessionID)
+		return err
+	})
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return snapshot, nil
+}
+func (s *Sandbox) ObserveJobs(ctx context.Context) ([]JobState, map[string]JobCounts, error) {
+	if err := s.verify(ctx); err != nil {
+		return nil, nil, err
+	}
+	if s.db == nil {
+		return nil, nil, fmt.Errorf("sandbox database unavailable")
+	}
+	var jobs []JobState
+	var counts map[string]JobCounts
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := s.checkMarker(tx); err != nil {
+			return err
+		}
+		var err error
+		jobs, counts, err = ObserveJobs(ctx, tx)
+		return err
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return jobs, counts, nil
+}
 func (s *Sandbox) verify(ctx context.Context) error {
 	if err := s.verifyIdentity(ctx); err != nil {
 		return err
