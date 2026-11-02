@@ -54,7 +54,7 @@ it('creation uses its own immutable key; duplicate clicks suppressed; explicit r
   expect(createBodies[2].requestId).not.toBe(first.requestId)
   await chat.send('问题')
   expect(bodies[0].requestId).not.toBe(createBodies[2].requestId)
-  expect(bodies[0]).toEqual({ content: '问题', requestId: expect.stringMatching(/^send-/), stream_steps: true })
+  expect(bodies[0]).toEqual({ content: '问题', requestId: expect.stringMatching(/^send-/), enableThinking: false, stream_steps: true })
 })
 
 it('failed/busy operation retries original fields; new operation gets a fresh key with no default consent', async () => {
@@ -237,4 +237,33 @@ it('sources name the document and its version without leaking an identity or a p
   expect(citations.text()).not.toContain('尚未接通')
   expect(citations.find('a').exists()).toBe(false)
   citations.unmount()
+})
+
+
+it('keeps the original thinking choice for retry and uses the new choice for a new turn', async () => {
+  await chat.loadSessions(); await chat.openSession(BIG)
+  chat.enableThinking.value = true
+  handleStream = async () => sseResponse([sseFrame('message.failed', { code: 'agent_run_busy', message: 'busy' })])
+  await chat.send('问题')
+  expect(bodies[0].enableThinking).toBe(true)
+  chat.enableThinking.value = false
+  await chat.retrySend()
+  expect(bodies[1]).toEqual(bodies[0])
+  await chat.send('另一个问题')
+  expect(bodies[2].enableThinking).toBe(false)
+  expect(bodies[2].requestId).not.toBe(bodies[0].requestId)
+  await chat.openSession('normal')
+  await chat.send('普通对话')
+  expect(bodies[3]).toEqual({ content: '普通对话' })
+})
+
+it('persists the choice and falls back to off when storage fails', () => {
+  chat.enableThinking.value = true
+  expect(useChat().enableThinking.value).toBe(true)
+  vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('unavailable') })
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('unavailable') })
+  const unavailable = useChat()
+  expect(unavailable.enableThinking.value).toBe(false)
+  expect(() => { unavailable.enableThinking.value = true }).not.toThrow()
+  vi.restoreAllMocks()
 })

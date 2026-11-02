@@ -170,3 +170,15 @@ describe('sending behaviour is unchanged by the new toolbar', () => {
     expect(app.emitted('submit')).toBeUndefined()
   })
 })
+
+
+it('shows the thinking control only in learning agent sessions', async () => {
+  const app = mountComposer({ mode: 'chat', thinking: true })
+  expect(app.text()).not.toContain('深度思考')
+  await app.setProps({ mode: 'learning_agent' })
+  expect(app.text()).toContain('深度思考')
+  expect(app.text()).toContain('回答更仔细，但会慢一些')
+  expect(app.text()).not.toMatch(/enableThinking|true|false/)
+  await app.setProps({ mode: 'chat' })
+  expect(app.find('[data-test="thinking-toggle"]').exists()).toBe(false)
+})

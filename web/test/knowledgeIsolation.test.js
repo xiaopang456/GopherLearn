@@ -108,7 +108,7 @@ describe('grounding reaches the request only where it was chosen', () => {
     // An agent turn does ask to watch its own progress, and grounding is still not on
     // the wire: `stream_steps` is the only addition, and it belongs to the mode, not to
     // the option the server just refused.
-    expect(streamBodies[0]).toEqual({ content: '问题', stream_steps: true, requestId: expect.stringMatching(/^send-/) })
+    expect(streamBodies[0]).toEqual({ content: '问题', stream_steps: true, enableThinking: false, requestId: expect.stringMatching(/^send-/) })
   })
 
   it('refuses it for an unrecognised mode too', async () => {
@@ -188,7 +188,7 @@ describe('the draft belongs to one session, not to the screen', () => {
 
     await chat.send('Agent 的问题')
     // The chat draft did not cross over; only the agent's own request flag did.
-    expect(streamBodies[0]).toEqual({ content: 'Agent 的问题', stream_steps: true, requestId: expect.stringMatching(/^send-/) })
+    expect(streamBodies[0]).toEqual({ content: 'Agent 的问题', stream_steps: true, enableThinking: false, requestId: expect.stringMatching(/^send-/) })
   })
 
   it('drops the draft with the session', async () => {

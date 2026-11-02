@@ -246,6 +246,7 @@ function select(id) {
 
       <ComposerBox
         v-model="chat.draft.value"
+        v-model:thinking="chat.enableThinking.value"
         :streaming="chat.streaming.value"
         :disabled="chat.historyLoading.value"
         :mode="chat.activeMode.value"

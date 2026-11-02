@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref } from 'vue'
+import { NSwitch } from 'naive-ui'
 
 import AppIcon from './AppIcon.vue'
 import { SessionMode } from '../lib/modes.js'
@@ -8,6 +9,7 @@ import { canSend, validateMessageContent } from '../lib/validation.js'
 const props = defineProps({
   modelValue: { type: String, default: '' },
   streaming: { type: Boolean, default: false },
+  thinking: { type: Boolean, default: false },
   disabled: { type: Boolean, default: false },
   placeholder: { type: String, default: '输入你的问题…' },
   /** The server-owned mode of the open session; '' while still unknown. */
@@ -22,6 +24,7 @@ const props = defineProps({
 
 const emit = defineEmits([
   'update:modelValue',
+  'update:thinking',
   'update:knowledge',
   'submit',
   'abort',
@@ -117,6 +120,10 @@ function onToolsKeydown(event) {
       ></textarea>
 
       <div class="composer__actions">
+        <div v-if="props.mode === SessionMode.LearningAgent" class="composer__thinking">
+          <n-switch :value="props.thinking" size="small" aria-label="深度思考" data-test="thinking-toggle" @update:value="emit('update:thinking', $event)" />
+          <span>深度思考</span><span class="composer__thinking-hint">回答更仔细，但会慢一些</span>
+        </div>
         <div
           v-if="showsKnowledge"
           class="composer__tools"
@@ -355,6 +362,8 @@ function onToolsKeydown(event) {
   text-underline-offset: 2px;
 }
 
+.composer__thinking { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: var(--gl-text-sm); color: var(--gl-ink-soft); }
+.composer__thinking-hint { font-size: var(--gl-text-xs); color: var(--gl-ink-faint); }
 .composer__right {
   display: flex;
   flex: none;

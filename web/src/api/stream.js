@@ -45,6 +45,7 @@ export async function streamMessage({
   onText,
   token,
   requestId,
+  enableThinking,
   knowledgePolicy,
   topicConsent,
 }) {
@@ -57,6 +58,7 @@ export async function streamMessage({
   // Explicit original Agent fields supplied by the caller. No operation key
   // is generated here; ordinary calls that omit them keep their wire body.
   if (requestId !== undefined) body.requestId = requestId
+  if (enableThinking !== undefined) body.enableThinking = enableThinking
   if (knowledgePolicy !== undefined) body.knowledgePolicy = knowledgePolicy
   if (topicConsent !== undefined) body.topicConsent = topicConsent
   const wire = toWireKnowledge(knowledge)

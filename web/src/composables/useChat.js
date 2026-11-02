@@ -80,6 +80,12 @@ export function useChat() {
   const activeId = ref('')
   const messages = ref([])
   const draft = ref('')
+  let savedThinking = false
+  try { savedThinking = localStorage.getItem('gopherlearn-thinking') === 'true' } catch { /* storage may be unavailable */ }
+  const enableThinking = ref(savedThinking)
+  watch(enableThinking, (value) => {
+    try { localStorage.setItem('gopherlearn-thinking', String(value)) } catch { /* storage may be unavailable */ }
+  }, { flush: 'sync' })
 
   const sessionsLoading = ref(false)
   const sessionsError = ref('')
@@ -688,6 +694,7 @@ export function useChat() {
       return
     }
 
+    const thinkingChoice = retryOperation ? retryOperation.enableThinking : enableThinking.value
     sendError.value = ''
     let sessionId = retryOperation ? retryOperation.sessionId : activeId.value
     if (!sessionId) {
@@ -705,7 +712,7 @@ export function useChat() {
     const mode = modeOf(sessionId)
     const knowledge = isChatLike(mode) ? knowledgeFor(sessionId) : null
     const operation = retryOperation || (isLearningAgent(mode) ? {
-      sessionId, content, requestId: localId('send'),
+      sessionId, content, requestId: localId('send'), enableThinking: thinkingChoice,
       ...(agentFields.knowledgePolicy !== undefined ? { knowledgePolicy: structuredClone(agentFields.knowledgePolicy) } : {}),
       ...(agentFields.topicConsent !== undefined ? { topicConsent: structuredClone(agentFields.topicConsent) } : {}),
     } : null)
@@ -768,7 +775,7 @@ export function useChat() {
       await apiStreamMessage({
         sessionId,
         content,
-        ...(operation ? { requestId: operation.requestId,
+        ...(operation ? { requestId: operation.requestId, enableThinking: operation.enableThinking,
           ...(operation.knowledgePolicy !== undefined ? { knowledgePolicy: operation.knowledgePolicy } : {}),
           ...(operation.topicConsent !== undefined ? { topicConsent: operation.topicConsent } : {}),
         } : {}),
@@ -834,6 +841,7 @@ export function useChat() {
     historyLoading,
     historyError,
     draft,
+    enableThinking,
     sendError,
     run,
     streaming,
