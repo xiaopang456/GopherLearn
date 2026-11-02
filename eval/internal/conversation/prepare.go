@@ -23,14 +23,16 @@ type SummaryProvider interface {
 }
 
 type PreparedTurn struct {
-	UserID      uint
-	AssistantID uint
-	Summary     agent.SummarySnapshot
+	UserID          uint
+	AssistantID     uint
+	Summary         agent.SummarySnapshot
+	SummaryDegraded bool
 }
 
 // Prepare appends each user message, runs the product summary policy, and then
 // appends the supplied assistant message. It never creates agent runs or events.
-// A failure stops immediately; callers must discard the isolated destination.
+// A message persistence failure stops immediately. Summary failures are recorded
+// and preserve the returned snapshot, as the product's context builder does.
 func Prepare(ctx context.Context, writer MessageWriter, summary SummaryProvider, owner int64, sessionID, username string, turns []Turn) ([]PreparedTurn, error) {
 	if writer == nil || summary == nil || owner <= 0 || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(username) == "" || len(turns) == 0 {
 		return nil, fmt.Errorf("invalid preparation parameters")
@@ -50,8 +52,9 @@ func Prepare(ctx context.Context, writer MessageWriter, summary SummaryProvider,
 			return results, fmt.Errorf("turn %d user was not persisted", i+1)
 		}
 		s, err := summary.SessionSummary(ctx, agent.RunContext{UserID: owner, UserName: username, SessionID: sessionID, Question: t.User})
-		if err != nil {
-			return results, fmt.Errorf("turn %d summary: %w", i+1, err)
+		degraded := err != nil
+		if ctx.Err() != nil {
+			return results, ctx.Err()
 		}
 		assistant, err := writer.Create(ctx, &model.Message{SessionID: sessionID, UserName: username, Content: t.Assistant})
 		if err != nil {
@@ -60,7 +63,7 @@ func Prepare(ctx context.Context, writer MessageWriter, summary SummaryProvider,
 		if assistant == nil || assistant.ID <= user.ID {
 			return results, fmt.Errorf("turn %d assistant id is invalid", i+1)
 		}
-		results = append(results, PreparedTurn{UserID: user.ID, AssistantID: assistant.ID, Summary: s})
+		results = append(results, PreparedTurn{UserID: user.ID, AssistantID: assistant.ID, Summary: s, SummaryDegraded: degraded})
 	}
 	return results, nil
 }

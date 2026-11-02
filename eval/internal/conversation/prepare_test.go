@@ -86,3 +86,16 @@ func TestPreparationRejectsEmptyTurnsBeforeWriting(t *testing.T) {
 		t.Fatalf("err=%v rows=%d", err, len(s.rows))
 	}
 }
+
+type failingSummary struct{}
+
+func (failingSummary) SessionSummary(context.Context, agent.RunContext) (agent.SummarySnapshot, error) {
+	return agent.SummarySnapshot{Content: "old", CoveredMessageID: 3, Version: 1}, fmt.Errorf("temporary failure")
+}
+func TestSummaryFailureContinuesAndRecordsDegradation(t *testing.T) {
+	s := &storage{}
+	got, err := Prepare(context.Background(), s, failingSummary{}, 7, "synthetic", "learner", []Turn{{User: "u", Assistant: "a"}})
+	if err != nil || len(got) != 1 || len(s.rows) != 2 || !got[0].SummaryDegraded || got[0].Summary.CoveredMessageID != 3 {
+		t.Fatalf("got=%+v err=%v rows=%d", got, err, len(s.rows))
+	}
+}
