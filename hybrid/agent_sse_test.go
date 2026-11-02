@@ -93,6 +93,11 @@ func publicStreamBody(key, q string) string {
 }
 func sseFixture(t *testing.T, plan func(int, []*schema.Message) streamPlan) (*Application, *gorm.DB, *fragmentAgentModel, *ordinaryModel, string, string) {
 	t.Helper()
+	return sseFixtureWithSettings(t, testSettings(t), plan)
+}
+
+func sseFixtureWithSettings(t *testing.T, settings *entry.Settings, plan func(int, []*schema.Message) streamPlan) (*Application, *gorm.DB, *fragmentAgentModel, *ordinaryModel, string, string) {
+	t.Helper()
 	db := sqliteDatabase(t)
 	ordinary := &ordinaryModel{}
 	base := &scriptedChatModel{}
@@ -100,7 +105,7 @@ func sseFixture(t *testing.T, plan func(int, []*schema.Message) streamPlan) (*Ap
 	migrations := 0
 	deps := dependencies(t, db, base, &testChunks{}, &migrations)
 	deps.ChatModel = func(context.Context, *entry.Settings) (modelcomponent.ToolCallingChatModel, error) { return m, nil }
-	app, err := Assemble(context.Background(), testSettings(t), deps, ordinary, conversation.Options{})
+	app, err := Assemble(context.Background(), settings, deps, ordinary, conversation.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
