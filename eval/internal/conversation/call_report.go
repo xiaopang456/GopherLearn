@@ -16,6 +16,8 @@ type RoleUsage struct {
 	UnmeteredInput      int   `json:"unmetered_input_calls"`
 	UnmeteredOutput     int   `json:"unmetered_output_calls"`
 	UnmeteredCache      int   `json:"unmetered_cache_calls"`
+	ReportedReasoning   int64 `json:"reported_reasoning_tokens"`
+	UnmeteredReasoning  int   `json:"unmetered_reasoning_calls"`
 }
 
 // AttributeCalls keeps the operation's purpose while attributing every call
@@ -41,7 +43,7 @@ func SummarizeCalls(calls []ModelCall) (map[string]RoleUsage, error) {
 		}
 		sum := result[call.Role]
 		sum.Calls++
-		var in, out, cache *int64
+		var in, out, cache, reasoning *int64
 		if len(call.RawUsageSamples) > 0 {
 			var usage struct {
 				Input   *int64 `json:"prompt_tokens"`
@@ -49,18 +51,26 @@ func SummarizeCalls(calls []ModelCall) (map[string]RoleUsage, error) {
 				Details struct {
 					Cached *int64 `json:"cached_tokens"`
 				} `json:"prompt_tokens_details"`
+				CacheHit          *int64 `json:"prompt_cache_hit_tokens"`
+				CompletionDetails struct {
+					Reasoning *int64 `json:"reasoning_tokens"`
+				} `json:"completion_tokens_details"`
 			}
 			if err := json.Unmarshal(call.RawUsageSamples[len(call.RawUsageSamples)-1], &usage); err != nil {
 				return nil, fmt.Errorf("invalid ledger usage")
 			}
 			in, out, cache = usage.Input, usage.Output, usage.Details.Cached
+			if cache == nil {
+				cache = usage.CacheHit
+			}
+			reasoning = usage.CompletionDetails.Reasoning
 		} else if call.Usage != nil {
 			// SDK-only warmup adapters expose total input/output usage, but cannot
 			// distinguish absent cache details from a reported zero. Keep cache unknown.
 			a, b := int64(call.Usage.PromptTokens), int64(call.Usage.CompletionTokens)
 			in, out = &a, &b
 		}
-		for _, value := range []*int64{in, out, cache} {
+		for _, value := range []*int64{in, out, cache, reasoning} {
 			if value != nil && *value < 0 {
 				return nil, fmt.Errorf("negative ledger usage")
 			}
@@ -79,6 +89,11 @@ func SummarizeCalls(calls []ModelCall) (map[string]RoleUsage, error) {
 			sum.UnmeteredCache++
 		} else {
 			sum.ReportedCachedInput += *cache
+		}
+		if reasoning == nil {
+			sum.UnmeteredReasoning++
+		} else {
+			sum.ReportedReasoning += *reasoning
 		}
 		result[call.Role] = sum
 	}

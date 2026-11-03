@@ -73,3 +73,16 @@ func TestHTTPModelLedgerRejectsTelemetryLoss(t *testing.T) {
 		}
 	}
 }
+
+func TestDeepSeekCacheAndReasoningUsage(t *testing.T) {
+	ledger := &ModelLedger{}
+	handler := modelHTTPHandler(ledger, RolePrompts{"known": "answer"}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"usage":{"prompt_tokens":12,"completion_tokens":9,"total_tokens":21,"prompt_cache_hit_tokens":4,"prompt_cache_miss_tokens":8,"completion_tokens_details":{"reasoning_tokens":6}}}`)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(`{"messages":[{"role":"system","content":"known"}]}`)))
+	calls := ledger.Calls()
+	totals, err := SummarizeCalls(calls)
+	if err != nil || calls[0].Usage.PromptTokenDetails.CachedTokens != 4 || calls[0].Usage.CompletionTokensDetails.ReasoningTokens != 6 || totals["answer"].ReportedCachedInput != 4 || totals["answer"].ReportedReasoning != 6 || totals["answer"].ReportedOutput != 9 {
+		t.Fatalf("tokens double counted or missing: %+v err=%v", totals, err)
+	}
+}

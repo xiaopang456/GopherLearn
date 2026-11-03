@@ -181,18 +181,36 @@ func (w *usageWriter) parse(raw []byte) {
 		CompletionTokens int `json:"completion_tokens"`
 		TotalTokens      int `json:"total_tokens"`
 		PromptDetails    struct {
-			CachedTokens int `json:"cached_tokens"`
+			CachedTokens *int `json:"cached_tokens"`
 		} `json:"prompt_tokens_details"`
+		CacheHit          *int `json:"prompt_cache_hit_tokens"`
+		CompletionDetails struct {
+			ReasoningTokens int `json:"reasoning_tokens"`
+		} `json:"completion_tokens_details"`
 	}
-	if err := json.Unmarshal(response.Usage, &usage); err != nil || usage.PromptTokens < 0 || usage.CompletionTokens < 0 || usage.TotalTokens < 0 || usage.PromptDetails.CachedTokens < 0 {
+	if err := json.Unmarshal(response.Usage, &usage); err != nil || usage.PromptTokens < 0 || usage.CompletionTokens < 0 || usage.TotalTokens < 0 || usage.CompletionDetails.ReasoningTokens < 0 {
 		w.badTelemetry("invalid provider usage")
+		return
+	}
+	cache := usage.PromptDetails.CachedTokens
+	if cache == nil {
+		cache = usage.CacheHit
+	} else if usage.CacheHit != nil && *cache != *usage.CacheHit {
+		w.badTelemetry("conflicting cache usage")
+		return
+	}
+	if cache != nil && *cache < 0 {
+		w.badTelemetry("invalid cached token usage")
 		return
 	}
 	w.ledger.mu.Lock()
 	defer w.ledger.mu.Unlock()
 	c := &w.ledger.calls[w.id-1]
 	c.RawUsageSamples = append(c.RawUsageSamples, append(json.RawMessage(nil), response.Usage...))
-	u := schema.TokenUsage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, PromptTokenDetails: schema.PromptTokenDetails{CachedTokens: usage.PromptDetails.CachedTokens}}
+	u := schema.TokenUsage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, CompletionTokensDetails: schema.CompletionTokensDetails{ReasoningTokens: usage.CompletionDetails.ReasoningTokens}}
+	if cache != nil {
+		u.PromptTokenDetails.CachedTokens = *cache
+	}
 	c.Usage = &u
 	c.UsageSamples = append(c.UsageSamples, u)
 }
