@@ -113,8 +113,9 @@ type RetrievalResult struct {
 	RerankRank       int
 	RerankApplied    bool
 	// RerankFellBack is set on every result of a retrieval whose reranker was tried and
-	// failed: the order is the fused order, not a reranked one.
-	RerankFellBack bool
+	// failed: the order is the fused order, not a reranked one. It is left out of the JSON
+	// when false, so that a result which did not fall back serializes exactly as before.
+	RerankFellBack bool `json:",omitempty"`
 }
 
 // RAGService is immutable after construction and is safe to reuse for the
