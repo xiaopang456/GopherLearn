@@ -6,6 +6,8 @@ These offline tools score short-term memory answers and compare repeated attempt
 
 `score.mjs` returns `pass`, `fail`, `needs_judge`, or `error`. Canonical factual answers can pass by exact normalized comparison; explicit canonical wrong values can fail. Narrative, negated, mixed-value, and open answers remain pending. Real records without a validated background audit are errors. This boolean must come from the run evidence collector; the scorer does not produce that evidence.
 
+Fact normalization handles Unicode width, whitespace, case and equivalent time units with exact rational arithmetic. For example, `66 分钟`, `66分钟`, `６６分钟`, and `66 min` compare equally. Optional `answer.aliases` lists semantic short names separately; answer keys do not need spelling variants. Only complete canonical answers are matched, so a sentence negating or comparing values still needs judgment. Missing-history cases also remain pending for semantic review: acknowledging absent records is acceptable, while inventing specific results is not. The dataset's rubric defines the requested detail and positive control; the scorer does not infer fabrication from a keyword.
+
 ```powershell
 # Paths must be outside every Git worktree. Output paths must be new.
 node eval/l4/cli.mjs score --dataset C:\evaluation\dev.jsonl --records C:\evaluation\records.jsonl --out C:\evaluation\scored
