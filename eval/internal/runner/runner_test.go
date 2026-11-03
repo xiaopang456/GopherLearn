@@ -514,10 +514,31 @@ func TestRerankerDegradationIsRecordedAndDoesNotStopTheRun(t *testing.T) {
 	}
 }
 
-func TestRerankerFailureIsKeptAsARecordAndNothingIsRetried(t *testing.T) {
+func TestAnyRerankerErrorIsRecordedAsAFallbackAndNothingIsRetried(t *testing.T) {
 	cfg := testConfig(t, []string{config.MethodHybrid, config.MethodHybridRerank}, []int{3, 5}, config.Limits{})
 	env := newEnv(t)
 	env.reranker.FailRerank(errors.New("bad gateway"))
+	result, records := execute(t, cfg, env.Env, dataset.SplitDev)
+
+	// The retrieval keeps the fused order when the reranker fails, whatever the error was, so the
+	// run is not degraded into errors; the record says the rerank did not happen.
+	if !result.Complete || result.Errors != 0 {
+		t.Fatalf("errors = %d, complete = %v; want a run without errors", result.Errors, result.Complete)
+	}
+	for _, r := range records {
+		if r.Method == config.MethodHybridRerank && r.RerankStatus != "fallback" {
+			t.Errorf("%s %s: status %q, want fallback", r.QuestionID, r.Cell, r.RerankStatus)
+		}
+	}
+	if env.reranker.Calls() != 5 {
+		t.Errorf("%d rerank calls for 5 questions: failures were retried", env.reranker.Calls())
+	}
+}
+
+func TestRerankerProtocolFailureIsKeptAsARecordAndNothingIsRetried(t *testing.T) {
+	cfg := testConfig(t, []string{config.MethodHybrid, config.MethodHybridRerank}, []int{3, 5}, config.Limits{})
+	env := newEnv(t)
+	env.reranker.BreakScores(true)
 	result, records := execute(t, cfg, env.Env, dataset.SplitDev)
 
 	if !result.Complete || result.Errors != 10 { // 5 questions x 2 rerank cells
