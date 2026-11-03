@@ -17,6 +17,7 @@ test('real attempts require validated background evidence and correct identities
   assert.equal(scoreAttempt({ ...record('Lantern'), env: 'real', backgroundAudit: { valid: true } }, s).verdict, 'pass')
   assert.equal(scoreAttempt({ ...record('Lantern'), rep: 3 }, s).verdict, 'error')
   assert.equal(scoreAttempt({ ...record('Lantern'), qid: 'other' }, s).verdict, 'error')
+  assert.equal(scoreAttempt({ ...record('Lantern'), arm: undefined }, s).verdict, 'error')
 })
 test('semantic cases remain pending even when an expected word occurs', () => {
   const s = scenario(); s.answer.mode = 'needs_judge'

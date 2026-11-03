@@ -19,7 +19,7 @@ export function scoreAttempt(record, scenario, condition = 'main') {
   const base = { schema: 'l4.outcome.v1', id: scenario?.id, condition, rep: record?.rep, arm: record?.arm, env: record?.env }
   const result = (verdict, reason) => ({ ...base, verdict, reason })
   if (checkScenario(scenario).length) return result('error', 'invalid_scenario')
-  if (record?.qid !== scenario.id || !Number.isInteger(record?.rep) || record.rep < 0 || record.rep > 2) return result('error', 'identity_mismatch')
+  if (record?.qid !== scenario.id || typeof record?.arm !== 'string' || !/^[A-Za-z0-9._-]+$/.test(record.arm) || !Number.isInteger(record?.rep) || record.rep < 0 || record.rep > 2) return result('error', 'identity_mismatch')
   if (!(scenario.category === 'irrelevant' ? ['control', 'distractor'].includes(condition) : condition === 'main')) return result('error', 'condition_mismatch')
   if (record.error || typeof record.answer !== 'string' || !record.answer.trim()) return result('error', 'answer_unavailable')
   if (!['fake', 'real'].includes(record.env)) return result('error', 'unknown_environment')

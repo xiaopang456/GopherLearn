@@ -29,6 +29,7 @@ export function main(args) {
     if (!scenarios.length) throw new Error('empty dataset')
     const records = lines(opts.records), identities = new Set()
     const outcomes = records.map(r => {
+      if (!r || typeof r !== 'object' || typeof r.arm !== 'string' || !/^[A-Za-z0-9._-]+$/.test(r.arm)) throw new Error('invalid record identity')
       const s = byId.get(r.qid)
       if (!s) throw new Error('record is not in selected dataset')
       const condition = r.condition ?? 'main', identity = JSON.stringify([r.arm, r.qid, condition, r.rep])
@@ -43,10 +44,17 @@ export function main(args) {
     const manifest = JSON.parse(fs.readFileSync(path.join(opts.run, 'manifest.json'), 'utf8'))
     const data = fs.readFileSync(path.join(opts.run, 'outcomes.jsonl'))
     if (manifest.schema !== 'l4.score.v1' || manifest.split !== split || hash(data) !== manifest.outcomes_sha256) throw new Error('run manifest mismatch')
-    const selector = text => { const parts = String(text).split(':'); if (parts.length !== 2 || parts.some(p => !p)) throw new Error('selector must be arm:condition'); return { arm: parts[0], condition: parts[1] } }
+    const selector = text => { const parts = String(text).split(':'); if (parts.length !== 2 || !/^[A-Za-z0-9._-]+$/.test(parts[0]) || !['main', 'control', 'distractor'].includes(parts[1])) throw new Error('selector must be arm:condition'); return { arm: parts[0], condition: parts[1] } }
     const rows = lines(path.join(opts.run, 'outcomes.jsonl')), left = selector(opts.left), right = opts.right ? selector(opts.right) : null
     if (!Array.isArray(manifest.scenarios)) throw new Error('missing expected scenario inventory')
+    const inventory = new Map()
+    for (const s of manifest.scenarios) {
+      if (!s || typeof s.id !== 'string' || inventory.has(s.id) || !Array.isArray(s.conditions) || !(s.conditions.length === 1 && s.conditions[0] === 'main' || s.conditions.length === 2 && new Set(s.conditions).size === 2 && s.conditions.every(c => ['control', 'distractor'].includes(c)))) throw new Error('invalid expected scenario inventory')
+      inventory.set(s.id, s.conditions)
+    }
+    if (manifest.count !== rows.length || rows.some(r => !r || r.schema !== 'l4.outcome.v1' || !inventory.get(r.id)?.includes(r.condition))) throw new Error('outcomes differ from manifest inventory')
     const expectedIds = manifest.scenarios.filter(s => s.conditions.includes(left.condition) && (!right || s.conditions.includes(right.condition))).map(s => s.id)
+    if (!expectedIds.length) throw new Error('selectors match no expected scenarios')
     const report = right ? pairedReport(rows, left, right, { expectedIds }) : { schema: 'l4.single.v1' }
     const single = [singleReport(rows, left, expectedIds)]
     if (right) single.push(singleReport(rows, right, expectedIds))
