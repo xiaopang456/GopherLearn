@@ -119,12 +119,19 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 	result.Entry = "gopherlearn-integrated:hybrid.Run"
 	result.QuietWindowSeconds = 86400
 	defer func() {
+		if len(result.Response) > 0 && !json.Valid(result.Response) {
+			result.ResponseText = string(result.Response)
+			result.Response = nil
+		}
 		if resultErr != nil {
 			result.BackgroundAudit.Valid = false
 			result.BackgroundAudit.Reason = resultErr.Error()
 			result.Error = resultErr.Error()
 		}
 	}()
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
 	if strings.TrimSpace(question) == "" {
 		return result, fmt.Errorf("question required")
 	}

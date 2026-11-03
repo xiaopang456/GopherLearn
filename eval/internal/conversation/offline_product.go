@@ -28,6 +28,7 @@ type ProductResult struct {
 	Environment     string               `json:"env"`
 	Answer          string               `json:"answer"`
 	Response        json.RawMessage      `json:"response"`
+	ResponseText    string               `json:"response_text,omitempty"`
 	BeforeCounts    map[string]JobCounts `json:"before_counts"`
 	AfterCounts     map[string]JobCounts `json:"after_counts"`
 	StoppedCounts   map[string]JobCounts `json:"stopped_counts"`
@@ -95,6 +96,9 @@ func closeSandbox(s *Sandbox) error {
 // PrepareOfflineProduct uses a deterministic fake model behind the real summary
 // generator and rolling provider. There is no online/provider credential path.
 func PrepareOfflineProduct(ctx context.Context, repository string, turns []Turn) (snapshot Snapshot, calls []ModelCall, resultErr error) {
+	if err := ctx.Err(); err != nil {
+		return snapshot, nil, err
+	}
 	storage, err := os.MkdirTemp("", "gl-offline-storage-")
 	if err != nil {
 		return snapshot, nil, err

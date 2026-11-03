@@ -25,6 +25,11 @@ func run(args []string, out io.Writer) error {
 	input := flags.String("input", "", "private turn array or snapshot archive")
 	output := flags.String("output-dir", "", "new private output directory")
 	question := flags.String("question", "", "final question for answer phase")
+	qid := flags.String("qid", "synthetic-offline", "scenario identifier for the scoring record")
+	arm := flags.String("arm", "current", "configuration identifier")
+	rep := flags.Int("rep", 0, "repeat number: 0, 1 or 2")
+	condition := flags.String("condition", "main", "main, control or distractor")
+	stopFile := flags.String("stop-file", "", "private stop-file path, watched during execution")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -34,8 +39,16 @@ func run(args []string, out io.Writer) error {
 	if *phase != "prepare" && *phase != "answer" {
 		return fmt.Errorf("phase must be prepare or answer")
 	}
+	if *rep < 0 || *rep > 2 || *qid == "" || *arm == "" || (*condition != "main" && *condition != "control" && *condition != "distractor") {
+		return fmt.Errorf("invalid attempt identity")
+	}
 	if err := pathguard.CheckAll(map[string]string{"input": *input, "output": *output}); err != nil {
 		return err
+	}
+	if *stopFile != "" {
+		if err := pathguard.Check("stop-file", *stopFile); err != nil {
+			return err
+		}
 	}
 	if _, err := os.Stat(*output); err == nil {
 		return fmt.Errorf("output already exists")
@@ -78,8 +91,10 @@ func run(args []string, out io.Writer) error {
 	}
 	interrupted, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	ctx, cancel := context.WithTimeout(interrupted, 3*time.Minute)
+	deadline, cancel := context.WithTimeout(interrupted, 3*time.Minute)
 	defer cancel()
+	ctx, cancelWatch := watchStopFile(deadline, *stopFile)
+	defer cancelWatch()
 	write := func(name string, value any) error {
 		file, e := os.OpenFile(filepath.Join(*output, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 		if e != nil {
@@ -100,7 +115,35 @@ func run(args []string, out io.Writer) error {
 	} else {
 		var result conversation.ProductResult
 		result, err = conversation.RunOfflineProduct(ctx, *repository, snapshot, *question)
+		if cause := context.Cause(ctx); cause != nil {
+			err = errors.Join(err, cause)
+			result.Error = err.Error()
+			result.BackgroundAudit.Valid = false
+			result.BackgroundAudit.Reason = result.Error
+		}
 		err = errors.Join(err, write("result.json", result))
+		encoded, encodeResultErr := json.Marshal(result)
+		if encodeResultErr != nil {
+			return errors.Join(err, encodeResultErr)
+		}
+		var record map[string]any
+		if decodeErr := json.Unmarshal(encoded, &record); decodeErr != nil {
+			return decodeErr
+		}
+		record["qid"], record["arm"], record["rep"], record["condition"] = *qid, *arm, *rep, *condition
+		data, encodeErr := json.Marshal(record)
+		if encodeErr != nil {
+			return encodeErr
+		}
+		file, fileErr := os.OpenFile(filepath.Join(*output, "record.jsonl"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if fileErr == nil {
+			_, fileErr = file.Write(append(data, '\n'))
+			fileErr = errors.Join(fileErr, file.Close())
+		}
+		err = errors.Join(err, fileErr)
+	}
+	if cause := context.Cause(ctx); cause != nil {
+		err = errors.Join(err, cause)
 	}
 	manifest := map[string]any{"scope": conversation.ProductScope, "env": "fake", "phase": *phase, "paid_model_calls": 0, "quality_and_cost_verified": false, "success": err == nil}
 	if err != nil {
