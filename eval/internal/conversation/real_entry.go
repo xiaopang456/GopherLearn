@@ -284,7 +284,11 @@ func PrepareRealProductReport(ctx context.Context, repository string, turns []Tu
 		if turn.SummaryDegraded {
 			report.DegradedTurns++
 		}
+		if turn.CooldownWaitMilliseconds > 0 {
+			report.CooldownWaits++
+		}
 	}
+	report.FailureCooldownSeconds = int(policy.FailureCooldown / time.Second)
 	report.Turns = prepared
 	report.Calls = ledger.Calls()
 	if err != nil {

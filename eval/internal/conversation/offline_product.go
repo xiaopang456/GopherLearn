@@ -104,6 +104,12 @@ type WarmupReport struct {
 	Turns         []PreparedTurn       `json:"turns"`
 	DegradedTurns int                  `json:"degraded_turns"`
 	UsageByRole   map[string]RoleUsage `json:"usage_by_role"`
+	// FailureCooldownSeconds is the product's own failure cooldown, and
+	// CooldownWaits is how many times the replay waited it out before writing
+	// the next turn. A replay that does not wait would spend the cooldown in
+	// one breath and never compact again.
+	FailureCooldownSeconds int `json:"failure_cooldown_seconds"`
+	CooldownWaits          int `json:"cooldown_waits"`
 }
 
 func PrepareOfflineProduct(ctx context.Context, repository string, turns []Turn) (Snapshot, []ModelCall, error) {
@@ -116,6 +122,9 @@ func PrepareOfflineProductReport(ctx context.Context, repository string, turns [
 		for _, t := range prepared {
 			if t.SummaryDegraded {
 				report.DegradedTurns++
+			}
+			if t.CooldownWaitMilliseconds > 0 {
+				report.CooldownWaits++
 			}
 		}
 	})

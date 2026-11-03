@@ -102,5 +102,9 @@ func (s *Sandbox) Prepare(ctx context.Context, owner int64, sessionID, username 
 	if err != nil {
 		return nil, err
 	}
-	return Prepare(ctx, guard, provider, owner, sessionID, username, turns)
+	// The replay waits the product's own failure cooldown out before it writes
+	// the next turn. A replay that runs a whole history in one breath would
+	// spend the cooldown in a single moment and never compact again, which is
+	// not how a conversation with a person goes.
+	return PrepareWithCooldown(ctx, guard, provider, owner, sessionID, username, turns, config.FailureCooldown)
 }
