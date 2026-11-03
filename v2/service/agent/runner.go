@@ -18,7 +18,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	modelcomponent "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/tool"
@@ -55,6 +54,14 @@ const (
 	// TerminationModelBudgetExhausted is the reason of a run that answered
 	// after the model-call budget ran out.
 	TerminationModelBudgetExhausted = "answered_model_budget_exhausted"
+	// TerminationToolUnavailable is the reason of a run that answered after
+	// the model asked for a tool this turn did not have.
+	//
+	// The turn did not fail - the model was told the tool was not there and
+	// carried on - but it is not the same run as one where every tool the
+	// model asked for was there, and a reader or an evaluation has to be able
+	// to tell the two apart.
+	TerminationToolUnavailable = "answered_tool_unavailable"
 )
 
 const (
@@ -138,6 +145,15 @@ type RunnerConfig struct {
 	// the request that was sent: a turn whose thinking switch the provider
 	// ignored is not the turn the budget was measured on.
 	ThinkingDialect string
+	// RelevanceThreshold is the rerank score above which the server-side
+	// pre-retrieval hands its evidence to the model.
+	//
+	// Zero means the pre-retrieval does not run at all, which is what every
+	// deployment did before it existed and what every mode that registers no
+	// document tools still gets. The threshold is written against rerank
+	// scores, so a deployment without a reranker never produces one and the
+	// pre-retrieval stays off there too.
+	RelevanceThreshold float64
 }
 
 // ToolCallLimits is the per-capability half of the tool budget.
@@ -196,7 +212,7 @@ func (l ToolCallLimits) limitFor(name string) int {
 const DefaultHistoryReadCalls = 2
 
 func DefaultRunnerConfig() RunnerConfig {
-	return RunnerConfig{MaxToolCalls: 3, MaxModelCalls: 4, MaxGraphSteps: 10, Deadline: 45 * time.Second, DeadlineThinking: 60 * time.Second}
+	return RunnerConfig{MaxToolCalls: 3, MaxModelCalls: 4, MaxGraphSteps: 10, Deadline: 45 * time.Second, DeadlineThinking: 60 * time.Second, RelevanceThreshold: DefaultRelevanceThreshold}
 }
 
 // AgentMemoryToolRunnerConfig is the only budget agent_memory_tool_v1 runs
@@ -360,6 +376,9 @@ func (c RunnerConfig) Validate() error {
 	if c.ForcesMemoryDraftBeforeMemoryRead && c.PerTool.ProposeMemory < 1 {
 		return fmt.Errorf("forcing the memory draft first requires a propose memory limit of at least 1")
 	}
+	if c.RelevanceThreshold < 0 || c.RelevanceThreshold > 1 {
+		return fmt.Errorf("relevance threshold must be between 0 and 1")
+	}
 	return nil
 }
 
@@ -434,6 +453,14 @@ type RunContext struct {
 	// fills this in after assembling the window, so a tool registry sees exactly
 	// what the model saw and nothing beyond it.
 	HistoryGrants []HistoryMessageGrant
+	// Relevance is what the server-side pre-retrieval found before the model
+	// was asked anything. It is server-owned and nil when no pre-retrieval ran.
+	//
+	// It travels on the run context because the search tool has to continue
+	// the pre-retrieval's citation numbering: the two are two doors into the
+	// same evidence, and a chunk the model has already seen under [1] must
+	// keep that number.
+	Relevance *RelevanceOutcome
 }
 
 type ContextBuilder interface {
@@ -520,6 +547,10 @@ type RunnerResult struct {
 	// answer it wrote because the run had run out of room to look, and a
 	// reader - or an evaluation - has to be able to tell them apart.
 	Closeout string
+	// UnknownToolCalls counts the calls the model made to tools this turn did
+	// not have. They are refused as observations rather than as failures, so
+	// the turn survives them; the count is what records that they happened.
+	UnknownToolCalls int
 }
 
 // runDeadline is the time budget of this turn.
@@ -553,6 +584,86 @@ func NewRunner(
 	return &Runner{chatModel: chatModel, registry: registry, steps: steps, builder: builder, config: config}, nil
 }
 
+// renderWindowPrompt replaces the window's system prompt with the one this
+// turn's tool table supports.
+//
+// The prompt is rendered after the table is known, because the table is what
+// decides the prompt: a rule that names a tool the model cannot see is a rule
+// the model cannot obey, and the most common way it broke was the model
+// following the rule and calling a tool that was never offered.
+//
+// The rendering only ever removes text, so the window cannot grow past the
+// target it was assembled against. The budget is recomputed anyway, because a
+// budget that describes a different prompt than the one the turn carries is
+// worse than no budget at all.
+func renderWindowPrompt(window ContextWindow, input RunContext, availableTools []string) ContextWindow {
+	if len(window.Messages) == 0 || window.Messages[0] == nil || window.Messages[0].Role != schema.System {
+		return window
+	}
+	base := window.Messages[0].Content
+	capabilities := CapabilitiesFromToolNames(availableTools)
+	capabilities.MemoryIntent = ExplicitMemoryIntent(input.Question)
+	rendered := RenderSystemPrompt(base, capabilities)
+	if rendered == base {
+		return window
+	}
+	window.Messages[0] = schema.SystemMessage(rendered)
+	window.Budget.System = messageTokenCost(rendered)
+	window.Budget.Assembled = window.Budget.Assembled - messageTokenCost(base) + window.Budget.System
+	window.Budget.ProjectedInput = window.Budget.Assembled + window.Budget.EvidenceReserved
+	return window
+}
+
+// probeRelevance runs the server-side pre-retrieval when this turn may have
+// one.
+//
+// It is skipped in three cases, and each of them is a case where the
+// pre-retrieval would cost something and buy nothing:
+//
+//   - the notes cannot be reached at all this turn, because the question is
+//     about this conversation or because the learner said not to use them;
+//   - the question is about the learner's own past, which the notes are not
+//     the source of;
+//   - the search is going to be forced anyway, so the forced search is the
+//     retrieval and a second one would only pay for the same answer twice.
+//
+// A pre-retrieval that fails is not an error. It is an optimisation, and an
+// optimisation that cannot run must not become a reason to refuse to answer:
+// the run goes on without it, exactly as it went on before the pre-retrieval
+// existed.
+func (r *Runner) probeRelevance(ctx context.Context, input RunContext) *RelevanceOutcome {
+	if r.config.RelevanceThreshold <= 0 {
+		return nil
+	}
+	if !documentKnowledgeReachable(input.Question, input.KnowledgePolicy) {
+		return nil
+	}
+	if isHistoryRecallQuestion(input.Question) {
+		return nil
+	}
+	// A greeting is not a question about the material, and a retrieval for one
+	// costs an embedding and a rerank to say nothing.
+	if isDirectGreeting(input.Question) {
+		return nil
+	}
+	if requiresDocumentSearch(input.Question, input.KnowledgePolicy) {
+		return nil
+	}
+	prober, ok := r.registry.(RelevanceProber)
+	if !ok {
+		return nil
+	}
+	outcome, err := prober.ProbeRelevance(ctx, input, input.Question, r.config.RelevanceThreshold)
+	if err != nil {
+		// The pre-retrieval could not even be attempted. That is not a
+		// statement about the material and it is not worth a sentence in the
+		// window: the run goes on exactly as it went on before the
+		// pre-retrieval existed.
+		return nil
+	}
+	return &outcome
+}
+
 func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (RunnerResult, error) {
 	if sink == nil {
 		sink = DiscardEvents
@@ -564,6 +675,19 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 		input.MemoryEvidence = NewMemoryEvidenceRegistry()
 	}
 	memoryEvidence := input.MemoryEvidence
+	// The policy is resolved once, here, and travels on the run context. The
+	// window builder and the runner must agree about it: one decides whether
+	// the notes can be reached at all, the other decides what happens when
+	// they were not.
+	policy := rag.NormalizeKnowledgePolicy(input.KnowledgePolicy, rag.KnowledgePreferred)
+	if requiresKnowledgeOnly(input.Question) {
+		policy = rag.KnowledgeOnly
+	}
+	input.KnowledgePolicy = policy
+	// The server-side pre-retrieval answers the one question the model cannot:
+	// whether this question is about the learner's own material at all. It
+	// runs before the window is assembled, because its evidence belongs in it.
+	input.Relevance = r.probeRelevance(ctx, input)
 	window, err := r.builder.Build(ctx, input)
 	if err != nil {
 		return RunnerResult{}, err
@@ -585,10 +709,20 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	if err != nil {
 		return RunnerResult{}, fmt.Errorf("load agent tools: %w", err)
 	}
-	if !documentKnowledgeReachable(input.Question) {
+	if !documentKnowledgeReachable(input.Question, input.KnowledgePolicy) {
 		registered, err = withoutDocumentKnowledgeTools(ctx, registered)
 		if err != nil {
 			return RunnerResult{}, err
+		}
+	}
+	availableTools := make([]string, 0, len(registered))
+	for _, registeredTool := range registered {
+		info, infoErr := registeredTool.Info(ctx)
+		if infoErr != nil {
+			return RunnerResult{}, fmt.Errorf("load agent tool info: %w", infoErr)
+		}
+		if info != nil && strings.TrimSpace(info.Name) != "" {
+			availableTools = append(availableTools, info.Name)
 		}
 	}
 	for index, registeredTool := range registered {
@@ -601,6 +735,13 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 		// something the classifier can only call unknown.
 		registered[index] = &originTypedTool{inner: invokable}
 	}
+
+	// The prompt has to agree with the table the model is about to see, and
+	// the table is known here and only here: it depends on the window that
+	// was just assembled. So the prompt is rendered here - a rule that names
+	// a tool this turn does not have is dropped, and what is left says only
+	// what the model can act on.
+	window = renderWindowPrompt(window, input, availableTools)
 
 	knowledgeSearchAvailable, err := hasRegisteredCapability(ctx, registered, CapabilityKnowledgeSearch)
 	if err != nil {
@@ -618,10 +759,6 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	if err != nil {
 		return RunnerResult{}, err
 	}
-	policy := rag.NormalizeKnowledgePolicy(input.KnowledgePolicy, rag.KnowledgePreferred)
-	if requiresKnowledgeOnly(input.Question) {
-		policy = rag.KnowledgeOnly
-	}
 	state := &runState{
 		input: input, sink: sink, steps: r.steps, config: r.config,
 		sequence: input.InitialStepSequence, sourceKeys: make(map[string]struct{}),
@@ -634,8 +771,19 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 		episodeSources: append(model.EpisodeSourceRefs(nil), window.EpisodeSources...),
 		memoryTrace:    memoryEvidence, perToolCalls: map[string]int{}, progress: newToolProgressLedger(),
 		memorySearchAvailable: memorySearchAvailable,
+		availableTools:        availableTools,
 	}
 	bounded := &boundedModel{inner: r.chatModel, state: state, thinkingDialect: r.config.ThinkingDialect}
+
+	// The server-side pre-retrieval is a search of the learner's material, so
+	// it is a step and it costs a tool slot. Recording it is what keeps the
+	// step list and the tool count telling the same story, and it is what lets
+	// a reader see that the material was searched rather than assumed.
+	if input.Relevance != nil && input.Relevance.Available() {
+		if err := state.recordProbeSearch(ctx, input.Relevance); err != nil {
+			return state.result(), err
+		}
+	}
 
 	var stream *schema.StreamReader[*schema.Message]
 	var answer strings.Builder
@@ -936,10 +1084,22 @@ type runState struct {
 	sources         []rag.Source
 	sourceKeys      map[string]struct{}
 	groundingUsed   bool
-	knowledgePolicy rag.KnowledgePolicy
-	answerBasis     rag.AnswerBasis
-	knowledgeStatus rag.KnowledgeStatus
-	knowledgeReason rag.KnowledgeReason
+	// probeSources are the chunks the server-side pre-retrieval handed to the
+	// model before the model was asked anything. They are not evidence the
+	// answer rests on until the answer cites them: evidence the model was
+	// shown and then ignored is not evidence the answer is built from.
+	probeSources []rag.Source
+	// availableTools names the tools this turn's table holds. The model is
+	// told about them when it asks for one that is not there, because a
+	// refusal that says only "no" leaves it guessing.
+	availableTools []string
+	// unknownToolCalls counts the calls the model made to tools this turn did
+	// not have.
+	unknownToolCalls int
+	knowledgePolicy  rag.KnowledgePolicy
+	answerBasis      rag.AnswerBasis
+	knowledgeStatus  rag.KnowledgeStatus
+	knowledgeReason  rag.KnowledgeReason
 	// knowledgeTerminal is set only after the no-evidence/unavailable tool step
 	// and all of its events have been persisted successfully. Eino does not
 	// preserve middleware error unwrap chains, so this state flag is safer than
@@ -1000,6 +1160,7 @@ func (s *runState) result() RunnerResult {
 		MemoryRefs:       s.memoryTrace.Entries(),
 		MemoryCitation:   s.memoryCitations,
 		Closeout:         s.closeoutReason(),
+		UnknownToolCalls: s.unknownToolCalls,
 	}
 }
 
@@ -1014,6 +1175,11 @@ func (s *runState) closeoutReason() string {
 		return TerminationModelBudgetExhausted
 	case s.toolBudgetClosed:
 		return TerminationToolBudgetExhausted
+	case s.unknownToolCalls > 0:
+		// The turn answered, but not with every tool the model asked for. A
+		// reader who cannot see that difference reads a turn where the model
+		// was working with the full table.
+		return TerminationToolUnavailable
 	default:
 		return TerminationAnswered
 	}
@@ -1424,21 +1590,61 @@ func cloneMemoryDraftCard(value *MemoryDraftCard) *MemoryDraftCard {
 	return &copy
 }
 
+// unknownToolHandler answers a call to a tool this turn does not have.
+//
+// It used to fail the turn. That is a harsh answer to a mistake the model
+// made: the model asked for a tool that was not in front of it, the call did
+// not run, and the whole turn - including whatever evidence it had already
+// collected - was thrown away. The same reasoning the spent-budget refusal
+// already uses applies here: the call did not run, so the refusal is an
+// observation, and the model is told so.
+//
+// The observation names the tools the turn does have, because "no" on its own
+// leaves the model guessing, and a model that guesses again spends another
+// round on the same mistake.
 func (s *runState) unknownToolHandler(ctx context.Context, name, arguments string) (string, error) {
 	sequence, _, _, boundaryErr := s.reserveTool(name, arguments)
 	if boundaryErr == nil {
 		boundaryErr = fmt.Errorf("%w: %s", ErrUnknownTool, name)
 	}
+	observation := unknownToolObservation(name, s.availableToolNames())
 	step := &model.AgentStep{
 		UserID: s.input.UserID, RunID: s.input.RunID, Sequence: sequence,
 		Type: model.AgentStepTool, ToolName: name,
 		ArgumentsSummary: truncate(canonicalJSON(arguments), 1000),
+		ResultSummary:    truncate(observation, 1000),
 		ErrorMessage:     truncate(boundaryErr.Error(), 500),
 	}
 	if err := s.appendStep(ctx, step); err != nil {
 		return "", err
 	}
-	return "", boundaryErr
+	s.mu.Lock()
+	s.unknownToolCalls++
+	s.mu.Unlock()
+	if err := sendEvent(ctx, s.sink, Event{
+		Type: EventToolResult, RunID: s.input.RunID, Sequence: sequence, ToolName: name,
+		Content: step.ResultSummary,
+	}); err != nil {
+		return "", err
+	}
+	return observation, nil
+}
+
+// availableToolNames lists the tools this turn's table holds.
+func (s *runState) availableToolNames() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.availableTools...)
+}
+
+// unknownToolObservation is what the model is told when it asks for a tool
+// this turn does not have.
+func unknownToolObservation(name string, available []string) string {
+	if len(available) == 0 {
+		return fmt.Sprintf("工具 %q 在本轮不可用，本轮没有可用的工具。请直接回答问题。", name)
+	}
+	return fmt.Sprintf("工具 %q 在本轮不可用；这次调用没有执行。本轮可用的工具是：%s。请改用其中一个，或者直接回答问题。",
+		name, strings.Join(available, "、"))
 }
 
 type boundedModel struct {
@@ -1762,7 +1968,120 @@ func (s *runState) recordGroundingObservation(observation groundingObservation) 
 	return added
 }
 
+// recordProbeSearch books the server-side pre-retrieval as a search of the
+// learner's material.
+//
+// It is a real retrieval of real material, so it is a step and it costs a
+// tool slot. The step list and the tool count have to agree, and a learner
+// whose evidence appears in the window has to be able to see where it came
+// from.
+//
+// The repeat ledger is deliberately left alone. The pre-retrieval ran with the
+// question as it was written; a search the model writes with different words
+// is a different search, and one with the same words is the tool's own
+// business to refuse.
+func (s *runState) recordProbeSearch(ctx context.Context, outcome *RelevanceOutcome) error {
+	if outcome == nil || !outcome.Available() {
+		return nil
+	}
+	name := MustToolNameFor(CapabilityKnowledgeSearch, s.config.Surface())
+	s.mu.Lock()
+	s.toolCalls++
+	call := s.toolCalls
+	if s.perToolCalls == nil {
+		s.perToolCalls = map[string]int{}
+	}
+	s.perToolCalls[name]++
+	s.probeSources = outcome.Sources()
+	s.sequence++
+	sequence := s.sequence
+	s.mu.Unlock()
+
+	step := &model.AgentStep{
+		UserID: s.input.UserID, RunID: s.input.RunID, Sequence: sequence,
+		Type: model.AgentStepTool, ToolName: name,
+		ArgumentsSummary: truncate(s.input.Question, 1000),
+		ResultSummary:    truncate(probeSearchSummary(outcome), 1000),
+	}
+	if err := s.appendStep(ctx, step); err != nil {
+		return err
+	}
+	if err := sendEvent(ctx, s.sink, Event{
+		Type: EventStepStarted, RunID: s.input.RunID, Sequence: sequence,
+		StepType: string(model.AgentStepTool), Message: fmt.Sprintf("tool call %d", call),
+	}); err != nil {
+		return err
+	}
+	if err := sendEvent(ctx, s.sink, Event{
+		Type: EventToolStarted, RunID: s.input.RunID, Sequence: sequence, ToolName: name,
+	}); err != nil {
+		return err
+	}
+	return sendEvent(ctx, s.sink, Event{
+		Type: EventToolResult, RunID: s.input.RunID, Sequence: sequence, ToolName: name,
+		Content: step.ResultSummary,
+	})
+}
+
+// probeSearchSummary describes what the pre-retrieval found, without
+// repeating the content: the step is a record of a search, and the excerpt
+// itself is already in the window the model read.
+func probeSearchSummary(outcome *RelevanceOutcome) string {
+	if outcome == nil {
+		return ""
+	}
+	return fmt.Sprintf("服务端预检索：命中 %d 个相关片段（最高相关度 %.3f，门槛 %.2f）。",
+		len(outcome.Chunks), outcome.TopScore, outcome.Threshold)
+}
+
 var finalCitationPattern = regexp.MustCompile(`\[(\d{1,4})\]`)
+
+// probeSourcesFor returns the pre-retrieval's chunks that the answer cites.
+//
+// The citation numbers are the ones the model was shown, so a citation that
+// matches is a citation of real material the learner owns. A citation that
+// does not match is not this evidence, and it is left to the ordinary citation
+// check, which refuses it.
+//
+// The caller holds the state lock.
+func (s *runState) probeSourcesFor(wanted map[int]struct{}) []rag.Source {
+	if len(s.probeSources) == 0 || len(wanted) == 0 {
+		return nil
+	}
+	cited := make([]rag.Source, 0, len(wanted))
+	for _, source := range s.probeSources {
+		if _, ok := wanted[source.Citation]; ok {
+			cited = append(cited, source)
+		}
+	}
+	return cited
+}
+
+// documentSources is every document citation this turn may hand out: the
+// chunks the pre-retrieval showed the model and the chunks a search returned.
+//
+// The two are one set of evidence reached by two doors, and the search tool
+// continues the pre-retrieval's numbering, so the same chunk appears once.
+// The caller holds the state lock.
+func (s *runState) documentSources() []rag.Source {
+	if len(s.probeSources) == 0 {
+		return s.sources
+	}
+	merged := make([]rag.Source, 0, len(s.probeSources)+len(s.sources))
+	seen := make(map[int]struct{}, len(s.probeSources)+len(s.sources))
+	for _, source := range s.probeSources {
+		seen[source.Citation] = struct{}{}
+		merged = append(merged, source)
+	}
+	for _, source := range s.sources {
+		if _, exists := seen[source.Citation]; exists {
+			continue
+		}
+		seen[source.Citation] = struct{}{}
+		merged = append(merged, source)
+	}
+	return merged
+}
 
 // finalizeGroundedAnswer is the server-side evidence boundary. A returned
 // action can grant one tool-free general-knowledge call or one citation-repair
@@ -1777,6 +2096,20 @@ func (s *runState) finalizeGroundedAnswer(answer string, allowRepair, allowFallb
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !s.groundingUsed {
+		// The server-side pre-retrieval may have handed the model evidence
+		// before it was asked anything. An answer that cites that evidence is
+		// grounded in the learner's material, exactly as if a search had
+		// returned it, and the citation check below resolves it the same way.
+		//
+		// It is the citation that decides, not the pre-retrieval. Evidence the
+		// model was shown and then ignored is not evidence the answer rests
+		// on, and an answer that rests on nothing is recorded as such.
+		if cited := s.probeSourcesFor(wanted); len(cited) > 0 {
+			s.sources = cited
+			s.groundingUsed = true
+		}
+	}
 	if !s.groundingUsed {
 		// Reading the learner's own message back is grounding, of a kind the
 		// citation machinery cannot express: there is no document and no
@@ -1820,29 +2153,93 @@ func (s *runState) finalizeGroundedAnswer(answer string, allowRepair, allowFallb
 			s.answerBasis = rag.AnswerBasisRefused
 			return UnsupportedHistoryAnswer, groundingFinalized
 		}
-		if s.knowledgeSearchAvailable && requiresGrounding(s.input.Question) {
+		// A question about the learner's own past is answered from that past,
+		// and the conversation in front of the model is the record of it.
+		//
+		// This is the label the learner reads under "回答依据". A turn that
+		// answered "我们上次聊到 AOF 的时候你建议我先学 RDB" from the window
+		// had its answer attributed to general knowledge, because the notes
+		// were searched first and returned nothing - and the learner was told
+		// their notes had nothing to say about a question the notes were never
+		// the source of.
+		if isHistoryRecallQuestion(s.input.Question) {
+			s.answerBasis = rag.AnswerBasisConversation
+			s.knowledgeStatus = rag.KnowledgeStatusNotRequired
+			s.knowledgeReason = rag.KnowledgeReasonNone
+			return answer, groundingFinalized
+		}
+		// A question about this conversation is answered from this
+		// conversation. "请记住发布颜色是 amber" is asked and answered in the
+		// same breath, and the answer is the learner's own sentence - not the
+		// model's general knowledge, and not the notes.
+		if isSessionContextQuestion(s.input.Question) {
+			s.answerBasis = rag.AnswerBasisConversation
+			s.knowledgeStatus = rag.KnowledgeStatusNotRequired
+			s.knowledgeReason = rag.KnowledgeReasonNone
+			return answer, groundingFinalized
+		}
+		if s.knowledgeSearchAvailable && requiresDocumentSearch(s.input.Question, s.knowledgePolicy) {
 			s.sources = nil
 			s.answerBasis = rag.AnswerBasisRefused
 			s.knowledgeStatus = rag.KnowledgeStatusInvalidGrounding
 			s.knowledgeReason = rag.KnowledgeReasonSearchRequired
 			return UnsupportedGroundingAnswer, groundingFinalized
 		}
-		s.answerBasis = rag.AnswerBasisConversation
+		// The server's pre-retrieval searched the material and found nothing
+		// above the relevance threshold.
+		//
+		// That is a search that happened and had nothing, which is a different
+		// fact from a turn that never searched at all, and a learner can act on
+		// the two differently. So it is recorded as the first and not as the
+		// second.
+		if s.input.Relevance != nil && s.input.Relevance.Status == RelevanceBelowThreshold &&
+			s.knowledgeStatus != rag.KnowledgeStatusUnavailable {
+			s.answerBasis = rag.AnswerBasisGeneralKnowledge
+			s.knowledgeStatus = rag.KnowledgeStatusNoEvidence
+			s.knowledgeReason = rag.KnowledgeReasonNoCandidate
+			return answer, groundingFinalized
+		}
+		// The answer cites a document this turn never retrieved.
+		//
+		// The old rule caught this by accident: it forced a search on nearly
+		// every question, so an uncited answer was rare. With the force gone,
+		// a model that answers from its own head and writes "[1]" would be
+		// shipping a citation to a passage nobody showed it - and the learner
+		// would be sent to a line of their notes that may say something else
+		// entirely. A citation that resolves to nothing is a fabricated
+		// citation, and it is refused like one.
+		if len(wanted) > 0 && len(s.documentSources()) == 0 {
+			s.sources = nil
+			s.answerBasis = rag.AnswerBasisRefused
+			s.knowledgeStatus = rag.KnowledgeStatusInvalidGrounding
+			s.knowledgeReason = rag.KnowledgeReasonInvalidCitation
+			return UnsupportedGroundingAnswer, groundingFinalized
+		}
+		// The model answered without retrieving anything. The answer is from
+		// its own head, and the record says exactly that.
+		//
+		// "The material was never consulted" and "the material was consulted
+		// and had nothing to say" are different facts, and a learner can act
+		// on them differently. The old vocabulary could only say the second
+		// one, so a turn that never searched was recorded as though a search
+		// had come back empty.
+		s.answerBasis = rag.AnswerBasisGeneralKnowledge
 		s.knowledgeStatus = rag.KnowledgeStatusNotRequired
-		s.knowledgeReason = rag.KnowledgeReasonNone
+		s.knowledgeReason = rag.KnowledgeReasonSearchNotPerformed
 		return answer, groundingFinalized
 	}
 	// Document retrieval produced nothing usable, but the turn is not
 	// ungrounded: it has the learner's own recorded past. Falling back to
 	// general knowledge here would replace an answer built on real evidence
 	// with a banner saying no evidence was found.
-	if len(s.sources) == 0 && s.memoryTrace.HasEvidence() {
+	documentSources := s.documentSources()
+	if len(documentSources) == 0 && s.memoryTrace.HasEvidence() {
 		s.answerBasis = rag.AnswerBasisConversation
 		s.knowledgeStatus = rag.KnowledgeStatusNotRequired
 		s.knowledgeReason = rag.KnowledgeReasonNone
 		return answer, groundingFinalized
 	}
-	if s.knowledgeStatus == rag.KnowledgeStatusUnavailable && len(s.sources) == 0 {
+	if s.knowledgeStatus == rag.KnowledgeStatusUnavailable && len(documentSources) == 0 {
 		s.sources = nil
 		if s.knowledgePolicy == rag.KnowledgePreferred && allowFallback {
 			return "", groundingUseGeneralFallback
@@ -1850,7 +2247,7 @@ func (s *runState) finalizeGroundedAnswer(answer string, allowRepair, allowFallb
 		s.answerBasis = rag.AnswerBasisRefused
 		return KnowledgeUnavailableAnswer, groundingFinalized
 	}
-	if len(s.sources) == 0 {
+	if len(documentSources) == 0 {
 		s.sources = nil
 		s.knowledgeStatus = rag.KnowledgeStatusNoEvidence
 		if s.knowledgeReason == rag.KnowledgeReasonNone {
@@ -1872,8 +2269,8 @@ func (s *runState) finalizeGroundedAnswer(answer string, allowRepair, allowFallb
 		s.answerBasis = rag.AnswerBasisRefused
 		return NoGroundingEvidenceAnswer, groundingFinalized
 	}
-	known := make(map[int]struct{}, len(s.sources))
-	for _, source := range s.sources {
+	known := make(map[int]struct{}, len(documentSources))
+	for _, source := range documentSources {
 		known[source.Citation] = struct{}{}
 	}
 	if len(wanted) == 0 {
@@ -1901,7 +2298,7 @@ func (s *runState) finalizeGroundedAnswer(answer string, allowRepair, allowFallb
 		}
 	}
 	retained := make([]rag.Source, 0, len(wanted))
-	for _, source := range s.sources {
+	for _, source := range documentSources {
 		if _, ok := wanted[source.Citation]; ok {
 			retained = append(retained, source)
 		}
@@ -2028,23 +2425,6 @@ var directConversationQuestions = map[string]struct{}{
 	"help": {}, "帮助": {},
 }
 
-func requiresGrounding(question string) bool {
-	if isSessionContextQuestion(question) {
-		return false
-	}
-	normalized := strings.Map(func(r rune) rune {
-		if unicode.IsSpace(r) || unicode.IsPunct(r) || unicode.IsSymbol(r) {
-			return -1
-		}
-		return unicode.ToLower(r)
-	}, strings.TrimSpace(question))
-	if normalized == "" {
-		return false
-	}
-	_, direct := directConversationQuestions[normalized]
-	return !direct
-}
-
 // requiresKnowledgeOnly can only tighten a server/request policy. The narrow
 // phrases avoid treating ordinary mentions of notes as a refusal to use a
 // clearly labelled general-knowledge fallback; the UI enum remains primary.
@@ -2122,15 +2502,26 @@ func isSessionContextQuestion(question string) bool {
 }
 
 // documentKnowledgeReachable reports whether knowledge_search and document_read
-// can emit any evidence in this run. It is the single definition behind two
+// can emit any evidence in this run. It is the single definition behind three
 // decisions that must agree: the context builder reserves evidence tokens only
-// when it returns true, and the runner registers the two evidence tools only
-// when it returns true. If the two ever disagree in the direction of reserving
-// nothing while the tools stay registered, the assembled window plus evidence
-// can exceed the input target, which is why both call this and not the
-// underlying predicate. TestEvidenceReserveMatchesToolRegistration guards it.
-func documentKnowledgeReachable(question string) bool {
-	return !isSessionContextQuestion(question)
+// when it returns true, the runner registers the two evidence tools only when
+// it returns true, and the prompt mentions them only when it returns true. If
+// they ever disagree in the direction of reserving nothing while the tools stay
+// registered, the assembled window plus evidence can exceed the input target,
+// which is why all of them call this and not the underlying predicates.
+// TestEvidenceReserveMatchesToolRegistration guards it.
+//
+// The knowledge-only policy wins over a question that says "do not look in my
+// notes": the request asked for answers from the notes and nothing else, and
+// a turn that cannot reach the notes could not honour it.
+func documentKnowledgeReachable(question string, policy rag.KnowledgePolicy) bool {
+	if isSessionContextQuestion(question) {
+		return false
+	}
+	if policy == rag.KnowledgeOnly {
+		return true
+	}
+	return !isExplicitNoSearchQuestion(question)
 }
 
 func isHistoryRecallQuestion(question string) bool {
@@ -2181,15 +2572,24 @@ func (s *runState) forcedToolName() string {
 	// STABILIZE-061 orders the two explicit memory actions, and does it before
 	// the clause below that hands the first choice to the model.
 	//
-	// The condition is deliberately narrow. It is not "this question looks like
-	// a save request" - the server does no such classification here. It is
-	// "the draft tool's own permission gate already fired", which is a decision
-	// explicitMemoryIntent made about the original user message, on evidence
-	// this function does not re-examine. Given that, a search of earlier
-	// sessions cannot inform whether to draft: the draft may only quote the
-	// current message, so nothing the search returns is admissible in it.
-	// Whether to search afterwards remains entirely the model's call.
-	if s.config.ForcesMemoryDraftBeforeMemoryRead && s.memoryDraftAvailable {
+	// The condition is deliberately narrow. It is "the learner asked for
+	// something to be saved", decided by explicitMemoryIntent on the original
+	// user message - a decision this function reads rather than re-makes.
+	//
+	// It used to read that decision off the tool table: the draft tool was
+	// only offered when the intent fired, so "the tool is there" and "the
+	// learner asked to save something" were the same fact. The draft tool is
+	// on the table every turn now, so the two facts are separate again and
+	// the rule has to ask for the one it means. Without that, every question
+	// in this mode would open with a forced draft, and a learner asking a
+	// question would get a memory card about it.
+	//
+	// Given a save request, a search of earlier sessions cannot inform
+	// whether to draft: the draft may only quote the current message, so
+	// nothing the search returns is admissible in it. Whether to search
+	// afterwards remains entirely the model's call.
+	if s.config.ForcesMemoryDraftBeforeMemoryRead && s.memoryDraftAvailable &&
+		ExplicitMemoryIntent(s.input.Question) {
 		return MustToolNameFor(CapabilityMemoryDraft, s.config.Surface())
 	}
 	if s.memorySearchAvailable && !s.config.ForcesKnowledgeSearchWithMemoryTool {
@@ -2207,7 +2607,7 @@ func (s *runState) forcedToolName() string {
 	if s.memorySearchAvailable && isHistoryRecallQuestion(s.input.Question) {
 		return ""
 	}
-	if s.knowledgeSearchAvailable && requiresGrounding(s.input.Question) && !s.groundingUsed {
+	if s.knowledgeSearchAvailable && requiresDocumentSearch(s.input.Question, s.knowledgePolicy) && !s.groundingUsed {
 		return MustToolNameFor(CapabilityKnowledgeSearch, s.config.Surface())
 	}
 	return ""

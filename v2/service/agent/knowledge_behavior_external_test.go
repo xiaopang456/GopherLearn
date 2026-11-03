@@ -70,8 +70,19 @@ func TestKnowledgeAgentSimpleReformulatedAndEmptyEvidenceBehaviors(t *testing.T)
 			if len(result.Sources) != test.wantSources {
 				t.Fatalf("sources = %#v, want %d", result.Sources, test.wantSources)
 			}
-			if got := retriever.recordedQueries(); fmt.Sprint(got) != fmt.Sprint(test.queries) {
-				t.Fatalf("queries = %#v, want %#v", got, test.queries)
+			// The server searches once before the model is asked anything, with
+			// the question as written, and the model then searches with its own
+			// words. The pre-retrieval is a real retrieval, so it is recorded
+			// as one - it is not free, and pretending it was would hide the
+			// cost the comparison run has to measure. The knowledge-only case
+			// has no pre-retrieval: the search is forced there, and a second
+			// one before it would be the same search twice.
+			wantQueries := test.queries
+			if test.policy != rag.KnowledgeOnly {
+				wantQueries = append([]string{"question"}, test.queries...)
+			}
+			if got := retriever.recordedQueries(); fmt.Sprint(got) != fmt.Sprint(wantQueries) {
+				t.Fatalf("queries = %#v, want %#v", got, wantQueries)
 			}
 			for _, userID := range retriever.recordedUsers() {
 				if userID != 77 {

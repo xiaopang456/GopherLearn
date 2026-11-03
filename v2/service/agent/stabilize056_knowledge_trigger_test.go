@@ -134,7 +134,7 @@ func TestKnowledgeForceUsesTheRegisteredSurfaceName(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			state := &runState{
 				config:                   test.config,
-				input:                    RunContext{Question: "解释一下 TCP 粘包为什么需要应用层划分消息边界"},
+				input:                    RunContext{Question: "我的笔记里怎么解释 TCP 粘包为什么需要应用层划分消息边界"},
 				knowledgeSearchAvailable: true,
 				memorySearchAvailable:    true,
 			}
@@ -145,18 +145,24 @@ func TestKnowledgeForceUsesTheRegisteredSurfaceName(t *testing.T) {
 	}
 }
 
-// The zero-call diagnosis, recomputed rather than asserted from memory: the
-// three refused questions are ordinary grounding questions, not conversation
-// questions and not history recall. Nothing about them explains the refusal.
-func TestRefusedScenarioQuestionsAreOrdinaryGroundingQuestions(t *testing.T) {
-	questions := []string{
+// The zero-call diagnosis, recomputed rather than asserted from memory.
+//
+// The two questions that name the learner's own material still have to be
+// searched: the question points at the notes, so the notes are the subject of
+// the question rather than a possible source of its answer. The third one -
+// an ordinary technical question - is not, and the server does not force a
+// search for it any more: that is the model's call.
+//
+// The first two still reach search_required, and they reach it for the same
+// reason as before: knowledge_search was bound and the question needed
+// grounding.
+func TestRefusedScenarioQuestionsNameTheLearnersMaterialOrAreTheModelsCall(t *testing.T) {
+	for _, question := range []string{
 		"TCP 粘包到底是什么？请结合我的学习记录讲。",
 		"RPC 粘包处理和 Codec 注册表之间是怎么配合的？请结合我的学习记录。",
-		"Go 里 defer 的执行顺序是怎样的？",
-	}
-	for _, question := range questions {
-		if !requiresGrounding(question) {
-			t.Errorf("requiresGrounding(%q) = false; search_required could not have been reached", question)
+	} {
+		if !requiresDocumentSearch(question, rag.KnowledgePreferred) {
+			t.Errorf("requiresDocumentSearch(%q) = false; search_required could not have been reached", question)
 		}
 		if isSessionContextQuestion(question) {
 			t.Errorf("%q must not read as a conversation question", question)
@@ -164,9 +170,13 @@ func TestRefusedScenarioQuestionsAreOrdinaryGroundingQuestions(t *testing.T) {
 		if isHistoryRecallQuestion(question) {
 			t.Errorf("%q must not read as history recall", question)
 		}
-		if !documentKnowledgeReachable(question) {
+		if !documentKnowledgeReachable(question, rag.KnowledgePreferred) {
 			t.Errorf("knowledge tools must be registered for %q", question)
 		}
+	}
+	// An ordinary technical question is the model's decision now.
+	if requiresDocumentSearch("Go 里 defer 的执行顺序是怎样的？", rag.KnowledgePreferred) {
+		t.Error("an ordinary technical question must not force a search")
 	}
 }
 
@@ -175,7 +185,7 @@ func TestRefusedScenarioQuestionsAreOrdinaryGroundingQuestions(t *testing.T) {
 func TestUserConfirmedModeForcesKnowledgeSearchFirst(t *testing.T) {
 	search := &trackedKnowledgeSearch{}
 	memory := &scriptedMemorySearch{}
-	fake, result := runConfirmedMode(t, "Go 里 defer 的执行顺序是怎样的？",
+	fake, result := runConfirmedMode(t, "我的笔记里 Go 的 defer 执行顺序是怎么写的？",
 		[]tool.BaseTool{memory.build(t), search.build(t, groundedResults())},
 		MinimalContextBuilder{}, rag.KnowledgePreferred, searchThenAnswer)
 
@@ -222,11 +232,14 @@ func TestConfirmedTopicsStillReceiptExactlyWhileKnowledgeSearchRuns(t *testing.T
 	}
 }
 
-// 4. No topic confirmed at all: an ordinary technical question still searches.
-func TestOrdinaryTechnicalQuestionWithoutTopicsStillSearches(t *testing.T) {
+// 4. No topic confirmed at all. A question that names the learner's own
+// material still searches, because the notes are the subject of the question;
+// an ordinary technical question does not, because whether the material
+// covers it is the model's judgement and the server no longer makes it.
+func TestSearchDecisionDoesNotDependOnTheConfirmedTopics(t *testing.T) {
 	search := &trackedKnowledgeSearch{}
 	memory := &scriptedMemorySearch{}
-	_, result := runConfirmedMode(t, "RPC 粘包处理和 Codec 注册表之间是怎么配合的？",
+	_, result := runConfirmedMode(t, "我的笔记里 RPC 粘包处理和 Codec 注册表之间是怎么配合的？",
 		[]tool.BaseTool{memory.build(t), search.build(t, groundedResults())},
 		MinimalContextBuilder{}, rag.KnowledgePreferred, searchThenAnswer)
 
@@ -235,6 +248,25 @@ func TestOrdinaryTechnicalQuestionWithoutTopicsStillSearches(t *testing.T) {
 	}
 	if len(result.UsedTopicKeys) != 0 {
 		t.Fatalf("usedTopicKeys = %v, want none", result.UsedTopicKeys)
+	}
+}
+
+// 4b. The same question without the pointer at the material is the model's
+// call, and the server spends no tool slot on it.
+func TestOrdinaryTechnicalQuestionIsNotForcedIntoKnowledgeSearch(t *testing.T) {
+	search := &trackedKnowledgeSearch{}
+	memory := &scriptedMemorySearch{}
+	fake, _ := runConfirmedMode(t, "RPC 粘包处理和 Codec 注册表之间是怎么配合的？",
+		[]tool.BaseTool{memory.build(t), search.build(t, groundedResults())},
+		MinimalContextBuilder{}, rag.KnowledgePreferred, func(call int) *schema.Message {
+			return schema.AssistantMessage("RPC 粘包处理和 Codec 注册表之间是一套配合。", nil)
+		})
+
+	if fake.ForcedToolChoiceCount() != 0 {
+		t.Fatalf("an ordinary technical question forced %d tool choices", fake.ForcedToolChoiceCount())
+	}
+	if search.calls != 0 {
+		t.Fatalf("an ordinary technical question ran knowledge_search %d times", search.calls)
 	}
 }
 
@@ -310,7 +342,7 @@ func TestNoCandidateKeepsExistingPolicyBehaviour(t *testing.T) {
 	t.Run("preferred falls back to general knowledge", func(t *testing.T) {
 		search := &trackedKnowledgeSearch{}
 		memory := &scriptedMemorySearch{}
-		_, result := runConfirmedMode(t, "Go 里 defer 的执行顺序是怎样的？",
+		_, result := runConfirmedMode(t, "我的笔记里 Go 的 defer 执行顺序是怎么写的？",
 			[]tool.BaseTool{memory.build(t), search.build(t, nil)},
 			MinimalContextBuilder{}, rag.KnowledgePreferred, func(call int) *schema.Message {
 				if call == 1 {
@@ -328,7 +360,7 @@ func TestNoCandidateKeepsExistingPolicyBehaviour(t *testing.T) {
 	t.Run("only still refuses", func(t *testing.T) {
 		search := &trackedKnowledgeSearch{}
 		memory := &scriptedMemorySearch{}
-		_, result := runConfirmedMode(t, "Go 里 defer 的执行顺序是怎样的？",
+		_, result := runConfirmedMode(t, "我的笔记里 Go 的 defer 执行顺序是怎么写的？",
 			[]tool.BaseTool{memory.build(t), search.build(t, nil)},
 			MinimalContextBuilder{}, rag.KnowledgeOnly, func(call int) *schema.Message {
 				if call == 1 {
@@ -350,7 +382,7 @@ func TestNoCandidateKeepsExistingPolicyBehaviour(t *testing.T) {
 func TestUncitedAnswerStillRefusedUnderKnowledgeOnly(t *testing.T) {
 	search := &trackedKnowledgeSearch{}
 	memory := &scriptedMemorySearch{}
-	_, result := runConfirmedMode(t, "Go 里 defer 的执行顺序是怎样的？",
+	_, result := runConfirmedMode(t, "我的笔记里 Go 的 defer 执行顺序是怎么写的？",
 		[]tool.BaseTool{memory.build(t), search.build(t, groundedResults())},
 		MinimalContextBuilder{}, rag.KnowledgeOnly, func(call int) *schema.Message {
 			if call == 1 {
@@ -437,7 +469,7 @@ func TestStreamingAndSyncAgreeOnForcedKnowledgeSearch(t *testing.T) {
 			t.Fatal(err)
 		}
 		input := testRunContext()
-		input.Question = "Go 里 defer 的执行顺序是怎样的？"
+		input.Question = "我的笔记里 Go 的 defer 执行顺序是怎么写的？"
 		input.MemoryEvidence = NewMemoryEvidenceRegistry()
 		result, err := runner.Run(context.Background(), input, sink)
 		if err != nil {
@@ -513,14 +545,18 @@ func TestForcedSearchDoesNotReopenTheToolLoop(t *testing.T) {
 // The pre-fix reproduction, kept as a control rather than described in prose.
 //
 // With the old rule - memory_search available suppresses the knowledge-first
-// choice - the three STABILIZE-055 questions reach the grounding gate having
-// made no tool call, and the gate refuses them with search_required. This is
-// the exact recorded shape, and it is what the fix has to move.
+// choice - the STABILIZE-055 questions that name the learner's own material
+// reach the grounding gate having made no tool call, and the gate refuses
+// them with search_required. This is the exact recorded shape, and it is what
+// the fix has to move.
+//
+// The ordinary technical question is not in that list any more, and the
+// difference is the whole point of the change: it is the model's call, and
+// what the server still refuses is a citation the model invented.
 func TestOldRuleStillReproducesTheSearchRequiredRefusal(t *testing.T) {
 	questions := []string{
 		"TCP 粘包到底是什么？请结合我的学习记录讲。",
 		"RPC 粘包处理和 Codec 注册表之间是怎么配合的？请结合我的学习记录。",
-		"Go 里 defer 的执行顺序是怎样的？",
 	}
 	for _, question := range questions {
 		search := &trackedKnowledgeSearch{}
@@ -549,5 +585,35 @@ func TestOldRuleStillReproducesTheSearchRequiredRefusal(t *testing.T) {
 			t.Fatalf("%q: basis=%s status=%s reason=%s, want the recorded refusal",
 				question, result.AnswerBasis, result.KnowledgeStatus, result.KnowledgeReason)
 		}
+	}
+}
+
+// The ordinary technical question reaches a different gate now, and it is
+// still a gate: the answer cites "[1]" and nothing was ever retrieved, so the
+// citation is fabricated and the turn is refused - just not for the reason it
+// used to be.
+func TestOrdinaryTechnicalQuestionIsRefusedForAFabricatedCitation(t *testing.T) {
+	search := &trackedKnowledgeSearch{}
+	memory := &scriptedMemorySearch{}
+	fake := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {
+		return citedAnswer(call), nil
+	}}
+	runner := mustRunner(t, fake, StaticToolRegistry{Registered: []tool.BaseTool{memory.build(t),
+		search.build(t, groundedResults())}}, newMemoryStepRepository(), AgentMemoryToolRunnerConfig())
+	input := testRunContext()
+	input.Question = "Go 里 defer 的执行顺序是怎样的？"
+	input.MemoryEvidence = NewMemoryEvidenceRegistry()
+	result, err := runner.Run(context.Background(), input, DiscardEvents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ToolCalls != 0 || search.calls != 0 {
+		t.Fatalf("an ordinary technical question must not spend a search, tools=%d", result.ToolCalls)
+	}
+	if result.AnswerBasis != rag.AnswerBasisRefused ||
+		result.KnowledgeStatus != rag.KnowledgeStatusInvalidGrounding ||
+		result.KnowledgeReason != rag.KnowledgeReasonInvalidCitation {
+		t.Fatalf("basis=%s status=%s reason=%s, want the fabricated citation to be refused",
+			result.AnswerBasis, result.KnowledgeStatus, result.KnowledgeReason)
 	}
 }

@@ -28,6 +28,17 @@
  * (an answer stored before the server kept these fields). Those produce no line
  * at all, because a line saying "there was nothing here" is noise on a card
  * that already says what the answer was based on.
+ *
+ * `search_not_performed` 这个取值必须显示出来，不能算进上面「无事可报」的那一组：
+ * 它不是「没有可报告的东西」，而是「这一轮根本没有查过用户的资料，答案是模型
+ * 自己的通用知识」——这是一条要如实告诉用户的事实。用户读到「资料里没有找到支撑
+ * 这句话的内容」时，会以为资料被查过、确实没有；读到「这次没有查资料」时才知道
+ * 资料这一轮压根没被打开过。两种情况用户下一步该做的事完全不同：前者只能接受
+ * 资料里本来就没有，后者可以重新提问、重新上传资料再试一次。
+ *
+ * `not_required` 仍然不单独显示。它说的是「这次问题不需要资料」，而读者真正
+ * 需要知道的是「为什么不需要」——那个理由由 reason 那一行说出来就够了，所以
+ * 依据 + 说明两行已经讲清了整件事，多加一行只会重复。
  */
 
 /** The answer's basis. The server's own list, in the server's own words. */
@@ -60,6 +71,12 @@ const KNOWLEDGE_REASON_ZH = Object.freeze({
   invalid_citation: '引用的位置对不上原文',
   missing_citation: '引用缺少位置信息',
   fallback_citation: '引用使用了降级位置',
+  // The turn never looked at the learner's material; the answer is the
+  // model's own general knowledge. It is told apart from `no_candidate`
+  // ("the material was searched and had nothing") because a learner can act
+  // on the two differently: ask again, or upload something, when nothing was
+  // searched - but not when the material was searched and stayed silent.
+  search_not_performed: '这次没有查资料',
 })
 
 /** The wording used for a value this table does not know. */
@@ -76,6 +93,10 @@ const UNNAMED_REASON = '原因未说明'
  * knowledge status both default to it). Such an answer has no basis recorded,
  * so it has no basis to show — and saying "未说明" about it would be inventing a
  * sentence about a fact nobody wrote down. It belongs with the other two.
+ *
+ * `search_not_performed` is not one of them: it names a fact the learner can
+ * act on - the material was never opened, so asking again or uploading
+ * something is worth doing - and the reason line beside it says so.
  */
 const NOTHING_TO_REPORT = Object.freeze({
   answerBasis: new Set(['legacy_unspecified']),

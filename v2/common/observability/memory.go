@@ -131,7 +131,7 @@ func (r *MemoryRecorder) KnowledgeRerank(status string, duration time.Duration) 
 func (r *MemoryRecorder) KnowledgeAnswer(basis, status, reason string) {
 	basis = boundedLabel(basis, "conversation", "personal_knowledge", "general_knowledge", "refused", "legacy_unspecified")
 	status = boundedLabel(status, "not_required", "grounded", "no_evidence", "unavailable", "invalid_grounding", "legacy_unspecified")
-	reason = boundedLabel(reason, "none", "search_required", "no_active_document", "no_candidate", "model_abstained", "embedding_unavailable", "vector_unavailable", "lexical_unavailable", "index_unavailable", "document_metadata_unavailable", "invalid_citation", "missing_citation", "fallback_citation")
+	reason = boundedLabel(reason, "none", "search_required", "no_active_document", "no_candidate", "model_abstained", "embedding_unavailable", "vector_unavailable", "lexical_unavailable", "index_unavailable", "document_metadata_unavailable", "invalid_citation", "missing_citation", "fallback_citation", "search_not_performed")
 	r.add("knowledge_answer_total{basis="+basis+",status="+status+"}", 1)
 	if basis == "general_knowledge" {
 		r.add("knowledge_fallback_total{reason="+reason+"}", 1)

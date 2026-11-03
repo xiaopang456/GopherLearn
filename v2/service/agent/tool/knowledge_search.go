@@ -170,6 +170,12 @@ func (r *Registry) Tools(ctx context.Context, run serviceagent.RunContext) ([]to
 		return nil, fmt.Errorf("%w: trusted user id is required", ErrInvalidKnowledgeSearchRequest)
 	}
 	evidence := newEvidenceSet(r.search.MaxRunTokens)
+	// A server-side pre-retrieval may have already handed this run some
+	// evidence, already numbered. The search tool continues from there, so a
+	// chunk the model has seen keeps its number and a chunk it has not seen
+	// gets the next one. Without this the two would both start at 1 and the
+	// model would have two different chunks under the same number.
+	evidence.Seed(run.Relevance)
 	name := serviceagent.MustToolNameFor(serviceagent.CapabilityKnowledgeSearch, r.resolvedSurface())
 	description := knowledgeSearchDescription
 	if r.resolvedSurface() == serviceagent.SurfaceExplicitSources {
@@ -198,6 +204,97 @@ func (r *Registry) resolvedSurface() serviceagent.ToolSurface {
 		return serviceagent.SurfaceLegacy
 	}
 	return r.surface
+}
+
+// ProbeRelevance runs one server-side retrieval for the question and reports
+// whether the learner's uploaded material covers it.
+//
+// The threshold is written against rerank scores. A retrieval that did not
+// rerank cannot be judged against it - the candidate pool is then ordered by
+// similarity rather than by relevance to the question, and a similarity score
+// is not on the same scale - so such a retrieval reports "unavailable" and the
+// run proceeds without a pre-retrieval. The model then decides for itself,
+// exactly as it did before the pre-retrieval existed.
+//
+// A retrieval that fails is not a verdict about the material either. The
+// pre-retrieval is an optimisation, and an optimisation that cannot run must
+// not become a reason to refuse to answer.
+func (r *Registry) ProbeRelevance(ctx context.Context, run serviceagent.RunContext, question string, threshold float64) (serviceagent.RelevanceOutcome, error) {
+	outcome := serviceagent.RelevanceOutcome{Status: serviceagent.RelevanceUnavailable, Threshold: threshold}
+	if err := contextError(ctx); err != nil {
+		return outcome, err
+	}
+	query := strings.TrimSpace(question)
+	if run.UserID <= 0 || query == "" {
+		return outcome, fmt.Errorf("%w: a trusted user id and a question are required", ErrInvalidKnowledgeSearchRequest)
+	}
+	topK := r.search.DefaultTopK
+	if topK <= 0 {
+		topK = 5
+	}
+	results, err := r.retriever.Retrieve(ctx, run.UserID, query, topK)
+	if err != nil {
+		if ctxErr := contextError(ctx); ctxErr != nil {
+			return outcome, ctxErr
+		}
+		return outcome, nil
+	}
+	if len(results) == 0 {
+		// The retrieval ran and the material had nothing that matched. That is
+		// a low relevance, not an unknown: the material was searched.
+		outcome.Status = serviceagent.RelevanceBelowThreshold
+		return outcome, nil
+	}
+	candidates := make([]rag.RetrievalResult, 0, len(results))
+	for _, result := range results {
+		if result.RerankApplied {
+			candidates = append(candidates, result)
+		}
+	}
+	if len(candidates) == 0 {
+		// The retrieval returned candidates but none of them carries a rerank
+		// score, and a similarity score is not on the same scale as the one
+		// the threshold is written against. So the question "does the
+		// material cover this" has no answer here, and the honest report is
+		// that it is unknown - not that nothing matched.
+		return outcome, nil
+	}
+	outcome.RerankApplied = true
+	outcome.TopScore = candidates[0].RerankScore
+	for _, candidate := range candidates[1:] {
+		if candidate.RerankScore > outcome.TopScore {
+			outcome.TopScore = candidate.RerankScore
+		}
+	}
+	if outcome.TopScore < threshold {
+		outcome.Status = serviceagent.RelevanceBelowThreshold
+		return outcome, nil
+	}
+	outcome.Status = serviceagent.RelevanceHit
+	for _, candidate := range candidates {
+		if candidate.RerankScore < threshold {
+			break
+		}
+		citation := len(outcome.Chunks) + 1
+		content, _ := truncateToTokens(cleanText(candidate.RawContent), r.search.MaxPerResultTokens)
+		identity := sourceIdentity(candidate)
+		outcome.Chunks = append(outcome.Chunks, serviceagent.RelevanceChunk{
+			Citation:   citation,
+			Identity:   identity,
+			DocID:      boundedText(candidate.DocID, 128),
+			DocVersion: candidate.DocVersion,
+			Content:    content,
+			Source: rag.Source{
+				Citation: citation, DocID: boundedText(candidate.DocID, 128), DocVersion: candidate.DocVersion,
+				FileName: safeDocumentName(candidate.DocumentName), TitlePath: boundedStrings(candidate.TitlePath, 8, 80),
+				StartLine: candidate.StartLine, EndLine: candidate.EndLine,
+				ChunkIndex: candidate.ChunkIndex, Score: safeScore(candidate.RerankScore),
+				Snippet: boundedText(cleanText(candidate.RawContent), 240),
+			},
+		})
+	}
+	outcome.NextCitation = len(outcome.Chunks) + 1
+	return outcome, nil
 }
 
 type normalizedSearchInput struct {

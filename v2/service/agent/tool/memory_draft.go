@@ -82,6 +82,16 @@ type ProposeMemoryOutput struct {
 	ConflictIDs              model.StringList       `json:"conflict_ids"`
 	RequiresUserConfirmation bool                   `json:"requires_user_confirmation"`
 	Replay                   bool                   `json:"replay"`
+	// Rejected says no draft was created.
+	//
+	// The draft is refused rather than failed: a tool that returns an error
+	// takes the whole turn down with it, and a turn that died because the
+	// model tried to save something would cost the learner their answer. So
+	// the refusal is an answer - the model is told what the rule is and can
+	// write it the right way.
+	Rejected bool `json:"rejected,omitempty"`
+	// RejectionReason says why there is no draft.
+	RejectionReason string `json:"rejection_reason,omitempty"`
 }
 
 func (r *MemoryDraftRegistry) Tools(ctx context.Context, run serviceagent.RunContext) ([]tool.BaseTool, error) {
@@ -91,13 +101,18 @@ func (r *MemoryDraftRegistry) Tools(ctx context.Context, run serviceagent.RunCon
 	if run.UserID <= 0 || strings.TrimSpace(run.SessionID) == "" || strings.TrimSpace(run.RunID) == "" {
 		return nil, fmt.Errorf("trusted memory draft identity is required")
 	}
-	// Tool visibility is an authorization boundary, not a semantic prediction.
-	// The model may propose a draft only when the raw user question contains a
-	// deterministic write-intent signal. Ordinary questions and memory-recall
-	// questions therefore cannot expose this mutating workflow to the model.
-	if !explicitMemoryIntent(run.Question) {
-		return nil, nil
-	}
+	// The tool is on the table every turn.
+	//
+	// It used to be offered only when the question matched a fixed phrase
+	// list, and that made the phrase list a gate on the whole feature: a
+	// learner who said "存到我的记忆里" got no tool at all, and the five
+	// evaluation questions that phrase it that way could not pass for any
+	// reason but the wording. A tool the model cannot see cannot be called,
+	// and a rule about when to call it belongs in the prompt rather than in
+	// the table.
+	//
+	// The tool is still a draft, and a draft still needs the learner's
+	// confirmation, so what this changes is the reach - not the risk.
 	var topics []memoryservice.Topic
 	if r.topics != nil {
 		var err error
@@ -122,6 +137,20 @@ func (r *MemoryDraftRegistry) Tools(ctx context.Context, run serviceagent.RunCon
 		func(ctx context.Context, input *ProposeMemoryInput) (*ProposeMemoryOutput, error) {
 			if input == nil {
 				return nil, fmt.Errorf("memory proposal input is required")
+			}
+			// A draft records what the learner said, and the server checks
+			// that rather than asking for it. The rule used to live only in
+			// the tool's description, which was enough while the tool was
+			// hidden unless the learner had asked to save something; with the
+			// tool always on the table, a model that has just read a passage
+			// out of the learner's notes is holding exactly the text a draft
+			// can be built from - and a draft built from a retrieved passage
+			// is a false memory with the learner's name on it.
+			if !draftContentFromCurrentMessage(run.Question, input.Content) {
+				return &ProposeMemoryOutput{
+					Scope: model.MemoryScope(input.Scope), Subject: input.Subject,
+					Rejected: true, RejectionReason: draftContentRejection,
+				}, nil
 			}
 			payload, _ := json.Marshal(input)
 			digest := sha256.Sum256(append([]byte(run.RunID+":"), payload...))
@@ -189,48 +218,4 @@ func resolveDraftTopicKey(topics []memoryservice.Topic, question, proposed strin
 		return bestKey
 	}
 	return key
-}
-
-func explicitMemoryIntent(question string) bool {
-	value := strings.ToLower(strings.TrimSpace(question))
-	if value == "" {
-		return false
-	}
-
-	// A recall question reads existing memory; it does not grant permission to
-	// create a new draft. Check it before English phrases such as "remember my".
-	if containsAny(value, []string{
-		"你还记得", "还记得我", "还记得这", "是否记得", "记不记得",
-		"do you remember", "did you remember", "what do you remember", "can you remember",
-	}) {
-		return false
-	}
-
-	if containsAny(value, []string{
-		"请记住", "记住我", "记住这", "记住：", "记住:", "帮我记", "给我记", "替我记",
-		"记一下", "记下来", "保存这", "保存为我的",
-		"remember this", "remember that", "remember my", "please remember", "save this", "save that", "keep this in mind",
-	}) {
-		return true
-	}
-
-	// Cross-session defaults are also explicit memory instructions even when
-	// the user does not literally say "remember".
-	futureDirective := containsAny(value, []string{
-		"以后", "今后", "从现在起", "接下来", "from now on", "going forward", "in the future",
-	})
-	persistentPolicy := containsAny(value, []string{
-		"请默认", "默认我", "都按", "请一直", "一直按", "请始终", "始终先", "请把我当",
-		"default to", "assume that i", "always treat", "always explain", "always use",
-	})
-	return futureDirective && persistentPolicy
-}
-
-func containsAny(value string, markers []string) bool {
-	for _, marker := range markers {
-		if strings.Contains(value, marker) {
-			return true
-		}
-	}
-	return false
 }

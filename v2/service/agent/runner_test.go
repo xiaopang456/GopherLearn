@@ -394,22 +394,43 @@ func TestToolFingerprintCanonicalizesNameAndJSON(t *testing.T) {
 	}
 }
 
-func TestRunnerRejectsUnknownToolAndPersistsPublicStep(t *testing.T) {
+// A model that calls a tool this turn does not have gets an explanation and
+// keeps its turn.
+//
+// The call did not run, so refusing it with an error would throw away
+// whatever the earlier calls of the same turn had brought back - and the model
+// that made the mistake is the one that can recover from it. The refusal is
+// therefore an observation, and the turn records that it happened.
+func TestRunnerObservesUnknownToolAndKeepsTheTurn(t *testing.T) {
 	fake := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {
-		return schema.AssistantMessage("", []schema.ToolCall{{
-			ID:       fmt.Sprintf("call-%d", call),
-			Function: schema.FunctionCall{Name: "not_registered", Arguments: `{}`},
-		}}), nil
+		if call == 1 {
+			return schema.AssistantMessage("", []schema.ToolCall{{
+				ID:       fmt.Sprintf("call-%d", call),
+				Function: schema.FunctionCall{Name: "not_registered", Arguments: `{}`},
+			}}), nil
+		}
+		return schema.AssistantMessage("答案。", nil), nil
 	}}
 	var executions atomic.Int32
 	steps := newMemoryStepRepository()
 	runner := mustRunner(t, fake, StaticToolRegistry{Registered: []tool.BaseTool{mustFakeTool(t, &executions)}}, steps, DefaultRunnerConfig())
-	_, err := runner.Run(context.Background(), testRunContext(), newEventCollector())
-	if !errors.Is(err, ErrUnknownTool) {
-		t.Fatalf("error = %v, want ErrUnknownTool", err)
+	result, err := runner.Run(context.Background(), testRunContext(), newEventCollector())
+	if err != nil {
+		t.Fatalf("an unknown tool must not fail the turn: %v", err)
 	}
 	if executions.Load() != 0 || !steps.hasError("agent requested an unknown tool: not_registered") {
 		t.Fatalf("unknown tool handling: executions=%d steps=%#v", executions.Load(), steps.steps)
+	}
+	if result.UnknownToolCalls != 1 {
+		t.Fatalf("unknown tool calls = %d, want 1", result.UnknownToolCalls)
+	}
+	if result.Answer != "答案。" {
+		t.Fatalf("answer = %q", result.Answer)
+	}
+	// The turn answered, but not with every tool the model asked for, and a
+	// reader has to be able to tell those two runs apart.
+	if result.Closeout != TerminationToolUnavailable {
+		t.Fatalf("closeout = %q, want %q", result.Closeout, TerminationToolUnavailable)
 	}
 }
 
@@ -952,33 +973,66 @@ func TestRunnerRejectsKnowledgeScopedAnswerWhenModelSkipsSearch(t *testing.T) {
 	if result.Answer != UnsupportedGroundingAnswer || len(result.Sources) != 0 {
 		t.Fatalf("result = %#v", result)
 	}
-	if fake.ForcedToolChoiceCount() == 0 {
-		t.Fatal("substantive Agent question did not force an initial knowledge tool call")
+	// The search is no longer forced: a file name in the question is the
+	// model's call to act on. What is not the model's call is a citation it
+	// invented - an answer that points at "[1]" when no document was ever
+	// retrieved is refused, and it is refused as what it is.
+	if result.KnowledgeReason != rag.KnowledgeReasonInvalidCitation {
+		t.Fatalf("reason = %s, want the fabricated citation to be named", result.KnowledgeReason)
 	}
-	if !fake.HasExclusiveToolBinding(knowledgeSearchToolName) {
-		t.Fatalf("forced bindings=%v want an exclusive knowledge_search binding", fake.BoundToolCalls())
+	if fake.ForcedToolChoiceCount() != 0 {
+		t.Fatalf("the turn forced %d tool choices", fake.ForcedToolChoiceCount())
 	}
 }
 
-func TestKnowledgeFirstGroundingPolicy(t *testing.T) {
+// The search decision is no longer "does this question need grounding".
+//
+// It is "does this question have to be answered from the learner's own
+// material", and the answer is yes for two reasons only: the request asked for
+// the knowledge base and nothing else, or the question names the learner's
+// material outright. Everything else is the model's decision, and the server
+// no longer spends a tool slot on a search the question did not ask for.
+func TestDocumentSearchDecision(t *testing.T) {
 	tests := []struct {
 		question string
+		policy   rag.KnowledgePolicy
 		want     bool
 	}{
-		{question: "你好", want: false},
-		{question: "谢谢！", want: false},
-		{question: "你能做什么？", want: false},
-		{question: "解释一下 Tool Schema、ToolCall 和 Tool Result", want: true},
-		{question: "Redis 的 TTL 是怎么实现的？", want: true},
-		{question: "你好，解释一下 Redis TTL", want: true},
-		{question: "note.md 中的 RPC 超时策略是什么？", want: true},
-		{question: "请记住发布颜色是 amber", want: false},
-		{question: "你还记得刚才的发布颜色吗？", want: false},
-		{question: "最终会话记忆检查，只使用 Recent Messages 或 Session Summary，不需要知识库引用", want: false},
+		{question: "你好", policy: rag.KnowledgePreferred, want: false},
+		{question: "谢谢！", policy: rag.KnowledgePreferred, want: false},
+		{question: "你能做什么？", policy: rag.KnowledgePreferred, want: false},
+		// An ordinary technical question is the model's call now. The server
+		// used to force a search here, and every question about the learner's
+		// material cost a search whether or not the material had anything to
+		// say about it.
+		{question: "解释一下 Tool Schema、ToolCall 和 Tool Result", policy: rag.KnowledgePreferred, want: false},
+		{question: "Redis 的 TTL 是怎么实现的？", policy: rag.KnowledgePreferred, want: false},
+		{question: "note.md 中的 RPC 超时策略是什么？", policy: rag.KnowledgePreferred, want: false},
+		// A question that names the learner's material is forced.
+		{question: "我的笔记里讲了什么？", policy: rag.KnowledgePreferred, want: true},
+		{question: "我上传的文件里有讲 RPC 超时吗？", policy: rag.KnowledgePreferred, want: true},
+		{question: "请结合我的学习记录讲。", policy: rag.KnowledgePreferred, want: true},
+		// The knowledge-only policy is the request's own instruction, and it
+		// outranks the learner's own material wording.
+		{question: "解释一下 Redis TTL", policy: rag.KnowledgeOnly, want: true},
+		// It does not outrank a question the notes cannot answer at all: a
+		// greeting, a question about this conversation and a question about
+		// the learner's own past are answered from elsewhere, and a forced
+		// search for them would spend a tool slot to produce nothing.
+		{question: "你好", policy: rag.KnowledgeOnly, want: false},
+		// A question about this conversation, about the learner's own past,
+		// or about somebody else's material is not a document question.
+		{question: "请记住发布颜色是 amber", policy: rag.KnowledgePreferred, want: false},
+		{question: "你还记得刚才的发布颜色吗？", policy: rag.KnowledgePreferred, want: false},
+		{question: "我之前是怎么决定用固定头部方案的？", policy: rag.KnowledgePreferred, want: false},
+		{question: "最终会话记忆检查，只使用 Recent Messages 或 Session Summary，不需要知识库引用", policy: rag.KnowledgePreferred, want: false},
+		// The learner said not to look in their material, and that is their
+		// decision to make.
+		{question: "用你自己的常识讲讲 TCP 粘包，不要查我的笔记", policy: rag.KnowledgePreferred, want: false},
 	}
 	for _, test := range tests {
-		if got := requiresGrounding(test.question); got != test.want {
-			t.Errorf("requiresGrounding(%q) = %v, want %v", test.question, got, test.want)
+		if got := requiresDocumentSearch(test.question, test.policy); got != test.want {
+			t.Errorf("requiresDocumentSearch(%q, %s) = %v, want %v", test.question, test.policy, got, test.want)
 		}
 	}
 }

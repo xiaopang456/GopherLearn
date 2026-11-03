@@ -197,10 +197,20 @@ func TestChatAndAgentTurnsUseDifferentModels(t *testing.T) {
 		// model's reach: memoryReadMode=legacy_v2 and episodeRecallMode=shadow_only
 		// (v2/config/config.go:247-288). Pinned here so a later config change is a
 		// deliberate act with a failing test behind it.
-		for _, name := range []string{"memory_search", "topic_memory_read", "propose_memory"} {
+		for _, name := range []string{"memory_search", "topic_memory_read"} {
 			if bound[name] {
 				t.Fatalf("%s was bound under the default read mode: capability gate widened", name)
 			}
+		}
+		// The draft tool is the exception to that gate, and it is a deliberate one.
+		// It used to be hidden from the model unless the question matched a phrase
+		// list, which made the phrase list a gate on the whole feature: a learner
+		// who said "存到我的记忆里" got no tool at all. It is on the table every
+		// turn now; what decides whether the model proposes saving is the prompt,
+		// which carries the save rule only for a question that asks for it, and a
+		// server-side check that the draft's content came from this turn's message.
+		if !bound["propose_memory"] {
+			t.Fatalf("the draft tool was not bound; bindings were %v", bound)
 		}
 	}
 	if len(ordinary.requests) != 1 {
