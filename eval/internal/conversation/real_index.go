@@ -31,11 +31,11 @@ import (
 
 // IndexReport describes what the builder did.
 type IndexReport struct {
-	Documents  int         `json:"documents"`
-	Calls      []ModelCall `json:"model_calls"`
+	Documents   int                  `json:"documents"`
+	Calls       []ModelCall          `json:"model_calls"`
 	UsageByRole map[string]RoleUsage `json:"usage_by_role"`
-	SeedSHA256 string      `json:"seed_sha256"`
-	StorageDir string      `json:"storage_dir"`
+	SeedSHA256  string               `json:"seed_sha256"`
+	StorageDir  string               `json:"storage_dir"`
 }
 
 // BuildSharedIndex uploads the corpus into the shared evaluation index and
