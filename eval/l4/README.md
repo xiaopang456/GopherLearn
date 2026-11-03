@@ -43,6 +43,23 @@ Full-schema initialization calls the original product migration. Immutable docum
 
 Preparation retains each turn's message IDs, summary watermark and degradation flag in `warmup.json`. Answer output includes `result.json` and compact `record.jsonl` with `qid`, `arm`, `rep`, `condition`, `env`, `answer`, `error` when applicable, and `backgroundAudit`. Scoring tools can consume the JSONL record directly. Manifests bind input/output hashes; run provenance records checkout revision/content, dirty state, functional settings and snapshot digests. Restore latency includes isolation checks and SQL restore, but excludes container startup and schema initialization. Stop files are checked before work and watched during it; interrupts/deadlines cancel requests and trigger owned-resource cleanup.
 
+## Diagnosing a failed summary
+
+`cmd/l4-summary` replays one conversation through the product's own rolling summarizer and stops at the first compaction failure. The product's log prints the type of an error but not its text, so a failed compaction cannot be explained from a run's logs; this command keeps the whole error chain, the step the failure came from, and the body the model returned.
+
+```powershell
+go run ./cmd/l4-summary -repository C:\checkout -input C:\evaluation\history.json -scenario my-case `
+  -output-dir C:\evaluation\diagnosis -proxy http://127.0.0.1:18150 -chat-model deepseek-flash
+```
+
+The model endpoint is the operator's counting proxy, so the credentials stay with the operator and every call is metered. The command never rewrites a request and never replaces a product dependency: the summary policy is the product's own configuration, and the knowledge index is not part of a summary.
+
+A saved diagnosis can be read again without a model call:
+
+```powershell
+go run ./cmd/l4-summary -reclassify C:\evaluation\diagnosis\diagnosis.json -output-dir C:\evaluation\diagnosis-again
+```
+
 ## Scope and real execution
 
 This implements the offline execution chain. Paid execution remains disabled. A real evaluation separately needs a frozen reviewed dataset, immutable corpus metadata bound to its shared index, a budget-enforcing upstream proxy, approved price accounting and calibrated semantic judgments. The fake command cannot certify model quality or real cost. `BackgroundAudit.Complete` is derived from journal verification, model coverage and successful shutdown, never from polling alone.
