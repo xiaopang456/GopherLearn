@@ -5,6 +5,7 @@ import (
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 	"testing"
+	"time"
 )
 
 func TestObserveJobsReadsBothTablesAndFailsClosed(t *testing.T) {
@@ -29,5 +30,19 @@ func TestObserveJobsReadsBothTablesAndFailsClosed(t *testing.T) {
 	}
 	if _, _, err = ObserveJobs(context.Background(), db); err == nil {
 		t.Fatal("missing table accepted")
+	}
+}
+
+func TestProductJobWallTimeUsesEntryZone(t *testing.T) {
+	original := time.Local
+	defer func() { time.Local = original }()
+	time.Local = time.FixedZone("synthetic-UTC+8", 8*3600)
+	naive := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	got := productJobTime(&naive, "mysql")
+	if got.Hour() != 4 || got.Location() != time.UTC {
+		t.Fatal("product wall time interpreted as UTC", got)
+	}
+	if productJobTime(nil, "mysql") != nil {
+		t.Fatal("invented missing timestamp")
 	}
 }

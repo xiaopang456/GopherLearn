@@ -20,9 +20,13 @@ func TestCompleteOfflineProductIntegration(t *testing.T) {
 	for i := range turns {
 		turns[i] = testTurn(i)
 	}
-	snapshot, calls, err := PrepareOfflineProduct(ctx, repository, turns)
+	warmup, err := PrepareOfflineProductReport(ctx, repository, turns)
 	if err != nil {
 		t.Fatal(err)
+	}
+	snapshot, calls := warmup.Snapshot, warmup.Calls
+	if len(warmup.Turns) != 40 || warmup.DegradedTurns != 0 {
+		t.Fatalf("warmup turns=%d degraded=%d", len(warmup.Turns), warmup.DegradedTurns)
 	}
 	if len(snapshot.Messages) != 80 || snapshot.Summary == nil || len(calls) != 12 {
 		t.Fatalf("messages=%d summary=%+v calls=%d", len(snapshot.Messages), snapshot.Summary, len(calls))
@@ -32,6 +36,7 @@ func TestCompleteOfflineProductIntegration(t *testing.T) {
 			t.Fatalf("warmup ledger: %+v", c)
 		}
 	}
+	var provenance Provenance
 	for repeat := 0; repeat < 3; repeat++ {
 		result, err := RunOfflineProduct(ctx, repository, snapshot, "请回顾当前会话里的练习安排。")
 		if err != nil {
@@ -40,8 +45,20 @@ func TestCompleteOfflineProductIntegration(t *testing.T) {
 		if !result.BackgroundAudit.Valid || !result.ShutdownComplete || result.Answer != "synthetic offline answer" {
 			t.Fatalf("invalid product result: %+v", result)
 		}
+		if result.Entry != "gopherlearn-integrated:hybrid.Run" || result.StoppedCounts["episode"].Processing != 0 {
+			t.Fatal("standard entry/shutdown evidence missing")
+		}
+		if repeat > 0 && (provenance.SnapshotSHA256 != result.Provenance.SnapshotSHA256 || provenance.ConfigSHA256 != result.Provenance.ConfigSHA256) {
+			t.Fatal("repeated initial state drift")
+		}
+		provenance = result.Provenance
 		if result.BeforeCounts["episode"].Pending != 1 || result.AfterCounts["episode"].Processing != 0 || result.Audit.ExecutedBeforeAnswer {
 			t.Fatalf("unexpected background: %+v", result)
+		}
+		for _, job := range result.Audit.Before {
+			if job.AvailableAt == nil || job.AvailableAt.Before(result.Audit.Started.Add(23*time.Hour)) || job.AvailableAt.After(result.Audit.Started.Add(25*time.Hour)) {
+				t.Fatalf("quiet-window task evidence: %+v", job)
+			}
 		}
 		foundSummary := false
 		foundRecent := false

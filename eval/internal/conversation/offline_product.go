@@ -37,6 +37,7 @@ type ProductResult struct {
 	UsageByRole     map[string]RoleUsage `json:"usage_by_role"`
 	Error           string               `json:"error,omitempty"`
 	Entry           string               `json:"entry"`
+	Provenance      Provenance           `json:"provenance"`
 	ContextMessages []*schema.Message    `json:"context_messages"`
 	Audit           BackgroundAudit      `json:"background_evidence"`
 	BackgroundAudit struct {
@@ -95,7 +96,32 @@ func closeSandbox(s *Sandbox) error {
 
 // PrepareOfflineProduct uses a deterministic fake model behind the real summary
 // generator and rolling provider. There is no online/provider credential path.
-func PrepareOfflineProduct(ctx context.Context, repository string, turns []Turn) (snapshot Snapshot, calls []ModelCall, resultErr error) {
+type WarmupReport struct {
+	Snapshot      Snapshot             `json:"-"`
+	Calls         []ModelCall          `json:"model_calls"`
+	Turns         []PreparedTurn       `json:"turns"`
+	DegradedTurns int                  `json:"degraded_turns"`
+	UsageByRole   map[string]RoleUsage `json:"usage_by_role"`
+}
+
+func PrepareOfflineProduct(ctx context.Context, repository string, turns []Turn) (Snapshot, []ModelCall, error) {
+	report, err := PrepareOfflineProductReport(ctx, repository, turns)
+	return report.Snapshot, report.Calls, err
+}
+func PrepareOfflineProductReport(ctx context.Context, repository string, turns []Turn) (report WarmupReport, resultErr error) {
+	report.Snapshot, report.Calls, resultErr = prepareOfflineProduct(ctx, repository, turns, func(prepared []PreparedTurn) {
+		report.Turns = prepared
+		for _, t := range prepared {
+			if t.SummaryDegraded {
+				report.DegradedTurns++
+			}
+		}
+	})
+	var usageErr error
+	report.UsageByRole, usageErr = SummarizeCalls(report.Calls)
+	return report, errors.Join(resultErr, usageErr)
+}
+func prepareOfflineProduct(ctx context.Context, repository string, turns []Turn, observe func([]PreparedTurn)) (snapshot Snapshot, calls []ModelCall, resultErr error) {
 	if err := ctx.Err(); err != nil {
 		return snapshot, nil, err
 	}
@@ -125,6 +151,11 @@ func PrepareOfflineProduct(ctx context.Context, repository string, turns []Turn)
 		return snapshot, nil, err
 	}
 	ledger := &ModelLedger{}
+	defer func() {
+		if !ledger.Complete() {
+			resultErr = errors.Join(resultErr, fmt.Errorf("warmup model telemetry incomplete"))
+		}
+	}()
 	roles, err := LoadRolePrompts(repository, memoryrecall.ReadMode(settings.Config.AgentConfig.MemoryReadMode))
 	if err != nil {
 		return snapshot, nil, err
@@ -138,7 +169,9 @@ func PrepareOfflineProduct(ctx context.Context, repository string, turns []Turn)
 	if err != nil {
 		return snapshot, nil, err
 	}
-	if _, err = s.Prepare(ctx, 7, "synthetic-evaluation", "synthetic-learner", turns, generator, policy); err != nil {
+	prepared, err := s.Prepare(ctx, 7, "synthetic-evaluation", "synthetic-learner", turns, generator, policy)
+	observe(prepared)
+	if err != nil {
 		return snapshot, ledger.Calls(), err
 	}
 	snapshot, err = s.Capture(ctx, 7, "synthetic-evaluation")

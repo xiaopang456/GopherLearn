@@ -147,6 +147,10 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 	if err != nil {
 		return result, err
 	}
+	result.Provenance, err = collectProvenance(ctx, repository, settings, snapshot)
+	if err != nil {
+		return result, err
+	}
 	s, err := NewSandbox(ctx)
 	if err != nil {
 		return result, err

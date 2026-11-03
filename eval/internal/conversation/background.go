@@ -7,8 +7,9 @@ import (
 
 // JobState is a point-in-time observation. Attempts includes failed executions.
 type JobState struct {
-	ID, Kind, Status string
-	Attempts         int
+	ID, Kind, Status                                            string
+	Attempts                                                    int
+	AvailableAt, CreatedAt, UpdatedAt, LeaseEndsAt, CompletedAt *time.Time
 }
 
 // BackgroundCall records the start of a model request, not the time it completed.

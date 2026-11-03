@@ -64,6 +64,13 @@ func run(args []string, out io.Writer) error {
 			return e
 		}
 		defer file.Close()
+		info, statErr := file.Stat()
+		if statErr != nil {
+			return statErr
+		}
+		if info.Size() > 8<<20 {
+			return fmt.Errorf("turn file exceeds limit")
+		}
 		decoder := json.NewDecoder(io.LimitReader(file, 8<<20))
 		decoder.DisallowUnknownFields()
 		if err = decoder.Decode(&turns); err != nil {
@@ -106,9 +113,10 @@ func run(args []string, out io.Writer) error {
 		return errors.Join(e, file.Close())
 	}
 	if *phase == "prepare" {
-		var calls []conversation.ModelCall
-		snapshot, calls, err = conversation.PrepareOfflineProduct(ctx, *repository, turns)
-		err = errors.Join(err, write("model-calls.json", calls))
+		var warmup conversation.WarmupReport
+		warmup, err = conversation.PrepareOfflineProductReport(ctx, *repository, turns)
+		snapshot = warmup.Snapshot
+		err = errors.Join(err, write("model-calls.json", warmup.Calls), write("warmup.json", warmup))
 		if err == nil {
 			err = conversation.WriteSnapshot(filepath.Join(*output, "snapshot.json"), snapshot)
 		}
