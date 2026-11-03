@@ -116,11 +116,13 @@ func loginStandardProduct(ctx context.Context, p *standardProduct, client *http.
 func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, question string) (result ProductResult, resultErr error) {
 	result.Scope = ProductScope
 	result.Environment = "fake"
+	result.Entry = "gopherlearn-integrated:hybrid.Run"
 	result.QuietWindowSeconds = 86400
 	defer func() {
 		if resultErr != nil {
 			result.BackgroundAudit.Valid = false
 			result.BackgroundAudit.Reason = resultErr.Error()
+			result.Error = resultErr.Error()
 		}
 	}()
 	if strings.TrimSpace(question) == "" {
@@ -251,6 +253,7 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+token)
+	questionStart := time.Now()
 	response, requestErr := client.Do(request)
 	if requestErr == nil {
 		result.Response, requestErr = io.ReadAll(io.LimitReader(response.Body, 4<<20+1))
@@ -274,6 +277,7 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 		}
 	}
 	result.Audit.Answered = time.Now().UTC()
+	result.QuestionMilliseconds = time.Since(questionStart).Milliseconds()
 	collect, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	barrierErr := journal.AnswerBarrier(collect)
@@ -281,14 +285,18 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 	stopErr := product.stop()
 	result.ShutdownComplete = stopErr == nil
 	wire.Close()
+	var stoppedErr error
+	_, result.StoppedCounts, stoppedErr = s.ObserveJobs(collect)
 	result.Events, result.Audit.ExecutedBeforeAnswer, resultErr = journal.Finish(collect)
-	result.Calls = ledger.Calls()
+	result.Calls = AttributeCalls(ledger.Calls(), result.Audit.Answered)
+	var usageErr error
+	result.UsageByRole, usageErr = SummarizeCalls(result.Calls)
 	result.ContextMessages = stub.answerInput()
 	for _, c := range result.Calls {
 		result.Audit.Calls = append(result.Audit.Calls, BackgroundCall{Role: c.Role, Started: c.Started})
 	}
-	result.Audit.Complete = resultErr == nil && barrierErr == nil && stopErr == nil && err == nil && ledger.Complete()
-	resultErr = errors.Join(resultErr, requestErr, barrierErr, err, stopErr, result.Audit.ValidateBackground())
+	result.Audit.Complete = resultErr == nil && barrierErr == nil && stopErr == nil && stoppedErr == nil && err == nil && usageErr == nil && ledger.Complete()
+	resultErr = errors.Join(resultErr, requestErr, barrierErr, err, stopErr, stoppedErr, usageErr, result.Audit.ValidateBackground())
 	result.BackgroundAudit.Valid = resultErr == nil
 	return result, resultErr
 }

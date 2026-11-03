@@ -30,17 +30,22 @@ type ProductResult struct {
 	Response        json.RawMessage      `json:"response"`
 	BeforeCounts    map[string]JobCounts `json:"before_counts"`
 	AfterCounts     map[string]JobCounts `json:"after_counts"`
+	StoppedCounts   map[string]JobCounts `json:"stopped_counts"`
 	Events          []JobEvent           `json:"job_events"`
 	Calls           []ModelCall          `json:"model_calls"`
+	UsageByRole     map[string]RoleUsage `json:"usage_by_role"`
+	Error           string               `json:"error,omitempty"`
+	Entry           string               `json:"entry"`
 	ContextMessages []*schema.Message    `json:"context_messages"`
 	Audit           BackgroundAudit      `json:"background_evidence"`
 	BackgroundAudit struct {
 		Valid  bool   `json:"valid"`
 		Reason string `json:"reason,omitempty"`
 	} `json:"backgroundAudit"`
-	QuietWindowSeconds  int   `json:"quiet_window_seconds"`
-	RestoreMilliseconds int64 `json:"restore_ms"`
-	ShutdownComplete    bool  `json:"shutdown_complete"`
+	QuietWindowSeconds   int   `json:"quiet_window_seconds"`
+	RestoreMilliseconds  int64 `json:"restore_ms"`
+	ShutdownComplete     bool  `json:"shutdown_complete"`
+	QuestionMilliseconds int64 `json:"question_ms"`
 }
 
 // ProductSummaryConfig mirrors the production wiring, including its context

@@ -27,6 +27,7 @@ import (
 type ModelCall struct {
 	ID              int                 `json:"id"`
 	Role            string              `json:"role"`
+	Purpose         string              `json:"purpose,omitempty"`
 	Method          string              `json:"method"`
 	Started         time.Time           `json:"started"`
 	Finished        time.Time           `json:"finished"`
