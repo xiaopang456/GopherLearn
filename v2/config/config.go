@@ -216,6 +216,16 @@ type AgentConfig struct {
 	MaxModelCalls   int `toml:"maxModelCalls"`
 	MaxGraphSteps   int `toml:"maxGraphSteps"`
 	DeadlineSeconds int `toml:"deadlineSeconds"`
+	// DeadlineThinkingSeconds is the run deadline for a turn whose thinking is
+	// on, and the plain DeadlineSeconds for a turn whose thinking is off.
+	//
+	// A thinking turn is a different turn: the answer is written after the
+	// thinking, and the measured cost of that final generation is about forty
+	// seconds on the provider this project ships with. Forty-five seconds cut
+	// those turns off before the answer existed, which is not a slow answer but
+	// no answer at all. The plain deadline stays where it was, because every
+	// measurement of a non-thinking turn was taken there.
+	DeadlineThinkingSeconds int `toml:"deadlineThinkingSeconds"`
 	// AgentThinkingEnabled turns the chat model's thinking on for the Agent's
 	// own model calls.
 	//
@@ -418,6 +428,11 @@ func defaultConfig() *Config {
 		IndexTimeoutSeconds: 300,
 	}, AgentConfig: AgentConfig{
 		MaxToolCalls: 3, MaxModelCalls: 4, MaxGraphSteps: 10, DeadlineSeconds: 45,
+		// A thinking turn writes its answer after the thinking, and the
+		// measured cost of that generation is about forty seconds on the
+		// provider this project ships with. The plain deadline of forty-five
+		// seconds cut those turns off before the answer existed.
+		DeadlineThinkingSeconds: 60,
 		// Thinking is off until a deployment turns it on: a provider that reads
 		// the switch may charge for it, and a default that costs money is a
 		// default nobody agreed to.
@@ -811,6 +826,7 @@ func applyAgentEnv(c *AgentConfig) error {
 		{"AGENT_MAX_MODEL_CALLS", func(value int) { c.MaxModelCalls = value }},
 		{"AGENT_MAX_GRAPH_STEPS", func(value int) { c.MaxGraphSteps = value }},
 		{"AGENT_DEADLINE_SECONDS", func(value int) { c.DeadlineSeconds = value }},
+		{"AGENT_DEADLINE_THINKING_SECONDS", func(value int) { c.DeadlineThinkingSeconds = value }},
 		{"AGENT_KNOWLEDGE_DEFAULT_TOP_K", func(value int) { c.KnowledgeDefaultTopK = value }},
 		{"AGENT_KNOWLEDGE_MAX_TOP_K", func(value int) { c.KnowledgeMaxTopK = value }},
 		{"AGENT_KNOWLEDGE_MAX_RESULT_TOKENS", func(value int) { c.KnowledgeMaxResultTokens = value }},
@@ -865,6 +881,39 @@ func applyAgentEnv(c *AgentConfig) error {
 	return nil
 }
 
+// validateBudgetMatch refuses a budget whose three ceilings cannot reach each
+// other.
+//
+// The three ceilings are one budget counted three ways, and they only mean
+// something together:
+//
+//   - maxToolCalls is how many tool calls a turn may execute;
+//   - maxModelCalls is how many generations a turn may spend, and every tool
+//     round costs one of them plus one more for the answer, so a turn that
+//     may call tools N times needs N+1 generations;
+//   - maxGraphSteps is how many nodes the ReAct graph may execute, and each
+//     model call and each tool round is one node, so the same turn needs
+//     maxModelCalls + maxToolCalls steps.
+//
+// A configuration that breaks either relation is not a wider budget: it is a
+// number that reports a capability the turn cannot reach. The tool ceiling
+// would be spent on paper while the model budget ran out first, and the
+// published measurement of that mode would describe a turn that never
+// happened. Startup refuses it and says which of the three is short.
+func (c AgentConfig) validateBudgetMatch() error {
+	if c.MaxModelCalls < c.MaxToolCalls+1 {
+		return fmt.Errorf(
+			"maxModelCalls must be at least maxToolCalls+1: %d tool rounds need one deciding generation each plus one generation for the answer, got maxToolCalls=%d maxModelCalls=%d",
+			c.MaxToolCalls, c.MaxToolCalls, c.MaxModelCalls)
+	}
+	if c.MaxGraphSteps < c.MaxModelCalls+c.MaxToolCalls {
+		return fmt.Errorf(
+			"maxGraphSteps must be at least maxModelCalls+maxToolCalls: the graph runs one node per model call and one per tool round, got maxModelCalls=%d maxToolCalls=%d maxGraphSteps=%d",
+			c.MaxModelCalls, c.MaxToolCalls, c.MaxGraphSteps)
+	}
+	return nil
+}
+
 func (c AgentConfig) Validate() error {
 	if c.MaxToolCalls < 0 || c.MaxToolCalls > 8 {
 		return fmt.Errorf("maxToolCalls must be between 0 and 8")
@@ -877,6 +926,12 @@ func (c AgentConfig) Validate() error {
 	}
 	if c.DeadlineSeconds < 1 || c.DeadlineSeconds > 120 {
 		return fmt.Errorf("deadlineSeconds must be between 1 and 120")
+	}
+	if c.DeadlineThinkingSeconds < 1 || c.DeadlineThinkingSeconds > 120 {
+		return fmt.Errorf("deadlineThinkingSeconds must be between 1 and 120")
+	}
+	if err := c.validateBudgetMatch(); err != nil {
+		return err
 	}
 	if c.KnowledgeDefaultTopK < 1 || c.KnowledgeMaxTopK < c.KnowledgeDefaultTopK || c.KnowledgeMaxTopK > 20 {
 		return fmt.Errorf("knowledge top_k must satisfy 1 <= default <= max <= 20")
@@ -984,10 +1039,17 @@ func (c AgentConfig) Validate() error {
 	// The stage budget is what one request may actually spend on compaction.
 	// It has to stay under the model timeout, and well under the agent deadline
 	// it is carved out of, or the summary can consume the answer's budget.
+	// A turn runs under one of the two deadlines, so the stage has to fit in
+	// the shorter one: a summary that fits a sixty second turn and eats a
+	// forty-five second turn is still a summary that ate the answer.
 	if c.SummaryStageBudgetSeconds < 1 || c.SummaryStageBudgetSeconds > c.SummaryTimeoutSeconds {
 		return fmt.Errorf("summaryStageBudgetSeconds must be between 1 and summaryTimeoutSeconds")
 	}
-	if c.SummaryStageBudgetSeconds*3 >= c.DeadlineSeconds {
+	shortestDeadline := c.DeadlineSeconds
+	if c.DeadlineThinkingSeconds < shortestDeadline {
+		shortestDeadline = c.DeadlineThinkingSeconds
+	}
+	if c.SummaryStageBudgetSeconds*3 >= shortestDeadline {
 		return fmt.Errorf("summaryStageBudgetSeconds must leave the agent deadline room for its own model calls")
 	}
 	if c.SummaryFailureCooldownSeconds < 1 || c.SummaryFailureCooldownSeconds > 600 {
@@ -1131,18 +1193,16 @@ func Current() *Config { return config }
 // tool ceiling is six, and the six exists because six serial tool rounds need
 // seven model generations; a deployment that selected the mode and left the
 // budget at three would register a tool the model can call twice at most, then
-// report the resulting recall as the method's. Every other mode must stay at
-// the pre-STABILIZE-033 ceiling for the opposite reason: their measurements
-// were taken there.
+// report the resulting recall as the method's. Every other mode is free to
+// choose its own three ceilings, as long as they reach each other: see
+// validateBudgetMatch, which is where a ceiling that cannot be spent is
+// refused.
 func (c AgentConfig) validateMemoryTool(mode memoryrecall.ReadMode) error {
 	if !mode.UsesMemorySearchTool() {
 		if c.MemoryToolMaxCalls != 0 || c.MemoryToolTopK != 0 || c.MemoryToolCandidateDepth != 0 ||
 			c.MemoryToolMinConfidence != 0 || c.MemoryToolTimeoutMS != 0 ||
 			strings.TrimSpace(c.MemoryToolWindowPolicy) != "" {
 			return fmt.Errorf("memoryTool* settings must be unset unless memoryReadMode is an agent memory tool mode")
-		}
-		if c.MaxToolCalls > 3 || c.MaxModelCalls > 4 || c.MaxGraphSteps > 10 {
-			return fmt.Errorf("maxToolCalls, maxModelCalls and maxGraphSteps must not exceed 3, 4 and 10 unless memoryReadMode is an agent memory tool mode")
 		}
 		return nil
 	}
@@ -1164,8 +1224,8 @@ func (c AgentConfig) validateMemoryTool(mode memoryrecall.ReadMode) error {
 	if c.MaxToolCalls != 6 || c.MaxModelCalls != 7 || c.MaxGraphSteps != 16 {
 		return fmt.Errorf("%s runs at maxToolCalls 6, maxModelCalls 7 and maxGraphSteps 16", mode)
 	}
-	if c.DeadlineSeconds != 45 {
-		return fmt.Errorf("%s keeps the 45 second run deadline", mode)
+	if c.DeadlineSeconds != 45 || c.DeadlineThinkingSeconds != 45 {
+		return fmt.Errorf("%s keeps the 45 second run deadline: set deadlineSeconds = 45 and deadlineThinkingSeconds = 45", mode)
 	}
 	// An unknown policy stops startup rather than falling back to the shipped
 	// window. A deployment that misspelled the experiment and got the baseline

@@ -200,7 +200,11 @@ func agentRunnerConfig(mode memoryrecall.ReadMode, agentConf config.AgentConfig,
 		MaxToolCalls: agentConf.MaxToolCalls, MaxModelCalls: agentConf.MaxModelCalls,
 		MaxGraphSteps: agentConf.MaxGraphSteps,
 		Deadline:      time.Duration(agentConf.DeadlineSeconds) * time.Second,
-		ThinkingDialect: thinkingDialect,
+		// A thinking turn writes its answer after the thinking and takes
+		// measurably longer, so it runs under its own deadline. The plain one
+		// stays where it was for every turn whose thinking is off.
+		DeadlineThinking: time.Duration(agentConf.DeadlineThinkingSeconds) * time.Second,
+		ThinkingDialect:  thinkingDialect,
 	}
 	if mode.UsesMemorySearchTool() {
 		runnerConfig.PerTool = agentService.AgentMemoryToolRunnerConfig().PerTool

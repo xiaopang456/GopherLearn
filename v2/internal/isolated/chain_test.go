@@ -55,6 +55,9 @@ func toolMode(s *Settings) {
 	c.MaxToolCalls = 6
 	c.MaxModelCalls = 7
 	c.MaxGraphSteps = 16
+	// The mode keeps the forty-five second deadline in both forms.
+	c.DeadlineSeconds = 45
+	c.DeadlineThinkingSeconds = 45
 	c.MemoryToolMaxCalls = 2
 	c.MemoryToolTopK = 5
 	c.MemoryToolCandidateDepth = 20

@@ -231,6 +231,7 @@ func TestKnowledgeEnvironmentOverrideRejectsNonInteger(t *testing.T) {
 func TestDefaultAgentConfigAndEnvironmentOverrides(t *testing.T) {
 	got := defaultConfig().AgentConfig
 	if got.MaxToolCalls != 3 || got.MaxModelCalls != 4 || got.MaxGraphSteps != 10 || got.DeadlineSeconds != 45 ||
+		got.DeadlineThinkingSeconds != 60 ||
 		got.KnowledgeDefaultTopK != 5 || got.KnowledgeMaxTopK != 8 || got.KnowledgeMaxResultTokens != 700 ||
 		got.KnowledgeMaxObservationTokens != 2200 || got.KnowledgeMaxRunTokens != 6500 ||
 		got.DocumentReadMaxLines != 240 || got.DocumentReadMaxBytes != 32768 || got.DocumentReadMaxObservationTokens != 3000 ||
@@ -245,6 +246,7 @@ func TestDefaultAgentConfigAndEnvironmentOverrides(t *testing.T) {
 	}
 	t.Setenv("AGENT_MAX_TOOL_CALLS", "2")
 	t.Setenv("AGENT_DEADLINE_SECONDS", "30")
+	t.Setenv("AGENT_DEADLINE_THINKING_SECONDS", "90")
 	t.Setenv("AGENT_KNOWLEDGE_DEFAULT_TOP_K", "4")
 	t.Setenv("AGENT_KNOWLEDGE_MAX_RUN_TOKENS", "6000")
 	t.Setenv("AGENT_DOCUMENT_READ_MAX_LINES", "120")
@@ -259,13 +261,58 @@ func TestDefaultAgentConfigAndEnvironmentOverrides(t *testing.T) {
 	if err := applyAgentEnv(&got); err != nil {
 		t.Fatal(err)
 	}
-	if got.MaxToolCalls != 2 || got.DeadlineSeconds != 30 || got.KnowledgeDefaultTopK != 4 || got.KnowledgeMaxRunTokens != 6000 ||
+	if got.MaxToolCalls != 2 || got.DeadlineSeconds != 30 || got.DeadlineThinkingSeconds != 90 || got.KnowledgeDefaultTopK != 4 || got.KnowledgeMaxRunTokens != 6000 ||
 		got.DocumentReadMaxLines != 120 || got.DocumentReadMaxBytes != 16384 || got.DocumentReadMaxObservationTokens != 2000 ||
 		got.ContextInputTargetTokens != 18000 || got.ContextHistoryFetchLimit != 96 || got.ContextMaxEpisodeTokens != 900 || got.EpisodeRecallMode != "inject_enabled" || got.EpisodeQuietWindowSeconds != 120 || got.EpisodeMaxMessages != 2048 {
 		t.Fatalf("agent overrides not applied: %+v", got)
 	}
 	if err := got.Validate(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The three ceilings are one budget counted three ways, and a budget whose
+// parts cannot reach each other is a number that reports a capability the turn
+// cannot reach. Startup refuses it and says which part is short.
+func TestAgentConfigRefusesCeilingsThatCannotReachEachOther(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(*AgentConfig)
+		want string
+	}{
+		{
+			name: "the model budget cannot answer after the tool budget",
+			edit: func(c *AgentConfig) { c.MaxToolCalls, c.MaxModelCalls, c.MaxGraphSteps = 5, 5, 16 },
+			want: "maxModelCalls must be at least maxToolCalls+1",
+		},
+		{
+			name: "the graph cannot hold the nodes the turn runs",
+			edit: func(c *AgentConfig) { c.MaxToolCalls, c.MaxModelCalls, c.MaxGraphSteps = 5, 6, 10 },
+			want: "maxGraphSteps must be at least maxModelCalls+maxToolCalls",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			conf := defaultConfig().AgentConfig
+			test.edit(&conf)
+			err := conf.Validate()
+			if err == nil {
+				t.Fatal("the configuration started with ceilings that cannot reach each other")
+			}
+			if !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want it to say %q", err, test.want)
+			}
+		})
+	}
+}
+
+// A wider budget is a deployment's own choice, as long as the three ceilings
+// still reach each other.
+func TestAgentConfigAcceptsAWiderSelfConsistentBudget(t *testing.T) {
+	conf := defaultConfig().AgentConfig
+	conf.MaxToolCalls, conf.MaxModelCalls, conf.MaxGraphSteps = 5, 6, 16
+	if err := conf.Validate(); err != nil {
+		t.Fatalf("a wider, self-consistent budget was refused: %v", err)
 	}
 }
 
@@ -278,6 +325,8 @@ func TestAgentConfigRejectsUnsafeLimits(t *testing.T) {
 		{"models", func(c *AgentConfig) { c.MaxModelCalls = 0 }},
 		{"graph", func(c *AgentConfig) { c.MaxGraphSteps = 33 }},
 		{"deadline", func(c *AgentConfig) { c.DeadlineSeconds = 121 }},
+		{"thinking deadline", func(c *AgentConfig) { c.DeadlineThinkingSeconds = 121 }},
+		{"thinking deadline missing", func(c *AgentConfig) { c.DeadlineThinkingSeconds = 0 }},
 		{"knowledge top k", func(c *AgentConfig) { c.KnowledgeDefaultTopK = c.KnowledgeMaxTopK + 1 }},
 		{"knowledge result", func(c *AgentConfig) { c.KnowledgeMaxResultTokens = 0 }},
 		{"knowledge observation", func(c *AgentConfig) { c.KnowledgeMaxObservationTokens = 9000 }},

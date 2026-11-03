@@ -78,7 +78,7 @@ func TestRepositoryRecoversExpiredChatRunAndFencesOldOwner(t *testing.T) {
 	if err := repository.AppendStep(ctx, session.ID, &model.AgentStep{UserID: session.UserID, RunID: stale.ID, Sequence: 5, Type: model.AgentStepPlan, LeaseToken: oldToken}); !errors.Is(err, ErrRunLeaseLost) {
 		t.Fatalf("old step error = %v, want lease lost", err)
 	}
-	if _, _, err := repository.CompleteRun(ctx, session.UserID, session.ID, stale.ID, oldToken, 1, &model.Message{SessionID: session.ID, UserName: session.UserName, Content: "stale", IsUser: false}, "stale", `{}`); !errors.Is(err, ErrRunLeaseLost) {
+	if _, _, err := repository.CompleteRun(ctx, session.UserID, session.ID, stale.ID, oldToken, 1, &model.Message{SessionID: session.ID, UserName: session.UserName, Content: "stale", IsUser: false}, "stale", `{}`, "answered"); !errors.Is(err, ErrRunLeaseLost) {
 		t.Fatalf("old completion error = %v, want lease lost", err)
 	}
 	if err := repository.AppendStep(ctx, session.ID, &model.AgentStep{UserID: session.UserID, RunID: stale.ID, Sequence: 5, Type: model.AgentStepPlan, LeaseToken: newToken}); err != nil {
@@ -100,7 +100,7 @@ func TestRepositoryRecoversExpiredChatRunAndFencesOldOwner(t *testing.T) {
 		t.Fatalf("idempotent user messages first=%d second=%d", first.ID, second.ID)
 	}
 
-	completed, assistant, err := repository.CompleteRun(ctx, session.UserID, session.ID, stale.ID, newToken, 2, &model.Message{SessionID: session.ID, UserName: session.UserName, Content: "answer", IsUser: false}, "answer", `{"answer":"answer"}`)
+	completed, assistant, err := repository.CompleteRun(ctx, session.UserID, session.ID, stale.ID, newToken, 2, &model.Message{SessionID: session.ID, UserName: session.UserName, Content: "answer", IsUser: false}, "answer", `{"answer":"answer"}`, "answered")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -614,7 +614,7 @@ func TestRepositorySerializesRunningRunsAndReplaysRequest(t *testing.T) {
 	if successes != 1 || busy != 1 {
 		t.Fatalf("successes=%d busy=%d errors=%v", successes, busy, errs)
 	}
-	completed, _, err := repository.CompleteRun(ctx, winner.UserID, winner.SessionID, winner.ID, winner.LeaseToken, 1, &model.Message{SessionID: winner.SessionID, UserName: session.UserName, Content: "answer", IsUser: false}, "answer", `{"runId":"`+winner.ID+`","answer":"answer"}`)
+	completed, _, err := repository.CompleteRun(ctx, winner.UserID, winner.SessionID, winner.ID, winner.LeaseToken, 1, &model.Message{SessionID: winner.SessionID, UserName: session.UserName, Content: "answer", IsUser: false}, "answer", `{"runId":"`+winner.ID+`","answer":"answer"}`, "answered")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -736,7 +736,7 @@ func TestRepositoryConcurrentAcquireCompleteAndReaperKeepTerminalState(t *testin
 				answer := fmt.Sprintf("answer-%d-%d", workerIndex, round)
 				if _, _, err := repository.CompleteRun(ctx, session.UserID, session.ID, acquired.Run.ID, acquired.Run.LeaseToken, acquired.Run.Version,
 					&model.Message{SessionID: session.ID, UserName: session.UserName, Content: answer}, answer,
-					fmt.Sprintf(`{"runId":%q,"answer":%q}`, acquired.Run.ID, answer)); err != nil {
+					fmt.Sprintf(`{"runId":%q,"answer":%q}`, acquired.Run.ID, answer), "answered"); err != nil {
 					errs <- fmt.Errorf("worker %d round %d complete: %w", workerIndex, round, err)
 					return
 				}
