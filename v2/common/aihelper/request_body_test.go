@@ -116,6 +116,37 @@ func TestTheRequestBodyOnTheWireIsPinned(t *testing.T) {
 				`{"type":"function","function":{"name":"knowledge_search","description":"the knowledge_search tool","parameters":` + toolSchema + `}}]}`,
 		},
 		{
+			// The turn that ran out of tool budget asks for the answer
+			// instead of another tool. The tools stay on the request, so the
+			// provider can still answer with one; what it must not do is call
+			// one.
+			name:    "two tools, the caller forbids both",
+			dialect: config.ChatThinkingDialectQwen,
+			opts: []model.Option{
+				model.WithTools([]*schema.ToolInfo{knowledgeSearch, memoryRecall}),
+				model.WithToolChoice(schema.ToolChoiceForbidden),
+			},
+			want: `{"enable_thinking":false,"messages":[{"role":"user","content":"hello"}],"model":"test","tool_choice":"none","tools":[` +
+				`{"type":"function","function":{"name":"knowledge_search","description":"the knowledge_search tool","parameters":` + toolSchema + `}},` +
+				`{"type":"function","function":{"name":"memory_recall","description":"the memory_recall tool","parameters":` + toolSchema + `}}]}`,
+		},
+		{
+			// The same request with the thinking switch on: the provider
+			// refuses a forced tool call in thinking mode, and a turn that
+			// has to answer without tools is exactly the case that has to
+			// keep its thinking.
+			name:    "two tools forbidden, thinking on",
+			dialect: config.ChatThinkingDialectDeepSeek,
+			enabled: true,
+			opts: []model.Option{
+				model.WithTools([]*schema.ToolInfo{knowledgeSearch, memoryRecall}),
+				model.WithToolChoice(schema.ToolChoiceForbidden),
+			},
+			want: `{"messages":[{"role":"user","content":"hello"}],"model":"test","thinking":{"type":"enabled"},"tool_choice":"none","tools":[` +
+				`{"type":"function","function":{"name":"knowledge_search","description":"the knowledge_search tool","parameters":` + toolSchema + `}},` +
+				`{"type":"function","function":{"name":"memory_recall","description":"the memory_recall tool","parameters":` + toolSchema + `}}]}`,
+		},
+		{
 			name:    "two tools, the caller insists on one of them",
 			dialect: config.ChatThinkingDialectQwen,
 			opts: []model.Option{

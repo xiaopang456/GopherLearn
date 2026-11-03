@@ -40,6 +40,23 @@ var (
 	errKnowledgeUnavailable  = errors.New("knowledge search unavailable")
 )
 
+// The reasons a completed run can end with.
+//
+// A run that answered under a spent budget still completed: the model was
+// told to stop looking and it wrote an answer from what the run had. The
+// reason is what tells a reader - and the evaluation - that apart from a run
+// whose model was free to look for more.
+const (
+	// TerminationAnswered is the reason of a run that answered normally.
+	TerminationAnswered = "answered"
+	// TerminationToolBudgetExhausted is the reason of a run that answered
+	// after the tool budget ran out.
+	TerminationToolBudgetExhausted = "answered_tool_budget_exhausted"
+	// TerminationModelBudgetExhausted is the reason of a run that answered
+	// after the model-call budget ran out.
+	TerminationModelBudgetExhausted = "answered_model_budget_exhausted"
+)
+
 const (
 	NoGroundingEvidenceAnswer  = "个人知识库未找到可支持本次回答的证据。请确认文档已上传并完成索引，或换一个更具体的关键词重试。"
 	KnowledgeUnavailableAnswer = "当前个人知识库检索暂时不可用，本次没有使用你上传的笔记。请稍后重试。"
@@ -78,6 +95,14 @@ type RunnerConfig struct {
 	MaxModelCalls int
 	MaxGraphSteps int
 	Deadline      time.Duration
+	// DeadlineThinking is the deadline of a turn whose thinking is on.
+	//
+	// A thinking turn is a longer turn: the answer is written after the
+	// thinking, and the measured cost of that final generation alone is about
+	// forty seconds on the provider this project ships with. Zero means the
+	// plain Deadline, so a configuration that never heard of thinking runs
+	// exactly as it did before.
+	DeadlineThinking time.Duration
 	// PerTool bounds each capability separately, inside the whole-run total.
 	//
 	// A single total is enough while three is the total: any tool that runs
@@ -171,7 +196,7 @@ func (l ToolCallLimits) limitFor(name string) int {
 const DefaultHistoryReadCalls = 2
 
 func DefaultRunnerConfig() RunnerConfig {
-	return RunnerConfig{MaxToolCalls: 3, MaxModelCalls: 4, MaxGraphSteps: 10, Deadline: 45 * time.Second}
+	return RunnerConfig{MaxToolCalls: 3, MaxModelCalls: 4, MaxGraphSteps: 10, Deadline: 45 * time.Second, DeadlineThinking: 60 * time.Second}
 }
 
 // AgentMemoryToolRunnerConfig is the only budget agent_memory_tool_v1 runs
@@ -191,7 +216,8 @@ func DefaultRunnerConfig() RunnerConfig {
 func AgentMemoryToolRunnerConfig() RunnerConfig {
 	return RunnerConfig{
 		MaxToolCalls: 6, MaxModelCalls: 7, MaxGraphSteps: 16, Deadline: 45 * time.Second,
-		PerTool: ToolCallLimits{MemorySearch: 2, KnowledgeSearch: 3, DocumentRead: 2, ProposeMemory: 1},
+		DeadlineThinking: 45 * time.Second,
+		PerTool:          ToolCallLimits{MemorySearch: 2, KnowledgeSearch: 3, DocumentRead: 2, ProposeMemory: 1},
 	}
 }
 
@@ -306,6 +332,9 @@ func (c RunnerConfig) Validate() error {
 	}
 	if c.Deadline <= 0 || c.Deadline > 2*time.Minute {
 		return fmt.Errorf("deadline must be between 1ns and 2m")
+	}
+	if c.DeadlineThinking < 0 || c.DeadlineThinking > 2*time.Minute {
+		return fmt.Errorf("deadline thinking must be between 0 and 2m")
 	}
 	for name, limit := range map[string]int{
 		"memory_search": c.PerTool.MemorySearch, "knowledge_search": c.PerTool.KnowledgeSearch,
@@ -483,6 +512,29 @@ type RunnerResult struct {
 	// so the outcome's citation sets describe the refusal, not the delivered
 	// sentence.
 	MemoryCitation MemoryCitationOutcome
+	// Closeout is how the turn ended: TerminationAnswered for a turn whose
+	// model was free to answer, or the budget reason for a turn that had to
+	// be closed out under a budget it had already spent.
+	//
+	// It is the difference between an answer the model chose to write and an
+	// answer it wrote because the run had run out of room to look, and a
+	// reader - or an evaluation - has to be able to tell them apart.
+	Closeout string
+}
+
+// runDeadline is the time budget of this turn.
+//
+// A turn whose thinking is on writes its answer after the thinking, and the
+// measured cost of that final generation alone is about forty seconds on the
+// provider this project ships with: under the plain forty-five second budget
+// those turns were cut off before the answer existed. A turn whose thinking
+// is off keeps the plain budget, because every measurement of such a turn was
+// taken there.
+func (r *Runner) runDeadline(input RunContext) time.Duration {
+	if input.EnableThinking && r.config.DeadlineThinking > 0 {
+		return r.config.DeadlineThinking
+	}
+	return r.config.Deadline
 }
 
 func NewRunner(
@@ -505,7 +557,7 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	if sink == nil {
 		sink = DiscardEvents
 	}
-	ctx, cancel := context.WithTimeout(parent, r.config.Deadline)
+	ctx, cancel := context.WithTimeout(parent, r.runDeadline(input))
 	defer cancel()
 
 	if input.MemoryEvidence == nil {
@@ -661,19 +713,30 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	}
 	if finalizeAction == groundingUseGeneralFallback {
 		fallbackStarted := time.Now()
-		fallbackMessages := generalFallbackMessages(messages)
-		fallbackStream, fallbackErr := bounded.Stream(ctx, fallbackMessages)
-		if fallbackErr != nil {
-			return state.result(), normalizeRunnerError(ctx, fallbackErr)
+		if !state.canSpendModelCall() {
+			// The general-knowledge answer is a second generation, and the
+			// turn has no generation left to spend on it. Asking for one
+			// anyway would end the turn with a model-call-limit failure
+			// instead of an answer, so the turn is closed out with the
+			// honest answer it can give without one: the knowledge base
+			// held no usable evidence, and this turn says so.
+			finalAnswer = state.finalizeBudgetFallback()
+			state.markModelBudgetClosed()
+		} else {
+			fallbackMessages := generalFallbackMessages(messages)
+			fallbackStream, fallbackErr := bounded.Stream(ctx, fallbackMessages)
+			if fallbackErr != nil {
+				return state.result(), normalizeRunnerError(ctx, fallbackErr)
+			}
+			fallbackAnswer, fallbackErr := readAnswerStream(fallbackStream)
+			if fallbackErr != nil {
+				return state.result(), normalizeRunnerError(ctx, fallbackErr)
+			}
+			if fallbackAnswer == "" {
+				return state.result(), ErrEmptyAgentAnswer
+			}
+			finalAnswer = state.finalizeGeneralFallback(fallbackAnswer)
 		}
-		fallbackAnswer, fallbackErr := readAnswerStream(fallbackStream)
-		if fallbackErr != nil {
-			return state.result(), normalizeRunnerError(ctx, fallbackErr)
-		}
-		if fallbackAnswer == "" {
-			return state.result(), ErrEmptyAgentAnswer
-		}
-		finalAnswer = state.finalizeGeneralFallback(fallbackAnswer)
 		observability.Memory.KnowledgeFallbackDuration(time.Since(fallbackStarted))
 	}
 	// The memory citation contract is enforced on whatever the grounding path
@@ -905,12 +968,19 @@ type runState struct {
 	// memoryCitations is what the final server-side check concluded.
 	memoryCitations MemoryCitationOutcome
 	// perToolCalls counts executions per tool name for the layered budget.
-	perToolCalls   map[string]int
-	contextBudget  BudgetBreakdown
-	usedTopicKeys  []string
-	episodeIDs     []string
-	episodeSources model.EpisodeSourceRefs
-	memoryDraft    *MemoryDraftCard
+	perToolCalls map[string]int
+	// toolBudgetClosed records that a model call was made without the tools,
+	// because the tool budget was already spent. The answer that follows was
+	// written from what the run had.
+	toolBudgetClosed bool
+	// modelBudgetClosed records that the turn was closed out because the
+	// model-call budget was spent, rather than because the model answered.
+	modelBudgetClosed bool
+	contextBudget     BudgetBreakdown
+	usedTopicKeys     []string
+	episodeIDs        []string
+	episodeSources    model.EpisodeSourceRefs
+	memoryDraft       *MemoryDraftCard
 }
 
 func (s *runState) result() RunnerResult {
@@ -929,6 +999,23 @@ func (s *runState) result() RunnerResult {
 		TopicMemoryReads: s.memoryTrace.TopicReads(),
 		MemoryRefs:       s.memoryTrace.Entries(),
 		MemoryCitation:   s.memoryCitations,
+		Closeout:         s.closeoutReason(),
+	}
+}
+
+// closeoutReason names how the turn ended.
+//
+// The model budget is the tighter constraint when both are spent, because it
+// is the one that ran out of room to write anything at all: the tool budget
+// running out still leaves the model a generation to answer in.
+func (s *runState) closeoutReason() string {
+	switch {
+	case s.modelBudgetClosed:
+		return TerminationModelBudgetExhausted
+	case s.toolBudgetClosed:
+		return TerminationToolBudgetExhausted
+	default:
+		return TerminationAnswered
 	}
 }
 
@@ -970,6 +1057,52 @@ func (s *runState) toolBudgetExhausted() bool {
 	return s.toolCalls >= s.config.MaxToolCalls
 }
 
+// isLastModelCall reports that the generation about to be made is the last
+// one this turn may spend.
+//
+// The last generation is the turn's answering generation: it is reserved for
+// writing the answer, so it is made without the tools. A turn that may call
+// tools N times needs N deciding generations and one generation for the
+// answer, and the budget is written to say exactly that.
+func (s *runState) isLastModelCall() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.modelCalls >= s.config.MaxModelCalls
+}
+
+// markToolBudgetClosed records that the model was asked to answer without the
+// tools because the tool budget was already spent.
+func (s *runState) markToolBudgetClosed() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.toolBudgetClosed = true
+}
+
+// markModelBudgetClosed records that the turn was closed out because the
+// model-call budget was spent.
+func (s *runState) markModelBudgetClosed() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.modelBudgetClosed = true
+}
+
+// toolCapabilityLimit is the refusal of one capability's own ceiling.
+//
+// It is a distinct type rather than a wrapped message because the two
+// refusals need different words to the model: one says the turn's search
+// budget is spent, the other says this tool's share of it is. It unwraps to
+// ErrToolCallLimit, so every place that classified the refusal still sees the
+// same budget it saw before.
+type toolCapabilityLimit struct {
+	tool string
+}
+
+func (e toolCapabilityLimit) Error() string {
+	return fmt.Sprintf("%v: %s", ErrToolCallLimit, e.tool)
+}
+
+func (e toolCapabilityLimit) Unwrap() error { return ErrToolCallLimit }
+
 func (s *runState) reserveTool(name, arguments string) (int, int, string, error) {
 	fingerprint := toolFingerprint(name, arguments)
 	s.mu.Lock()
@@ -983,7 +1116,7 @@ func (s *runState) reserveTool(name, arguments string) (int, int, string, error)
 	// a model that keeps asking one tool for more cannot consume the budget the
 	// other tools were given room for.
 	if limit := s.config.PerTool.limitFor(name); limit > 0 && s.perToolCalls[name] >= limit {
-		return sequence, s.toolCalls, fingerprint, fmt.Errorf("%w: %s", ErrToolCallLimit, name)
+		return sequence, s.toolCalls, fingerprint, toolCapabilityLimit{tool: name}
 	}
 	if fingerprint == s.lastFingerprint {
 		return sequence, s.toolCalls, fingerprint, ErrRepeatedToolCall
@@ -1071,6 +1204,25 @@ func (s *runState) toolMiddleware() compose.InvokableToolMiddleware {
 				ArgumentsSummary: truncate(canonicalJSON(input.Arguments), 1000),
 			}
 			if boundaryErr != nil {
+				if errors.Is(boundaryErr, ErrToolCallLimit) {
+					// The budget is spent, not the tool broken. Refusing the
+					// call with an error would void the whole turn - including
+					// the evidence the earlier calls of this same batch
+					// brought back - so the refusal is an observation: the
+					// call did not run, and the model is told so.
+					observation := toolBudgetObservation(input.Name, boundaryErr)
+					step.ResultSummary = truncate(observation, 1000)
+					if err := s.appendStep(ctx, step); err != nil {
+						return nil, err
+					}
+					if err := sendEvent(ctx, s.sink, Event{
+						Type: EventToolResult, RunID: s.input.RunID, Sequence: sequence,
+						ToolName: input.Name, Content: step.ResultSummary,
+					}); err != nil {
+						return nil, err
+					}
+					return &compose.ToolOutput{Result: observation}, nil
+				}
 				step.ErrorMessage = boundaryErr.Error()
 				if err := s.appendStep(ctx, step); err != nil {
 					return nil, err
@@ -1191,6 +1343,39 @@ func (s *runState) toolMiddleware() compose.InvokableToolMiddleware {
 	}
 }
 
+// toolBudgetObservation is what the model is told when a call the turn cannot
+// afford is refused.
+//
+// It is an observation rather than an error for two reasons. The turn has to
+// continue: the model still has to write an answer, and an error would end the
+// turn with the evidence the earlier calls brought back thrown away. And the
+// call has to be answered: every tool call the model made needs a result, or
+// the provider rejects the request that carries the unmatched call.
+//
+// The shape is the one the run already uses for a call it suppresses
+// (noProgressObservation), so the model reads one kind of thing whatever
+// stopped the call.
+func toolBudgetObservation(name string, err error) string {
+	summary := "本轮的检索次数已用完，这次调用没有执行。"
+	var capability toolCapabilityLimit
+	if errors.As(err, &capability) {
+		summary = fmt.Sprintf("本轮中 %s 的调用次数已用完，这次调用没有执行。", capability.tool)
+	}
+	payload := map[string]any{
+		"status":    "tool_budget_exhausted",
+		"reason":    strings.TrimSpace(err.Error()),
+		"retryable": false,
+		"results":   []any{},
+		"summary":   summary,
+		"next_step": "立即基于现有信息作答；如果知识库里没有可用证据，请如实说明，不要编造。",
+	}
+	encoded, marshalErr := json.Marshal(payload)
+	if marshalErr != nil {
+		return `{"status":"tool_budget_exhausted","retryable":false,"summary":"检索次数已用完，请直接作答。"}`
+	}
+	return string(encoded)
+}
+
 func parseMemoryDraftCard(value string) (*MemoryDraftCard, error) {
 	var payload struct {
 		DraftID     string                 `json:"draft_id"`
@@ -1290,11 +1475,19 @@ func (m *boundedModel) Generate(ctx context.Context, input []*schema.Message, op
 	}
 	callModel := m.inner
 	forcedTool := ""
-	if m.state.toolBudgetExhausted() {
+	if m.state.toolBudgetExhausted() || m.state.isLastModelCall() {
 		// MaxToolCalls bounds executions, not the Agent's ability to synthesize
 		// a final answer from evidence already collected. The finalizer still
 		// enforces citations, while a provider that violates tool_choice=none
 		// remains blocked by reserveTool's hard limit.
+		//
+		// The last generation of the turn is reserved for that same reason: a
+		// turn that may call tools N times has N generations that decide to
+		// call one and one generation left to write the answer, so the last
+		// one is asked for the answer rather than for another tool.
+		if m.state.toolBudgetExhausted() {
+			m.state.markToolBudgetClosed()
+		}
 		opts = append(opts, modelcomponent.WithToolChoice(schema.ToolChoiceForbidden))
 	} else if forcedTool = m.state.forcedToolName(); forcedTool != "" {
 		var err error
@@ -1327,7 +1520,13 @@ func (m *boundedModel) Stream(ctx context.Context, input []*schema.Message, opts
 	}
 	callModel := m.inner
 	forcedTool := ""
-	if m.state.toolBudgetExhausted() {
+	if m.state.toolBudgetExhausted() || m.state.isLastModelCall() {
+		// The same rule as Generate: the turn's last generation writes the
+		// answer, and a turn whose tool budget is spent writes it from what
+		// it already has.
+		if m.state.toolBudgetExhausted() {
+			m.state.markToolBudgetClosed()
+		}
 		opts = append(opts, modelcomponent.WithToolChoice(schema.ToolChoiceForbidden))
 	} else if forcedTool = m.state.forcedToolName(); forcedTool != "" {
 		var err error
@@ -1728,6 +1927,29 @@ func (s *runState) citationRepairMessages(question, draft string) []*schema.Mess
 	content := fmt.Sprintf("QUESTION:\n%s\n\nDRAFT TO REPAIR:\n%s\n\nSERVER-OWNED EVIDENCE:\n%s",
 		truncate(question, 4000), truncate(draft, 12000), evidence.String())
 	return []*schema.Message{schema.SystemMessage(citationRepairSystemPrompt), schema.UserMessage(content)}
+}
+
+// finalizeBudgetFallback is the answer of a turn that ran out of model calls
+// before it could write its general-knowledge answer.
+//
+// It says what the run knows: the knowledge base held no usable evidence (or
+// was unavailable), and the turn had nothing left to write with. It is a
+// refusal with the same states the refusal path uses, because it is one: the
+// turn did not answer from general knowledge, and it must not be recorded as
+// if it had.
+func (s *runState) finalizeBudgetFallback() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sources = nil
+	s.answerBasis = rag.AnswerBasisRefused
+	if s.knowledgeStatus == rag.KnowledgeStatusUnavailable {
+		return KnowledgeUnavailableAnswer
+	}
+	s.knowledgeStatus = rag.KnowledgeStatusNoEvidence
+	if s.knowledgeReason == rag.KnowledgeReasonNone {
+		s.knowledgeReason = rag.KnowledgeReasonNoCandidate
+	}
+	return NoGroundingEvidenceAnswer
 }
 
 func (s *runState) finalizeGeneralFallback(answer string) string {

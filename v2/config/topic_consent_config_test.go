@@ -24,6 +24,7 @@ func confirmedAgentConfig() AgentConfig {
 	config.MaxModelCalls = 7
 	config.MaxGraphSteps = 16
 	config.DeadlineSeconds = 45
+	config.DeadlineThinkingSeconds = 45
 	return config
 }
 

@@ -39,7 +39,7 @@ type RunRepository interface {
 	StepRepository
 	AcquireRun(context.Context, *model.AgentRun) (*agentdao.RunAcquisition, error)
 	RenewRunLease(context.Context, int64, string, string, string, time.Time, time.Time) error
-	CompleteRun(context.Context, int64, string, string, string, uint64, *model.Message, string, string) (*model.AgentRun, *model.Message, error)
+	CompleteRun(context.Context, int64, string, string, string, uint64, *model.Message, string, string, string) (*model.AgentRun, *model.Message, error)
 	TransitionLeasedRun(context.Context, int64, string, string, string, uint64, model.AgentRunStatus, string, string) (*model.AgentRun, error)
 }
 
@@ -190,6 +190,10 @@ type RunResult struct {
 	// model, so the user can see what their confirmation did. It carries keys
 	// and never note text: the answer already shows whatever it used.
 	UsedTopicKeys []string `json:"usedTopicKeys,omitempty"`
+	// TerminationReason is how the run ended: "answered" for a run whose
+	// model was free to answer, and one of the budget reasons for a run that
+	// was closed out under a budget it had already spent.
+	TerminationReason string `json:"terminationReason,omitempty"`
 }
 
 func NewService(sessions SessionRepository, runs RunRepository, messages MessageStore, runner *Runner, options ...ServiceOption) (*Service, error) {
@@ -355,6 +359,12 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 		ContextBudget: runnerResult.ContextBudget,
 		MemoryDraft:   cloneMemoryDraftCard(runnerResult.MemoryDraft),
 		UsedTopicKeys: append([]string{}, runnerResult.UsedTopicKeys...),
+		// A run that answered under a spent budget is not a run that
+		// answered freely, and the record has to say which one it was.
+		TerminationReason: runnerResult.Closeout,
+	}
+	if result.TerminationReason == "" {
+		result.TerminationReason = TerminationAnswered
 	}
 	if leaseErr := keeper.Err(); leaseErr != nil {
 		// A run whose lease ended must still end visibly. Returning here left
@@ -382,7 +392,7 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 	if err != nil {
 		return result, s.failRun(runCtx, run, sink, "result_encoding_failed", err)
 	}
-	completed, persistedAssistant, err := s.runs.CompleteRun(runCtx, run.UserID, run.SessionID, run.ID, run.LeaseToken, run.Version, assistantMessage, truncate(runnerResult.Answer, 1000), string(encodedResult))
+	completed, persistedAssistant, err := s.runs.CompleteRun(runCtx, run.UserID, run.SessionID, run.ID, run.LeaseToken, run.Version, assistantMessage, truncate(runnerResult.Answer, 1000), string(encodedResult), result.TerminationReason)
 	if err != nil {
 		return result, fmt.Errorf("complete agent run: %w", err)
 	}
@@ -397,7 +407,7 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 	_ = s.memory.PublishAgentRun(publishCtx, run.UserID, run.SessionID, run.ID, request.Question, runnerResult.ToolCalls, runnerResult.MemoryDraft != nil)
 	cancelPublish()
 	if err := sendEvent(ctx, sink, Event{
-		Type: EventRunCompleted, RunID: run.ID, TerminationReason: "answered", UsedTopicKeys: append([]string{}, runnerResult.UsedTopicKeys...),
+		Type: EventRunCompleted, RunID: run.ID, TerminationReason: result.TerminationReason, UsedTopicKeys: append([]string{}, runnerResult.UsedTopicKeys...),
 		Content:     runnerResult.Answer,
 		Sources:     append([]rag.Source{}, runnerResult.Sources...),
 		AnswerBasis: runnerResult.AnswerBasis, KnowledgeStatus: runnerResult.KnowledgeStatus, KnowledgeReason: runnerResult.KnowledgeReason,
@@ -548,11 +558,16 @@ func replayRun(ctx context.Context, sink EventSink, run *model.AgentRun) (RunRes
 	result.RunID = run.ID
 	normalizeReplayedAnswerState(&result)
 	result.Replayed = true
+	// A run that was recorded before the reason became part of the result
+	// still ended the way it was recorded: answered.
+	if strings.TrimSpace(result.TerminationReason) == "" {
+		result.TerminationReason = TerminationAnswered
+	}
 	if err := sendEvent(ctx, sink, Event{Type: EventRunStarted, RunID: run.ID}); err != nil {
 		return result, err
 	}
 	if err := sendEvent(ctx, sink, Event{
-		Type: EventRunCompleted, RunID: run.ID, TerminationReason: "answered", Content: result.Answer,
+		Type: EventRunCompleted, RunID: run.ID, TerminationReason: result.TerminationReason, Content: result.Answer,
 		UsedTopicKeys: append([]string{}, result.UsedTopicKeys...),
 		Sources:       append([]rag.Source{}, result.Sources...), ContextBudget: &result.ContextBudget,
 		AnswerBasis: result.AnswerBasis, KnowledgeStatus: result.KnowledgeStatus, KnowledgeReason: result.KnowledgeReason,
