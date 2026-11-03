@@ -19,6 +19,7 @@ func memoryToolConfig(t *testing.T) AgentConfig {
 	conf.MemoryToolMinConfidence = 0.6
 	conf.MemoryToolTimeoutMS = 3000
 	conf.MaxToolCalls, conf.MaxModelCalls, conf.MaxGraphSteps = 6, 7, 16
+	conf.DeadlineSeconds, conf.DeadlineThinkingSeconds = 45, 45
 	if err := conf.Validate(); err != nil {
 		t.Fatalf("the reference memory-tool configuration must validate: %v", err)
 	}
@@ -68,8 +69,17 @@ func TestMemoryToolConfigurationFailsClosedBothWays(t *testing.T) {
 
 	strayBudget := defaultConfig().AgentConfig
 	strayBudget.MaxToolCalls, strayBudget.MaxModelCalls, strayBudget.MaxGraphSteps = 6, 7, 16
-	if err := strayBudget.Validate(); err == nil {
-		t.Fatal("legacy_v2 accepted the wider run budget")
+	if err := strayBudget.Validate(); err != nil {
+		t.Fatalf("legacy_v2 refused a run budget whose three ceilings reach each other: %v", err)
+	}
+
+	// A wider budget is a deployment's own choice, but the three ceilings
+	// still have to reach each other: a run that may call tools six times
+	// cannot answer in four generations.
+	unreachable := defaultConfig().AgentConfig
+	unreachable.MaxToolCalls, unreachable.MaxModelCalls, unreachable.MaxGraphSteps = 6, 4, 16
+	if err := unreachable.Validate(); err == nil {
+		t.Fatal("legacy_v2 accepted a tool budget its model budget cannot reach")
 	}
 }
 
@@ -93,6 +103,7 @@ func TestMemoryToolBoundsAreEnforced(t *testing.T) {
 		{name: "model budget narrowed", mutate: func(c *AgentConfig) { c.MaxModelCalls = 4 }},
 		{name: "graph budget narrowed", mutate: func(c *AgentConfig) { c.MaxGraphSteps = 10 }},
 		{name: "deadline widened", mutate: func(c *AgentConfig) { c.DeadlineSeconds = 90 }},
+		{name: "thinking deadline widened", mutate: func(c *AgentConfig) { c.DeadlineThinkingSeconds = 90 }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

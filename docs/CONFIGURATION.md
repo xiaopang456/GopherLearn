@@ -170,12 +170,20 @@
 | `maxToolCalls` | `3` | 单轮最多工具调用数 |
 | `maxModelCalls` | `4` | 单轮最多模型调用数 |
 | `maxGraphSteps` | `10` | 单轮最多图步数 |
-| `deadlineSeconds` | `45` | 单轮时间预算 |
+| `deadlineSeconds` | `45` | 单轮时间预算（思考关闭时） |
+| `deadlineThinkingSeconds` | `60` | 单轮时间预算（**思考开启时**）。思考开启的回答要等思考写完再写，实测最后那一次生成本身就要四十秒左右，用 45 秒会把这些轮次切在答案出现之前；思考关闭的轮次仍用 `deadlineSeconds` |
 | `knowledgeDefaultTopK` | `5` | 知识库默认取几段 |
 | `knowledgeMaxTopK` | `8` | 知识库最多取几段 |
 | `memoryReadMode` | `legacy_v2` | 长期记忆的整条读取路径模式 |
 | `episodeRecallMode` | `shadow_only` | 情景召回模式 |
 | `episodeRelationMode` | `off` | 情景关系抽取模式 |
+
+`maxToolCalls` / `maxModelCalls` / `maxGraphSteps` 三个数必须**互相够得着**，否则启动报错并说明是哪一处不够：
+
+- `maxModelCalls` 至少是 `maxToolCalls + 1`：每轮工具都要一次"决定调用工具"的生成，最后还要一次生成来写答案。
+- `maxGraphSteps` 至少是 `maxModelCalls + maxToolCalls`：ReAct 图里每个模型调用和每轮工具各算一个节点。
+
+例如想放宽到 5 次工具调用，就写 `maxToolCalls = 5`、`maxModelCalls = 6`、`maxGraphSteps = 16`；只写前一个，另外两个够不着，新名额是纸上的。
 
 `memoryTopicStandout` 与 `memoryTopicMargin` **没有默认值**：启用相关模式却不给出这两个数，是启动失败。
 

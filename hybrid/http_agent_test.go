@@ -352,6 +352,8 @@ func TestHTTPAgentConsentFromOriginalIssuerReachesOriginalContext(t *testing.T) 
 	c.MemoryReadMode = "agent_memory_user_confirmed_v1"
 	c.TopicConsentSecret = "synthetic-confirmed-topic-secret-at-least-32-chars"
 	c.MaxToolCalls, c.MaxModelCalls, c.MaxGraphSteps = 6, 7, 16
+	// The mode keeps the forty-five second deadline in both forms.
+	c.DeadlineSeconds, c.DeadlineThinkingSeconds = 45, 45
 	c.MemoryToolMaxCalls, c.MemoryToolTopK, c.MemoryToolCandidateDepth = 2, 4, 40
 	c.MemoryToolMinConfidence, c.MemoryToolTimeoutMS = .5, 2000
 	db := sqliteDatabase(t)

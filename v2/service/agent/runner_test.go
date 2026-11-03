@@ -123,20 +123,126 @@ func TestRunnerEnforcesModelCallLimit(t *testing.T) {
 	}
 }
 
-func TestRunnerEnforcesToolCallLimit(t *testing.T) {
-	fake := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {
-		return fakeToolCall(call, fmt.Sprintf("topic-%d", call)), nil
-	}}
+// The shape the baseline failed on: one generation asks for more tool calls
+// than the turn can pay for.
+//
+// The calls inside the budget run. The one outside it is refused with an
+// observation rather than an error, so the turn survives, and the next
+// generation is made without the tools so the model answers from what the
+// turn has. Every tool call the model made is answered, because a request
+// that carries an unmatched tool call is a request the provider rejects.
+func TestRunnerRefusesTheParallelCallsTheToolBudgetCannotAfford(t *testing.T) {
+	fake := &scriptedChatModel{
+		forbiddenAnswer: "final answer from collected evidence",
+		respond: func(_ context.Context, call int) (*schema.Message, error) {
+			return fakeParallelToolCall(call, fmt.Sprintf("topic-%d-a", call), fmt.Sprintf("topic-%d-b", call)), nil
+		},
+	}
 	var executions atomic.Int32
+	steps := newMemoryStepRepository()
 	config := DefaultRunnerConfig()
 	config.MaxToolCalls = 1
-	runner := mustRunner(t, fake, StaticToolRegistry{Registered: []tool.BaseTool{mustFakeTool(t, &executions)}}, newMemoryStepRepository(), config)
-	_, err := runner.Run(context.Background(), testRunContext(), newEventCollector())
-	if !errors.Is(err, ErrToolCallLimit) {
-		t.Fatalf("error = %v, want ErrToolCallLimit", err)
+	runner := mustRunner(t, fake, StaticToolRegistry{Registered: []tool.BaseTool{mustFakeTool(t, &executions)}}, steps, config)
+	result, err := runner.Run(context.Background(), testRunContext(), newEventCollector())
+	if err != nil {
+		t.Fatal(err)
 	}
 	if executions.Load() != 1 {
-		t.Fatalf("tool executions = %d, want 1", executions.Load())
+		t.Fatalf("tool executions = %d, want 1: the call outside the budget must not run", executions.Load())
+	}
+	if result.Answer != "final answer from collected evidence" {
+		t.Fatalf("answer = %q", result.Answer)
+	}
+	if result.ToolCalls != 1 {
+		t.Fatalf("tool calls = %d, want 1: a refused call is not an execution", result.ToolCalls)
+	}
+	if result.Closeout != TerminationToolBudgetExhausted {
+		t.Fatalf("closeout = %q, want %q", result.Closeout, TerminationToolBudgetExhausted)
+	}
+	if fake.ForbiddenToolChoiceCount() != 1 {
+		t.Fatalf("forbidden tool choices = %d, want 1", fake.ForbiddenToolChoiceCount())
+	}
+	// The second generation was shown one result per tool call the first
+	// generation made.
+	results := fake.toolResults(1)
+	if len(results) != 2 {
+		t.Fatalf("tool results = %d, want 2: every tool call needs a result", len(results))
+	}
+	if results[0].ToolCallID != "call-1-0" || results[1].ToolCallID != "call-1-1" {
+		t.Fatalf("tool result ids = %q, %q", results[0].ToolCallID, results[1].ToolCallID)
+	}
+	if !strings.Contains(results[1].Content, "tool_budget_exhausted") {
+		t.Fatalf("the refused call was not explained to the model: %q", results[1].Content)
+	}
+}
+
+// A refused call leaves a step that says what happened, and it is not a
+// failed step: the turn did not fail, the call did not run.
+func TestRunnerRecordsARefusedCallAsAStepThatDidNotFail(t *testing.T) {
+	fake := &scriptedChatModel{
+		forbiddenAnswer: "final answer from collected evidence",
+		respond: func(_ context.Context, call int) (*schema.Message, error) {
+			return fakeParallelToolCall(call, "topic-a", "topic-b"), nil
+		},
+	}
+	var executions atomic.Int32
+	steps := newMemoryStepRepository()
+	config := DefaultRunnerConfig()
+	config.MaxToolCalls = 1
+	runner := mustRunner(t, fake, StaticToolRegistry{Registered: []tool.BaseTool{mustFakeTool(t, &executions)}}, steps, config)
+	if _, err := runner.Run(context.Background(), testRunContext(), newEventCollector()); err != nil {
+		t.Fatal(err)
+	}
+	refused := 0
+	for i := range steps.steps {
+		step := steps.steps[i]
+		if step.Type != model.AgentStepTool || !strings.Contains(step.ResultSummary, "tool_budget_exhausted") {
+			continue
+		}
+		refused++
+		if strings.TrimSpace(step.ErrorMessage) != "" {
+			t.Fatalf("the refused call was recorded as a failure: %#v", step)
+		}
+	}
+	if refused != 1 {
+		t.Fatalf("refused call steps = %d, want 1: %#v", refused, steps.steps)
+	}
+}
+
+// The turn runs under the deadline its thinking asked for, and the turn whose
+// thinking is off keeps the shorter one.
+func TestRunnerRunsATurnUnderTheDeadlineItsThinkingAskedFor(t *testing.T) {
+	fake := &scriptedChatModel{respond: func(ctx context.Context, _ int) (*schema.Message, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	config := DefaultRunnerConfig()
+	config.Deadline = 40 * time.Millisecond
+	config.DeadlineThinking = 600 * time.Millisecond
+	runner := mustRunner(t, fake, StaticToolRegistry{}, newMemoryStepRepository(), config)
+
+	plain := testRunContext()
+	started := time.Now()
+	_, err := runner.Run(context.Background(), plain, newEventCollector())
+	if err == nil {
+		t.Fatal("the turn did not end on its deadline")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want a deadline error", err)
+	}
+	if elapsed := time.Since(started); elapsed > 400*time.Millisecond {
+		t.Fatalf("the plain turn ran for %s, want the short deadline", elapsed)
+	}
+
+	thinking := testRunContext()
+	thinking.EnableThinking = true
+	started = time.Now()
+	_, err = runner.Run(context.Background(), thinking, newEventCollector())
+	if err == nil {
+		t.Fatal("the thinking turn did not end on its deadline")
+	}
+	if elapsed := time.Since(started); elapsed < 400*time.Millisecond {
+		t.Fatalf("the thinking turn ran for %s, want its own longer deadline", elapsed)
 	}
 }
 
@@ -163,6 +269,9 @@ func TestRunnerSynthesizesAfterToolExecutionBudgetIsExhausted(t *testing.T) {
 	}
 	if fake.ForbiddenToolChoiceCount() != 1 {
 		t.Fatalf("forbidden tool choices = %d, want 1", fake.ForbiddenToolChoiceCount())
+	}
+	if result.Closeout != TerminationToolBudgetExhausted {
+		t.Fatalf("closeout = %q, want %q", result.Closeout, TerminationToolBudgetExhausted)
 	}
 }
 
@@ -1055,15 +1164,32 @@ func fakeToolCall(call int, topic string) *schema.Message {
 	}})
 }
 
+// fakeParallelToolCall is one generation that asks for several tools at once,
+// which is the shape the baseline failed on: the calls inside the budget ran,
+// and the one outside it voided the whole turn.
+func fakeParallelToolCall(call int, topics ...string) *schema.Message {
+	calls := make([]schema.ToolCall, 0, len(topics))
+	for index, topic := range topics {
+		calls = append(calls, schema.ToolCall{
+			ID:       fmt.Sprintf("call-%d-%d", call, index),
+			Function: schema.FunctionCall{Name: "lookup", Arguments: fmt.Sprintf(`{"topic":%q}`, topic)},
+		})
+	}
+	return schema.AssistantMessage("", calls)
+}
+
 type scriptedChatModel struct {
 	mu                   sync.Mutex
 	calls                int
 	forcedToolChoices    int
 	forbiddenToolChoices int
 	boundToolCalls       [][]string
-	respond              func(context.Context, int) (*schema.Message, error)
-	forbiddenAnswer      string
-	omitFinishReason     bool
+	// received keeps the messages of every call, so a test can look at what
+	// the model was actually shown.
+	received         [][]*schema.Message
+	respond          func(context.Context, int) (*schema.Message, error)
+	forbiddenAnswer  string
+	omitFinishReason bool
 }
 
 func (m *scriptedChatModel) next(ctx context.Context, opts ...modelcomponent.Option) (*schema.Message, error) {
@@ -1079,13 +1205,15 @@ func (m *scriptedChatModel) next(ctx context.Context, opts ...modelcomponent.Opt
 	return m.respond(ctx, call)
 }
 
-func (m *scriptedChatModel) Generate(ctx context.Context, _ []*schema.Message, opts ...modelcomponent.Option) (*schema.Message, error) {
+func (m *scriptedChatModel) Generate(ctx context.Context, input []*schema.Message, opts ...modelcomponent.Option) (*schema.Message, error) {
 	m.recordOptions(opts...)
+	m.recordInput(input)
 	return m.next(ctx, opts...)
 }
 
-func (m *scriptedChatModel) Stream(ctx context.Context, _ []*schema.Message, opts ...modelcomponent.Option) (*schema.StreamReader[*schema.Message], error) {
+func (m *scriptedChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...modelcomponent.Option) (*schema.StreamReader[*schema.Message], error) {
 	m.recordOptions(opts...)
+	m.recordInput(input)
 	message, err := m.next(ctx, opts...)
 	if err != nil {
 		return nil, err
@@ -1143,6 +1271,33 @@ func (m *scriptedChatModel) CallCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.calls
+}
+
+func (m *scriptedChatModel) recordInput(input []*schema.Message) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.received = append(m.received, append([]*schema.Message(nil), input...))
+}
+
+// ReceivedMessages returns the messages of one call, by index.
+func (m *scriptedChatModel) ReceivedMessages(index int) []*schema.Message {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if index < 0 || index >= len(m.received) {
+		return nil
+	}
+	return append([]*schema.Message(nil), m.received[index]...)
+}
+
+// toolResults returns the tool messages the model was shown, in order.
+func (m *scriptedChatModel) toolResults(index int) []*schema.Message {
+	var results []*schema.Message
+	for _, message := range m.ReceivedMessages(index) {
+		if message != nil && message.Role == schema.Tool {
+			results = append(results, message)
+		}
+	}
+	return results
 }
 
 func (m *scriptedChatModel) recordOptions(opts ...modelcomponent.Option) {
