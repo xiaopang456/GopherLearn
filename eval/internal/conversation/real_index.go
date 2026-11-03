@@ -254,7 +254,7 @@ func uploadDocument(ctx context.Context, client *http.Client, base, token, path 
 	if err != nil {
 		return "", err
 	}
-	if response.StatusCode != http.StatusOK {
+	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusCreated {
 		return "", fmt.Errorf("the product refused a document with HTTP %d", response.StatusCode)
 	}
 	var envelope struct {

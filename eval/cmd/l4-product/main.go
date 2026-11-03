@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/xiaopang456/GopherLearn/eval/internal/conversation"
@@ -29,6 +30,7 @@ func run(args []string, out io.Writer) error {
 	input := flags.String("input", "", "private turn array or snapshot archive")
 	output := flags.String("output-dir", "", "new private output directory")
 	question := flags.String("question", "", "final question for answer phase")
+	questionFile := flags.String("question-file", "", "file holding the final question (UTF-8)")
 	qid := flags.String("qid", "synthetic-offline", "scenario identifier for the scoring record")
 	arm := flags.String("arm", "current", "configuration identifier")
 	rep := flags.Int("rep", 0, "repeat number: 0, 1 or 2")
@@ -61,7 +63,11 @@ func run(args []string, out io.Writer) error {
 	if *rep < 0 || *rep > 2 || *qid == "" || *arm == "" || (*condition != "main" && *condition != "control" && *condition != "distractor") {
 		return fmt.Errorf("invalid attempt identity")
 	}
-	if err := pathguard.CheckAll(map[string]string{"input": *input, "output": *output}); err != nil {
+	guarded := map[string]string{"output": *output}
+	if *phase != "index" {
+		guarded["input"] = *input
+	}
+	if err := pathguard.CheckAll(guarded); err != nil {
 		return err
 	}
 	if *stopFile != "" {
@@ -109,7 +115,14 @@ func run(args []string, out io.Writer) error {
 		if len(turns) < 1 || len(turns) > 256 {
 			return fmt.Errorf("turn count must be 1 through 256")
 		}
-	} else {
+	} else if *phase == "answer" {
+		if *questionFile != "" {
+			raw, readErr := os.ReadFile(*questionFile)
+			if readErr != nil {
+				return readErr
+			}
+			*question = strings.TrimSpace(string(raw))
+		}
 		if *question == "" {
 			return fmt.Errorf("question required")
 		}
