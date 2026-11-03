@@ -88,6 +88,31 @@ test('the ledger records the run before the request is answered, and every phase
   assert.deepEqual(h.ledger().map((e) => e.phase), ['run', 'result', 'steps', 'cleanup'])
 })
 
+test('the ledger and the record say which run the trial was, and when its answer came back', async (t) => {
+  if (skipIfTmpInRepo(t)) return
+  const h = await harness(t, [scenario('q?')])
+  const record = await h.runner.run({ arm: 'a', qid: 'q1', rep: 0, question: 'q?' })
+  const entries = h.ledger()
+  const started = entries.find((e) => e.phase === 'run')
+  const answered = entries.find((e) => e.phase === 'result')
+  assert.ok(started.sessionId, 'the ledger must say which session the trial was made in')
+  assert.equal(answered.runId, record.runId, 'the ledger must name the run the trial was')
+  assert.ok(answered.answeredAt, 'the ledger must say when the answer came back')
+  assert.equal(new Date(answered.answeredAt).toISOString(), answered.answeredAt)
+  assert.equal(record.sessionId, started.sessionId)
+  assert.equal(record.answeredAt, answered.answeredAt)
+  assert.equal(entries.find((e) => e.phase === 'steps').runId, record.runId)
+})
+
+test('a trial that did not answer has no answer boundary', async (t) => {
+  if (skipIfTmpInRepo(t)) return
+  const h = await harness(t, [{ question: 'q?', reps: [{ body: { status_msg: 'boom' }, http: 500 }] }])
+  const record = await h.runner.run({ arm: 'a', qid: 'q1', rep: 0, question: 'q?' })
+  const answered = h.ledger().find((e) => e.phase === 'result')
+  assert.equal(answered.answeredAt, null, 'a run that did not answer must not claim a boundary')
+  assert.equal(record.answeredAt, null)
+})
+
 test('the budget stops the run before the request, and says so in a record', async (t) => {
   if (skipIfTmpInRepo(t)) return
   const h = await harness(t, [scenario('q?')], { maxRuns: 2 })

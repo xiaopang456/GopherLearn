@@ -230,12 +230,23 @@ export class TrialRunner {
         }),
       }, this.cfg.timeoutMs)
       const b = run.body ?? {}
-      this.ledgerAppend({ phase: 'result', arm, qid, rep, http: run.status, statusCode: b.status_code, modelCalls: b.modelCalls, toolCalls: b.toolCalls })
+      // The moment the run's turn ended. It is the boundary the answer is
+      // split at: calls the product sent before it are part of producing the
+      // answer, calls it sent afterwards are background work that the answer
+      // caused. A run that did not answer has no boundary.
+      const answered = run.status === 200 && b.status_code === SUCCESS_CODE
+      const answeredAt = answered ? new Date().toISOString() : null
+      this.ledgerAppend({ phase: 'result', arm, qid, rep, http: run.status, statusCode: b.status_code, modelCalls: b.modelCalls, toolCalls: b.toolCalls, runId: b.runId, answeredAt })
 
       const record = {
         http: run.status,
         statusCode: b.status_code,
         runId: b.runId,
+        // The identity of the trial: which session it was made in, and when
+        // its answer came back. A model call is accounted for by the run it
+        // belongs to, so a record has to say which run that was.
+        sessionId,
+        answeredAt,
         replayed: b.replayed === true,
         answer: b.answer ?? '',
         answerBasis: b.answerBasis,

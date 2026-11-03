@@ -81,7 +81,25 @@ func Markdown(stats *Stats, meta Meta, opts Options) string {
 	for _, c := range stats.Costs {
 		fmt.Fprintf(&b, "| %s | %d | %s | %s | %s |\n", c.Arm, c.Trials, optional1(c.MeanModelCalls), optional1(c.MeanToolCalls), optional0(c.MedianDurationMs))
 	}
-	b.WriteString("\n- 模型调用数与工具调用数是 `/agent/run` 自己返回的；它不含后台任务（记忆抽取、摘要）的调用，也没有 token 用量，这些要看计数代理的账本。耗时是一次 `/agent/run` 的整体耗时。\n")
+	b.WriteString("\n- 模型调用数与工具调用数是 `/agent/run` 自己返回的；它不含后台任务（记忆抽取、摘要）的调用，也没有 token 用量，这些要看按运行归账的账本（表 6）。耗时是一次 `/agent/run` 的整体耗时。\n")
+
+	if stats.Attribution != nil {
+		b.WriteString("\n## 表 6　代价（按运行归账：回答本身 / 回答之后的后台）\n\n")
+		b.WriteString("| 臂 | 侧 | 已归账的运行 | 平均模型调用 | 平均输入 token | 平均输出 token |\n|---|---|--:|--:|--:|--:|\n")
+		for _, c := range stats.Costs {
+			fmt.Fprintf(&b, "| %s | 回答本身 | %d | %s | %s | %s |\n", c.Arm, c.AttributedRuns, optional1(c.MeanAnswerCalls), optional0(c.MeanAnswerPromptTokens), optional0(c.MeanAnswerOutputTokens))
+			fmt.Fprintf(&b, "| %s | 回答之后的后台 | %d | %s | %s | %s |\n", c.Arm, c.AttributedRuns, optional1(c.MeanAfterAnswerCalls), optional0(c.MeanAfterAnswerPromptTok), optional0(c.MeanAfterAnswerOutputTok))
+		}
+		summary := stats.Attribution
+		b.WriteString("\n")
+		fmt.Fprintf(&b, "- **归账口径**：每次模型调用按它自己带的运行身份（`runId`，没有就按 `sessionId`）归到那次运行，**不用墙钟时间窗**。带不上身份的调用单独记为「无法归账」，不并进任何一次运行；身份写错或一次会话里有多次运行时也不猜。\n")
+		b.WriteString("- **回答之前还是之后**：由那次运行自己的回答时刻划分 —— 运行在回答时刻之前发出的请求算「回答本身」，之后发出的算「回答之后的后台」。\n")
+		fmt.Fprintf(&b, "- **核对**：已归账 %d 次运行，其中回答侧调用数与运行自己报告的模型调用数一致 %d 次、不一致 %d 次（运行没有报告调用数的 %d 次另计）；无法归账的调用 %d 次（其中身份未知 %d 次、身份有歧义 %d 次）。\n",
+			summary.AttributedRuns, summary.VerifiedRuns, summary.MismatchedRuns, summary.UnreportedRuns,
+			summary.UnattributedCalls, summary.UnknownIdentityCalls, summary.AmbiguousCalls)
+		b.WriteString("- token 只统计供应商报告了用量的调用；没有报告用量的调用另计，所以 token 是下界，不是零。\n")
+		b.WriteString("- **现有评测测不到情景记忆投影的代价**：评测每次试验后都删除会话，情景记忆投影在评测中基本不会执行，它产生的后台调用不会出现在表 6 里。以后如果要测，需要专门设计（例如不删会话，并等到投影落库再记账）。\n")
+	}
 	return b.String()
 }
 
