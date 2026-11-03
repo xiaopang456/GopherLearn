@@ -3,11 +3,15 @@ package l23
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/xiaopang456/GopherLearn/eval/internal/calls"
 )
 
 // The golden file is written by the Node scorer (eval/l2l3/test/e2e.test.mjs) from two
@@ -323,5 +327,97 @@ func TestStatsSerialise(t *testing.T) {
 	data, err := JSON(stats)
 	if err != nil || !strings.Contains(string(data), `"pass_at_1_strict"`) || !strings.Contains(string(data), `"mcnemar_p"`) {
 		t.Fatalf("%v %s", err, data[:min(len(data), 200)])
+	}
+}
+
+// bookedCalls builds a call ledger for the fixture: one call before the answer
+// and one after it for every run of the "good" arm, plus a call that carries
+// no identity at all.
+func bookedCalls(t *testing.T, outcomes []Outcome) (*calls.Attribution, int) {
+	t.Helper()
+	answered := time.Date(2026, 11, 2, 11, 0, 10, 0, time.UTC)
+	prompt := int64(100)
+	var runs []calls.Run
+	var list []calls.Call
+	for _, o := range outcomes {
+		if o.Arm != "good" {
+			continue
+		}
+		id := fmt.Sprintf("run-%s-%d", o.QID, o.Rep)
+		runs = append(runs, calls.Run{Arm: o.Arm, QID: o.QID, Rep: o.Rep, RunID: id, SessionID: "s-" + id, AnsweredAt: answered})
+		list = append(list, calls.Call{At: answered.Add(-time.Second), Lane: "chat", RunID: id, Usage: &calls.Usage{Prompt: &prompt}})
+		list = append(list, calls.Call{At: answered.Add(time.Second), Lane: "chat", RunID: id, Usage: &calls.Usage{Prompt: &prompt}})
+	}
+	list = append(list, calls.Call{At: answered, Lane: "chat"})
+	attribution, err := calls.Attribute(runs, list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &attribution, len(runs)
+}
+
+func TestTheReportSplitsTheCostOfTheAnswerFromTheCostAfterIt(t *testing.T) {
+	outcomes, meta := loadFixture(t)
+	attribution, runs := bookedCalls(t, outcomes)
+	opts := Options{Baseline: "good", Seed: 11, Resamples: 500, Attribution: attribution}
+	stats, err := Compute(outcomes, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := Markdown(stats, meta, opts)
+	for _, want := range []string{
+		"## 表 6　代价（按运行归账：回答本身 / 回答之后的后台）",
+		"| good | 回答本身 |",
+		"| good | 回答之后的后台 |",
+		"**不用墙钟时间窗**",
+		"无法归账",
+		"情景记忆投影",
+		"现有评测测不到情景记忆投影的代价",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("report lacks %q", want)
+		}
+	}
+	for _, c := range stats.Costs {
+		if c.Arm != "good" {
+			continue
+		}
+		if c.AttributedRuns != runs {
+			t.Errorf("attributed runs = %d, want %d", c.AttributedRuns, runs)
+		}
+		if c.MeanAnswerCalls == nil || *c.MeanAnswerCalls != 1 {
+			t.Errorf("mean answer calls = %v, want 1", c.MeanAnswerCalls)
+		}
+		if c.MeanAfterAnswerCalls == nil || *c.MeanAfterAnswerCalls != 1 {
+			t.Errorf("mean after-answer calls = %v, want 1", c.MeanAfterAnswerCalls)
+		}
+		if c.MeanAnswerPromptTokens == nil || *c.MeanAnswerPromptTokens != 100 {
+			t.Errorf("mean answer prompt tokens = %v, want 100", c.MeanAnswerPromptTokens)
+		}
+	}
+	if stats.Attribution == nil || stats.Attribution.UnattributedCalls != 1 {
+		t.Fatalf("the call without identity was not counted apart: %+v", stats.Attribution)
+	}
+	if stats.Attribution.UnknownIdentityCalls != 1 {
+		t.Errorf("unknown identity calls = %d, want 1", stats.Attribution.UnknownIdentityCalls)
+	}
+	data, err := JSON(stats)
+	if err != nil || !strings.Contains(string(data), `"call_attribution"`) {
+		t.Fatalf("%v the json does not carry the attribution", err)
+	}
+}
+
+func TestWithoutACallLedgerTheReportKeepsOnlyWhatTheRunsReported(t *testing.T) {
+	outcomes, meta := loadFixture(t)
+	stats, err := Compute(outcomes, Options{Baseline: "good", Seed: 11, Resamples: 500})
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := Markdown(stats, meta, Options{Baseline: "good", Seed: 11, Resamples: 500})
+	if strings.Contains(md, "## 表 6") {
+		t.Error("the report shows a cost split without a call ledger")
+	}
+	if stats.Attribution != nil {
+		t.Errorf("attribution without a call ledger: %+v", stats.Attribution)
 	}
 }

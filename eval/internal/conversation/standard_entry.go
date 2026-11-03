@@ -280,6 +280,7 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 	request.Header.Set("Authorization", "Bearer "+token)
 	questionStart := time.Now()
 	response, requestErr := client.Do(request)
+	runID := ""
 	if requestErr == nil {
 		result.Response, requestErr = io.ReadAll(io.LimitReader(response.Body, 4<<20+1))
 		response.Body.Close()
@@ -292,10 +293,12 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 		}
 		var envelope struct {
 			Answer string `json:"answer"`
+			RunID  string `json:"runId"`
 		}
 		if requestErr == nil {
 			requestErr = json.Unmarshal(result.Response, &envelope)
 			result.Answer = envelope.Answer
+			runID = envelope.RunID
 			if result.Answer == "" {
 				requestErr = fmt.Errorf("product response has no answer")
 			}
@@ -313,7 +316,7 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 	var stoppedErr error
 	_, result.StoppedCounts, stoppedErr = s.ObserveJobs(collect)
 	result.Events, result.Audit.ExecutedBeforeAnswer, resultErr = journal.Finish(collect)
-	result.Calls = AttributeCalls(ledger.Calls(), result.Audit.Answered)
+	result.Calls = BindRun(AttributeCalls(ledger.Calls(), result.Audit.Answered), snapshot.Session.ID, runID)
 	var usageErr error
 	result.UsageByRole, usageErr = SummarizeCalls(result.Calls)
 	result.ContextMessages = stub.answerInput()

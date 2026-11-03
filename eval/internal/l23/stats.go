@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/xiaopang456/GopherLearn/eval/internal/calls"
 	"github.com/xiaopang456/GopherLearn/eval/internal/metrics"
 )
 
@@ -19,6 +20,10 @@ type Options struct {
 	Baseline  string
 	Seed      int64
 	Resamples int
+	// Attribution is what the model calls could be booked to, by the run that
+	// caused them. Nil when no call ledger was given; the cost of producing an
+	// answer is then only what the runs reported themselves.
+	Attribution *calls.Attribution
 }
 
 // PassK is pass^k: the chance that k trials of one question, chosen from its repeats,
@@ -89,6 +94,35 @@ type CostRow struct {
 	MeanModelCalls   *float64 `json:"mean_model_calls"`
 	MeanToolCalls    *float64 `json:"mean_tool_calls"`
 	MedianDurationMs *float64 `json:"median_duration_ms"`
+	// The cost split by the run that caused it, when a call ledger was given.
+	// AttributedRuns is the number of runs the calls could be booked to; the
+	// means are per attributed run, not per trial.
+	AttributedRuns           int      `json:"attributed_runs,omitempty"`
+	MeanAnswerCalls          *float64 `json:"mean_answer_calls,omitempty"`
+	MeanAnswerPromptTokens   *float64 `json:"mean_answer_prompt_tokens,omitempty"`
+	MeanAnswerOutputTokens   *float64 `json:"mean_answer_output_tokens,omitempty"`
+	MeanAfterAnswerCalls     *float64 `json:"mean_after_answer_calls,omitempty"`
+	MeanAfterAnswerPromptTok *float64 `json:"mean_after_answer_prompt_tokens,omitempty"`
+	MeanAfterAnswerOutputTok *float64 `json:"mean_after_answer_output_tokens,omitempty"`
+	// UnmeteredCalls counts the calls that reported no usage at all. The token
+	// means above leave them out, so they are lower bounds.
+	UnmeteredCalls int `json:"unmetered_calls,omitempty"`
+}
+
+// AttributionSummary says how much of the call ledger could be booked to a
+// run, and how the booking compares with what the runs reported themselves.
+type AttributionSummary struct {
+	AttributedRuns       int `json:"attributed_runs"`
+	UnattributedCalls    int `json:"unattributed_calls"`
+	UnknownIdentityCalls int `json:"unknown_identity_calls"`
+	AmbiguousCalls       int `json:"ambiguous_calls"`
+	ClaimedPhaseMismatch int `json:"claimed_phase_mismatch"`
+	// VerifiedRuns are the runs whose booked answer-side calls match the
+	// number of model calls the run reported; MismatchedRuns are the others.
+	VerifiedRuns   int `json:"verified_runs"`
+	MismatchedRuns int `json:"mismatched_runs"`
+	// UnreportedRuns are the runs that reported no number of model calls.
+	UnreportedRuns int `json:"unreported_runs"`
 }
 
 // Stats is everything a report shows.
@@ -97,6 +131,9 @@ type Stats struct {
 	ArmLayers   []ArmLayer   `json:"arm_layers"`
 	Comparisons []Comparison `json:"comparisons"`
 	Costs       []CostRow    `json:"costs"`
+	// Attribution is what the call ledger could be booked to. Nil when no
+	// call ledger was given.
+	Attribution *AttributionSummary `json:"call_attribution,omitempty"`
 	// Envs is the set of environments the trials ran in.
 	Envs []string `json:"envs"`
 }
@@ -129,7 +166,11 @@ func Compute(outcomes []Outcome, opts Options) (*Stats, error) {
 				stats.ArmLayers = append(stats.ArmLayers, al)
 			}
 		}
-		stats.Costs = append(stats.Costs, cost(outcomes, arm))
+		stats.Costs = append(stats.Costs, cost(outcomes, arm, opts))
+	}
+	if opts.Attribution != nil {
+		summary := attributionSummary(opts.Attribution)
+		stats.Attribution = &summary
 	}
 	for _, arm := range stats.Arms {
 		if arm == opts.Baseline {
@@ -327,7 +368,7 @@ func compare(outcomes []Outcome, layer, arm string, opts Options) (Comparison, b
 	return cmp, true
 }
 
-func cost(outcomes []Outcome, arm string) CostRow {
+func cost(outcomes []Outcome, arm string, opts Options) CostRow {
 	row := CostRow{Arm: arm}
 	var models, tools, durations []float64
 	for _, o := range outcomes {
@@ -346,7 +387,54 @@ func cost(outcomes []Outcome, arm string) CostRow {
 		}
 	}
 	row.MeanModelCalls, row.MeanToolCalls, row.MedianDurationMs = mean(models), mean(tools), median(durations)
+	if opts.Attribution == nil {
+		return row
+	}
+	// The cost of the calls each run caused, split by the run's own answer
+	// boundary: what it took to answer, and what happened because of it.
+	runs := opts.Attribution.ArmRuns(arm)
+	row.AttributedRuns = len(runs)
+	var answerCalls, afterCalls, answerPrompt, answerOutput, afterPrompt, afterOutput []float64
+	for _, run := range runs {
+		answerCalls = append(answerCalls, float64(run.Answer.Calls))
+		afterCalls = append(afterCalls, float64(run.AfterAnswer.Calls))
+		answerPrompt = append(answerPrompt, float64(run.Answer.Prompt))
+		answerOutput = append(answerOutput, float64(run.Answer.Completion))
+		afterPrompt = append(afterPrompt, float64(run.AfterAnswer.Prompt))
+		afterOutput = append(afterOutput, float64(run.AfterAnswer.Completion))
+		row.UnmeteredCalls += run.Answer.UnmeteredCalls + run.AfterAnswer.UnmeteredCalls
+	}
+	row.MeanAnswerCalls = mean(answerCalls)
+	row.MeanAfterAnswerCalls = mean(afterCalls)
+	row.MeanAnswerPromptTokens = mean(answerPrompt)
+	row.MeanAnswerOutputTokens = mean(answerOutput)
+	row.MeanAfterAnswerPromptTok = mean(afterPrompt)
+	row.MeanAfterAnswerOutputTok = mean(afterOutput)
 	return row
+}
+
+// attributionSummary says how much of the call ledger could be booked to a
+// run, and how the booking compares with what the runs reported themselves.
+func attributionSummary(attribution *calls.Attribution) AttributionSummary {
+	summary := AttributionSummary{
+		UnattributedCalls:    attribution.UnattributedCalls,
+		UnknownIdentityCalls: attribution.UnknownIdentityCalls,
+		AmbiguousCalls:       attribution.AmbiguousCalls,
+	}
+	for _, run := range attribution.Runs {
+		summary.AttributedRuns++
+		summary.ClaimedPhaseMismatch += run.ClaimedPhaseMismatch
+		if run.Run.ReportedModelCalls == nil {
+			summary.UnreportedRuns++
+			continue
+		}
+		if run.Answer.ChatCalls == *run.Run.ReportedModelCalls {
+			summary.VerifiedRuns++
+		} else {
+			summary.MismatchedRuns++
+		}
+	}
+	return summary
 }
 
 func mean(values []float64) *float64 {
