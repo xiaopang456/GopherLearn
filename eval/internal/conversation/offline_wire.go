@@ -16,32 +16,19 @@ import (
 // This provider speaks the real SDK wire protocol on loopback. It has no
 // forwarding destination or credentials and cannot reach an upstream model.
 func offlineWire(ledger *ModelLedger, roles RolePrompts, chat *offlineChat) *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return httptest.NewServer(modelHTTPHandler(ledger, roles, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Messages []*schema.Message `json:"messages"`
 			Stream   bool              `json:"stream"`
 			Input    json.RawMessage   `json:"input"`
 		}
 		err := json.NewDecoder(io.LimitReader(r.Body, 8<<20)).Decode(&request)
-		role := "unknown"
-		prompt := ""
-		if strings.HasSuffix(r.URL.Path, "/embeddings") {
-			role = "embedding"
-		} else if len(request.Messages) > 0 && request.Messages[0] != nil && request.Messages[0].Role == schema.System {
-			prompt = request.Messages[0].Content
-			if v, ok := roles[prompt]; ok {
-				role = v
-			}
-		}
-		id := ledger.begin(role, "http:"+r.URL.Path, request, prompt)
-		defer func() { ledger.finish(id, err) }()
-		if err != nil || r.Method != "POST" || role == "unknown" {
-			err = fmt.Errorf("unclassified or malformed offline model request")
-			http.Error(w, err.Error(), 400)
+		if err != nil {
+			http.Error(w, "invalid offline model request", 400)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if role == "embedding" {
+		if strings.HasSuffix(r.URL.Path, "/embeddings") {
 			var inputs []string
 			if e := json.Unmarshal(request.Input, &inputs); e != nil {
 				var text string
@@ -77,7 +64,7 @@ func offlineWire(ledger *ModelLedger, roles RolePrompts, chat *offlineChat) *htt
 			return
 		}
 		err = json.NewEncoder(w).Encode(map[string]any{"id": "offline", "object": "chat.completion", "created": time.Now().Unix(), "model": "synthetic-offline", "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": message.Content}, "finish_reason": "stop"}}})
-	}))
+	})))
 }
 
 type redisSandbox struct{ id, nonce, addr string }

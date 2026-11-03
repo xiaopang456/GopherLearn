@@ -25,16 +25,20 @@ import (
 // UsageSamples are provider snapshots; Usage is the last reported snapshot.
 // Monetary cost needs a separately approved price table and is not inferred here.
 type ModelCall struct {
-	ID           int                 `json:"id"`
-	Role         string              `json:"role"`
-	Method       string              `json:"method"`
-	Started      time.Time           `json:"started"`
-	Finished     time.Time           `json:"finished"`
-	InputSHA256  string              `json:"input_sha256"`
-	PromptSHA256 string              `json:"prompt_sha256"`
-	Usage        *schema.TokenUsage  `json:"usage"`
-	UsageSamples []schema.TokenUsage `json:"usage_samples,omitempty"`
-	Error        string              `json:"error,omitempty"`
+	ID              int                 `json:"id"`
+	Role            string              `json:"role"`
+	Method          string              `json:"method"`
+	Started         time.Time           `json:"started"`
+	Finished        time.Time           `json:"finished"`
+	InputSHA256     string              `json:"input_sha256"`
+	PromptSHA256    string              `json:"prompt_sha256"`
+	Usage           *schema.TokenUsage  `json:"usage"`
+	UsageSamples    []schema.TokenUsage `json:"usage_samples,omitempty"`
+	Model           string              `json:"model,omitempty"`
+	HTTPStatus      int                 `json:"http_status,omitempty"`
+	RawUsageSamples []json.RawMessage   `json:"raw_usage_samples,omitempty"`
+	TelemetryError  string              `json:"telemetry_error,omitempty"`
+	Error           string              `json:"error,omitempty"`
 }
 type ModelLedger struct {
 	mu    sync.Mutex
@@ -76,6 +80,10 @@ func (l *ModelLedger) Calls() []ModelCall {
 	out := append([]ModelCall(nil), l.calls...)
 	for i := range out {
 		out[i].UsageSamples = append([]schema.TokenUsage(nil), out[i].UsageSamples...)
+		out[i].RawUsageSamples = make([]json.RawMessage, len(l.calls[i].RawUsageSamples))
+		for j, raw := range l.calls[i].RawUsageSamples {
+			out[i].RawUsageSamples[j] = append(json.RawMessage(nil), raw...)
+		}
 		if out[i].Usage != nil {
 			u := *out[i].Usage
 			out[i].Usage = &u
@@ -85,7 +93,7 @@ func (l *ModelLedger) Calls() []ModelCall {
 }
 func (l *ModelLedger) Complete() bool {
 	for _, c := range l.Calls() {
-		if c.Finished.IsZero() || c.Role == "unknown" {
+		if c.Finished.IsZero() || c.Role == "unknown" || c.TelemetryError != "" {
 			return false
 		}
 	}

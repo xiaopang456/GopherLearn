@@ -78,6 +78,7 @@ func loginStandardProduct(ctx context.Context, p *standardProduct, client *http.
 	for {
 		select {
 		case <-p.done:
+			p.cancel()
 			p.stopped = true
 			return "", fmt.Errorf("standard product failed before readiness")
 		default:
@@ -279,6 +280,7 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 	result.Audit.After, result.AfterCounts, err = s.ObserveJobs(collect)
 	stopErr := product.stop()
 	result.ShutdownComplete = stopErr == nil
+	wire.Close()
 	result.Events, result.Audit.ExecutedBeforeAnswer, resultErr = journal.Finish(collect)
 	result.Calls = ledger.Calls()
 	result.ContextMessages = stub.answerInput()
