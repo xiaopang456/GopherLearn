@@ -19,9 +19,11 @@ func modelHTTPHandler(ledger *ModelLedger, roles RolePrompts, backend http.Handl
 		raw, readErr := io.ReadAll(io.LimitReader(r.Body, 8<<20+1))
 		r.Body.Close()
 		var request struct {
-			Messages []*schema.Message `json:"messages"`
-			Model    string            `json:"model"`
-			Input    json.RawMessage   `json:"input"`
+			Messages            []*schema.Message `json:"messages"`
+			Model               string            `json:"model"`
+			Input               json.RawMessage   `json:"input"`
+			MaxTokens           *int              `json:"max_tokens"`
+			MaxCompletionTokens *int              `json:"max_completion_tokens"`
 		}
 		decodeErr := json.Unmarshal(raw, &request)
 		role, prompt := "unknown", ""
@@ -29,6 +31,10 @@ func modelHTTPHandler(ledger *ModelLedger, roles RolePrompts, backend http.Handl
 		case "/v1/embeddings":
 			if len(request.Input) > 0 {
 				role = "embedding"
+			}
+		case "/v1/rerank":
+			if len(request.Input) > 0 {
+				role = "rerank"
 			}
 		case "/v1/chat/completions":
 			if len(request.Messages) > 0 && request.Messages[0] != nil && request.Messages[0].Role == schema.System {
@@ -41,6 +47,8 @@ func modelHTTPHandler(ledger *ModelLedger, roles RolePrompts, backend http.Handl
 		id := ledger.begin(role, "http:"+r.URL.Path, json.RawMessage(raw), prompt)
 		ledger.mu.Lock()
 		ledger.calls[id-1].Model = request.Model
+		ledger.calls[id-1].RequestedMaxTokens = request.MaxTokens
+		ledger.calls[id-1].RequestedMaxCompletionTokens = request.MaxCompletionTokens
 		ledger.calls[id-1].InputSHA256 = digest(raw)
 		ledger.mu.Unlock()
 		observed := &usageWriter{ResponseWriter: w, ledger: ledger, id: id}

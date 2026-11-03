@@ -66,4 +66,7 @@ func TestOfflineWireUsesProductionSDK(t *testing.T) {
 	if len(calls) != 3 || calls[2].Role != "embedding" || !ledger.Complete() {
 		t.Fatal("embedding not accounted", calls)
 	}
+	if calls[0].RequestedMaxTokens != nil || calls[0].RequestedMaxCompletionTokens != nil {
+		t.Fatal("product factory output cap changed; recheck budgeting assumptions")
+	}
 }

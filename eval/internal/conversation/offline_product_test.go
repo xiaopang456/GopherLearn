@@ -81,6 +81,7 @@ func TestCompleteOfflineProductIntegration(t *testing.T) {
 		}
 		answers := 0
 		summaries := 0
+		reranks := 0
 		for _, call := range result.Calls {
 			if call.Role == "background" {
 				t.Fatal("background model ran")
@@ -91,12 +92,15 @@ func TestCompleteOfflineProductIntegration(t *testing.T) {
 			if call.Role == "summary" {
 				summaries++
 			}
+			if call.Role == "rerank" {
+				reranks++
+			}
 			if call.Usage != nil {
 				t.Fatal("invented offline usage")
 			}
 		}
-		if answers != 1 || summaries != 1 {
-			t.Fatalf("answer model calls=%d summary calls=%d", answers, summaries)
+		if answers != 1 || summaries != 1 || reranks != 1 {
+			t.Fatalf("answer model calls=%d summary calls=%d rerank calls=%d", answers, summaries, reranks)
 		}
 		t.Logf("repeat=%d restore_ms=%d question_ms=%d pending_before=%d calls=%d snapshot=%s config=%s", repeat, result.RestoreMilliseconds, result.QuestionMilliseconds, result.BeforeCounts["episode"].Pending, len(result.Calls), result.Provenance.SnapshotSHA256, result.Provenance.ConfigSHA256)
 	}

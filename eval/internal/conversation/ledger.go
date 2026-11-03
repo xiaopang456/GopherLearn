@@ -25,21 +25,23 @@ import (
 // UsageSamples are provider snapshots; Usage is the last reported snapshot.
 // Monetary cost needs a separately approved price table and is not inferred here.
 type ModelCall struct {
-	ID              int                 `json:"id"`
-	Role            string              `json:"role"`
-	Purpose         string              `json:"purpose,omitempty"`
-	Method          string              `json:"method"`
-	Started         time.Time           `json:"started"`
-	Finished        time.Time           `json:"finished"`
-	InputSHA256     string              `json:"input_sha256"`
-	PromptSHA256    string              `json:"prompt_sha256"`
-	Usage           *schema.TokenUsage  `json:"usage"`
-	UsageSamples    []schema.TokenUsage `json:"usage_samples,omitempty"`
-	Model           string              `json:"model,omitempty"`
-	HTTPStatus      int                 `json:"http_status,omitempty"`
-	RawUsageSamples []json.RawMessage   `json:"raw_usage_samples,omitempty"`
-	TelemetryError  string              `json:"telemetry_error,omitempty"`
-	Error           string              `json:"error,omitempty"`
+	ID                           int                 `json:"id"`
+	Role                         string              `json:"role"`
+	Purpose                      string              `json:"purpose,omitempty"`
+	Method                       string              `json:"method"`
+	Started                      time.Time           `json:"started"`
+	Finished                     time.Time           `json:"finished"`
+	InputSHA256                  string              `json:"input_sha256"`
+	PromptSHA256                 string              `json:"prompt_sha256"`
+	Usage                        *schema.TokenUsage  `json:"usage"`
+	UsageSamples                 []schema.TokenUsage `json:"usage_samples,omitempty"`
+	Model                        string              `json:"model,omitempty"`
+	HTTPStatus                   int                 `json:"http_status,omitempty"`
+	RawUsageSamples              []json.RawMessage   `json:"raw_usage_samples,omitempty"`
+	TelemetryError               string              `json:"telemetry_error,omitempty"`
+	RequestedMaxTokens           *int                `json:"requested_max_tokens"`
+	RequestedMaxCompletionTokens *int                `json:"requested_max_completion_tokens"`
+	Error                        string              `json:"error,omitempty"`
 }
 type ModelLedger struct {
 	mu    sync.Mutex
@@ -80,6 +82,14 @@ func (l *ModelLedger) Calls() []ModelCall {
 	defer l.mu.Unlock()
 	out := append([]ModelCall(nil), l.calls...)
 	for i := range out {
+		if out[i].RequestedMaxTokens != nil {
+			v := *out[i].RequestedMaxTokens
+			out[i].RequestedMaxTokens = &v
+		}
+		if out[i].RequestedMaxCompletionTokens != nil {
+			v := *out[i].RequestedMaxCompletionTokens
+			out[i].RequestedMaxCompletionTokens = &v
+		}
 		out[i].UsageSamples = append([]schema.TokenUsage(nil), out[i].UsageSamples...)
 		out[i].RawUsageSamples = make([]json.RawMessage, len(l.calls[i].RawUsageSamples))
 		for j, raw := range l.calls[i].RawUsageSamples {

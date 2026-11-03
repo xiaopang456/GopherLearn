@@ -28,6 +28,21 @@ func offlineWire(ledger *ModelLedger, roles RolePrompts, chat *offlineChat) *htt
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/rerank") {
+			var input struct {
+				Documents []string `json:"documents"`
+			}
+			if err = json.Unmarshal(request.Input, &input); err != nil {
+				http.Error(w, "invalid rerank input", 400)
+				return
+			}
+			results := []any{}
+			for i := range input.Documents {
+				results = append(results, map[string]any{"index": i, "relevance_score": 1.0 / float64(i+1)})
+			}
+			err = json.NewEncoder(w).Encode(map[string]any{"output": map[string]any{"results": results}})
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/embeddings") {
 			var inputs []string
 			if e := json.Unmarshal(request.Input, &inputs); e != nil {

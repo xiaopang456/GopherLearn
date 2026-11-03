@@ -217,6 +217,7 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 		return result, err
 	}
 	settings.Entry.ChatBaseURL = wire.URL + "/v1"
+	settings.Config.RagRerankEndpoint = wire.URL + "/v1/rerank"
 	settings.Config.RagBaseUrl = wire.URL + "/v1"
 	settings.Config.RagEmbeddingBaseURL = wire.URL + "/v1"
 	settings.Config.JwtConfig.Key, err = randomHex(32)
@@ -232,6 +233,19 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 	settings.Config.MainConfig.Port = address.Port
 	listener.Close()
 	path := filepath.Join(dir, "product.toml")
+	// The existing configuration intentionally reads this one credential only
+	// from the process environment. Use a fake token for the loopback service.
+	oldToken, hadToken := os.LookupEnv("RAG_RERANK_AUTH_TOKEN")
+	if err = os.Setenv("RAG_RERANK_AUTH_TOKEN", settings.Config.RagRerankToken); err != nil {
+		return result, err
+	}
+	defer func() {
+		if hadToken {
+			os.Setenv("RAG_RERANK_AUTH_TOKEN", oldToken)
+		} else {
+			os.Unsetenv("RAG_RERANK_AUTH_TOKEN")
+		}
+	}()
 	if err = writeEntryConfig(path, settings, wire.URL); err != nil {
 		return result, err
 	}
@@ -240,7 +254,7 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 	if err != nil {
 		return result, err
 	}
-	if loaded.Config.EpisodeQuietWindowSeconds != 86400 || loaded.Entry.Migrate || loaded.Config.RagRerankEnabled {
+	if loaded.Config.EpisodeQuietWindowSeconds != 86400 || loaded.Entry.Migrate || !loaded.Config.RagRerankEnabled || loaded.Config.RagRerankEndpoint != wire.URL+"/v1/rerank" {
 		return result, fmt.Errorf("unexpected standard entry settings")
 	}
 	result.Audit.Started = time.Now().UTC()
@@ -257,7 +271,7 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 	if err != nil {
 		return result, err
 	}
-	body, _ := json.Marshal(map[string]any{"sessionId": snapshot.Session.ID, "requestId": "offline-final-question", "question": question, "knowledgePolicy": "knowledge_preferred"})
+	body, _ := json.Marshal(map[string]any{"sessionId": snapshot.Session.ID, "requestId": "offline-final-question", "question": question, "knowledgePolicy": "knowledge_preferred", "enableThinking": true})
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/v1/AI/agent/run", bytes.NewReader(body))
 	if err != nil {
 		return result, err

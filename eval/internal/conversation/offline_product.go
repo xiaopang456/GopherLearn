@@ -80,11 +80,13 @@ func offlineSettings(repository, storage string) (*entry.Settings, error) {
 	}
 	settings.Config.KnowledgeConfig.StorageDir = storage
 	settings.Config.AgentConfig.EpisodeQuietWindowSeconds = 86400
-	// Reranking has its own HTTP transport, outside the assembly dependency seam.
-	// Offline mode explicitly refuses it rather than leaking a provider request.
-	if settings.Config.RagModelConfig.RagRerankEnabled {
-		return nil, fmt.Errorf("offline runner requires reranking disabled")
-	}
+	settings.Config.AgentThinkingEnabled = true
+	settings.Config.RagChatThinkingDialect = config.ChatThinkingDialectDeepSeek
+	settings.Config.RagRerankEnabled = true
+	settings.Config.RagRerankProvider = config.RerankProviderDashScope
+	settings.Config.RagRerankEndpoint = "http://127.0.0.1:1/v1/rerank"
+	settings.Config.RagRerankModel = "synthetic-rerank"
+	settings.Config.RagRerankToken = "synthetic-rerank-token-at-least-32-characters"
 	return settings, settings.Validate()
 }
 

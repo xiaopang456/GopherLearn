@@ -62,7 +62,7 @@ func collectProvenance(ctx context.Context, repository string, s *entry.Settings
 	out.SnapshotSHA256 = digest(payload)
 	knowledge := s.Config.KnowledgeConfig
 	knowledge.StorageDir = ""
-	functional := map[string]any{"agent": s.Config.AgentConfig, "knowledge": knowledge, "summary_policy": ProductSummaryConfig(s.Config), "chat_model": s.Entry.ChatModel, "thinking_dialect": s.Config.RagChatThinkingDialect, "embedding_model": s.Config.RagEmbeddingModel, "dimension": s.Config.RagDimension, "rerank_enabled": s.Config.RagRerankEnabled}
+	functional := map[string]any{"agent": s.Config.AgentConfig, "knowledge": knowledge, "summary_policy": ProductSummaryConfig(s.Config), "chat_model": s.Entry.ChatModel, "thinking_dialect": s.Config.RagChatThinkingDialect, "embedding_model": s.Config.RagEmbeddingModel, "dimension": s.Config.RagDimension, "rerank_enabled": s.Config.RagRerankEnabled, "rerank_provider": s.Config.RagRerankProvider, "rerank_model": s.Config.RagRerankModel}
 	encoded, err := json.Marshal(functional)
 	if err != nil {
 		return out, err
