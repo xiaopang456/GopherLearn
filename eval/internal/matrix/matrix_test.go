@@ -57,6 +57,9 @@ func TestOptionsRealiseEachCell(t *testing.T) {
 		{Method: config.MethodHybrid, TopK: 5}:                             {TopK: 5, Mode: rag.RetrievalModeHybrid, Rerank: rag.RerankForceOff, WantCandidates: true},
 		{Method: config.MethodHybridRerank, Rule: RuleProduction, TopK: 5}: {TopK: 5, Mode: rag.RetrievalModeHybrid, Rerank: rag.RerankDefault, WantCandidates: true},
 		{Method: config.MethodHybridRerank, Rule: RuleForced, TopK: 12}:    {TopK: 12, Mode: rag.RetrievalModeHybrid, Rerank: rag.RerankForceOn, WantCandidates: true},
+		// The "before" of the keyword-weight change: equal weights, everything else as the default cell.
+		{Method: config.MethodHybridEqual, TopK: 5}:                             {TopK: 5, Mode: rag.RetrievalModeHybrid, Rerank: rag.RerankForceOff, WantCandidates: true, LexicalWeight: 1},
+		{Method: config.MethodHybridEqualRerank, Rule: RuleProduction, TopK: 8}: {TopK: 8, Mode: rag.RetrievalModeHybrid, Rerank: rag.RerankDefault, WantCandidates: true, LexicalWeight: 1},
 	}
 	for cell, want := range cases {
 		if got := cell.Options(); got != want {
@@ -120,6 +123,11 @@ func TestRerankPoolsCountsTheDifferentlyBuiltPools(t *testing.T) {
 	both := Expand(config.Matrix{Methods: []string{config.MethodHybridRerank, config.MethodVectorRerank, config.MethodHybrid}, TopK: []int{3}})
 	if n := RerankPools(both); n != 2 {
 		t.Errorf("hybrid+rerank and vector+rerank build two pools, got %d", n)
+	}
+	// hybrid-equal+rerank builds the same pool as hybrid+rerank: the reranker is asked once per question for both.
+	same := Expand(config.Matrix{Methods: []string{config.MethodHybridRerank, config.MethodHybridEqualRerank, config.MethodHybridEqual}, TopK: []int{3}})
+	if n := RerankPools(same); n != 1 || !IsRerankMethod(config.MethodHybridEqualRerank) || IsRerankMethod(config.MethodHybridEqual) {
+		t.Errorf("equal-weight hybrid+rerank must share the pool of hybrid+rerank, got %d pools", n)
 	}
 	one := Expand(config.Matrix{Methods: []string{config.MethodHybridRerank, config.MethodHybrid}, TopK: []int{3}})
 	if n := RerankPools(one); n != 1 {

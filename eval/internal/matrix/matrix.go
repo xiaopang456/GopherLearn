@@ -52,10 +52,16 @@ func (c Cell) Options() rag.RetrieveOptions {
 		opts.Mode = rag.RetrievalModeKeyword
 	case config.MethodHybrid:
 		opts.Mode = rag.RetrievalModeHybrid
-	case config.MethodHybridRerank, config.MethodVectorRerank:
+	case config.MethodHybridEqual:
+		opts.Mode = rag.RetrievalModeHybrid
+		opts.LexicalWeight = 1
+	case config.MethodHybridRerank, config.MethodVectorRerank, config.MethodHybridEqualRerank:
 		opts.Mode = rag.RetrievalModeHybrid
 		if c.Method == config.MethodVectorRerank {
 			opts.Mode = rag.RetrievalModeVector
+		}
+		if c.Method == config.MethodHybridEqualRerank {
+			opts.LexicalWeight = 1
 		}
 		if c.Rule == RuleForced {
 			opts.Rerank = rag.RerankForceOn
@@ -66,19 +72,24 @@ func (c Cell) Options() rag.RetrieveOptions {
 	return opts
 }
 
-// IsRerankMethod reports whether a method reranks (hybrid+rerank or vector+rerank).
+// IsRerankMethod reports whether a method reranks (hybrid+rerank, vector+rerank or hybrid-equal+rerank).
 func IsRerankMethod(method string) bool {
-	return method == config.MethodHybridRerank || method == config.MethodVectorRerank
+	return method == config.MethodHybridRerank || method == config.MethodVectorRerank || method == config.MethodHybridEqualRerank
 }
 
 // RerankPools is how many differently built candidate pools the matrix sends to the
 // reranker for one question: one per rerank method that can actually call it. The
 // rerank result is cached by (question, pool), so each pool is one paid call per question.
+// hybrid-equal+rerank builds the same pool as hybrid+rerank, so it is not a pool of its own.
 func RerankPools(cells []Cell) int {
 	methods := map[string]bool{}
 	for _, c := range cells {
 		if c.UsesReranker() {
-			methods[c.Method] = true
+			method := c.Method
+			if method == config.MethodHybridEqualRerank {
+				method = config.MethodHybridRerank
+			}
+			methods[method] = true
 		}
 	}
 	return len(methods)

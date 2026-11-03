@@ -31,6 +31,14 @@ const (
 	// channel in the pool. Next to hybrid+rerank it shows what the keyword channel adds
 	// once a reranker is deciding the order.
 	MethodVectorRerank = "vector+rerank"
+	// MethodHybridEqual is hybrid retrieval with the original equal-weight fusion and no reserved
+	// identifier slot (rag.RetrieveOptions.LexicalWeight 1): the "before" of the keyword-weight change,
+	// measured in the same run, on the same index, as the default hybrid cells.
+	MethodHybridEqual = "hybrid-equal"
+	// MethodHybridEqualRerank is hybrid+rerank with that equal-weight fusion. Its candidate pool is the
+	// default one, so it must return exactly what hybrid+rerank returns; the rerank result is cached
+	// per (question, pool), so it costs no extra call.
+	MethodHybridEqualRerank = "hybrid-equal+rerank"
 )
 
 // maxTopK bounds a TopK cell. A forced rerank is further limited to the
@@ -164,9 +172,9 @@ func (m Matrix) validate() error {
 	seen := map[string]bool{}
 	for _, method := range m.Methods {
 		switch method {
-		case MethodVector, MethodKeyword, MethodHybrid, MethodHybridRerank, MethodVectorRerank:
+		case MethodVector, MethodKeyword, MethodHybrid, MethodHybridRerank, MethodVectorRerank, MethodHybridEqual, MethodHybridEqualRerank:
 		default:
-			return fmt.Errorf("matrix.methods: unknown method %q (want %s, %s, %s, %s or %s)", method, MethodVector, MethodKeyword, MethodHybrid, MethodHybridRerank, MethodVectorRerank)
+			return fmt.Errorf("matrix.methods: unknown method %q (want %s, %s, %s, %s, %s, %s or %s)", method, MethodVector, MethodKeyword, MethodHybrid, MethodHybridRerank, MethodVectorRerank, MethodHybridEqual, MethodHybridEqualRerank)
 		}
 		if seen[method] {
 			return fmt.Errorf("matrix.methods: %q is listed twice", method)
@@ -185,7 +193,7 @@ func (m Matrix) validate() error {
 			return fmt.Errorf("matrix.topK: %d is listed twice", k)
 		}
 		topSeen[k] = true
-		if (seen[MethodHybridRerank] || seen[MethodVectorRerank]) && k > maxRerankTopK {
+		if (seen[MethodHybridRerank] || seen[MethodVectorRerank] || seen[MethodHybridEqualRerank]) && k > maxRerankTopK {
 			return fmt.Errorf("matrix.topK: %d is above %d, the reranker's candidate pool, so the rerank methods cannot run at it; drop the method or the value", k, maxRerankTopK)
 		}
 	}
