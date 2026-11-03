@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { checkScenario, materialize, splitForId } from '../scenarios.mjs'
-import { scoreAttempt } from '../score.mjs'
+import { scoreAttempt, normalizeFact } from '../score.mjs'
 const scenario = () => ({ id: 'synthetic-case', category: 'early_fact', split: splitForId('synthetic-case'), question: 'What name did I choose?', turns: [{ user: 'I chose Lantern.', assistant: 'Understood.', user_at: '2026-01-01T00:00:00Z', assistant_at: '2026-01-01T00:00:01Z' }], evidence_turns: [1], answer: { mode: 'fact', accepted: ['Lantern'], forbidden: ['Harbor'] } })
 const record = answer => ({ qid: 'synthetic-case', rep: 0, arm: 'current', env: 'fake', answer })
 test('facts use exact answers, while negation and mixed values remain pending', () => {
@@ -38,4 +38,18 @@ test('paired histories only replace the selected turn and preserve timestamps', 
 })
 test('malformed scenarios fail validation without throwing', () => {
   for (const turns of [null, 1, {}, [null]]) { const s = scenario(); s.turns = turns; assert.ok(checkScenario(s).length) }
+})
+test('quantity spacing, width and unit spellings have identical verdicts', () => {
+  const s = scenario(); s.answer = { mode: 'fact', accepted: ['66分钟'], forbidden: ['33分钟'] }
+  for (const value of ['66 分钟', '66分钟', '６６分钟', '66分鐘', '66 min', '66 minutes', '1.1小时', '3960秒']) assert.equal(scoreAttempt(record(value), s).verdict, 'pass', value)
+  for (const value of ['33 分钟', '３３分钟', '33 mins']) assert.equal(scoreAttempt(record(value), s).verdict, 'fail', value)
+  for (const value of ['不是66分钟', '旧33分钟，新66分钟', '66']) assert.equal(scoreAttempt(record(value), s).verdict, 'needs_judge', value)
+  assert.equal(normalizeFact('0 分钟'), normalizeFact('0小时'))
+})
+test('explicit aliases pass without broad substring matching', () => {
+  const s = scenario(); s.answer.aliases = ['Lamp']
+  assert.equal(scoreAttempt(record('Lamp'), s).verdict, 'pass')
+  assert.equal(scoreAttempt(record('Not Lamp'), s).verdict, 'needs_judge')
+  s.answer.aliases = [null]
+  assert.ok(checkScenario(s).includes('invalid aliases'))
 })

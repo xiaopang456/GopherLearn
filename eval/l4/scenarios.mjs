@@ -24,6 +24,10 @@ export function checkScenario(s) {
   if (!Array.isArray(s.evidence_turns) || s.evidence_turns.some(n => !Number.isInteger(n) || n < 1 || n > (s.turns?.length ?? 0))) errors.push('invalid evidence turns')
   if (!['fact', 'needs_judge'].includes(s.answer?.mode)) errors.push('unknown scoring mode')
   if (s.answer?.mode === 'fact' && (!Array.isArray(s.answer.accepted) || !s.answer.accepted.length || s.answer.accepted.some(v => typeof v !== 'string' || !v.trim()))) errors.push('missing accepted answers')
+  for (const key of ['aliases', 'forbidden']) {
+    const values = s.answer?.[key]
+    if (values !== undefined && (!Array.isArray(values) || values.some(v => typeof v !== 'string' || !v.trim()))) errors.push(`invalid ${key}`)
+  }
   if (s.category === 'irrelevant') {
     for (const name of ['control', 'distractor']) {
       const c = s.conditions?.[name]
