@@ -19,6 +19,7 @@ type Reranker struct {
 	healthCalls int
 	healthErr   error
 	rerankErr   error
+	brokenScore bool
 }
 
 var _ rag.Reranker = (*Reranker)(nil)
@@ -33,13 +34,24 @@ func (r *Reranker) FailHealth(err error) {
 	r.healthErr = err
 }
 
-// FailRerank makes Rerank return err; nil restores it. Pass an error wrapping
-// rag.ErrRerankUnavailable to exercise the retrieval service's fallback path,
-// and any other error to exercise its failure path.
+// FailRerank makes Rerank return err; nil restores it. The retrieval service
+// answers any rerank error (a timeout, throttling, an unclassified failure) with
+// the fused order and the status "fallback"; it retries a timeout or an
+// unavailable service once first.
 func (r *Reranker) FailRerank(err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.rerankErr = err
+}
+
+// BreakScores makes Rerank answer with scores that break the protocol (an index
+// outside the candidate list), which the retrieval service does not paper over:
+// that retrieval fails. It is the one rerank failure that still fails. Passing
+// false restores it.
+func (r *Reranker) BreakScores(broken bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.brokenScore = broken
 }
 
 // Unavailable returns the error a degraded provider yields: one that wraps
@@ -81,6 +93,7 @@ func (r *Reranker) Rerank(ctx context.Context, query string, passages []string) 
 	r.calls++
 	r.passages += len(passages)
 	failure := r.rerankErr
+	broken := r.brokenScore
 	r.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -90,6 +103,9 @@ func (r *Reranker) Rerank(ctx context.Context, query string, passages []string) 
 	}
 	if failure != nil {
 		return nil, failure
+	}
+	if broken {
+		return []rag.RerankScore{{Index: len(passages) + 5, Score: 1}}, nil
 	}
 	queryTokens := tokenSet(query)
 	scores := make([]rag.RerankScore, len(passages))
