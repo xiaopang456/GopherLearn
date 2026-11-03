@@ -18,10 +18,16 @@ node eval/l4/cli.mjs report --run C:\evaluation\scored --out C:\evaluation\paire
 
 Sealed input requires `--split sealed` at both stages. A score manifest binds the dataset, raw records, outcomes and expected scenario inventory. Reports reject modified outcomes. Unknown options, duplicate attempts and output overwrites are refused.
 
-Each scenario expects three attempts, numbered 0 through 2. Single-configuration summaries show conservative and adjudicated denominators, pass^3, complete-case pass^2 and missing scenarios. Pair differences average each scenario's three attempts first, then bootstrap scenarios, preserving repeated-attempt dependence. Paired all-success counts use exact McNemar. Incomplete pairs are listed and excluded from the complete-pair estimate; do not interpret that estimate without the missingness report. One complete pair has no confidence interval. Seed and bootstrap count are recorded.
+Each scenario expects three attempts, numbered 0 through 2. Single-configuration summaries show conservative and adjudicated denominators, pass^3, complete-case pass^2 and missing scenarios. Pair differences average each scenario's three attempts first, then bootstrap scenarios, preserving repeated-attempt dependence. Paired all-success counts use exact McNemar. Reports retain each scenario's raw three-verdict pairing and distinguish missing attempts, pending judgments and errors. Fake and real observations cannot be mixed in a report.
+
+The primary estimate uses complete pairs. A separate sensitivity section includes every expected scenario: it reports the difference when all unresolved outcomes count as non-success, and bounds from assigning missing/pending/error outcomes opposite success extremes. Those bounds are not confidence intervals. One complete pair has no bootstrap interval. Seed and bootstrap count are recorded.
+
+Sensitivity planning includes an exploratory normal approximation using the variance of independent scenario mean differences, with fixed two-sided alpha .05 and target power .8. It returns null for insufficient/zero observed variance and flags an estimate outside the feasible effect range. An additional exact conditional McNemar estimate uses observed scenario-level discordance for the all-three-pass metric. Zero or too few discordants produce null with a reason, rather than a claim of zero detectable effect. These pilot estimates do not guarantee power in a small or future sample.
 
 ```powershell
 node --test "eval/l4/test/*.test.mjs"
 ```
 
-Synthetic fixtures verify arithmetic and control flow only. Fake results are not quality evidence. This implementation still needs integration with final-question records and calibrated semantic judgments, additional malformed-input review, missing-pair sensitivity analysis and minimum-detectable-effect reporting before a final evaluation report.
+Input records carry `qid`, `arm`, `rep`, `condition`, `env`, `answer`, optional `error`, and the runner's `backgroundAudit`. Malformed identities, duplicate attempts, unknown conditions, inconsistent outcome inventories and modified outcome files are rejected. The final-question runner can export this contract directly as `record.jsonl`; concatenate such files when scoring multiple attempts.
+
+Synthetic fixtures verify arithmetic and control flow only. Fake results are not quality evidence. Semantic judge calibration, independent dataset review and separately authorized real execution remain prerequisites for a final quality evaluation. Open answers remain `needs_judge` until an audited judgment is supplied.
