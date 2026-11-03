@@ -82,6 +82,7 @@ jobs:
         with:
           node-version: 24
       - run: node --test "l2l3/test/*.test.mjs"
+      - run: node --test "l4/test/*.test.mjs"
 
   frontend:
     name: web client
