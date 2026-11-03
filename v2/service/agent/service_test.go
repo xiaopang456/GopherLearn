@@ -8,7 +8,9 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -83,6 +85,46 @@ func TestServiceCompletesRunAndPersistsOnlyPublicFacts(t *testing.T) {
 		if step.Type == model.AgentStepPlan && step.ResultSummary != "" {
 			t.Fatalf("plan step must not persist hidden reasoning: %#v", step)
 		}
+	}
+}
+
+// A turn that answered under a spent budget says so where a reader and the
+// evaluation will find it: in the completion event and in the run row. A turn
+// that answered freely still says "answered".
+func TestServiceRecordsTheCloseoutReasonOfABudgetTurn(t *testing.T) {
+	chatModel := &scriptedChatModel{
+		forbiddenAnswer: "完成答案",
+		respond: func(_ context.Context, _ int) (*schema.Message, error) {
+			return fakeToolCall(1, "topic"), nil
+		},
+	}
+	repository := newMemoryRunRepository(agentTestSession())
+	var executions atomic.Int32
+	config := DefaultRunnerConfig()
+	config.MaxToolCalls = 1
+	runner := mustRunner(t, chatModel, StaticToolRegistry{Registered: []tool.BaseTool{mustFakeTool(t, &executions)}}, repository, config)
+	messages := &memoryMessageStore{}
+	service, err := NewService(repository, repository, messages, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := newEventCollector()
+	result, err := service.Run(context.Background(), agentTestRequest(), events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TerminationReason != TerminationToolBudgetExhausted {
+		t.Fatalf("result reason = %q, want %q", result.TerminationReason, TerminationToolBudgetExhausted)
+	}
+	if repository.reason != TerminationToolBudgetExhausted {
+		t.Fatalf("row reason = %q, want %q", repository.reason, TerminationToolBudgetExhausted)
+	}
+	if repository.status != model.AgentRunCompleted {
+		t.Fatalf("row status = %q", repository.status)
+	}
+	completed := events.events[len(events.events)-1]
+	if completed.Type != EventRunCompleted || completed.TerminationReason != TerminationToolBudgetExhausted {
+		t.Fatalf("completion event = %#v", completed)
 	}
 }
 
@@ -602,7 +644,7 @@ func (r *memoryRunRepository) RenewRunLease(_ context.Context, _ int64, _, _, le
 }
 
 func (r *memoryRunRepository) CompleteRun(
-	_ context.Context, _ int64, _, _, leaseToken string, _ uint64, assistant *model.Message, answer, resultJSON string,
+	_ context.Context, _ int64, _, _, leaseToken string, _ uint64, assistant *model.Message, answer, resultJSON, terminationReason string,
 ) (*model.AgentRun, *model.Message, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -613,7 +655,10 @@ func (r *memoryRunRepository) CompleteRun(
 		return nil, nil, r.completeErr
 	}
 	r.status = model.AgentRunCompleted
-	r.reason = "answered"
+	r.reason = terminationReason
+	if strings.TrimSpace(r.reason) == "" {
+		r.reason = "answered"
+	}
 	r.run.Status = model.AgentRunCompleted
 	r.run.AnswerSummary = answer
 	r.run.ResultJSON = resultJSON

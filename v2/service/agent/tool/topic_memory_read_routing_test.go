@@ -730,10 +730,10 @@ func TestSharedDedupDoesNotRemoveDifferentRecords(t *testing.T) {
 }
 
 // The runner's per-capability limit is one, and it is enforced before the tool
-// is entered rather than only inside it. A model that asks twice is stopped by
-// the run budget, which is a different fuse from the tool's own: the tool
-// refuses because it has nothing else to say, the runner because a turn only
-// gets so many rounds.
+// is entered rather than only inside it. The second call is refused before it
+// reaches the tool, and the refusal is an observation rather than the end of
+// the turn: the model is told the capability has nothing more to say, and it
+// answers from what the first read brought back.
 func TestTheRunnerAllowsOneTopicReadPerTurn(t *testing.T) {
 	setup := newRoutingSetup(t, activeQuiz("RPC 粘包"), []serviceagent.TopicMemoryRecord{
 		routingRecord("m-1", "rpc-粘包", "粘包", "把 TCP 当成没有刻度的水管", 1730000000),
@@ -743,15 +743,20 @@ func TestTheRunnerAllowsOneTopicReadPerTurn(t *testing.T) {
 		}
 		return schema.AssistantMessage(cite(input, "S"), nil)
 	})
-	_, err := setup.runner.Run(context.Background(), routingRun(), serviceagent.DiscardEvents)
-	if err == nil {
-		t.Fatal("a second topic read was allowed")
-	}
-	if !strings.Contains(err.Error(), agenttool.TopicMemoryReadName) {
-		t.Fatalf("the second call was refused for the wrong reason: %v", err)
+	result, err := setup.runner.Run(context.Background(), routingRun(), serviceagent.DiscardEvents)
+	if err != nil {
+		t.Fatalf("a refused topic read failed the turn: %v", err)
 	}
 	if setup.provider.reads.Load() != 1 {
 		t.Fatalf("the exact reader ran %d times", setup.provider.reads.Load())
+	}
+	if strings.TrimSpace(result.Answer) == "" {
+		t.Fatal("the turn produced no answer")
+	}
+	// The whole-run budget was not spent, so this turn was not closed out by
+	// one: the model answered when it was asked to.
+	if result.Closeout != serviceagent.TerminationAnswered {
+		t.Fatalf("closeout = %q, want %q", result.Closeout, serviceagent.TerminationAnswered)
 	}
 	config := serviceagent.AgentMemoryToolV3RunnerConfig()
 	if config.PerTool.TopicMemoryRead != 1 || config.MaxToolCalls != 6 ||

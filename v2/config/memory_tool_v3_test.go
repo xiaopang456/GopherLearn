@@ -65,6 +65,11 @@ func TestAgentMemoryToolV3ObeysTheSameConfigurationRulesAsV1(t *testing.T) {
 	if err := longer.Validate(); err == nil {
 		t.Fatal("agent_memory_tool_v3 accepted a longer deadline than the 45 seconds it was authorised for")
 	}
+	longerThinking := complete
+	longerThinking.DeadlineThinkingSeconds = 60
+	if err := longerThinking.Validate(); err == nil {
+		t.Fatal("agent_memory_tool_v3 accepted a longer thinking deadline than the 45 seconds it was authorised for")
+	}
 }
 
 // Two isolated experimental modes register the narrow tool: v3 keeps its

@@ -512,6 +512,7 @@ func (r *Repository) CompleteRun(
 	expectedVersion uint64,
 	assistant *model.Message,
 	answerSummary, resultJSON string,
+	terminationReason string,
 ) (*model.AgentRun, *model.Message, error) {
 	if err := r.ready(); err != nil {
 		return nil, nil, err
@@ -519,6 +520,13 @@ func (r *Repository) CompleteRun(
 	if strings.TrimSpace(resultJSON) == "" || strings.TrimSpace(leaseToken) == "" || assistant == nil ||
 		assistant.IsUser || assistant.SessionID != sessionID {
 		return nil, nil, fmt.Errorf("agent completion payload is invalid")
+	}
+	terminationReason = strings.TrimSpace(terminationReason)
+	if terminationReason == "" {
+		terminationReason = "answered"
+	}
+	if len(terminationReason) > 64 {
+		return nil, nil, fmt.Errorf("agent termination reason is too long")
 	}
 	runIDCopy, role := runID, model.MessageAgentRunRoleAssistant
 	assistant.AgentRunID, assistant.AgentRunRole = &runIDCopy, &role
@@ -551,7 +559,7 @@ func (r *Repository) CompleteRun(
 			Updates(map[string]interface{}{
 				"status": model.AgentRunCompleted, "version": gorm.Expr("version + 1"),
 				"answer_summary": answerSummary, "result_json": resultJSON,
-				"finished_at": &now, "termination_reason": "answered",
+				"finished_at": &now, "termination_reason": terminationReason,
 				"lease_token": "", "lease_expires_at": nil, "heartbeat_at": nil,
 			})
 		if result.Error != nil {
