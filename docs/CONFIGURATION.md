@@ -174,6 +174,7 @@
 | `deadlineThinkingSeconds` | `60` | 单轮时间预算（**思考开启时**）。思考开启的回答要等思考写完再写，实测最后那一次生成本身就要四十秒左右，用 45 秒会把这些轮次切在答案出现之前；思考关闭的轮次仍用 `deadlineSeconds` |
 | `knowledgeDefaultTopK` | `5` | 知识库默认取几段 |
 | `knowledgeMaxTopK` | `8` | 知识库最多取几段 |
+| `knowledgeRelevanceThreshold` | `0.80` | **服务端预检索的相关性门槛**。模型回答之前，服务端先拿这个问题去检索学习者的笔记，重排分数高于这个值的片段才会作为证据放进提示词；低于门槛就不给证据，只在窗口里说明"这次没找到高相关内容"。取值 0 到 1，**0 表示完全不启用预检索**（没有重排服务的部署本来也拿不到重排分数） |
 | `memoryReadMode` | `legacy_v2` | 长期记忆的整条读取路径模式 |
 | `episodeRecallMode` | `shadow_only` | 情景召回模式 |
 | `episodeRelationMode` | `off` | 情景关系抽取模式 |
