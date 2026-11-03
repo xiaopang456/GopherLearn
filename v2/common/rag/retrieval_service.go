@@ -112,6 +112,9 @@ type RetrievalResult struct {
 	RerankScore      float64
 	RerankRank       int
 	RerankApplied    bool
+	// RerankFellBack is set on every result of a retrieval whose reranker was tried and
+	// failed: the order is the fused order, not a reranked one.
+	RerankFellBack bool
 }
 
 // RAGService is immutable after construction and is safe to reuse for the
@@ -350,7 +353,12 @@ func (s *RAGService) retrieve(ctx context.Context, userID int64, query string, o
 		rerankStarted := time.Now()
 		scores, rerankErr := s.reranker.Rerank(ctx, query, passages)
 		if rerankErr != nil {
-			if errors.Is(rerankErr, ErrRerankUnavailable) {
+			// Reranking only improves the order of candidates that are already good enough to
+			// answer from, so a reranker that timed out, was throttled or answered with an error
+			// must not take the retrieval down: the fused order is kept and the result says so.
+			// The exception is a caller that has itself given up (its context is done): that is
+			// not a reranker failure and is reported as before.
+			if ctx.Err() == nil || errors.Is(rerankErr, ErrRerankUnavailable) {
 				observability.Memory.KnowledgeRerank("fallback", time.Since(rerankStarted))
 				candidates = a0Candidates
 				rerankStatus = RerankFallback
@@ -397,6 +405,11 @@ func (s *RAGService) retrieve(ctx context.Context, userID int64, query string, o
 	results, err = buildRetrievalResults(candidates, activeVersions, documentNames, rerankScores)
 	if err != nil {
 		return nil, err
+	}
+	if rerankStatus == RerankFallback {
+		for index := range results {
+			results[index].RerankFellBack = true
+		}
 	}
 	return results, nil
 }

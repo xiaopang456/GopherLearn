@@ -65,7 +65,7 @@ func hasKind(record retrievalRecord, kind string) bool {
 // RetrieveWithOptions with only TopK set must be indistinguishable from
 // Retrieve: same results, same error, same calls to every dependency, same
 // metric counters. It is checked on the fixed scenarios and on the generated
-// ones used for the differential test.
+// ones the seeded generator in retrieval_differential_test.go produces.
 func TestRetrieveWithZeroOptionsMatchesRetrieve(t *testing.T) {
 	compare := func(sc retrievalScenario) {
 		t.Helper()

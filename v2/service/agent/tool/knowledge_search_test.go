@@ -303,3 +303,24 @@ func (f *fakeRetriever) lastTopK() int {
 	defer f.mu.Unlock()
 	return f.topKs[len(f.topKs)-1]
 }
+
+func TestKnowledgeSearchSummaryRecordsThatTheRerankFellBack(t *testing.T) {
+	results := []rag.RetrievalResult{
+		{DocID: "doc-a", DocVersion: 1, DocumentName: "redis.md", ChunkID: "chunk-a", ChunkType: string(rag.ChunkTypeProse), RawContent: "redis fact", RerankFellBack: true},
+		{DocID: "doc-b", DocVersion: 1, DocumentName: "rpc.md", ChunkID: "chunk-b", ChunkType: string(rag.ChunkTypeProse), RawContent: "rpc fact", RerankFellBack: true},
+	}
+	clean := []rag.RetrievalResult{
+		{DocID: "doc-a", DocVersion: 1, DocumentName: "redis.md", ChunkID: "chunk-a", ChunkType: string(rag.ChunkTypeProse), RawContent: "redis fact", RerankApplied: true},
+	}
+	retriever := &fakeRetriever{resultsByQuery: map[string][]rag.RetrievalResult{"fell back": results, "reranked": clean}}
+	searchTool := mustKnowledgeTool(t, retriever, 42, DefaultKnowledgeSearchConfig())
+
+	fellBack := invokeKnowledgeTool(t, searchTool, `{"query":"fell back"}`)
+	if !strings.HasSuffix(fellBack.Summary, rerankFallbackNote) || len(fellBack.Results) != 2 || fellBack.Status != "complete" {
+		t.Fatalf("a search whose rerank failed must say so and still return its results: %+v", fellBack)
+	}
+	reranked := invokeKnowledgeTool(t, searchTool, `{"query":"reranked"}`)
+	if strings.Contains(reranked.Summary, rerankFallbackNote) {
+		t.Fatalf("a reranked search carries the fallback note: %q", reranked.Summary)
+	}
+}

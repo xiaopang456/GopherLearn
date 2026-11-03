@@ -1,21 +1,19 @@
 package rag
 
-// TestRetrieveMatchesLegacy runs the frozen pre-refactor Retrieve
-// (retrieval_legacy_test.go) and the live Retrieve on the same generated inputs
-// and requires every observable effect to be identical: the results (nil and
-// empty are different), the error text and every sentinel it matches, every call
-// to the loader, the embedder, both searches and the reranker, and the metric
-// counters. The inputs come from a fixed seed, so a failure is reproducible.
+// The generated inputs the options tests compare against the default retrieval.
 //
-// It exists to prove the E2 refactor; see the rules in retrieval_legacy_test.go
-// for what to do when the default behaviour is changed on purpose.
+// This file used to hold TestRetrieveMatchesLegacy, which ran a frozen copy of the pre-refactor
+// Retrieve (retrieval_legacy_test.go) side by side with the live one. A failed reranker no longer
+// takes the retrieval down - the default retrieval keeps the fused order and marks the results -
+// so the frozen copy stopped describing the default and was removed together with that test, as
+// the rules in the removed file asked. The golden scenarios (retrieval_golden_test.go) keep
+// guarding the new default; what is left here is the seeded scenario generator, which
+// TestRetrieveWithZeroOptionsMatchesRetrieve still uses.
 
 import (
 	"context"
 	"fmt"
 	"math/rand"
-	"reflect"
-	"testing"
 )
 
 const (
@@ -120,38 +118,4 @@ func randomRetrievalScenario(r *rand.Rand, index int) retrievalScenario {
 		sc.UserID = 0
 	}
 	return sc
-}
-
-func TestRetrieveMatchesLegacy(t *testing.T) {
-	r := rand.New(rand.NewSource(differentialSeed))
-	outcomes := map[string]int{}
-	for index := 0; index < differentialCases; index++ {
-		scenario := randomRetrievalScenario(r, index)
-		legacy := runRetrievalScenario(t, scenario, legacyRetrieve)
-		current := runRetrievalScenario(t, scenario, currentRetrieve)
-		if !reflect.DeepEqual(legacy, current) {
-			legacyJSON, _ := jsonIndent(legacy.golden("legacy"))
-			currentJSON, _ := jsonIndent(current.golden("current"))
-			t.Fatalf("Retrieve differs from the frozen legacy copy on %s\n--- legacy\n%s\n--- current\n%s",
-				describeScenario(scenario), truncateForReport(legacyJSON), truncateForReport(currentJSON))
-		}
-		switch {
-		case legacy.Err != "":
-			outcomes["error"]++
-		case len(legacy.Results) == 0:
-			outcomes["empty"]++
-		default:
-			outcomes["results"]++
-		}
-		if len(legacy.RerankCalls) > 0 {
-			outcomes["reranked"]++
-		}
-	}
-	// The generator must keep reaching every kind of outcome; otherwise the test
-	// would pass without comparing anything interesting.
-	for _, outcome := range []string{"error", "empty", "results", "reranked"} {
-		if outcomes[outcome] < 100 {
-			t.Errorf("only %d of %d generated cases ended as %q; the generator no longer covers it", outcomes[outcome], differentialCases, outcome)
-		}
-	}
 }
