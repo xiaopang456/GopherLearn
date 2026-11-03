@@ -17,7 +17,9 @@ func TestCompleteOfflineProductIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	repository := filepath.Join("..", "..", "..")
-	turns := make([]Turn, 40)
+	// At 42 turns the final user message crosses the production trigger. This
+	// exercises compaction through the standard HTTP SDK path as well as ReAct.
+	turns := make([]Turn, 42)
 	for i := range turns {
 		turns[i] = testTurn(i)
 	}
@@ -27,10 +29,15 @@ func TestCompleteOfflineProductIntegration(t *testing.T) {
 	}
 	snapshot, calls := warmup.Snapshot, warmup.Calls
 	writeOfflineEvidence(t, "warmup.json", warmup)
-	if len(warmup.Turns) != 40 || warmup.DegradedTurns != 0 {
+	if evidence := os.Getenv("GL_CONVERSATION_EVIDENCE_DIR"); evidence != "" {
+		if err := WriteSnapshot(filepath.Join(evidence, "snapshot.json"), snapshot); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(warmup.Turns) != 42 || warmup.DegradedTurns != 0 {
 		t.Fatalf("warmup turns=%d degraded=%d", len(warmup.Turns), warmup.DegradedTurns)
 	}
-	if len(snapshot.Messages) != 80 || snapshot.Summary == nil || len(calls) != 12 {
+	if len(snapshot.Messages) != 84 || snapshot.Summary == nil || len(calls) != 12 {
 		t.Fatalf("messages=%d summary=%+v calls=%d", len(snapshot.Messages), snapshot.Summary, len(calls))
 	}
 	for _, c := range calls {
@@ -67,12 +74,13 @@ func TestCompleteOfflineProductIntegration(t *testing.T) {
 		foundRecent := false
 		for _, m := range result.ContextMessages {
 			foundSummary = foundSummary || strings.Contains(m.Content, "synthetic offline summary")
-			foundRecent = foundRecent || m.Content == turns[39].User
+			foundRecent = foundRecent || m.Content == turns[41].User
 		}
 		if !foundSummary || !foundRecent {
 			t.Fatalf("missing summary/recent context: %+v", result.ContextMessages)
 		}
 		answers := 0
+		summaries := 0
 		for _, call := range result.Calls {
 			if call.Role == "background" {
 				t.Fatal("background model ran")
@@ -80,12 +88,15 @@ func TestCompleteOfflineProductIntegration(t *testing.T) {
 			if call.Role == "answer" {
 				answers++
 			}
+			if call.Role == "summary" {
+				summaries++
+			}
 			if call.Usage != nil {
 				t.Fatal("invented offline usage")
 			}
 		}
-		if answers != 1 {
-			t.Fatalf("answer model calls=%d", answers)
+		if answers != 1 || summaries != 1 {
+			t.Fatalf("answer model calls=%d summary calls=%d", answers, summaries)
 		}
 		t.Logf("repeat=%d restore_ms=%d question_ms=%d pending_before=%d calls=%d snapshot=%s config=%s", repeat, result.RestoreMilliseconds, result.QuestionMilliseconds, result.BeforeCounts["episode"].Pending, len(result.Calls), result.Provenance.SnapshotSHA256, result.Provenance.ConfigSHA256)
 	}
