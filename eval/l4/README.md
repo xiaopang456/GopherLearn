@@ -60,6 +60,10 @@ A saved diagnosis can be read again without a model call:
 go run ./cmd/l4-summary -reclassify C:\evaluation\diagnosis\diagnosis.json -output-dir C:\evaluation\diagnosis-again
 ```
 
+## Scoring output directories
+
+A run directory may hold more than one scored directory when the scoring rules change between two rounds of the same run. In that case the **later directory is the authoritative one** and the earlier one is kept only as a comparison. For the conversation run that changed the fact scoring, `score-fact2/` is the authoritative directory and `score-fact/` is the superseded first round, kept for comparison only. A report must name the scored directory it used.
+
 ## Scope and real execution
 
 This implements the offline execution chain. Paid execution remains disabled. A real evaluation separately needs a frozen reviewed dataset, immutable corpus metadata bound to its shared index, a budget-enforcing upstream proxy, approved price accounting and calibrated semantic judgments. The fake command cannot certify model quality or real cost. `BackgroundAudit.Complete` is derived from journal verification, model coverage and successful shutdown, never from polling alone.

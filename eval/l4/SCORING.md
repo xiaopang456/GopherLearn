@@ -31,3 +31,5 @@ node --test "eval/l4/test/*.test.mjs"
 Input records carry `qid`, `arm`, `rep`, `condition`, `env`, `answer`, optional `error`, and the runner's `backgroundAudit`. Malformed identities, duplicate attempts, unknown conditions, inconsistent outcome inventories and modified outcome files are rejected. The final-question runner can export this contract directly as `record.jsonl`; concatenate such files when scoring multiple attempts.
 
 Synthetic fixtures verify arithmetic and control flow only. Fake results are not quality evidence. Semantic judge calibration, independent dataset review and separately authorized real execution remain prerequisites for a final quality evaluation. Open answers remain `needs_judge` until an audited judgment is supplied.
+
+When one run directory holds several scored directories, the later one supersedes the earlier: `score-fact2/` is authoritative and `score-fact/` is the superseded first round, kept for comparison only. A report names the scored directory it used.
