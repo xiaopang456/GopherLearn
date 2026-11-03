@@ -4522,11 +4522,41 @@
           "embedding content 32",
           "embedding content 33"
         ]
+      },
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
       }
     ],
     "counters": {
       "knowledge_candidate_total{match_kind=hybrid}": 1,
       "knowledge_rerank_total{status=fallback}": 1,
+      "knowledge_rerank_total{status=retried}": 1,
       "knowledge_retrieval_total{status=complete,reason=none}": 1
     }
   },
@@ -4612,11 +4642,41 @@
           "embedding content 32",
           "embedding content 33"
         ]
+      },
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
       }
     ],
     "counters": {
       "knowledge_candidate_total{match_kind=hybrid}": 5,
       "knowledge_rerank_total{status=fallback}": 1,
+      "knowledge_rerank_total{status=retried}": 1,
       "knowledge_retrieval_total{status=complete,reason=none}": 1
     }
   },
@@ -4708,11 +4768,41 @@
           "embedding content 32",
           "embedding content 33"
         ]
+      },
+      {
+        "query": "如何设置 TTL",
+        "passages": [
+          "embedding content 10",
+          "embedding content 11",
+          "embedding content 12",
+          "embedding content 13",
+          "embedding content 14",
+          "embedding content 15",
+          "embedding content 16",
+          "embedding content 17",
+          "embedding content 18",
+          "embedding content 19",
+          "embedding content 20",
+          "embedding content 21",
+          "embedding content 22",
+          "embedding content 23",
+          "embedding content 24",
+          "embedding content 25",
+          "embedding content 26",
+          "embedding content 27",
+          "embedding content 28",
+          "embedding content 29",
+          "embedding content 30",
+          "embedding content 31",
+          "embedding content 32",
+          "embedding content 33"
+        ]
       }
     ],
     "counters": {
       "knowledge_candidate_total{match_kind=hybrid}": 8,
       "knowledge_rerank_total{status=fallback}": 1,
+      "knowledge_rerank_total{status=retried}": 1,
       "knowledge_retrieval_total{status=complete,reason=none}": 1
     }
   },
