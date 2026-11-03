@@ -3,11 +3,12 @@ package conversation
 import (
 	"context"
 	"fmt"
-	"os"
+	"io"
 	"strings"
 
 	"GopherAI/common/mysql"
 	"GopherAI/model"
+	knowledge "GopherAI/service/knowledge"
 	driver "gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -38,7 +39,7 @@ func (s *Sandbox) InitProductSchema(ctx context.Context) error {
 // SeedProduct copies only explicitly supplied evaluation identity and immutable
 // document metadata. Files must already exist with their exact hash; no live
 // application database is a seed source. Redis indexes are not copied or reset.
-func (s *Sandbox) SeedProduct(ctx context.Context, user model.User, docs []model.KnowledgeDocument) error {
+func (s *Sandbox) SeedProduct(ctx context.Context, user model.User, docs []model.KnowledgeDocument, storageRoot string) error {
 	if user.ID <= 0 || strings.TrimSpace(user.Username) == "" {
 		return fmt.Errorf("invalid evaluation identity")
 	}
@@ -46,11 +47,20 @@ func (s *Sandbox) SeedProduct(ctx context.Context, user model.User, docs []model
 		if d.UserID != user.ID || d.ID == "" || d.IndexStatus != model.KnowledgeStatusReady || d.Version != d.ActiveVersion || d.ActiveVersion < 1 || d.ProcessingJobID != "" || d.ActiveExecutionID != "" || d.CleanupVersion != 0 || d.CleanupAfter != nil || d.DeletedAt.Valid {
 			return fmt.Errorf("document seed is not immutable and ready")
 		}
-		bytes, err := os.ReadFile(d.StoragePath)
+		storage, err := knowledge.NewLocalFileStorage(storageRoot)
+		if err != nil {
+			return err
+		}
+		file, err := storage.Open(d.UserID, d.ID, d.StoragePath)
 		if err != nil {
 			return fmt.Errorf("seed document unavailable: %w", err)
 		}
-		if digest(bytes) != d.ContentHash || int64(len(bytes)) != d.FileSize || d.ActiveHash == nil || *d.ActiveHash != d.ContentHash || d.ActiveName == nil || *d.ActiveName != d.OriginalName {
+		bytes, readErr := io.ReadAll(io.LimitReader(file, 64<<20+1))
+		closeErr := file.Close()
+		if readErr != nil || closeErr != nil || len(bytes) > 64<<20 {
+			return fmt.Errorf("seed document read failed or exceeds limit")
+		}
+		if knowledge.ContentHash(bytes) != d.ContentHash || int64(len(bytes)) != d.FileSize || d.ActiveHash == nil || *d.ActiveHash != d.ContentHash || d.ActiveName == nil || *d.ActiveName != d.OriginalName {
 			return fmt.Errorf("document seed hash or identity mismatch")
 		}
 	}
