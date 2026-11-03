@@ -2,6 +2,7 @@ package conversation
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +26,7 @@ func TestCompleteOfflineProductIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapshot, calls := warmup.Snapshot, warmup.Calls
+	writeOfflineEvidence(t, "warmup.json", warmup)
 	if len(warmup.Turns) != 40 || warmup.DegradedTurns != 0 {
 		t.Fatalf("warmup turns=%d degraded=%d", len(warmup.Turns), warmup.DegradedTurns)
 	}
@@ -39,6 +41,7 @@ func TestCompleteOfflineProductIntegration(t *testing.T) {
 	var provenance Provenance
 	for repeat := 0; repeat < 3; repeat++ {
 		result, err := RunOfflineProduct(ctx, repository, snapshot, "请回顾当前会话里的练习安排。")
+		writeOfflineEvidence(t, fmt.Sprintf("repeat-%d.json", repeat), result)
 		if err != nil {
 			t.Fatalf("repeat %d: %v; response=%s audit=%+v", repeat, err, result.Response, result.Audit)
 		}
@@ -84,5 +87,6 @@ func TestCompleteOfflineProductIntegration(t *testing.T) {
 		if answers != 1 {
 			t.Fatalf("answer model calls=%d", answers)
 		}
+		t.Logf("repeat=%d restore_ms=%d question_ms=%d pending_before=%d calls=%d snapshot=%s config=%s", repeat, result.RestoreMilliseconds, result.QuestionMilliseconds, result.BeforeCounts["episode"].Pending, len(result.Calls), result.Provenance.SnapshotSHA256, result.Provenance.ConfigSHA256)
 	}
 }

@@ -58,6 +58,10 @@ func run(args []string, out io.Writer) error {
 	var turns []conversation.Turn
 	var snapshot conversation.Snapshot
 	var err error
+	inputDigest, err := fileDigest(*input)
+	if err != nil {
+		return err
+	}
 	if *phase == "prepare" {
 		file, e := os.Open(*input)
 		if e != nil {
@@ -154,11 +158,26 @@ func run(args []string, out io.Writer) error {
 		err = errors.Join(err, cause)
 	}
 	manifest := map[string]any{"scope": conversation.ProductScope, "env": "fake", "phase": *phase, "paid_model_calls": 0, "quality_and_cost_verified": false, "success": err == nil}
+	manifest["input_sha256"] = inputDigest
+	outputs := map[string]string{}
+	for _, name := range []string{"snapshot.json", "model-calls.json", "warmup.json", "result.json", "record.jsonl"} {
+		hash, hashErr := fileDigest(filepath.Join(*output, name))
+		if hashErr == nil {
+			outputs[name] = hash
+		} else if !os.IsNotExist(hashErr) {
+			err = errors.Join(err, hashErr)
+		}
+	}
+	manifest["outputs"] = outputs
+	if current, hashErr := fileDigest(*input); hashErr != nil || current != inputDigest {
+		err = errors.Join(err, fmt.Errorf("input changed during attempt"))
+	}
+	manifest["success"] = err == nil
 	if err != nil {
 		manifest["error"] = err.Error()
 	}
 	err = errors.Join(err, write("manifest.json", manifest))
-	fmt.Fprintln(out, "OFFLINE ONLY: complete product with fake model/vector transports; no quality or cost conclusion")
+	fmt.Fprintln(out, "OFFLINE ONLY: standard product entry, disposable MySQL/Redis, loopback fake model; no quality or cost conclusion")
 	return err
 }
 func main() {

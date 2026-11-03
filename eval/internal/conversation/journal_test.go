@@ -52,6 +52,10 @@ func TestJobJournalIntegration(t *testing.T) {
 	if err != nil || !executed || len(events) != 8 {
 		t.Fatalf("events=%+v executed=%v err=%v", events, executed, err)
 	}
+	audit := BackgroundAudit{Started: time.Now().Add(-time.Minute), Answered: time.Now(), Complete: true, ExecutedBeforeAnswer: executed}
+	if err := audit.ValidateBackground(); err == nil {
+		t.Fatal("transient execution certified as valid")
+	}
 	if err = j.AnswerBarrier(ctx); err == nil {
 		t.Fatal("duplicate barrier accepted")
 	}
