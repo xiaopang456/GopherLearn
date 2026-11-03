@@ -108,9 +108,9 @@ dimension = 1024
 # rerankProvider = "local"
 # rerankEndpoint = "http://127.0.0.1:18083"
 #
-# 单次调用上限（毫秒）。留空即用默认值：远程 5 秒、本地 30 秒。
+# 单次调用上限（毫秒）。留空即用默认值：远程 3 秒、本地 30 秒。
 # 本地跑 CPU 时请调大（默认 30 秒可能不够），否则重排会超时降级。
-# rerankTimeoutMs = 5000
+# rerankTimeoutMs = 3000
 
 # agentConfig / voiceServiceConfig 段：agentConfig 里只有下面这一个键，
 # 其余（memoryReadMode=legacy_v2、episodeRecallMode=shadow_only、

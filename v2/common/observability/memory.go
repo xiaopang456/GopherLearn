@@ -122,7 +122,7 @@ func (r *MemoryRecorder) KnowledgeCandidate(matchKind string) {
 }
 
 func (r *MemoryRecorder) KnowledgeRerank(status string, duration time.Duration) {
-	status = boundedLabel(status, "applied", "fallback", "failed", "bypassed")
+	status = boundedLabel(status, "applied", "fallback", "failed", "bypassed", "retried")
 	r.add("knowledge_rerank_total{status="+status+"}", 1)
 	r.addTotal("knowledge_rerank_duration_ms", duration.Milliseconds())
 	r.logf("memory_metric name=knowledge_rerank status=%s duration_ms=%d", status, duration.Milliseconds())

@@ -112,6 +112,10 @@ type RetrievalResult struct {
 	RerankScore      float64
 	RerankRank       int
 	RerankApplied    bool
+	// RerankFellBack is set on every result of a retrieval whose reranker was tried and
+	// failed: the order is the fused order, not a reranked one. It is left out of the JSON
+	// when false, so that a result which did not fall back serializes exactly as before.
+	RerankFellBack bool `json:",omitempty"`
 }
 
 // RAGService is immutable after construction and is safe to reuse for the
@@ -348,9 +352,14 @@ func (s *RAGService) retrieve(ctx context.Context, userID int64, query string, o
 			}
 		}
 		rerankStarted := time.Now()
-		scores, rerankErr := s.reranker.Rerank(ctx, query, passages)
+		scores, rerankErr := s.rerankWithRetry(ctx, query, passages)
 		if rerankErr != nil {
-			if errors.Is(rerankErr, ErrRerankUnavailable) {
+			// Reranking only improves the order of candidates that are already good enough to
+			// answer from, so a reranker that timed out, was throttled or answered with an error
+			// must not take the retrieval down: the fused order is kept and the result says so.
+			// The exception is a caller that has itself given up (its context is done): that is
+			// not a reranker failure and is reported as before.
+			if ctx.Err() == nil || errors.Is(rerankErr, ErrRerankUnavailable) {
 				observability.Memory.KnowledgeRerank("fallback", time.Since(rerankStarted))
 				candidates = a0Candidates
 				rerankStatus = RerankFallback
@@ -398,7 +407,47 @@ func (s *RAGService) retrieve(ctx context.Context, userID int64, query string, o
 	if err != nil {
 		return nil, err
 	}
+	if rerankStatus == RerankFallback {
+		for index := range results {
+			results[index].RerankFellBack = true
+		}
+	}
 	return results, nil
+}
+
+// rerankRetryBound bounds the second rerank attempt. A healthy rerank answers in a fraction of a
+// second, so an attempt that is still running after this long is not going to help, and the retry
+// must stay cheap next to the turn it belongs to. It is a variable only so tests can shorten it.
+var rerankRetryBound = 3 * time.Second
+
+// rerankRetryMinBudget is how much of the caller's time must be left for a retry to be worth
+// starting: the retry itself and the answer that still has to be written after it.
+const rerankRetryMinBudget = 5 * time.Second
+
+// retryableRerankError says whether trying the same rerank again can plausibly give another answer:
+// a call that ran out of time or never got a usable answer from the service. A throttled or refused
+// call, or an error of the request itself, would only repeat.
+func retryableRerankError(err error) bool {
+	return errors.Is(err, ErrRerankTimeout) || errors.Is(err, ErrRerankUnavailable)
+}
+
+// rerankWithRetry asks the reranker once, and once more if the first attempt failed in a way a
+// second attempt can fix. The same query and passages give the same scores, so the retry cannot
+// change the outcome except by getting one. It uses the caller's context, so it counts against the
+// turn's time budget, and it is skipped when the caller has given up or has too little time left.
+func (s *RAGService) rerankWithRetry(ctx context.Context, query string, passages []string) ([]RerankScore, error) {
+	started := time.Now()
+	scores, err := s.reranker.Rerank(ctx, query, passages)
+	if err == nil || ctx.Err() != nil || !retryableRerankError(err) {
+		return scores, err
+	}
+	if deadline, bounded := ctx.Deadline(); bounded && time.Until(deadline) < rerankRetryMinBudget {
+		return scores, err
+	}
+	observability.Memory.KnowledgeRerank("retried", time.Since(started))
+	retryCtx, cancel := context.WithTimeout(ctx, rerankRetryBound)
+	defer cancel()
+	return s.reranker.Rerank(retryCtx, query, passages)
 }
 
 // buildRetrievalResults turns fused candidates into results: it re-checks each

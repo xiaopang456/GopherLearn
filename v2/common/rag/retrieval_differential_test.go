@@ -122,11 +122,24 @@ func randomRetrievalScenario(r *rand.Rand, index int) retrievalScenario {
 	return sc
 }
 
+// rerankErrorScenario reports whether the reranker of the scenario answers with an error that the
+// retrieval now handles by trying again and falling back, instead of failing or falling back at once.
+func rerankErrorScenario(sc retrievalScenario) bool {
+	return sc.Rerank == rerankUnavailable || sc.Rerank == rerankFailure
+}
+
 func TestRetrieveMatchesLegacy(t *testing.T) {
 	r := rand.New(rand.NewSource(differentialSeed))
 	outcomes := map[string]int{}
 	for index := 0; index < differentialCases; index++ {
 		scenario := randomRetrievalScenario(r, index)
+		if rerankErrorScenario(scenario) {
+			// The reranker erring is the one behaviour that changed on purpose: the frozen copy fails
+			// the retrieval (or falls back without a retry), the live code retries once and falls back.
+			// retrieval_rerank_fallback_test.go guards that part; every other scenario must still match.
+			outcomes["skipped: reranker error"]++
+			continue
+		}
 		legacy := runRetrievalScenario(t, scenario, legacyRetrieve)
 		current := runRetrievalScenario(t, scenario, currentRetrieve)
 		if !reflect.DeepEqual(legacy, current) {
@@ -149,6 +162,9 @@ func TestRetrieveMatchesLegacy(t *testing.T) {
 	}
 	// The generator must keep reaching every kind of outcome; otherwise the test
 	// would pass without comparing anything interesting.
+	if outcomes["skipped: reranker error"] < 20 || outcomes["skipped: reranker error"] > differentialCases/4 {
+		t.Errorf("%d of %d generated cases were skipped as reranker errors; the generator no longer produces the right share", outcomes["skipped: reranker error"], differentialCases)
+	}
 	for _, outcome := range []string{"error", "empty", "results", "reranked"} {
 		if outcomes[outcome] < 100 {
 			t.Errorf("only %d of %d generated cases ended as %q; the generator no longer covers it", outcomes[outcome], differentialCases, outcome)

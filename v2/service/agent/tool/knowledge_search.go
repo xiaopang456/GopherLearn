@@ -23,6 +23,9 @@ const (
 	minimumObservationTokens = 128
 	observationSafetyMargin  = 32
 	maximumRetrievalTopK     = 100
+	// rerankFallbackNote ends the summary of a search whose reranker failed and whose results are in
+	// the unreranked order.
+	rerankFallbackNote = "（本次重排失败，使用未重排结果）"
 )
 
 var (
@@ -523,6 +526,14 @@ func (s *runSearchState) buildWithStatus(query string, candidates []rag.Retrieva
 	if len(output.Results) == 0 && len(candidates) > 0 {
 		output.Summary = "检索到候选，但本轮证据预算不足，未返回正文。"
 		output.Truncated = true
+	}
+	// The summary is what the run record keeps of this call, so a retrieval that fell back to the
+	// unreranked order says so there, where an evaluation can count it.
+	for _, candidate := range candidates {
+		if candidate.RerankFellBack {
+			output.Summary += rerankFallbackNote
+			break
+		}
 	}
 	if status != "unavailable" && len(output.Results) == 0 {
 		output.Status = "no_candidates"

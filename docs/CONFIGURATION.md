@@ -158,7 +158,7 @@
 | `rerankProvider` | | `local` | 重排服务形态：`local`（本地模型服务）或 `dashscope`（远程重排 API） |
 | `rerankEndpoint` | 开启重排时 ✅ | `http://host.docker.internal:18081` | 服务地址。本地服务填服务根地址，远程服务填**完整重排 URL** |
 | `rerankModel` | 远程时 ✅ | 空 | 远程服务要用的模型名；本地服务钉死一个模型，忽略这个字段 |
-| `rerankTimeoutMs` | | 远程 `5000`、本地 `30000` | 单次调用上限（毫秒），不能为负。留空即用该形态的默认值 |
+| `rerankTimeoutMs` | | 远程 `3000`、本地 `30000` | 单次调用上限（毫秒），不能为负。留空即用该形态的默认值。一次重排超时或服务端不可用时会立刻再试一次（再试最多 3 秒，且本轮剩余时间不足 5 秒就不再试）；仍然失败或遇到限流、凭据被拒等错误，这一次检索退回未重排的顺序继续，不会让整轮失败，知识检索那一步的摘要会写明「本次重排失败，使用未重排结果」 |
 
 ### `[agentConfig]`
 
@@ -294,8 +294,8 @@ rerankProvider = "dashscope"
 rerankEndpoint = "https://<你的业务空间ID>.cn-beijing.maas.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
 # 要用的重排模型名，例如 qwen3-rerank
 rerankModel = "qwen3-rerank"
-# 单次调用上限（毫秒）。留空即用默认值：远程 5 秒、本地 30 秒
-# rerankTimeoutMs = 5000
+# 单次调用上限（毫秒）。留空即用默认值：远程 3 秒、本地 30 秒
+# rerankTimeoutMs = 3000
 ```
 
 > **远程默认 5 秒是实测出来的**：24 条候选连测 5 次，中位数 **0.52 秒**、最慢 **0.89 秒**，

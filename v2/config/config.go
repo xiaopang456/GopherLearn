@@ -34,11 +34,14 @@ const (
 // reference deployment answered a candidate batch in about thirteen seconds
 // on CPU. A hosted endpoint answers in well under that: measured over five
 // calls with twenty-four candidates, the median was 0.52s and the slowest
-// 0.89s, so five seconds leaves room for jitter and load without letting a
-// hung request hold a turn open.
+// 0.89s. Over about 3,900 later calls the median was 0.21s, the 99th percentile
+// 0.35s and the slowest healthy call 1.4s, and two calls stalled for 5s or more.
+// Three seconds is more than twice the slowest healthy call and keeps a stalled
+// request from holding a turn open for longer than it has to; a timed-out call
+// is tried once more before the retrieval falls back.
 const (
 	defaultLocalRerankTimeout  = 30 * time.Second
-	defaultHostedRerankTimeout = 5 * time.Second
+	defaultHostedRerankTimeout = 3 * time.Second
 )
 
 // ErrRerankConfig marks a rerank configuration problem. The message never
