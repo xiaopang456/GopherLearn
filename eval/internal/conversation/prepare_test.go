@@ -119,3 +119,44 @@ func TestSummaryFailureContinuesAndRecordsDegradation(t *testing.T) {
 		t.Fatalf("got=%+v err=%v rows=%d", got, err, len(s.rows))
 	}
 }
+
+// A replay that spends the product's failure cooldown in one breath never
+// compacts again. The preparation waits the cooldown out before the next turn.
+func TestPreparationWaitsOutTheFailureCooldownBeforeTheNextTurn(t *testing.T) {
+	s := &storage{}
+	turns := []Turn{testTurn(0), testTurn(1)}
+	started := time.Now()
+	got, err := PrepareWithCooldown(context.Background(), s, failingSummary{}, 7, "synthetic", "learner", turns, 60*time.Millisecond)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+	if elapsed := time.Since(started); elapsed < 60*time.Millisecond {
+		t.Fatalf("the replay wrote the next turn after %s, before the cooldown was over", elapsed)
+	}
+	if got[0].CooldownWaitMilliseconds != 0 {
+		t.Fatalf("the first turn waited %dms, nothing had failed yet", got[0].CooldownWaitMilliseconds)
+	}
+	if got[1].CooldownWaitMilliseconds <= 0 {
+		t.Fatalf("the second turn waited %dms, the cooldown was not waited out", got[1].CooldownWaitMilliseconds)
+	}
+	if !got[0].SummaryDegraded || !got[1].SummaryDegraded {
+		t.Fatal("a failed summary must stay a degraded turn")
+	}
+}
+
+func TestPreparationWithoutACooldownDoesNotWait(t *testing.T) {
+	s := &storage{}
+	started := time.Now()
+	got, err := PrepareWithCooldown(context.Background(), s, failingSummary{}, 7, "synthetic", "learner", []Turn{testTurn(0), testTurn(1)}, 0)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+	if elapsed := time.Since(started); elapsed > 30*time.Millisecond {
+		t.Fatalf("the replay waited %s although no cooldown was asked for", elapsed)
+	}
+	for _, turn := range got {
+		if turn.CooldownWaitMilliseconds != 0 {
+			t.Fatalf("a turn waited %dms although no cooldown was asked for", turn.CooldownWaitMilliseconds)
+		}
+	}
+}
