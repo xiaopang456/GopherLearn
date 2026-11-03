@@ -106,3 +106,60 @@ func TestReportKeepsEvaluationDataOutOfWorktrees(t *testing.T) {
 		t.Error("the output directory was created inside a worktree")
 	}
 }
+
+// stageLedgers writes a run ledger and a call ledger: one run of the "good"
+// arm, one call before its answer and one after it.
+func stageLedgers(t *testing.T, dir string) (string, string) {
+	t.Helper()
+	ledger := filepath.Join(dir, "runs.jsonl")
+	lines := []string{
+		`{"at":"2026-11-02T11:00:00Z","phase":"run","arm":"good","qid":"q-bar","rep":0,"sessionId":"s1"}`,
+		`{"at":"2026-11-02T11:00:10Z","phase":"result","arm":"good","qid":"q-bar","rep":0,"http":200,"statusCode":1000,"modelCalls":1,"toolCalls":0,"runId":"run-1","answeredAt":"2026-11-02T11:00:10Z"}`,
+	}
+	if err := os.WriteFile(ledger, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	calls := filepath.Join(dir, "calls.jsonl")
+	entries := []string{
+		`{"schema":"call.v1","at":"2026-11-02T11:00:05Z","lane":"chat","model":"m","stream":true,"run":"run-1","session":"s1","phase":"answer","usage":{"prompt":120,"completion":30,"total":150}}`,
+		`{"schema":"call.v1","at":"2026-11-02T11:00:12Z","lane":"chat","model":"m","stream":false,"run":"run-1","session":"s1","phase":"after_answer","usage":{"prompt":800,"completion":200,"total":1000}}`,
+	}
+	if err := os.WriteFile(calls, []byte(strings.Join(entries, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return ledger, calls
+}
+
+func TestTheReportSplitsTheCostWhenACallLedgerIsGiven(t *testing.T) {
+	dir := stage(t)
+	ledger, calls := stageLedgers(t, dir)
+	code, stdout, stderr := cli("report", "-outcomes", dir, "-baseline", "good", "-ledger", ledger, "-calls", calls)
+	if code != 0 {
+		t.Fatalf("exit %d, stderr: %s", code, stderr)
+	}
+	_ = stdout
+	report, err := os.ReadFile(filepath.Join(dir, "report.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"## 表 6", "| good | 回答本身 |", "| good | 回答之后的后台 |", "不用墙钟时间窗"} {
+		if !strings.Contains(string(report), want) {
+			t.Errorf("report lacks %q", want)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "report.json"))
+	if err != nil || !strings.Contains(string(data), "mean_after_answer_calls") {
+		t.Fatalf("%v the json does not carry the split", err)
+	}
+}
+
+func TestTheReportRefusesHalfALedger(t *testing.T) {
+	dir := stage(t)
+	ledger, calls := stageLedgers(t, dir)
+	if code, _, stderr := cli("report", "-outcomes", dir, "-baseline", "good", "-ledger", ledger); code != 2 || !strings.Contains(stderr, "go together") {
+		t.Errorf("only a run ledger: %d %q", code, stderr)
+	}
+	if code, _, stderr := cli("report", "-outcomes", dir, "-baseline", "good", "-calls", calls); code != 2 || !strings.Contains(stderr, "go together") {
+		t.Errorf("only a call ledger: %d %q", code, stderr)
+	}
+}

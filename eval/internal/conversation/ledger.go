@@ -25,9 +25,17 @@ import (
 // UsageSamples are provider snapshots; Usage is the last reported snapshot.
 // Monetary cost needs a separately approved price table and is not inferred here.
 type ModelCall struct {
-	ID                           int                 `json:"id"`
-	Role                         string              `json:"role"`
-	Purpose                      string              `json:"purpose,omitempty"`
+	ID      int    `json:"id"`
+	Role    string `json:"role"`
+	Purpose string `json:"purpose,omitempty"`
+	// RunID and SessionID are the identity of the run the call belongs to.
+	// They are empty when the call was not made for a run of this evaluation.
+	RunID     string `json:"run_id,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	// Phase says whether the call was sent before the answer came back
+	// ("answer") or after it ("after_answer"). It is derived from the run's
+	// answer boundary, not from the role the prompt suggested.
+	Phase                        string              `json:"phase,omitempty"`
 	Method                       string              `json:"method"`
 	Started                      time.Time           `json:"started"`
 	Finished                     time.Time           `json:"finished"`

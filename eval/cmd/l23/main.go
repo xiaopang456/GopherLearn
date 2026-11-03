@@ -14,17 +14,22 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/xiaopang456/GopherLearn/eval/internal/calls"
 	"github.com/xiaopang456/GopherLearn/eval/internal/l23"
 	"github.com/xiaopang456/GopherLearn/eval/internal/pathguard"
 )
 
 const usage = `usage: l23 report -outcomes <dir> [-baseline <arm>] [-seed N] [-resamples N] [-out <dir>]
+                [-ledger <file> -calls <file>]
 
   -outcomes   directory holding outcomes.jsonl and outcomes.meta.json (from score.mjs)
   -baseline   the arm the others are compared with (required when there is more than one arm)
   -seed       bootstrap seed (default 20261030)
   -resamples  bootstrap resamples per comparison (default 2000)
   -out        where report.md and report.json go (default: the outcomes directory)
+  -ledger     provider run ledger (JSONL): which run each trial was, and when it answered
+  -calls      call ledger (JSONL, call.v1): the model calls to book to those runs
+              (both -ledger and -calls are needed for the split of the cost)
 `
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
@@ -41,6 +46,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	seed := flags.Int64("seed", 20261030, "bootstrap seed")
 	resamples := flags.Int("resamples", 2000, "bootstrap resamples")
 	out := flags.String("out", "", "output directory")
+	ledger := flags.String("ledger", "", "provider run ledger")
+	callLedger := flags.String("calls", "", "call ledger")
 	if err := flags.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -52,11 +59,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "l23 report: -resamples must be in 100..100000")
 		return 2
 	}
+	if (*ledger == "") != (*callLedger == "") {
+		fmt.Fprintln(stderr, "l23 report: -ledger and -calls go together: the run ledger says which run each trial was, the call ledger says which calls to book")
+		return 2
+	}
 	target := *out
 	if target == "" {
 		target = *dir
 	}
-	for name, path := range map[string]string{"-outcomes": *dir, "-out": target} {
+	for name, path := range map[string]string{"-outcomes": *dir, "-out": target, "-ledger": *ledger, "-calls": *callLedger} {
+		if path == "" {
+			continue
+		}
 		if err := pathguard.Check(name, path); err != nil {
 			fmt.Fprintf(stderr, "l23 report: %v\n", err)
 			return 1
@@ -73,6 +87,24 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	opts := l23.Options{Baseline: *baseline, Seed: *seed, Resamples: *resamples}
+	if *ledger != "" {
+		runs, err := calls.ReadRunFile(*ledger)
+		if err != nil {
+			fmt.Fprintf(stderr, "l23 report: %v\n", err)
+			return 1
+		}
+		list, err := calls.ReadCallFile(*callLedger)
+		if err != nil {
+			fmt.Fprintf(stderr, "l23 report: %v\n", err)
+			return 1
+		}
+		attribution, err := calls.Attribute(runs, list)
+		if err != nil {
+			fmt.Fprintf(stderr, "l23 report: %v\n", err)
+			return 1
+		}
+		opts.Attribution = &attribution
+	}
 	stats, err := l23.Compute(outcomes, opts)
 	if err != nil {
 		fmt.Fprintf(stderr, "l23 report: %v\n", err)

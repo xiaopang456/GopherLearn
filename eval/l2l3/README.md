@@ -11,10 +11,10 @@
                        (Node)      (每次尝试一个 JSON)    (Node，离线)     (每次尝试一行)      (Go)
 ```
 
-- **provider**（`provider/`）：登录 → 每次尝试新建会话、换新 `requestId` → `POST /api/v1/AI/agent/run` → 读该轮步骤（`GET …/runs/:runId/steps`）→ 写一条原始记录 → 删除这次的会话（`DELETE /api/v1/sessions/:id`；产品限制每个用户最多 100 个会话，不删就跑不了超过 100 次的阶段；`deleteSessions=false` 或 `GL_L23_DELETE_SESSIONS=false` 可关，删除结果写进账本 `cleanup` 阶段，不算运行次数）。Promptfoo 只是运行外壳（`provider/gl_provider.mjs` 是它的自定义 provider）。
+- **provider**（`provider/`）：登录 → 每次尝试新建会话、换新 `requestId` → `POST /api/v1/AI/agent/run` → 读该轮步骤（`GET …/runs/:runId/steps`）→ 写一条原始记录 → 删除这次的会话（`DELETE /api/v1/sessions/:id`；产品限制每个用户最多 100 个会话，不删就跑不了超过 100 次的阶段；`deleteSessions=false` 或 `GL_L23_DELETE_SESSIONS=false` 可关，删除结果写进账本 `cleanup` 阶段，不算运行次数）。Promptfoo 只是运行外壳（`provider/gl_provider.mjs` 是它的自定义 provider）。**账本与记录都带运行身份**（`sessionId`、`runId`）和这次运行的回答时刻（`answeredAt`），代价才可能按运行归账（见"代价怎么归账"）。
 - **断言**（`lib/`）：纯函数 `(记录, 题目) → 判定`。同一套函数既被 Promptfoo 的断言调用（`promptfoo/assertions.cjs`），也被离线评分调用（`score.mjs`），所以两边不会对同一次尝试给出不同判定。**离线评分是权威结果**，Promptfoo 里的通过 / 失败只是它的一个视图。
 - **评分**（`score.mjs`）：读原始记录 + 题集，写 `outcomes.jsonl`。离线、可重复，同样的输入得到同样的字节。运行目录里的 `run.json` 记着它对应的题集与语料哈希，哈希对不上就拒绝评分。
-- **统计与报告**（Go，`cmd/l23`）：单次成功率、pass^k、配对比较，复用 L1 的聚类自助法和 McNemar 精确检验。
+- **统计与报告**（Go，`cmd/l23`）：单次成功率、pass^k、配对比较，复用 L1 的聚类自助法和 McNemar 精确检验；给了调用账本时，还把代价按运行拆成"回答本身"和"回答之后的后台"（表 6）。
 
 ## 数据不进仓库
 
@@ -54,9 +54,41 @@ cd eval && go test ./cmd/l23 ./internal/l23
 node eval/l2l3/check.mjs --labels L --dataset D --l3-only N
 ```
 
-**原始记录 `record.v1`**：`arm`、`qid`、`rep`、`env`、`http`、`statusCode`、`runId`、`replayed`、`answer`、`answerBasis`、`knowledgeStatus`、`knowledgeReason`、`sources`、`toolCalls`、`modelCalls`、`steps`（`stepsError` 在读取失败时出现）、`enableThinking`（请求里发的 `true` / `false`，没发则为 `null`）、`error`、`durationMs`。服务端的提示语 `statusMsg`、运行状态 `runStatus` 和结束原因 `terminationReason`（来自读步骤接口里的 `termination_reason`）有就记。失败（超时、非 JSON、读不到步骤）都会留成记录，不丢。一次 `/agent/run` 失败但服务给出了运行编号时，会再读一次这次运行的视图（不调用模型）；服务端对"启动后才失败"的运行（5003）不返回运行编号，这时 provider 会读该会话的运行列表（`GET …/sessions/:sessionId/runs`，每次尝试一个独立会话，取最新一条）找回编号并写进 `runId`（同时记 `runIdFrom: "session_runs"`），再读它的视图；因为同一个状态码和提示语下有多种原因，只有 `terminationReason` 能把 `unknown_tool` 与 `model_call_limit` 等区分开；评分把这类失败归为 `run_failed:<原因>`，没有原因时仍是 `run_failed`。
+**原始记录 `record.v1`**：`arm`、`qid`、`rep`、`env`、`http`、`statusCode`、`runId`、`sessionId`（这次尝试在哪个会话里）、`answeredAt`（这次运行的回答什么时候到的；没有回答就是 `null`）、`replayed`、`answer`、`answerBasis`、`knowledgeStatus`、`knowledgeReason`、`sources`、`toolCalls`、`modelCalls`、`steps`（`stepsError` 在读取失败时出现）、`enableThinking`（请求里发的 `true` / `false`，没发则为 `null`）、`error`、`durationMs`。服务端的提示语 `statusMsg`、运行状态 `runStatus` 和结束原因 `terminationReason`（来自读步骤接口里的 `termination_reason`）有就记。失败（超时、非 JSON、读不到步骤）都会留成记录，不丢。一次 `/agent/run` 失败但服务给出了运行编号时，会再读一次这次运行的视图（不调用模型）；服务端对"启动后才失败"的运行（5003）不返回运行编号，这时 provider 会读该会话的运行列表（`GET …/sessions/:sessionId/runs`，每次尝试一个独立会话，取最新一条）找回编号并写进 `runId`（同时记 `runIdFrom: "session_runs"`），再读它的视图；因为同一个状态码和提示语下有多种原因，只有 `terminationReason` 能把 `unknown_tool` 与 `model_call_limit` 等区分开；评分把这类失败归为 `run_failed:<原因>`，没有原因时仍是 `run_failed`。
+
+**账本**（provider 写的 JSONL，一行一个事件）：`run`（请求发出前写，带 `sessionId`）、`result`（回答回来时写，带 `runId`、`answeredAt`、`modelCalls`、`toolCalls`）、`steps`、`cleanup`、`refused`、`exception`。`run` 与 `result` 两条合起来就是一次运行的身份和它的回答时刻 —— 代价归账靠的就是它们。
 
 **结果 `outcome.v1`**：每次尝试一行，含 L2、L3 两层各自的 `verdict`、归类 `class`、各断言明细和代价。字段由 `test/e2e.test.mjs` 写成 `testdata/outcomes.fixture.jsonl`，Go 测试读同一份文件，两边任一改了格式都会失败。
+
+## 代价怎么归账
+
+**按运行身份归账，不按墙钟时间窗。** 一次后台调用可能落在下一次运行的窗口里；按时间窗记账就会把它算到隔壁那次运行头上。这里只认身份：调用自己带的 `runId`（没有就 `sessionId`）是它属于哪次运行的唯一依据。
+
+**调用账本 `call.v1`**：一次模型调用一行。
+
+```json
+{"schema":"call.v1","at":"2026-11-02T11:41:33.708Z","lane":"chat","model":"deepseek-flash","stream":true,
+ "run":"50d2d951-efb1-4b9e-9077-e86ce85144c6","session":"eed3cf3c-9c5c-467e-ab05-6b4015588e57",
+ "phase":"answer","usage":{"prompt":1003,"completion":78,"total":1081,"cached":768,"reasoning":null}}
+```
+
+- `at`：**请求发出**的时刻（不是结束的时刻）。
+- `run` / `session`：这次调用属于哪次运行。**两个都没有的调用归不了账**，单独计成"无法归账"，不会并进任何一次运行；身份写错、或者一次会话里有多次运行而调用又没写 `runId` 的，也不猜。
+- `phase`：账本自己声称的阶段，只是**声明**。真正用来记账的阶段由那次运行的回答时刻决定（下面）。
+- `usage`：供应商报告的用量。**没报就是没报**（`null`），不补零；token 的和因此是下界。
+
+**回答之前还是之后**：由那次运行自己的回答时刻划分 —— 调用发出时刻早于回答时刻的是"回答本身"，晚于的是"回答之后的后台"。没有回答的运行（失败）没有这个边界，它的调用都算"回答本身"。
+
+**怎么用**：
+
+```bash
+cd eval && go run ./cmd/l23 report -outcomes <结果目录> -baseline <臂> \
+  -ledger <provider 写的账本> -calls <调用账本 call.v1>
+```
+
+两个参数必须一起给：账本（`-ledger`）说每次运行是谁、什么时候答的，调用账本（`-calls`）说有哪些调用要给它们记。给了以后报告多一张**表 6**，把每个臂的"回答本身"和"回答之后的后台"分开列，并写明多少次调用无法归账、归账到的回答侧调用数与运行自己报告的调用数是否一致。没给就没有表 6 —— 只有运行自己报告的数（表 5）。
+
+**评测测不到情景记忆投影的代价**：评测每次试验后都删除会话，情景记忆投影因此基本不执行，它产生的后台调用不会出现在表 6 里。**现有评测测不到它的代价；以后要测，需要专门设计**（例如不删会话，并等到投影落库再记账）。
 
 ## 断言的判定规则
 
@@ -112,7 +144,7 @@ node eval/l2l3/check.mjs --labels L --dataset D --l3-only N
 1. 设置 `GL_L23_ENV=real`（没有默认值，`fake` 时只许连回环地址）。
 2. 设置 `GL_L23_CORPUS`，值是语料清单 `corpus.json` 的路径。**漏设它不会得到「判定不通过」，而是每条断言都报错**：断言在加载语料时直接抛 `GL_L23_CORPUS (the corpus manifest) is not set`，跑完看到的是一片 `error`，看起来像模型全错，其实一次都没真正判过。题里含上传文档的，还要设 `GL_L23_UPLOAD_NAMES`（上传名对照 JSON 的路径）；不设只查不到上传文档，不影响其他断言。开整批之前先用一条已知语料的题验一次，确认判定里有 `pass` 也有 `fail`。
 3. 预算：`GL_L23_MAX_RUNS` 必须大于 0，provider 在每次请求**之前**把这次尝试写进账本，到上限就拒绝；不重试。试算：题数 × 臂数 × 重复次数 = `/agent/run` 次数，每次约 3.4 次聊天模型调用（含后台任务），另有判分调用（判分模型尚未实现）。
-4. 所有模型调用经一个带硬上限、记 token 账本的计数代理（本仓库不提供，需自备）。
+4. 所有模型调用经一个带硬上限、记 token 账本的计数代理（本仓库不提供，需自备）。**代理的账本如果按 `call.v1` 写（每次调用一行，带 `run` / `session` 身份与请求发出的时刻），代价就能按运行归账、报告里能分开看"回答本身"和"回答之后的后台"；只记时间戳的账本归不了账，那些调用会被单独计成"无法归账"。**
 5. 每个臂用独立的数据库和 Redis（或运行前完整重置）。
 6. 用 `promptfoo/build-config.mjs [--split dev|sealed] <run-spec.json> <输出目录>` 生成配置并写 `run.json`；`npx promptfoo@0.125.1 eval -c … --no-cache -j 1` 运行。**生成的配置没有用真实的 Promptfoo 跑过**（CI 不安装它）；第一次真实使用前先用 `npx promptfoo@0.125.1 validate` 检查。
 
@@ -130,5 +162,6 @@ node eval/l2l3/check.mjs --labels L --dataset D --l3-only N
 - **`doc_constraint` 暂不可用于真实运行**：读步骤的公开接口刻意不返回参数（它们可能含用户问题和检索片段），而存下来的参数在 `agent_steps` 表里。断言只依赖一个 `inspector` 接口（`inspect(runId) → 每步的能力与文档 id`），这里只有假的实现（`fake/server.mjs` 的 `fakeInspector`）；读测试库的实现要等有测试库时再写和验证。没有 inspector 时该断言标为"未评"。
 - **`tools_consistency` 在真实系统上没验证过**：它假定步骤里的工具步骤条数等于 `toolCalls`。第一次真实运行时如果系统性地对不上，要看是假设错了还是步骤读取有问题，不要直接忽略。
 - 产品对除问候以外的几乎所有问题都要求"落地"（`requiresGrounding`），所以"不应检索"的题在真实系统上很可能被判为违规；这是要测出来的行为，不是标注错误。
-- 耗时是整次 `/agent/run` 的耗时；返回里没有 token 用量，后台任务的调用也看不到，这些要看计数代理的账本。
+- 耗时是整次 `/agent/run` 的耗时；返回里没有 token 用量，后台任务的调用也看不到，这些要看调用账本（按运行归账后，见"代价怎么归账"）。
+- **情景记忆投影在评测里基本不执行**：评测每次试验后都删除会话，排队中的投影任务被一起带走，所以现有评测**测不到情景记忆投影的代价**；以后要测它，需要专门设计（例如不删会话，并等到投影落库再记账）。
 - 要点覆盖、忠实度、"是否编造"需要判分模型，目前未实现，这里只留了 `needs_judge` 的出口。

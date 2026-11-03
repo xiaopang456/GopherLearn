@@ -61,7 +61,10 @@ func modelHTTPHandler(ledger *ModelLedger, roles RolePrompts, backend http.Handl
 				}
 			}
 			observed.end()
-			if observed.writeErr == nil && r.Context().Err() != nil {
+			// A client that cancels its request context after reading the
+			// response is not a failed request. Only a request that never
+			// produced a response is a cancellation.
+			if observed.writeErr == nil && observed.status == 0 && r.Context().Err() != nil {
 				observed.writeErr = fmt.Errorf("model request cancelled")
 			}
 			ledger.finish(id, observed.writeErr)

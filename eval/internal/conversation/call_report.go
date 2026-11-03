@@ -3,7 +3,10 @@ package conversation
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
+
+	callledger "github.com/xiaopang456/GopherLearn/eval/internal/calls"
 )
 
 // RoleUsage sums only explicitly reported fields. Unknown quantities are
@@ -23,16 +26,83 @@ type RoleUsage struct {
 // AttributeCalls keeps the operation's purpose while attributing every call
 // after final-answer collection to background cost. No foreground work remains
 // scheduled after that boundary in this one-question runner.
+//
+// The phase is derived from the answer boundary, not from the role the prompt
+// suggested: a call the product sent after the answer came back is background
+// work whatever its prompt looked like.
 func AttributeCalls(calls []ModelCall, answered time.Time) []ModelCall {
 	result := append([]ModelCall(nil), calls...)
 	for i := range result {
 		result[i].Purpose = result[i].Role
 		if result[i].Started.After(answered) {
 			result[i].Role = "background"
+			result[i].Phase = callledger.PhaseAfterAnswer
+		} else {
+			result[i].Phase = callledger.PhaseAnswer
 		}
 	}
 	return result
 }
+
+// BindRun stamps the identity of the run the calls belong to. A ledger that
+// does not say which run a call was made for cannot be accounted for by run.
+func BindRun(calls []ModelCall, sessionID, runID string) []ModelCall {
+	result := append([]ModelCall(nil), calls...)
+	for i := range result {
+		result[i].SessionID = sessionID
+		result[i].RunID = runID
+	}
+	return result
+}
+
+// CallLedger turns the model ledger into the call ledger the attribution
+// reads: one entry per call, carrying the identity of the run it belongs to
+// and the phase it was sent in.
+func CallLedger(calls []ModelCall) []callledger.Call {
+	result := make([]callledger.Call, 0, len(calls))
+	for _, call := range calls {
+		entry := callledger.Call{
+			At:        call.Started,
+			Lane:      callLane(call.Method),
+			Model:     call.Model,
+			RunID:     call.RunID,
+			SessionID: call.SessionID,
+			Phase:     call.Phase,
+		}
+		if call.Usage != nil {
+			prompt := int64(call.Usage.PromptTokens)
+			completion := int64(call.Usage.CompletionTokens)
+			total := int64(call.Usage.TotalTokens)
+			entry.Usage = &callledger.Usage{Prompt: &prompt, Completion: &completion, Total: &total}
+			if cached := call.Usage.PromptTokenDetails.CachedTokens; cached > 0 {
+				value := int64(cached)
+				entry.Usage.Cached = &value
+			}
+			if reasoning := call.Usage.CompletionTokensDetails.ReasoningTokens; reasoning > 0 {
+				value := int64(reasoning)
+				entry.Usage.Reasoning = &value
+			}
+		}
+		result = append(result, entry)
+	}
+	return result
+}
+
+// callLane names the lane a call went through, so the attribution can tell a
+// chat call from an embedding or a rerank call.
+func callLane(method string) string {
+	switch {
+	case strings.Contains(method, "embeddings"):
+		return "embed"
+	case strings.Contains(method, "rerank"):
+		return "rerank"
+	case method == "generate" || method == "stream" || strings.Contains(method, "chat/completions"):
+		return "chat"
+	default:
+		return "model"
+	}
+}
+
 func SummarizeCalls(calls []ModelCall) (map[string]RoleUsage, error) {
 	result := map[string]RoleUsage{}
 	for _, call := range calls {
