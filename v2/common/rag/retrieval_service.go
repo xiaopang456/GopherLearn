@@ -328,7 +328,17 @@ func (s *RAGService) retrieve(ctx context.Context, userID int64, query string, o
 		}
 		return nil, retrievalUnavailable(RetrievalReasonLexical, lexicalErr)
 	}
-	a0Candidates := FuseRRF(vectorCandidates, lexicalCandidates, topK)
+	// The order returned when the reranker does not run, and the order a failed reranker falls
+	// back to. The keyword channel counts for DefaultLexicalWeight and one place of the top K is
+	// reserved for a chunk that contains an identifier of the question verbatim. A weight of 1
+	// is the original equal-weight fusion. Single-channel requests have nothing to weigh.
+	var a0Candidates []RedisChunkSearchResult
+	if weight := opts.lexicalWeight(); weight == 1 || opts.Mode != RetrievalModeHybrid {
+		a0Candidates = FuseRRF(vectorCandidates, lexicalCandidates, topK)
+	} else {
+		fusedAll := FuseWeightedRRF(vectorCandidates, lexicalCandidates, len(vectorCandidates)+len(lexicalCandidates), weight)
+		a0Candidates = ReserveIdentifierSlot(query, fusedAll, topK)
+	}
 	candidates := a0Candidates
 	rerankScores := map[string]RerankScore{}
 	rerankStatus := RerankNotAttached

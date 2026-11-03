@@ -128,6 +128,16 @@ func rerankErrorScenario(sc retrievalScenario) bool {
 	return sc.Rerank == rerankUnavailable || sc.Rerank == rerankFailure
 }
 
+// equalWeightRetrieve is the live retrieval asked for the original equal-weight fusion
+// (LexicalWeight 1, no reserved identifier slot). The default is no longer that: the keyword
+// channel counts for DefaultLexicalWeight in the order returned without a rerank. The frozen
+// copy therefore guards the live code through this setting, which must stay the original
+// behaviour exactly; retrieval_golden_test.go pins the new default.
+func equalWeightRetrieve(s *RAGService, ctx context.Context, userID int64, query string, topK int) ([]RetrievalResult, error) {
+	outcome, err := s.RetrieveWithOptions(ctx, userID, query, RetrieveOptions{TopK: topK, LexicalWeight: 1})
+	return outcome.Results, err
+}
+
 func TestRetrieveMatchesLegacy(t *testing.T) {
 	r := rand.New(rand.NewSource(differentialSeed))
 	outcomes := map[string]int{}
@@ -141,7 +151,7 @@ func TestRetrieveMatchesLegacy(t *testing.T) {
 			continue
 		}
 		legacy := runRetrievalScenario(t, scenario, legacyRetrieve)
-		current := runRetrievalScenario(t, scenario, currentRetrieve)
+		current := runRetrievalScenario(t, scenario, equalWeightRetrieve)
 		if !reflect.DeepEqual(legacy, current) {
 			legacyJSON, _ := jsonIndent(legacy.golden("legacy"))
 			currentJSON, _ := jsonIndent(current.golden("current"))
