@@ -53,4 +53,17 @@ func TestOfflineWireUsesProductionSDK(t *testing.T) {
 	if content != "synthetic offline answer" || len(ledger.Calls()) != 2 || !ledger.Complete() {
 		t.Fatalf("wire content=%q calls=%+v", content, ledger.Calls())
 	}
+	settings.Config.RagEmbeddingBaseURL = server.URL + "/v1"
+	embedder, err := entry.ProductionDependencies(settings).Embedder(context.Background(), settings.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vectors, err := embedder.EmbedStrings(context.Background(), []string{"synthetic input", "second input"})
+	if err != nil || len(vectors) != 2 || len(vectors[0]) != 1024 {
+		t.Fatalf("embedding transport vectors=%d err=%v", len(vectors), err)
+	}
+	calls := ledger.Calls()
+	if len(calls) != 3 || calls[2].Role != "embedding" || !ledger.Complete() {
+		t.Fatal("embedding not accounted", calls)
+	}
 }
