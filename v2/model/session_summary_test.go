@@ -63,6 +63,11 @@ func TestSessionSummaryTrimKeepsTheNewestItems(t *testing.T) {
 		truncations[0].Kept != 20 || truncations[0].Dropped != 2 {
 		t.Fatalf("truncations = %+v", truncations)
 	}
+	// The ids of what was dropped are reported: a run has to be able to name
+	// the evidence the summary lost.
+	if len(truncations[0].DroppedMessageIDs) != 2 || truncations[0].DroppedMessageIDs[0] != 1 || truncations[0].DroppedMessageIDs[1] != 2 {
+		t.Fatalf("dropped message ids = %v, want [1 2]", truncations[0].DroppedMessageIDs)
+	}
 	if err := trimmed.Validate(DefaultSummaryBudget()); err != nil {
 		t.Fatalf("the trimmed document is not within the budget: %v", err)
 	}
@@ -121,6 +126,12 @@ func TestSessionSummaryTrimKeepsTheNewestCitationsOfOneItem(t *testing.T) {
 	}
 	if len(truncations) != 1 || truncations[0].Kind != "evidence_ids" || truncations[0].Dropped != 8 {
 		t.Fatalf("truncations = %+v", truncations)
+	}
+	// The cut citations are named: they are the eight oldest messages the
+	// item cited.
+	if len(truncations[0].DroppedMessageIDs) != 8 || truncations[0].DroppedMessageIDs[0] != 1 ||
+		truncations[0].DroppedMessageIDs[7] != 8 {
+		t.Fatalf("dropped message ids = %v", truncations[0].DroppedMessageIDs)
 	}
 }
 

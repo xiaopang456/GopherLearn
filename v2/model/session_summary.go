@@ -81,6 +81,11 @@ type SummaryTruncation struct {
 	Kept int `json:"kept"`
 	// Dropped is how many were cut.
 	Dropped int `json:"dropped"`
+	// DroppedMessageIDs are the messages the cut took away: the messages the
+	// dropped items cited, or the citations that were cut out of the items
+	// that stayed. They are what the summary lost, and a run that wants to
+	// know whether what was lost mattered has to be able to name it.
+	DroppedMessageIDs []uint `json:"dropped_message_ids,omitempty"`
 }
 
 // SessionSummaryEvidence is the auditable form used by summary schema v2.
@@ -318,7 +323,11 @@ func (d SessionSummaryDocument) Truncate(budget SummaryBudget) (SessionSummaryDo
 	}
 
 	droppedItems := make(map[string]int, len(evidenceGroups)+len(stringGroups))
-	droppedIDs := make(map[string]int, len(evidenceGroups))
+	// The ids of the items that were dropped, and the ids that were cut out
+	// of the items that stayed. They are different losses and they are
+	// reported apart.
+	droppedItemIDs := make(map[string][]uint, len(evidenceGroups))
+	droppedCitationIDs := make(map[string][]uint, len(evidenceGroups))
 
 	// Every group is trimmed to its own limit. The evidence groups keep the
 	// items a later message still backs; the plain groups have no citations
@@ -330,8 +339,9 @@ func (d SessionSummaryDocument) Truncate(budget SummaryBudget) (SessionSummaryDo
 		if limit <= 0 || len(*group.items) <= limit {
 			continue
 		}
-		kept := keepNewestEvidence(*group.items, limit)
-		droppedItems[group.name] += len(*group.items) - len(kept)
+		kept, dropped := keepNewestEvidence(*group.items, limit)
+		droppedItems[group.name] += len(dropped)
+		droppedItemIDs[group.name] = append(droppedItemIDs[group.name], summaryEvidenceIDs(dropped)...)
 		*group.items = kept
 	}
 	for _, group := range stringGroups {
@@ -356,6 +366,7 @@ func (d SessionSummaryDocument) Truncate(budget SummaryBudget) (SessionSummaryDo
 			}
 			group := evidenceGroups[groupIndex]
 			items := *group.items
+			droppedItemIDs[group.name] = append(droppedItemIDs[group.name], items[itemIndex].EvidenceMessageIDs...)
 			*group.items = append(items[:itemIndex:itemIndex], items[itemIndex+1:]...)
 			droppedItems[group.name]++
 		}
@@ -369,9 +380,9 @@ func (d SessionSummaryDocument) Truncate(budget SummaryBudget) (SessionSummaryDo
 			continue
 		}
 		for i := range *group.items {
-			trimmed, dropped := keepNewestEvidenceIDs((*group.items)[i], budget.ItemEvidenceLimit)
+			trimmed, cut := keepNewestEvidenceIDs((*group.items)[i], budget.ItemEvidenceLimit)
 			(*group.items)[i] = trimmed
-			droppedIDs[group.name] += dropped
+			droppedCitationIDs[group.name] = append(droppedCitationIDs[group.name], cut...)
 		}
 	}
 
@@ -380,6 +391,7 @@ func (d SessionSummaryDocument) Truncate(budget SummaryBudget) (SessionSummaryDo
 		if dropped := droppedItems[group.name]; dropped > 0 {
 			truncations = append(truncations, SummaryTruncation{
 				Kind: "items", Group: group.name, Kept: len(*group.items), Dropped: dropped,
+				DroppedMessageIDs: distinctMessageIDs(droppedItemIDs[group.name]),
 			})
 		}
 	}
@@ -391,11 +403,13 @@ func (d SessionSummaryDocument) Truncate(budget SummaryBudget) (SessionSummaryDo
 		}
 	}
 	for _, group := range evidenceGroups {
-		if dropped := droppedIDs[group.name]; dropped > 0 {
-			truncations = append(truncations, SummaryTruncation{
-				Kind: "evidence_ids", Group: group.name, Kept: summaryGroupEvidenceIDs(*group.items), Dropped: dropped,
-			})
+		if len(droppedCitationIDs[group.name]) == 0 {
+			continue
 		}
+		truncations = append(truncations, SummaryTruncation{
+			Kind: "evidence_ids", Group: group.name, Kept: summaryGroupEvidenceIDs(*group.items),
+			Dropped: len(droppedCitationIDs[group.name]), DroppedMessageIDs: distinctMessageIDs(droppedCitationIDs[group.name]),
+		})
 	}
 	return document, truncations
 }
@@ -411,15 +425,16 @@ func summaryGroupEvidenceIDs(items SessionSummaryEvidenceList) int {
 	return len(seen)
 }
 
-// keepNewestEvidence keeps the items a later message still backs.
+// keepNewestEvidence keeps the items a later message still backs, and says
+// which ones it dropped.
 //
 // The recency of an item is the largest message id it cites: that message is
 // the newest one the item rests on. An item that cites nothing has no date at
 // all and is therefore the oldest there is. Items of the same recency keep
 // the order the model put them in.
-func keepNewestEvidence(items SessionSummaryEvidenceList, limit int) SessionSummaryEvidenceList {
+func keepNewestEvidence(items SessionSummaryEvidenceList, limit int) (SessionSummaryEvidenceList, SessionSummaryEvidenceList) {
 	if limit <= 0 || len(items) <= limit {
-		return items
+		return items, nil
 	}
 	order := make([]int, len(items))
 	for i := range order {
@@ -441,19 +456,22 @@ func keepNewestEvidence(items SessionSummaryEvidenceList, limit int) SessionSumm
 		keep[index] = true
 	}
 	kept := make(SessionSummaryEvidenceList, 0, limit)
+	dropped := make(SessionSummaryEvidenceList, 0, len(items)-limit)
 	for i, item := range items {
 		if keep[i] {
 			kept = append(kept, item)
+			continue
 		}
+		dropped = append(dropped, item)
 	}
-	return kept
+	return kept, dropped
 }
 
-// keepNewestEvidenceIDs keeps the newest citations of one item and reports how
-// many were cut. The citations that survive keep the order they had.
-func keepNewestEvidenceIDs(item SessionSummaryEvidence, limit int) (SessionSummaryEvidence, int) {
+// keepNewestEvidenceIDs keeps the newest citations of one item and says which
+// citations were cut. The citations that survive keep the order they had.
+func keepNewestEvidenceIDs(item SessionSummaryEvidence, limit int) (SessionSummaryEvidence, []uint) {
 	if limit <= 0 || len(item.EvidenceMessageIDs) <= limit {
-		return item, 0
+		return item, nil
 	}
 	ids := append([]uint(nil), item.EvidenceMessageIDs...)
 	slices.Sort(ids)
@@ -462,14 +480,39 @@ func keepNewestEvidenceIDs(item SessionSummaryEvidence, limit int) (SessionSumma
 		keep[id] = struct{}{}
 	}
 	trimmed := make([]uint, 0, limit)
+	var cut []uint
 	for _, id := range item.EvidenceMessageIDs {
 		if _, exists := keep[id]; exists {
 			trimmed = append(trimmed, id)
+			continue
 		}
+		cut = append(cut, id)
 	}
-	dropped := len(item.EvidenceMessageIDs) - len(trimmed)
 	item.EvidenceMessageIDs = trimmed
-	return item, dropped
+	return item, cut
+}
+
+// summaryEvidenceIDs are the messages a list of items cites.
+func summaryEvidenceIDs(items SessionSummaryEvidenceList) []uint {
+	ids := make([]uint, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.EvidenceMessageIDs...)
+	}
+	return ids
+}
+
+// distinctMessageIDs are the messages of a list, once each and in order.
+func distinctMessageIDs(ids []uint) []uint {
+	seen := make(map[uint]struct{}, len(ids))
+	distinct := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		distinct = append(distinct, id)
+	}
+	return distinct
 }
 
 // summaryEvidenceRecency is the newest message an item rests on.

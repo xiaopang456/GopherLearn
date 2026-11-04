@@ -28,6 +28,24 @@ Sensitivity planning includes an exploratory normal approximation using the vari
 node --test "eval/l4/test/*.test.mjs"
 ```
 
+## Comparing two rolling-summary policies
+
+A summary that outgrew its compression budget is trimmed instead of refused. The tools above answer whether the answers got worse; these three answer what the trimming cost and whether what it cost was the evidence a question is about.
+
+`truncation-report` reads the warmup report of every prepared conversation and the frozen scenarios, and matches the messages the dropped items cited to the turns they belong to. A scenario's evidence turns are known by their position in the history, so a lost evidence turn is a turn whose message was cited by an item the budget dropped. The report says, per scenario, how many items and messages were dropped, which evidence turns were among them, and how many messages could not be matched to a turn at all.
+
+`judge-input` prepares the rows a judge has to read for the scenarios whose answers are not decided by the structure: the answer of one attempt, the constraint the scenario asks for, and the rubric. The tool does not judge them. Whether an answer obeyed a stated constraint is a matter of meaning, and a script that pretended to decide it would report a number it did not earn.
+
+`category-report` compares two arms per category. A judgement settles a pending outcome and never overwrites a decided one; without judgements the pending category stays pending, and pending is reported apart from failure.
+
+```powershell
+node eval/l4/cli.mjs truncation-report --dataset C:\evaluation\dev.jsonl --prepare C:\evaluation\prepare --out C:\evaluation\truncation.json --arm truncation
+node eval/l4/cli.mjs judge-input --dataset C:\evaluation\dev.jsonl --records C:\evaluation\records.jsonl --out C:\evaluation\judge-input.jsonl --categories constraint
+node eval/l4/cli.mjs category-report --run C:\evaluation\scored --dataset C:\evaluation\dev.jsonl --out C:\evaluation\categories.json --left baseline:main --right truncation:main --judgments C:\evaluation\judgments.jsonl
+```
+
+The two arms of one comparison are two `arm` values in the same records file; the categories are kept apart because the question is not whether the answers got worse but whether the answers that depend on what the summary kept got worse.
+
 Input records carry `qid`, `arm`, `rep`, `condition`, `env`, `answer`, optional `error`, and the runner's `backgroundAudit`. Malformed identities, duplicate attempts, unknown conditions, inconsistent outcome inventories and modified outcome files are rejected. The final-question runner can export this contract directly as `record.jsonl`; concatenate such files when scoring multiple attempts.
 
 Synthetic fixtures verify arithmetic and control flow only. Fake results are not quality evidence. Semantic judge calibration, independent dataset review and separately authorized real execution remain prerequisites for a final quality evaluation. Open answers remain `needs_judge` until an audited judgment is supplied.

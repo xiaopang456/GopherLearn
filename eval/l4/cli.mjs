@@ -6,6 +6,7 @@ import { assertOutsideWorktree } from '../l2l3/lib/pathguard.mjs'
 import { checkScenario } from './scenarios.mjs'
 import { scoreAttempt } from './score.mjs'
 import { pairedReport, singleReport } from './statistics.mjs'
+import { categoryReport, judgeInput, truncationReport } from './truncation.mjs'
 const hash = data => crypto.createHash('sha256').update(data).digest('hex')
 const lines = file => fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line))
 export function main(args) {
@@ -14,13 +15,41 @@ export function main(args) {
     if (!rest[i].startsWith('--') || !rest[i + 1] || rest[i + 1].startsWith('--') || Object.hasOwn(opts, rest[i].slice(2))) throw new Error('invalid or duplicate option')
     opts[rest[i].slice(2)] = rest[i + 1]
   }
-  const allowed = command === 'score' ? ['dataset', 'records', 'out', 'split'] : command === 'report' ? ['run', 'out', 'left', 'right', 'split'] : []
+  const allowed = command === 'score' ? ['dataset', 'records', 'out', 'split']
+    : command === 'report' ? ['run', 'out', 'left', 'right', 'split']
+      : command === 'truncation-report' ? ['dataset', 'prepare', 'out', 'arm']
+        : command === 'judge-input' ? ['dataset', 'records', 'out', 'categories']
+          : command === 'category-report' ? ['run', 'dataset', 'out', 'left', 'right', 'judgments', 'split'] : []
   if (!allowed.length || Object.keys(opts).some(k => !allowed.includes(k))) throw new Error('unknown command or option')
   const split = opts.split ?? 'dev'
   if (!['dev', 'sealed'].includes(split)) throw new Error('invalid split')
-  for (const k of command === 'score' ? ['dataset', 'records', 'out'] : ['run', 'out']) assertOutsideWorktree(k, opts[k])
+  for (const k of command === 'score' ? ['dataset', 'records', 'out'] : command === 'judge-input' ? ['dataset', 'records', 'out'] : command === 'truncation-report' ? ['dataset', 'prepare', 'out'] : command === 'category-report' ? ['dataset', 'out'] : ['run', 'out']) assertOutsideWorktree(k, opts[k])
   if (fs.existsSync(opts.out)) throw new Error('output exists')
-  if (command === 'score') {
+  if (command === 'truncation-report') {
+    const scenarios = new Map(lines(opts.dataset).map(s => [s.id, s]))
+    const warmups = new Map()
+    for (const entry of fs.readdirSync(opts.prepare, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue
+      const file = path.join(opts.prepare, entry.name, 'warmup.json')
+      if (!fs.existsSync(file)) continue
+      const id = entry.name.slice(0, entry.name.lastIndexOf('.'))
+      warmups.set(id, JSON.parse(fs.readFileSync(file, 'utf8')))
+    }
+    fs.writeFileSync(opts.out, JSON.stringify(truncationReport(scenarios, warmups, { arm: opts.arm ?? 'unknown' }), null, 2), { flag: 'wx' })
+  } else if (command === 'judge-input') {
+    const scenarios = new Map(lines(opts.dataset).map(s => [s.id, s]))
+    const selected = opts.categories ? opts.categories.split(',').map(c => c.trim()).filter(Boolean) : ['constraint']
+    const rows = judgeInput(scenarios, lines(opts.records), { selected })
+    fs.writeFileSync(opts.out, rows.map(row => JSON.stringify(row)).join('\n') + (rows.length ? '\n' : ''), { flag: 'wx' })
+  } else if (command === 'category-report') {
+    const scenarios = new Map(lines(opts.dataset).map(s => [s.id, s]))
+    const manifest = JSON.parse(fs.readFileSync(path.join(opts.run, 'manifest.json'), 'utf8'))
+    const data = fs.readFileSync(path.join(opts.run, 'outcomes.jsonl'))
+    if (manifest.schema !== 'l4.score.v1' || manifest.split !== split || hash(data) !== manifest.outcomes_sha256) throw new Error('run manifest mismatch')
+    const selector = text => { const parts = String(text).split(':'); if (parts.length !== 2 || !/^[A-Za-z0-9._-]+$/.test(parts[0]) || !['main', 'control', 'distractor'].includes(parts[1])) throw new Error('selector must be arm:condition'); return { arm: parts[0], condition: parts[1] } }
+    const judgments = opts.judgments ? lines(opts.judgments) : []
+    fs.writeFileSync(opts.out, JSON.stringify(categoryReport(lines(path.join(opts.run, 'outcomes.jsonl')), scenarios, { left: selector(opts.left), right: selector(opts.right), judgments }), null, 2), { flag: 'wx' })
+  } else if (command === 'score') {
     const scenarios = lines(opts.dataset), byId = new Map()
     for (const s of scenarios) {
       if (checkScenario(s).length || s.split !== split || byId.has(s.id)) throw new Error('invalid, duplicate or wrong-split scenario')
