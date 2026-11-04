@@ -54,7 +54,7 @@ type ProductResult struct {
 // summary output limit rather than the standalone summarizer test defaults.
 func ProductSummaryConfig(c *config.Config) agent.SummaryConfig {
 	a := c.AgentConfig
-	return agent.SummaryConfig{TriggerMessages: a.SummaryTriggerMessages, TriggerTokens: a.SummaryTriggerTokens, RetainMessages: a.SummaryRetainMessages, MaxInputTokens: a.SummaryMaxInputTokens, MaxOutputTokens: a.ContextMaxSummaryTokens, FetchLimit: a.SummaryFetchLimit, Timeout: time.Duration(a.SummaryTimeoutSeconds) * time.Second, StageBudget: time.Duration(a.SummaryStageBudgetSeconds) * time.Second, MaxDeadlineShare: agent.DefaultSummaryConfig().MaxDeadlineShare, FailureCooldown: time.Duration(a.SummaryFailureCooldownSeconds) * time.Second}
+	return agent.SummaryConfig{TriggerMessages: a.SummaryTriggerMessages, TriggerTokens: a.SummaryTriggerTokens, RetainMessages: a.SummaryRetainMessages, MaxInputTokens: a.SummaryMaxInputTokens, MaxOutputTokens: a.ContextMaxSummaryTokens, FetchLimit: a.SummaryFetchLimit, Timeout: time.Duration(a.SummaryTimeoutSeconds) * time.Second, StageBudget: time.Duration(a.SummaryStageBudgetSeconds) * time.Second, MaxDeadlineShare: agent.DefaultSummaryConfig().MaxDeadlineShare, FailureCooldown: time.Duration(a.SummaryFailureCooldownSeconds) * time.Second, Budget: agent.SummaryBudgetOf(a.SummaryGroupItemLimit, a.SummaryOpenLoopsItemLimit, a.SummaryEvidenceIDLimit)}
 }
 
 func offlineSettings(repository, storage string) (*entry.Settings, error) {
@@ -110,6 +110,17 @@ type WarmupReport struct {
 	// one breath and never compact again.
 	FailureCooldownSeconds int `json:"failure_cooldown_seconds"`
 	CooldownWaits          int `json:"cooldown_waits"`
+	// SummaryFailureReasons counts the degraded turns by the step that
+	// failed. The cooldown is one of them: it is counted on its own so that
+	// the share of degraded turns still reads as the share of real failures.
+	SummaryFailureReasons map[string]int `json:"summary_failure_reasons,omitempty"`
+	// CooldownTurns is how many of the degraded turns were held back by the
+	// cooldown rather than failed by themselves.
+	CooldownTurns int `json:"cooldown_turns"`
+	// SummaryTruncations is how many times the compression budget trimmed a
+	// summary, and SummaryDroppedItems is how many items it cut.
+	SummaryTruncations  int `json:"summary_truncations"`
+	SummaryDroppedItems int `json:"summary_dropped_items"`
 }
 
 func PrepareOfflineProduct(ctx context.Context, repository string, turns []Turn) (Snapshot, []ModelCall, error) {
@@ -119,14 +130,7 @@ func PrepareOfflineProduct(ctx context.Context, repository string, turns []Turn)
 func PrepareOfflineProductReport(ctx context.Context, repository string, turns []Turn) (report WarmupReport, resultErr error) {
 	report.Snapshot, report.Calls, resultErr = prepareOfflineProduct(ctx, repository, turns, func(prepared []PreparedTurn) {
 		report.Turns = prepared
-		for _, t := range prepared {
-			if t.SummaryDegraded {
-				report.DegradedTurns++
-			}
-			if t.CooldownWaitMilliseconds > 0 {
-				report.CooldownWaits++
-			}
-		}
+		SummarizeTurns(prepared, &report)
 	})
 	var usageErr error
 	report.UsageByRole, usageErr = SummarizeCalls(report.Calls)
@@ -176,7 +180,7 @@ func prepareOfflineProduct(ctx context.Context, repository string, turns []Turn,
 		return snapshot, nil, err
 	}
 	policy := ProductSummaryConfig(settings.Config)
-	generator, err := agent.NewModelSummaryGenerator(chat, policy.MaxInputTokens, policy.MaxOutputTokens)
+	generator, err := agent.NewModelSummaryGenerator(chat, policy.MaxInputTokens, policy.MaxOutputTokens, policy.Budget)
 	if err != nil {
 		return snapshot, nil, err
 	}

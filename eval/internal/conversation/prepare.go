@@ -26,13 +26,49 @@ type SummaryProvider interface {
 }
 
 type PreparedTurn struct {
-	UserID          uint
-	AssistantID     uint
-	Summary         agent.SummarySnapshot
+	UserID      uint
+	AssistantID uint
+	Summary     agent.SummarySnapshot
+	// SummaryDegraded says that this turn went on without a fresh summary.
 	SummaryDegraded bool
+	// SummaryFailureReason says why: which step of the compaction failed, or
+	// "cooldown" when the failure before it held this turn back. It is empty
+	// when the turn had a fresh summary.
+	SummaryFailureReason string
 	// CooldownWaitMilliseconds is how long the replay waited out the product's
 	// failure cooldown before it wrote this turn.
 	CooldownWaitMilliseconds int64
+}
+
+// SummarizeTurns counts what the prepared turns say about the summaries.
+//
+// The reasons are counted apart from the degraded turns: a compaction the
+// failure cooldown held back is not a second failure, and a report that adds
+// the two together cannot show how often a summary really failed.
+func SummarizeTurns(prepared []PreparedTurn, report *WarmupReport) {
+	for _, turn := range prepared {
+		if turn.SummaryDegraded {
+			report.DegradedTurns++
+		}
+		if turn.SummaryFailureReason != "" {
+			if report.SummaryFailureReasons == nil {
+				report.SummaryFailureReasons = map[string]int{}
+			}
+			report.SummaryFailureReasons[turn.SummaryFailureReason]++
+			if turn.SummaryFailureReason == string(agent.SummaryFailureCooldown) {
+				report.CooldownTurns++
+			}
+		}
+		for _, truncation := range turn.Summary.Truncations {
+			report.SummaryDroppedItems += truncation.Dropped
+		}
+		if len(turn.Summary.Truncations) > 0 {
+			report.SummaryTruncations++
+		}
+		if turn.CooldownWaitMilliseconds > 0 {
+			report.CooldownWaits++
+		}
+	}
 }
 
 // Prepare appends each user message, runs the product summary policy, and then
@@ -92,8 +128,10 @@ func PrepareWithCooldown(ctx context.Context, writer MessageWriter, summary Summ
 		}
 		s, err := summary.SessionSummary(ctx, agent.RunContext{UserID: owner, UserName: username, SessionID: sessionID, Question: t.User})
 		degraded := err != nil
+		reason := ""
 		if degraded {
 			failedAt = time.Now()
+			reason = string(agent.SummaryFailureReasonOf(err))
 		}
 		if ctx.Err() != nil {
 			return results, ctx.Err()
@@ -105,7 +143,7 @@ func PrepareWithCooldown(ctx context.Context, writer MessageWriter, summary Summ
 		if assistant == nil || assistant.ID <= user.ID {
 			return results, fmt.Errorf("turn %d assistant id is invalid", i+1)
 		}
-		results = append(results, PreparedTurn{UserID: user.ID, AssistantID: assistant.ID, Summary: s, SummaryDegraded: degraded, CooldownWaitMilliseconds: waited.Milliseconds()})
+		results = append(results, PreparedTurn{UserID: user.ID, AssistantID: assistant.ID, Summary: s, SummaryDegraded: degraded, SummaryFailureReason: reason, CooldownWaitMilliseconds: waited.Milliseconds()})
 	}
 	return results, nil
 }
