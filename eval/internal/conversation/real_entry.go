@@ -320,6 +320,9 @@ func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, que
 	if err := env.Validate(); err != nil {
 		return result, err
 	}
+	if err := requireEmptyUserIndexes(ctx, env); err != nil {
+		return result, err
+	}
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}

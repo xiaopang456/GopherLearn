@@ -75,7 +75,7 @@ The command derives the same evaluation user for preparation and all repeats,
 and a different user for each run, configuration, scenario and condition.
 Scenario users have an intentionally empty knowledge base: this evaluation
 measures conversation history. Do not provide a knowledge seed or explicit user
-identity for these phases. Redis user isolation requires validation against a
-real Redis Stack instance before a real run; the hash-derived ID has a small
-collision probability, so operators must check the generated identity manifest
-for duplicates before dispatch.
+identity for these phases. Before answering, the evaluator refuses users with entries in either derived
+memory index, preventing repeats from inheriting a previous attempt’s state.
+The hash-derived ID has a small collision probability, so operators must check
+the generated identity manifest for duplicates before dispatch.

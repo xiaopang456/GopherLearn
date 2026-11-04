@@ -9,7 +9,7 @@ export function checkScenario(s) {
   const errors = []
   if (!s || typeof s !== 'object') return ['scenario is not an object']
   if (typeof s.id !== 'string' || !/^[A-Za-z0-9_-]+$/.test(s.id)) errors.push('invalid id')
-  if (!categories.has(s.category)) errors.push('unknown category')
+  if (!categories.has(s.category) && !(s.schema_version === 'l4.scenario.draft.v3' && /^R[1-6]$/.test(s.category))) errors.push('unknown category')
   if (s.split !== splitForId(String(s.id))) errors.push('split differs from id hash')
   if (typeof s.question !== 'string' || !s.question.trim()) errors.push('missing question')
   if (!Array.isArray(s.turns) || s.turns.length < 1) errors.push('missing history')
@@ -34,6 +34,25 @@ export function checkScenario(s) {
       if (!c || !Number.isInteger(c.replace_turn) || c.replace_turn < 1 || c.replace_turn > (s.turns?.length ?? 0) || typeof c.user !== 'string' || !c.user.trim() || typeof c.assistant !== 'string' || !c.assistant.trim()) errors.push(`invalid ${name} condition`)
     }
     if (s.conditions?.control?.replace_turn !== s.conditions?.distractor?.replace_turn) errors.push('conditions replace different turns')
+  }
+  if (s.schema_version === 'l4.scenario.draft.v3') {
+    const N = s.turns?.length ?? 0
+    if (N < 60 || N > 110) errors.push('invalid v3 history length')
+    const valid = n => Number.isInteger(n) && n >= 1 && n <= N
+    if (s.category === 'R2' || s.category === 'R3') {
+      if (!valid(s.original_turn) || !valid(s.superseded_turn) || s.original_turn <= 25 || s.original_turn > 40 || s.superseded_turn < 45 || s.superseded_turn > 70 || s.original_turn >= s.superseded_turn || N + 1 - s.original_turn < 20 || N + 1 - s.superseded_turn < 20) errors.push('invalid update turns')
+      if (typeof s.superseded_value !== 'string' || !s.superseded_value.trim()) errors.push('invalid old value')
+      if (s.distance_to_question !== N + 1 - s.superseded_turn) errors.push('invalid distance')
+      if (!Array.isArray(s.evidence_turns) || !s.evidence_turns.includes(s.original_turn) || !s.evidence_turns.includes(s.superseded_turn)) errors.push('missing update evidence')
+      const values = s.category === 'R2' ? s.answer?.forbidden : s.answer?.accepted
+      if (!Array.isArray(values) || !values.includes(s.superseded_value)) errors.push('old value absent from answer key')
+    } else {
+      if (!valid(s.fact_turn) || s.distance_to_question !== N + 1 - s.fact_turn || (!Array.isArray(s.evidence_turns) || !s.evidence_turns.includes(s.fact_turn))) errors.push('invalid fact turn or distance')
+      if (['R1', 'R5'].includes(s.category) && (s.fact_turn < 30 || s.fact_turn > 50 || s.distance_to_question < 20)) errors.push('invalid middle turn')
+      if (s.category === 'R4' && ![2, 3].includes(s.distance_to_question)) errors.push('invalid tail turn')
+      if (s.category === 'R6' && (s.fact_turn < 3 || s.fact_turn > 10)) errors.push('invalid early turn')
+    }
+    if (s.category === 'R5' ? s.answer?.mode !== 'needs_judge' : s.answer?.mode !== 'fact') errors.push('invalid category answer mode')
   }
   return [...new Set(errors)]
 }
