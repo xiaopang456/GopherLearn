@@ -6,6 +6,11 @@
 deploy/redis-stack-preflight.sh text eol=lf
 deploy/redis-stack-healthcheck.sh text eol=lf
 
+# redis-stack-start.sh 同样是被容器里的 /bin/sh 执行的脚本，LF 同样是它能跑起来的前提。
+# 它还被 preflight 直接 exec（不是由 /bin/sh 代跑），所以它需要可执行位：文件模式记在
+# git 里（100755），否则绑定挂载进去的副本在 Linux 上是不可执行的，容器起不来。
+deploy/redis-stack-start.sh text eol=lf
+
 # 下面两个文件按**行内容**被断言，CRLF 会让断言本身失效，所以它们也必须以 LF 检出：
 #
 # - compose.integrated.yml：internal/app/retrieval_stack_config_test.go 逐行找顶层的
