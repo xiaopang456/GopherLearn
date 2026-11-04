@@ -305,9 +305,12 @@ func TestRetrieveWithOptionsCandidatePool(t *testing.T) {
 		if len(outcome.Candidates) != RerankCandidateK || !reflect.DeepEqual(chunkIDs(outcome.Candidates), want) {
 			t.Fatalf("pool = %v, want %v", chunkIDs(outcome.Candidates), want)
 		}
-		// The pool is the fused order, so the final top-K is its prefix.
-		if !reflect.DeepEqual(chunkIDs(outcome.Results), want[:len(outcome.Results)]) {
-			t.Fatalf("results %v are not the prefix of the pool %v", chunkIDs(outcome.Results), want)
+		// The pool is the equal-weight fused order whatever the keyword weight is: it is what a
+		// reranker would see. With equal weights the final top-K is its prefix; with the default
+		// keyword weight the returned order differs but the pool does not.
+		_, equal := runWithOptions(t, sc, RetrieveOptions{WantCandidates: true, LexicalWeight: 1})
+		if !reflect.DeepEqual(chunkIDs(equal.Candidates), want) || !reflect.DeepEqual(chunkIDs(equal.Results), want[:len(equal.Results)]) {
+			t.Fatalf("with equal weights results %v are not the prefix of the pool %v", chunkIDs(equal.Results), want)
 		}
 	})
 	t.Run("with a reranker it is what the reranker was given", func(t *testing.T) {

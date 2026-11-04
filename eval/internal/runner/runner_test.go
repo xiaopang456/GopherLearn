@@ -561,6 +561,34 @@ func TestRerankerProtocolFailureIsKeptAsARecordAndNothingIsRetried(t *testing.T)
 	}
 }
 
+func TestEqualWeightCellsRunInTheSameRunAndShareTheRerankCalls(t *testing.T) {
+	cfg := testConfig(t, []string{config.MethodHybrid, config.MethodHybridEqual, config.MethodHybridRerank, config.MethodHybridEqualRerank}, []int{3}, config.Limits{})
+	env := newEnv(t)
+	result, records := execute(t, cfg, env.Env, dataset.SplitDev)
+	if !result.Complete || result.Errors != 0 {
+		t.Fatalf("run: %+v", result)
+	}
+	// hybrid-equal+rerank asks the reranker for the same pool as hybrid+rerank, so the cache answers it.
+	if env.reranker.Calls() != 5 {
+		t.Errorf("%d rerank calls for 5 questions; the equal-weight rerank cell must share them", env.reranker.Calls())
+	}
+	rerank, equalRerank := byCell(records, "hybrid+rerank/production/k=3"), byCell(records, "hybrid-equal+rerank/production/k=3")
+	if len(rerank) != 5 || len(equalRerank) != 5 {
+		t.Fatalf("cells: %d and %d records", len(rerank), len(equalRerank))
+	}
+	for i := range rerank {
+		if !reflect.DeepEqual(spans(rerank[i].Results), spans(equalRerank[i].Results)) || !reflect.DeepEqual(spans(rerank[i].Pool), spans(equalRerank[i].Pool)) {
+			t.Errorf("%s: the reranked cells differ although they share the pool", rerank[i].QuestionID)
+		}
+	}
+	// The equal-weight cell is the pool's own order: its results are the head of the (equal-weight) pool.
+	for _, r := range byCell(records, "hybrid-equal/k=3") {
+		if !reflect.DeepEqual(spans(r.Results), spans(r.Pool)[:len(r.Results)]) {
+			t.Errorf("%s: the equal-weight results are not the head of the equal-weight pool", r.QuestionID)
+		}
+	}
+}
+
 // failAfter lets the first n embedding calls through, then fails.
 type failAfter struct {
 	inner embedding.Embedder

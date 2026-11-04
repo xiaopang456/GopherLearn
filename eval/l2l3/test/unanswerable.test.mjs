@@ -28,6 +28,33 @@ test('general knowledge after a stated "no evidence" is left to the judge too', 
   assert.equal(r.label, 'disclosed_general_knowledge')
 })
 
+test('general knowledge without any search is left to the judge, and counted apart', () => {
+  // The material was never consulted, which is a different fact from "the
+  // material was searched and had nothing". The state still cannot tell
+  // whether skipping the search was the right thing to do.
+  const r = handle({ answerBasis: 'general_knowledge', knowledgeStatus: 'not_required', knowledgeReason: 'search_not_performed', sources: [] })
+  assert.equal(r.verdict, 'needs_judge')
+  assert.equal(r.tier, 'pending')
+  assert.equal(r.label, 'general_knowledge_without_search')
+})
+
+test('"searched and found nothing" is still the disclosed-general-knowledge case', () => {
+  // The new branch must not swallow the old one: a search that ran and found
+  // nothing keeps its own label.
+  const r = handle({ answerBasis: 'general_knowledge', knowledgeStatus: 'no_evidence', knowledgeReason: 'no_candidate', sources: [] })
+  assert.equal(r.verdict, 'needs_judge')
+  assert.equal(r.tier, 'pending')
+  assert.equal(r.label, 'disclosed_general_knowledge')
+})
+
+test('"not required" without the no-search reason is not read as a no-search turn', () => {
+  // The reason is what says the material was never consulted. On its own,
+  // `not_required` must not borrow the new branch's verdict.
+  const r = handle({ answerBasis: 'general_knowledge', knowledgeStatus: 'not_required', knowledgeReason: 'none', sources: [] })
+  assert.equal(r.verdict, 'fail')
+  assert.equal(r.label, 'unexpected_basis')
+})
+
 test('a service that could not answer is an error, not an abstention and not a fabrication', () => {
   for (const status of ['unavailable', 'invalid_grounding']) {
     const r = handle({ answerBasis: 'refused', knowledgeStatus: status, knowledgeReason: 'index_unavailable' })
