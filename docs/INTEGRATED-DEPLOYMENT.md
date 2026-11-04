@@ -128,6 +128,18 @@ Docker 侧读数是**静态**的：`Dockerfile.backend-integrated` 的 COPY 行�
   （`redis-cli` 官方记录的非 argv 通道）。代价是：探针存活期间，这个值在**该容器内同 uid
   的进程与 root** 的进程环境里可读。它对 Redis 客户端的同伴、对其它容器、对宿主进程表
   都不可见。这条边界的实测记录见 §3 的最后几行。
+- **停止与落盘**：镜像自带的 `/entrypoint.sh` 把 `redis-server` 作为 **shell 的子进程**跑起来
+  （封存证据 `entrypoint.sh.txt:1,25-36`），停止信号先到 shell：shell 死掉、服务还活着，
+  容器在宽限期（30 秒）结束后被强杀，**服务来不及写最后那张快照**——正常停止就会丢掉上次
+  快照之后的全部写入。所以本栈的 preflight 交给的是 `deploy/redis-stack-start.sh`：
+  同样的命令、同样的模块，但最后一步是 `exec`，服务自己成为 1 号进程，收到停止信号后写完
+  快照再退出。实测：写入 5001 个键 → `docker stop -t 30` → 日志里出现
+  `Saving the final RDB snapshot before exiting. / DB saved on disk` → 重启后 `DBSIZE` 仍是
+  5001；用 `docker kill` 模拟崩溃再重启，9001 个键同样一个不少。
+- **写入要落盘**：服务端配置（`redis.integrated.conf.local`）默认开 `appendonly yes` +
+  `appendfsync everysec`，RDB 快照也保留；数据目录是 `gopherlearn-integrated-redis-data` 卷
+  里的 `/data`。**老部署的配置里没有这两行**：preflight 会在启动时打印一行提示（只有分类，
+  不含配置内容），但**不拒绝启动**；更新配置后重启一次即可，重启前写入的内容由 AOF 补上。
 
 ---
 
