@@ -11,22 +11,27 @@
 
 This entry is the repository's historical baseline, not the shipped application.
 
-Its accepted scope: the session/mode model, GORM-backed MySQL storage, the Gin
-routes with their golden HTTP contract, the offline retrieval backend with
-citation persistence, the model seam with its OpenAI-compatible adapter, and a
-learning-Agent Harness whose one server-owned tool (`knowledge_search`) has been
-executed end to end against a real provider and sealed.
+Verified against a real model provider, end to end: the session/mode model,
+GORM-backed MySQL storage, the Gin routes with their golden HTTP contract, the
+offline retrieval backend with citation persistence, the model seam with its
+OpenAI-compatible adapter, and one server-owned Agent tool - `knowledge_search` -
+whose full two-request round trip has been executed against a real provider, with
+the record kept under `spec/verification/`.
 
-Implemented here, but not accepted to that bar: a per-session rolling summary
-shared by the chat, knowledge-answering and Agent paths; long-term memory with
-its confirmation gate, read-back and human-operated screen; automatic episodic
-(cross-session) memory behind the opt-in `GOPHERLEARN_EPISODES=on`; the Agent's
-own `propose_memory` write; and the quiz / learning loop with server-side
-mastery. None of those has been signed off the way the accepted layers were.
+Implemented here, but not verified to that standard - the evidence for these is
+offline tests and substitutes: a per-session rolling summary shared by the chat,
+knowledge-answering and Agent paths; long-term memory with its confirmation gate,
+read-back and human-operated screen; automatic episodic (cross-session) memory
+behind the opt-in `GOPHERLEARN_EPISODES=on`; the Agent's own `propose_memory`
+write; and the quiz / learning loop with server-side mastery. The provider records
+under `spec/verification/` name `knowledge_search` alone, so nothing registered
+after it has an end-to-end real-provider run on file.
 
-Not built at all: automatic extraction into confirmed long-term memory (nothing
-proposes a draft on its own), and a topic-consent store that would authorise
-topic recall. Topic mastery is computed and read back inside the quiz loop only -
+Not built at all: any path that promotes a memory without a user decision - the
+Agent can file a `pending` draft through `propose_memory`, but only
+`MemoryService.ConfirmMemoryDraft` (`internal/service/memory.go:137`) makes one a
+fact - and a topic-consent store that would authorise topic recall. Topic mastery
+is computed and read back inside the quiz loop only -
 a chat or knowledge answer is not personalised from it.
 
 How each layer is verified is stated where it matters: service and HTTP layers run
@@ -581,7 +586,7 @@ server cannot price is recorded as unknown. See
 
 A session keeps one summary row that records where it stops: the id of the last
 message folded into it. Every turn is then assembled the same way for all three
-strategies - system prompt, sealed summary, the complete turns after the boundary
+strategies - system prompt, the stored summary, the complete turns after the boundary
 that fit the context budget, and the current question - so the summary and the
 recent window never overlap and the question is never counted twice. When enough
 uncovered messages have piled up past the boundary, the next turn compresses them
@@ -785,7 +790,7 @@ answer, or reads mastery back, and the tools it can be given remain `knowledge_s
 its own routes, shapes and state machine - see "Learning workflow (quiz surface)".
 
 `memory_search` and `propose_memory` have never been run against a real provider. Both
-sealed tool records predate them - each names `knowledge_search` and no other tool - so the
+provider records on file predate them - each names `knowledge_search` and no other tool - so the
 wire contract of every tool registered after it is tested against substitutes and a local
 HTTP server, and nothing claims a vendor endpoint proved them.
 
@@ -794,8 +799,9 @@ HTTP server, and nothing claims a vendor endpoint proved them.
 
 ## Provider smoke check
 
-`cmd/gopherlearn-model-smoke` spent one authorization on 2026-09-25 and is not run
-again without a new one. An authorized run spends exactly three provider requests - one
+`cmd/gopherlearn-model-smoke` has been run once, on 2026-09-25. It makes no provider call
+unless `-authorize <phrase>` is supplied, and each phrase is single-use, so repeating the
+run needs a new one. A run that passes that guard spends exactly three provider requests - one
 non-streaming completion, one streamed completion, and one grounded `knowledge_qa` turn
 through the real `MessageService → retrieval → model generator` path - then asks an
 unrelated question that must reach the provider zero times, and writes
@@ -833,8 +839,8 @@ result file path.
 
 ## Agent tool-calling smoke check
 
-`cmd/gopherlearn-agent-smoke` has been run twice, each under its own single-use
-authorization, on 2026-09-25. Both records are sealed and read-only.
+`cmd/gopherlearn-agent-smoke` has been run twice on 2026-09-25, each with its own
+single-use `-authorize` phrase. Both verification records are stored read-only.
 
 **v1** - `spec/verification/agent-tool-smoke-v1.json` (SHA-256
 `3296df13a837da9acd4428d4cd6531a07b59aa12ed300b2f9172ec8e86ab785a`, 1283 bytes, schema
@@ -862,7 +868,7 @@ published schema to `query` alone and recorded the shape of what arrived. That i
 about what changed between the two records, not a reconstruction of v1's cause, which v1's
 evidence cannot name.
 
-An authorized run spends exactly two provider requests. It seeds an in-memory user,
+A run that passes that guard spends exactly two provider requests. It seeds an in-memory user,
 collection and one document carrying a unique marker, plus a second user holding a
 document with the same marker and a different discriminator - `cycle-90d` for the caller,
 `cycle-7d` for the other account - then asks a question whose answer is that discriminator,
