@@ -130,7 +130,7 @@ Copy-Item config.integrated.example.toml config.integrated.toml.local   # PowerS
 **三处模型配置分别管什么**——这是最容易填错的地方：
 
 - `[isolatedEntry]` —— **学习 Agent** 的 chat 模型（地址、模型名、密钥），外加 **embedding 服务的密钥**；
-- `[ragModelConfig]` —— **embedding 服务**的模型名、地址与向量维度，**Agent 侧 chat 模型的模型名**（和上一段用同一个模型时就写一样的），以及**思考开关的方言**；
+- `[ragModelConfig]` —— **embedding 服务**的模型名、地址与向量维度，情景关系分类器**身份标签**里的模型名（它不决定答题用哪个模型，但请写成和上面 `chatModel` 一样的值），以及**思考开关的方言**；
 - `[ordinaryChat]` —— **普通聊天**的模型（地址、模型名、密钥）。
 
 **大多数部署三处填同一个模型就行**：学习 Agent 与普通聊天用同一个 chat 模型，embedding 用同一家（也可以是另一家）的 embedding 模型。
@@ -153,8 +153,9 @@ embeddingKey = "<你的百炼 API Key>"
 embeddingModel = "qwen3.7-text-embedding"
 embeddingBaseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 dimension = 1024
-# Agent 侧 chat 模型的模型名：和上面同一个模型就写一样的
+# 情景关系分类器的身份标签用这个名字（答题用的模型来自上面的 chatModel）：请写成和 chatModel 一样的值
 chatModelName = "deepseek-flash"
+# 必填项，但当前没有客户端从它构建（详见 docs/CONFIGURATION.md）
 baseUrl = "https://api.deepseek.com/v1"
 # 思考开关的方言：DeepSeek 用 deepseek（默认的 qwen 写法它不认）
 chatThinkingDialect = "deepseek"
@@ -193,7 +194,7 @@ host = "127.0.0.1"
 port = 18082
 ```
 
-> 换 provider 时改四处：`chatModel` / `chatBaseURL` / `baseUrl` / `chatModelName` 换成你的模型名与地址，两把密钥换成你的，`chatThinkingDialect` 改成对方认的写法（默认 `qwen`）。
+> 换 provider 时要动四处，但只有两半是真的在用：`chatModel` / `chatBaseURL` 决定学习 Agent 用哪个模型、哪个地址；`chatModelName` 是关系分类器的身份标签（**照抄 `chatModel`**），`baseUrl` 是必填但当前没有消费者的一项（**照抄 `chatBaseURL`**）。两把密钥换成你自己的，`chatThinkingDialect` 改成对方认的写法（默认 `qwen`）。
 > 完整字段表、每个字段的默认值与校验规则见 [配置参考](docs/CONFIGURATION.md)。
 
 ### 5.2 可选功能
@@ -236,9 +237,20 @@ docker run -d --name gopherlearn-mysql -p 127.0.0.1:13360:3306 \
 # Redis Stack（宿主端口 16360）。口令与配置里的 redisConfig.password 必须一致，
 # 因此这里同样用配置文件声明口令：
 #   cp redis.integrated.conf.example redis.integrated.conf.local   # 然后替换其中的 requirepass
+#
+# 三处都要照做：
+#   * 数据目录挂出来（-v ...:/data + REDIS_DATA_DIR=/data）：不挂的话容器一删，索引就没了。
+#   * 用仓库里的 deploy/redis-stack-start.sh 起服务：镜像自带的入口会把 redis-server 放在
+#     shell 下面，停止信号到不了服务本身，正常停止时最后那张快照就不会写，容器一停，
+#     上次快照之后写入的内容全丢（详见「Redis 持久化」一节）。
+#   * 示例配置里已经开了 AOF（appendonly yes），写入不会只活在内存里。
 docker run -d --name gopherlearn-redis -p 127.0.0.1:16360:6379 \
   -v "$PWD/redis.integrated.conf.local:/redis-stack.conf:ro" \
-  redis/redis-stack-server:latest
+  -v "$PWD/deploy/redis-stack-start.sh:/redis-stack-start.sh:ro" \
+  -v gopherlearn-redis-data:/data \
+  -e REDIS_DATA_DIR=/data \
+  --entrypoint /bin/sh \
+  redis/redis-stack-server:latest /redis-stack-start.sh
 ```
 
 > **PowerShell 与 Bash 的差异**：续行符不同（PowerShell 用反引号 `` ` ``，Bash 用 `\`），
@@ -246,6 +258,25 @@ docker run -d --name gopherlearn-redis -p 127.0.0.1:16360:6379 \
 > 直接写绝对路径最省事）。其余命令两边一致。
 >
 > `redis.integrated.conf.local` 里的 `requirepass` 必须是**一个未加引号的词**、长度 ≥ 32 字节。
+
+#### Redis 持久化
+
+检索索引在 Redis 里，MySQL 里只记着「这个文档已经就绪」。所以 Redis 重启后如果索引是旧的或
+不完整的，检索会**悄悄变差**：命中的块变少、找不到本该找到的文档，但不会有任何报错。
+
+因此这一份部署要满足两件事：
+
+| 要做到 | 怎么做 |
+|---|---|
+| 写入不只活在内存里 | 配置文件里开 `appendonly yes` + `appendfsync everysec`（示例配置已经开了）；RDB 快照也保留 |
+| 正常停止不丢数据 | 用 `deploy/redis-stack-start.sh` 起服务（见上面的命令），并把数据目录挂到 `/data` |
+
+镜像自带的入口脚本会把 `redis-server` 作为 **shell 的子进程**跑起来：停止信号先到 shell，
+shell 死掉，服务还活着，容器在宽限期结束后被强杀——**服务来不及写最后那张快照**。仓库里的
+`deploy/redis-stack-start.sh` 做的是同样的事，但最后一步用 `exec` 交出进程，服务自己就是
+1 号进程，收到停止信号后会写完快照再退出。
+
+改这两处之后需要**重启一次 Redis 容器**才生效；重启前写入的内容不会丢（AOF 会补上）。
 
 ### 步骤 2 · 复制并填写配置模板
 

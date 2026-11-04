@@ -232,9 +232,13 @@ func buildMemoryIndex(repository *memoryDAO.Repository, embedder embedding.Embed
 func agentRunnerConfig(mode memoryrecall.ReadMode, agentConf config.AgentConfig, thinkingDialect string) agentService.RunnerConfig {
 	runnerConfig := agentService.RunnerConfig{
 		MaxToolCalls: agentConf.MaxToolCalls, MaxModelCalls: agentConf.MaxModelCalls,
-		MaxGraphSteps: agentConf.MaxGraphSteps,
-		Deadline:      time.Duration(agentConf.DeadlineSeconds) * time.Second,
+		MaxGraphSteps:   agentConf.MaxGraphSteps,
+		Deadline:        time.Duration(agentConf.DeadlineSeconds) * time.Second,
 		ThinkingDialect: thinkingDialect,
+		// The pre-retrieval's threshold is a deployment setting, because the
+		// reranker's scores move with the corpus and with the reranker itself,
+		// and the comparison run is what should move this number.
+		RelevanceThreshold: agentConf.KnowledgeRelevanceThreshold,
 	}
 	if mode.UsesMemorySearchTool() {
 		runnerConfig.PerTool = agentService.AgentMemoryToolRunnerConfig().PerTool
@@ -691,8 +695,10 @@ func main() {
 		// where widening it is the right answer.
 		MaxDeadlineShare: agentService.DefaultSummaryConfig().MaxDeadlineShare,
 		FailureCooldown:  time.Duration(conf.AgentConfig.SummaryFailureCooldownSeconds) * time.Second,
+		Budget: agentService.SummaryBudgetOf(conf.AgentConfig.SummaryGroupItemLimit,
+			conf.AgentConfig.SummaryOpenLoopsItemLimit, conf.AgentConfig.SummaryEvidenceIDLimit),
 	}
-	summaryGenerator, err := agentService.NewModelSummaryGenerator(agentModel, summaryConfig.MaxInputTokens, summaryConfig.MaxOutputTokens)
+	summaryGenerator, err := agentService.NewModelSummaryGenerator(agentModel, summaryConfig.MaxInputTokens, summaryConfig.MaxOutputTokens, summaryConfig.Budget)
 	if err != nil {
 		log.Printf("initialize agent summary generator: %v", err)
 		return

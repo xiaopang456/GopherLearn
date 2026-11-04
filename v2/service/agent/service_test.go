@@ -70,8 +70,14 @@ func TestServiceCompletesRunAndPersistsOnlyPublicFacts(t *testing.T) {
 	if len(persisted) != 2 || !persisted[0].IsUser || persisted[1].IsUser {
 		t.Fatalf("messages = %#v", persisted)
 	}
+	// The user's own message carries no answer of its own. The answer the
+	// assistant gave rests on nothing the turn retrieved, and it says so:
+	// "general knowledge" and "this turn never searched the material" are
+	// two different facts, and the second one is the reason there is no
+	// citation to check.
 	if persisted[0].AnswerBasis != rag.AnswerBasisConversation || persisted[0].KnowledgeStatus != rag.KnowledgeStatusNotRequired ||
-		persisted[1].AnswerBasis != rag.AnswerBasisConversation || persisted[1].KnowledgeStatus != rag.KnowledgeStatusNotRequired {
+		persisted[1].AnswerBasis != rag.AnswerBasisGeneralKnowledge || persisted[1].KnowledgeStatus != rag.KnowledgeStatusNotRequired ||
+		persisted[1].KnowledgeReason != rag.KnowledgeReasonSearchNotPerformed {
 		t.Fatalf("persisted answer states = %#v", persisted)
 	}
 	if !events.ordered(EventRunStarted, EventStepStarted, EventAnswerDelta, EventRunCompleted) {

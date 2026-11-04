@@ -357,6 +357,12 @@ type AgentConfig struct {
 	SummaryTimeoutSeconds         int    `toml:"summaryTimeoutSeconds"`
 	SummaryStageBudgetSeconds     int    `toml:"summaryStageBudgetSeconds"`
 	SummaryFailureCooldownSeconds int    `toml:"summaryFailureCooldownSeconds"`
+	// The summary budget is how much a summary may hold. A summary that
+	// outgrew it is trimmed to it rather than thrown away, so these limits
+	// decide how much history is kept, not whether the summary updates at all.
+	SummaryGroupItemLimit     int `toml:"summaryGroupItemLimit"`
+	SummaryOpenLoopsItemLimit int `toml:"summaryOpenLoopsItemLimit"`
+	SummaryEvidenceIDLimit    int `toml:"summaryEvidenceIDLimit"`
 	// EpisodeRelationMode selects the episodic write-side relation pass:
 	// "off", "shadow" or "apply".
 	//
@@ -380,6 +386,28 @@ type AgentConfig struct {
 	EpisodeMaxInputTokens           int    `toml:"episodeMaxInputTokens"`
 	EpisodeMaxOutputTokens          int    `toml:"episodeMaxOutputTokens"`
 	EpisodeMaxMessages              int    `toml:"episodeMaxMessages"`
+
+	// KnowledgeRelevanceThreshold is the rerank score above which the
+	// server-side pre-retrieval hands the learner's own material to the
+	// model before it answers.
+	//
+	// The default is 0.80. It sits above the highest score the material's
+	// own calibration reached on a question it does not answer (0.733) and
+	// below the median of the questions it does answer (0.937), so the
+	// default hands over the passages that answer the question and leaves
+	// the rest to the model. It is a setting rather than a constant
+	// because the reranker's scores move when the corpus or the model
+	// moves, and the comparison run is what should move this one.
+	//
+	// Zero turns the pre-retrieval off entirely. That is what a deployment
+	// without a reranker gets anyway: no rerank score, no pre-retrieval.
+	// It does not mean "the model decides without evidence" - a
+	// pre-retrieval that could not run falls back to the rule that was in
+	// force before it existed, which forces the document search.
+	//
+	// The value is a literal rather than a constant from the agent
+	// package, because the configuration must not import a service.
+	KnowledgeRelevanceThreshold float64 `toml:"knowledgeRelevanceThreshold"`
 }
 
 type Config struct {
@@ -441,6 +469,10 @@ func defaultConfig() *Config {
 		// default nobody agreed to.
 		AgentThinkingEnabled: false,
 		KnowledgeDefaultTopK: 5, KnowledgeMaxTopK: 8, KnowledgeMaxResultTokens: 700,
+		// The pre-retrieval hands over the passages that answer the question and
+		// leaves the rest alone. 0.80 is the score the reranker's own
+		// calibration put between the two.
+		KnowledgeRelevanceThreshold:   0.80,
 		KnowledgeMaxObservationTokens: 2200, KnowledgeMaxRunTokens: 6500,
 		DocumentReadMaxLines: 240, DocumentReadMaxBytes: 32 * 1024, DocumentReadMaxObservationTokens: 3000,
 		ContextModelWindowTokens: 32768, ContextInputTargetTokens: 28000, ContextOutputReserveTokens: 4000,
@@ -451,6 +483,7 @@ func defaultConfig() *Config {
 		SummaryTriggerMessages:   12, SummaryTriggerTokens: 6000, SummaryRetainMessages: 8,
 		SummaryMaxInputTokens: 8000, SummaryFetchLimit: 512, SummaryTimeoutSeconds: 20,
 		SummaryStageBudgetSeconds: 8, SummaryFailureCooldownSeconds: 30,
+		SummaryGroupItemLimit: 20, SummaryOpenLoopsItemLimit: 20, SummaryEvidenceIDLimit: 64,
 		// Literals, not the service package's constants: config must not
 		// import a service, and the service parses and validates this string
 		// at assembly time rather than trusting it here.
@@ -855,6 +888,9 @@ func applyAgentEnv(c *AgentConfig) error {
 		{"AGENT_SUMMARY_TIMEOUT_SECONDS", func(value int) { c.SummaryTimeoutSeconds = value }},
 		{"AGENT_SUMMARY_STAGE_BUDGET_SECONDS", func(value int) { c.SummaryStageBudgetSeconds = value }},
 		{"AGENT_SUMMARY_FAILURE_COOLDOWN_SECONDS", func(value int) { c.SummaryFailureCooldownSeconds = value }},
+		{"AGENT_SUMMARY_GROUP_ITEM_LIMIT", func(value int) { c.SummaryGroupItemLimit = value }},
+		{"AGENT_SUMMARY_OPEN_LOOPS_ITEM_LIMIT", func(value int) { c.SummaryOpenLoopsItemLimit = value }},
+		{"AGENT_SUMMARY_EVIDENCE_ID_LIMIT", func(value int) { c.SummaryEvidenceIDLimit = value }},
 		{"AGENT_EPISODE_RELATION_MAX_CANDIDATES", func(value int) { c.EpisodeRelationMaxCandidates = value }},
 		{"AGENT_EPISODE_WORKER_COUNT", func(value int) { c.EpisodeWorkerCount = value }},
 		{"AGENT_EPISODE_QUEUE_SIZE", func(value int) { c.EpisodeQueueSize = value }},
@@ -941,6 +977,13 @@ func (c AgentConfig) Validate() error {
 	}
 	if c.KnowledgeMaxResultTokens < 32 || c.KnowledgeMaxResultTokens > 4000 {
 		return fmt.Errorf("knowledgeMaxResultTokens must be between 32 and 4000")
+	}
+	// The pre-retrieval threshold is a rerank score. Zero means the
+	// pre-retrieval does not run at all, so it is allowed; anything above
+	// one could never be reached and would silently disable the feature, so
+	// it is not.
+	if c.KnowledgeRelevanceThreshold < 0 || c.KnowledgeRelevanceThreshold > 1 {
+		return fmt.Errorf("knowledgeRelevanceThreshold must be between 0 and 1")
 	}
 	if c.KnowledgeMaxObservationTokens < 256 || c.KnowledgeMaxObservationTokens > 8000 {
 		return fmt.Errorf("knowledgeMaxObservationTokens must be between 256 and 8000")
@@ -1057,6 +1100,19 @@ func (c AgentConfig) Validate() error {
 	}
 	if c.SummaryFailureCooldownSeconds < 1 || c.SummaryFailureCooldownSeconds > 600 {
 		return fmt.Errorf("summaryFailureCooldownSeconds must be between 1 and 600")
+	}
+	// The budget limits how much history a summary keeps. They have to leave
+	// room for the citations themselves: every item of every group cites at
+	// least one message, so a budget of ids that is smaller than the budget of
+	// items would trim items that did not have to go.
+	if c.SummaryGroupItemLimit < 1 || c.SummaryGroupItemLimit > 200 {
+		return fmt.Errorf("summaryGroupItemLimit must be between 1 and 200")
+	}
+	if c.SummaryOpenLoopsItemLimit < 1 || c.SummaryOpenLoopsItemLimit > 200 {
+		return fmt.Errorf("summaryOpenLoopsItemLimit must be between 1 and 200")
+	}
+	if c.SummaryEvidenceIDLimit < c.SummaryGroupItemLimit || c.SummaryEvidenceIDLimit > 2000 {
+		return fmt.Errorf("summaryEvidenceIDLimit must cover summaryGroupItemLimit and be at most 2000")
 	}
 	if c.EpisodeWorkerCount < 1 || c.EpisodeWorkerCount > 16 || c.EpisodeQueueSize < c.EpisodeWorkerCount || c.EpisodeQueueSize > 1000 {
 		return fmt.Errorf("episode worker and queue sizes are invalid")

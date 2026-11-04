@@ -7,211 +7,43 @@
 > 这里的 `GOPHERLEARN_*` 环境变量属于基线入口的配置面；正式入口读的是
 > `config.integrated.toml.local`（见 [INTEGRATED-REFERENCE.md](INTEGRATED-REFERENCE.md)）。
 
-## Development status
+## What this implementation covers
 
-Backend phases 1-4B.2 are accepted: session modes, GORM/MySQL storage, the Gin
-routes with their golden contract, the offline RAG backend with citation
-persistence, the model seam with its OpenAI-compatible adapter, and a learning-Agent
-Harness with a server-owned tool at the time of the sealed run - `knowledge_search` -
-whose full two-request tool round trip has now been executed once against a real provider
-and sealed. The Vue client's
-knowledge-base management, per-turn knowledge toggle, citation display, history
-restoration and cross-account isolation are complete.
+This entry is the repository's historical baseline, not the shipped application.
 
-Phase 5A is implemented in the same codebase and not yet accepted: chat, knowledge
-answering and the learning Agent now share one context - a per-session rolling summary
-plus the recent complete turns - instead of each keeping its own window, and the summary
-is one stored row per session, so it survives a restart exactly like the messages under
-`mysql` and is as volatile as they are under `memory`.
+Verified against a real model provider, end to end: the session/mode model,
+GORM-backed MySQL storage, the Gin routes with their golden HTTP contract, the
+offline retrieval backend with citation persistence, the model seam with its
+OpenAI-compatible adapter, and one server-owned Agent tool - `knowledge_search` -
+whose full two-request round trip has been executed against a real provider, with
+the record kept under `spec/verification/`.
 
-Automatic episodic memory is now implemented behind its own opt-in switch
-(`GOPHERLEARN_EPISODES=on`, see "Episodic memory (cross-session experience)" under
-Configuration): a background projector turns each finished conversation into one versioned
-cross-session experience card, indexes it for retrieval, and an agent turn can recall it
-across sessions through `episode_search` with read-back through `read_history_message`. It
-is not yet accepted the way the phases above were, and it shares the confirmation-gate
-boundary with everything else in this list: nothing it produces ever enters the
-user-confirmed memory path.
+Implemented here, but not verified to that standard - the evidence for these is
+offline tests and substitutes: a per-session rolling summary shared by the chat,
+knowledge-answering and Agent paths; long-term memory with its confirmation gate,
+read-back and human-operated screen; automatic episodic (cross-session) memory
+behind the opt-in `GOPHERLEARN_EPISODES=on`; the Agent's own `propose_memory`
+write; and the quiz / learning loop with server-side mastery. The provider records
+under `spec/verification/` name `knowledge_search` alone, so nothing registered
+after it has an end-to-end real-provider run on file.
 
-Still not built: automatic extraction into the confirmed long-term memory table (nothing
-proposes a draft on its own), and a topic consent store that would authorize topic recall. An agent turn being watched (`stream_steps: true`) does publish each
-model call's text as it is produced, and folds a tool round's narration away as a note once the
-answer is confirmed; an unwatched agent turn is still re-chunked after the answer exists, and
-no path asks the model an extra question to announce that it is ready to answer.
-Topic mastery is no longer on this list: Phase 6B computes it server-side and the quiz loop
-reads it back, but nothing outside the quiz consumes it yet - a Chat or Knowledge answer is
-not personalized from it.
+Not built at all: any path that promotes a memory without a user decision - the
+Agent can file a `pending` draft through `propose_memory`, but only
+`MemoryService.ConfirmMemoryDraft` (`internal/service/memory.go:137`) makes one a
+fact - and a topic-consent store that would authorise topic recall. Topic mastery
+is computed and read back inside the quiz loop only -
+a chat or knowledge answer is not personalised from it.
 
-Phase 5B.1, 5B.2 and 5B.3 are implemented in the same codebase and not yet accepted:
-long-term memory now has a home, a bounded way to be read back, and the confirmation screen
-a decision is actually made on. Three layers are modelled -
-`global` for stable facts and preferences, `topic` for understanding of one subject keyed
-by `topic_key`, and `episodic` for experienced episodes with time, session and message
-evidence. A memory arrives by one of two doors, and `origin` - an internal stored field,
-never a request or response field - records which. Someone typing in a fact about themselves
-(`domain.UserAuthoredMemory`, global or topic only) IS the confirmation: it is stored `active`
-with the server's own `confidence` of 1 and cites no conversation, because the sentence is its
-own evidence. A machine's proposal (`MemoryDraft`) is the opposite: a candidate that cannot
-represent any state but pending, which has to name a real session and real messages of its own
-owner, and which only `MemoryService.ConfirmMemoryDraft` - a user decision in one transaction,
-never a model's judgement - can promote. Confirming or replacing a global or topic memory
-retires the previous active version of the same subject (`superseded`); episodes accumulate. A
-proposal's citation is re-checked when it is confirmed, a deleted session leaves the memories
-standing - the reference survives, the confirmation of a draft whose evidence is gone is
-refused - and an episode can only ever come from a conversation, so it is not hand-writable at
-all.
-
-Phase 5B.2 adds the read side, and only for the learning Agent: `MemoryAccess` recalls a
-user's own `active` memories with a deterministic lexical match inside a grant this server
-builds (global facts plus the current session's episodes; no topic and no other session's
-episodes until a consent store exists), bounded by result count, per-item length, total
-length and a confidence floor, and ordered by score then stored creation order rather than
-by any row order. The floor defaults to `0.6` - the filter strength the long-term-memory
-pairing experiment measured as M2 - and a caller can only tighten it: the effective floor is
-`max(0.6, requested)`, `0` in a request means "unset" rather than "show everything", and
-there is no parameter that turns the filter off. `active` is necessary but not sufficient
-for visibility; a row still has to clear the scope grant, the floor and the capacity limits.
-Chat and knowledge-grounded Chat are untouched by all of this: neither reads the memory
-table, and a test fails if the conversation path performs any memory operation during a
-turn.
-
-Phase 5B.3 adds the write side that a person operates - the memory HTTP API and the screen
-on top of it. `POST /api/v1/memories` stores what the caller typed, for `global` or `topic`
-only: it comes back `active` in the same `200` with no provenance to check and no second
-confirmation to click, because submitting the sentence IS the decision. A machine's candidate
-is not on this route at all - it arrives only through the agent's `propose_memory` - so the
-screen has one kind of row to wait on. `GET` with `?state=pending` or `?state=active` lists
-the caller's own drafts and confirmed memories, and
-`POST /api/v1/memories/{id}/confirm|reject|archive` makes the three lifecycle moves. The
-route publishes no way to name a state: `status`, `origin`, `active`, `superseded_at`,
-`confidence`, the timestamps and the source fields are unknown keys and are refused, an
-action carries no body at all, a
-draft whose cited conversation has since been deleted is confirmed nowhere (`409
-memory_evidence_missing`) while staying on the pending list, and another user's memory is
-indistinguishable from one that never existed. `confirm` is still the store's conditional
-write, so four concurrent confirmations produce exactly one success, and a hand-written
-replacement retires the previous active answer to the same subject in one transaction. The
-frontend is a
-confirmation screen only - drafts with their scope, topic key, provenance and confidence,
-and confirm / reject / archive buttons; it proposes nothing, and the demo adapter it can run
-on in `npm run dev` labels its own rows as demo data, while a production build always talks
-to the server.
-
-Phase 5B.4 gives the learning agent one write of its own - `propose_memory` - and it is
-the same capability the upstream project had, re-derived for this architecture rather
-than copied. The model may say `scope`, `topic_key` and `content`; everything that decides
-whose memory it is and what it rests on is filled in from the turn, and the only stored
-message it may cite is this turn's own question, which is already in the database (the answer
-is not, so it cannot be cited and nothing older can be named). What comes back to the model is
-one sentence: a draft is waiting, and whether it takes effect is the user's decision on the
-Memory page. No memory id, message id or store error ever reaches it, the result carries no
-citation, and a pending draft is invisible to recall, so a proposal cannot become the agent's
-own evidence. Confidence is fixed by the service at "certain", the capability may run once per
-turn, and a repeat of the same claim returns the row already waiting instead of a second copy.
-Tightened relative to the upstream design: strict argument parsing (a payload carrying `user_id` or
-`status` is refused whole, not ignored downstream), no identifiers in the result, and
-message-level provenance. Deliberately not carried over: `subject`, `tags`, `durability`,
-`valid_until`, conflict enumeration with `replace`, a global-memory quota, and `RunID`-keyed
-run-level idempotency. There is no provider smoke for `propose_memory` at all - its only
-evidence so far is offline.
-
-Phase 6B is written and its contract is closed: the learning loop has its own HTTP surface,
-this build serves it, and `spec/API.md` together with the golden HTTP contract records its
-success shapes, refusal codes and state transitions. The phase has not been signed off as a
-delivered milestone, but its two open shape decisions have been - the response DTO and the
-`grading -> waiting_answer` recovery edge were reviewed and their fix accepted in this closure,
-so the shapes described below are what this build serves, not a proposal. What the quiz surface
-still lacks is evidence about a model rather than about a contract, and that is stated at the
-end of this section.
-A learner names a topic, this server selects evidence from that
-learner's own notes, generates exactly three questions with a model, stores an immutable
-snapshot of the evidence behind each one, scores every answer against the dimensions
-(correctness 60, completeness 25, clarity 15 - the total is ours, never the model's), and
-folds the result into one projection per topic. Six routes, all bearer-authenticated:
-`POST /api/v1/learning/sessions`, `GET /api/v1/learning/sessions`,
-`POST /api/v1/learning/sessions/{id}/answer`, `.../skip`, `.../cancel` and
-`GET /api/v1/learning/progress`. The contract - success shapes, error codes and the seven-state
-machine - is written up in `spec/API.md` ("Learning workflow (quiz surface)"), and every route
-above is asserted row by row in the golden HTTP contract under
-`internal/httpapi/testdata/http_contract.golden`.
-
-Two placement decisions are the shape of that contract, not details of it. Mastery, confidence,
-valid-attempt count, level and weak points are readable in exactly one place -
-`GET /api/v1/learning/progress` - and the answer, skip, cancel, start and resume responses carry
-no projection at all: the graded attempt and the projection it caused are both stored and
-neither is echoed, so no second copy of a learner's record exists that a correction could leave
-behind. And the client never sends a number in the other direction either: there is no score,
-status, owner or timestamp field on any learning route, a body on `cancel` is a 400, and an
-attempt to send a score is refused as an unknown field with no write performed. A learner
-cannot grade themselves, so the projection keeps meaning something.
-
-A quiz is bound to one kind of conversation. `POST /api/v1/learning/sessions` checks ownership
-first and conversation mode second, so starting on your own plain chat conversation is a 400
-`invalid_request`, while a conversation you do not own - or one that does not exist - keeps
-answering exactly the 404 `not_found` it answered before the rule existed. The refusal writes
-nothing: no quiz row, no model call, no progress change. Only *starting* is gated; reading the
-projection is not, because `GET /api/v1/learning/progress` is keyed by topic rather than by
-conversation, and the mastery a learning-agent quiz produces is read back into agent turns and
-into nothing else - a chat conversation never sees it. The web picker lists only
-learning-agent conversations for the same reason, and that is a usability filter sitting on top
-of the server rule, not a substitute for it.
-
-Every request body must be valid UTF-8, on every route, and the check runs before the JSON is
-parsed. A body in another encoding answers the same `400 invalid_request` any malformed body
-gets, and it leaves nothing behind: no row, no model call, no consumed quiz `submission_id`, no
-change to the conversation. The alternative was silent damage - `encoding/json` replaces bytes
-it cannot read with U+FFFD and reports nothing, so a GBK or Shift-JIS client would have stored a
-learner's own sentence as a run of replacement marks and seen a `200`. A lone surrogate escape
-(`"\ud800"`) is refused for the same reason, while a correctly paired one (`"\ud83d\udd2c"`) is
-just 🔬 and is stored as submitted. Chinese, emoji and characters outside the Basic Multilingual
-Plane such as 𠮷 are ordinary valid UTF-8 and pass through untouched.
-
-What is not built is stated in the same place: no feedback or "explain my answer" endpoint, no
-list of past quizzes, no resuming a terminal one, no recomputation endpoint, no automatic quiz,
-and no environment override for the question count (3), the quiz lifetime (24h) or the
-projection thresholds. `memory_search` remains unproved against a real provider, and no part of
-the quiz surface has been run against one either: every number above comes from the offline
-suite.
-
-The quiz can nevertheless be driven end to end with no provider at all: with
-`GOPHERLEARN_LOCAL_LEARNING_MODEL=deterministic` in echo mode, the real `LearningService`, the
-real seven-state machine and the real HTTP routes run against a scripted question-and-grade
-model, which is what a browser session needs to exercise the flow. It proves the pipeline and
-not a judgement - the grade is chosen by the question, never by what the learner typed - and it
-reaches no other answer path (see "Assistant model provider" above). One production rule is
-worth knowing before such a run: a chunk of notes shorter than 128 runes is not evidence, so a
-notebook of headings and one-line bullets answers `learning_no_evidence` instead of being
-padded into a quiz.
-
-Two real provider runs have been executed, both on 2026-09-25, each under its own
-single-use authorization. The first is the plain provider smoke: three requests spent of
-a cap of three, zero failures, zero retries, and the unrelated question cost nothing.
-Its record is
-[`spec/verification/provider-smoke-v1.json`](../spec/verification/provider-smoke-v1.json)
-(SHA-256 `ee0ba6c4cda0109dde14590b0a80720d75bc04eeca9dbf6713e76495c307aeb8`), and it is
-a one-time piece of evidence: never overwritten, never re-run without a new
-authorization. What it proved is connectivity and the call chain - a non-streaming
-completion, a streamed completion, and one grounded `knowledge_qa` turn through the
-production assembly. It does not attest answer quality, a trained embedding, Redis, or
-the Agent Harness, and it says nothing about vendors other than the endpoint used.
-
-Phase 11A gives the retrieval backend a real second option and changes nothing about the
-first. `GOPHERLEARN_RETRIEVAL_MODE=semantic_redis` embeds chunks through any OpenAI-compatible
-`/embeddings` endpoint, keeps the vectors in a RediSearch index, recalls by cosine KNN inside
-the caller's own collections, and re-ranks the fused head with a cross-encoder;
-`deterministic` remains the default and its startup behaviour, scoring and citations are
-what they were. Both modes share one fusion implementation, so the difference is which
-signals admit a chunk, not how admissions are merged. What has been executed: the retrieval
-and index layers offline against fakes; the index adapter against a real Redis Stack
-container (its own gated suite, skipped by an ordinary `go test ./...`), which is where the
-database-0 and dash-escaping rules below came from; the embedding client against a real
-1024-dimensional endpoint; and the reranker client against a locally served
-`BAAI/bge-reranker-v2-m3`. `cmd/gopherlearn` reads the mode at startup, so both are reachable
-from the binary, and the startup line says which one is live. What is still not established
-here: retrieval *quality* against a human-judged corpus, and a semantic run that also answers
-with a real assistant model - the chain below is verified with the offline generator, because
-an embedding endpoint and a chat provider are different dependencies and only the first was
-in scope.
+How each layer is verified is stated where it matters: service and HTTP layers run
+offline against fakes; the index adapter runs against a real Redis Stack container
+in its own gated suite (skipped by an ordinary `go test ./...`), which is where the
+database-0 and dash-escaping rules below come from; the embedding client runs
+against a real 1024-dimensional endpoint; the reranker client against a locally
+served `BAAI/bge-reranker-v2-m3`. What is still not established: retrieval
+*quality* against a human-judged corpus, and a semantic run that also answers with
+a real assistant model - the chain below is verified with the offline generator,
+because an embedding endpoint and a chat provider are different dependencies and
+only the first was in scope.
 
 Behavior contracts live in [`spec/`](../spec/). They intentionally describe
 requirements without incorporating source code or documentation from earlier
@@ -404,7 +236,7 @@ retried a write after such an error could duplicate it. The quiz answer route is
 exception by design: `submission_id` makes a replay return the stored verdict instead of
 grading twice.
 
-Since Phase 8B.3 the pool also retires a connection it has not used for 90 seconds
+The pool also retires a connection it has not used for 90 seconds
 (`DefaultConnMaxIdleTime` in `internal/repository/gormmysql/connect.go`), which bounds how
 long a dead socket can sit in the free list on a host where the driver cannot probe it. That
 narrows the window and does not close it: a connection torn while a request is already in
@@ -754,7 +586,7 @@ server cannot price is recorded as unknown. See
 
 A session keeps one summary row that records where it stops: the id of the last
 message folded into it. Every turn is then assembled the same way for all three
-strategies - system prompt, sealed summary, the complete turns after the boundary
+strategies - system prompt, the stored summary, the complete turns after the boundary
 that fit the context budget, and the current question - so the summary and the
 recent window never overlap and the question is never counted twice. When enough
 uncovered messages have piled up past the boundary, the next turn compresses them
@@ -880,8 +712,8 @@ extraction path, or ordinary-Chat automatic long-term-memory injection was added
 
 In `openai_compatible` mode a `learning_agent` session runs an outer loop: the model
 chooses whether to call one of the registered tools - `knowledge_search` over the caller's
-documents, `memory_search` over the caller's confirmed long-term memories (Phase 5B.2),
-`propose_memory`, which files a pending draft (Phase 5B.4), and, when
+documents, `memory_search` over the caller's confirmed long-term memories,
+`propose_memory`, which files a pending draft, and, when
 `GOPHERLEARN_EPISODES=on`, the episodic pair `episode_search` and `read_history_message`
 (see "Episodic memory (cross-session experience)") - this server validates the tool
 name and its arguments, executes it as the authenticated user, and feeds back a bounded,
@@ -958,7 +790,7 @@ answer, or reads mastery back, and the tools it can be given remain `knowledge_s
 its own routes, shapes and state machine - see "Learning workflow (quiz surface)".
 
 `memory_search` and `propose_memory` have never been run against a real provider. Both
-sealed tool records predate them - each names `knowledge_search` and no other tool - so the
+provider records on file predate them - each names `knowledge_search` and no other tool - so the
 wire contract of every tool registered after it is tested against substitutes and a local
 HTTP server, and nothing claims a vendor endpoint proved them.
 
@@ -967,8 +799,9 @@ HTTP server, and nothing claims a vendor endpoint proved them.
 
 ## Provider smoke check
 
-`cmd/gopherlearn-model-smoke` spent one authorization on 2026-09-25 and is not run
-again without a new one. An authorized run spends exactly three provider requests - one
+`cmd/gopherlearn-model-smoke` has been run once, on 2026-09-25. It makes no provider call
+unless `-authorize <phrase>` is supplied, and each phrase is single-use, so repeating the
+run needs a new one. A run that passes that guard spends exactly three provider requests - one
 non-streaming completion, one streamed completion, and one grounded `knowledge_qa` turn
 through the real `MessageService → retrieval → model generator` path - then asks an
 unrelated question that must reach the provider zero times, and writes
@@ -1006,8 +839,8 @@ result file path.
 
 ## Agent tool-calling smoke check
 
-`cmd/gopherlearn-agent-smoke` has been run twice, each under its own single-use
-authorization, on 2026-09-25. Both records are sealed and read-only.
+`cmd/gopherlearn-agent-smoke` has been run twice on 2026-09-25, each with its own
+single-use `-authorize` phrase. Both verification records are stored read-only.
 
 **v1** - `spec/verification/agent-tool-smoke-v1.json` (SHA-256
 `3296df13a837da9acd4428d4cd6531a07b59aa12ed300b2f9172ec8e86ab785a`, 1283 bytes, schema
@@ -1035,7 +868,7 @@ published schema to `query` alone and recorded the shape of what arrived. That i
 about what changed between the two records, not a reconstruction of v1's cause, which v1's
 evidence cannot name.
 
-An authorized run spends exactly two provider requests. It seeds an in-memory user,
+A run that passes that guard spends exactly two provider requests. It seeds an in-memory user,
 collection and one document carrying a unique marker, plus a second user holding a
 document with the same marker and a different discriminator - `cycle-90d` for the caller,
 `cycle-7d` for the other account - then asks a question whose answer is that discriminator,

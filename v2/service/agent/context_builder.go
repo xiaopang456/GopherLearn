@@ -362,24 +362,29 @@ func (c ContextConfig) Validate() error {
 }
 
 type BudgetBreakdown struct {
-	InputTarget       int `json:"inputTarget"`
-	OutputReserved    int `json:"outputReserved"`
-	EvidenceReserved  int `json:"evidenceReserved"`
-	System            int `json:"system"`
-	TaskState         int `json:"taskState"`
-	Mastery           int `json:"mastery"`
-	GlobalUserMemory  int `json:"globalUserMemory"`
-	TopicUserMemory   int `json:"topicUserMemory"`
-	EpisodeMemory     int `json:"episodeMemory"`
-	EpisodeCount      int `json:"episodeCount"`
-	Summary           int `json:"summary"`
-	RecentMessages    int `json:"recentMessages"`
-	CurrentEvidence   int `json:"currentEvidence"`
-	CurrentQuestion   int `json:"currentQuestion"`
-	Assembled         int `json:"assembled"`
-	ProjectedInput    int `json:"projectedInput"`
-	DroppedMessages   int `json:"droppedMessages"`
-	TruncatedMessages int `json:"truncatedMessages"`
+	InputTarget      int `json:"inputTarget"`
+	OutputReserved   int `json:"outputReserved"`
+	EvidenceReserved int `json:"evidenceReserved"`
+	System           int `json:"system"`
+	TaskState        int `json:"taskState"`
+	Mastery          int `json:"mastery"`
+	GlobalUserMemory int `json:"globalUserMemory"`
+	TopicUserMemory  int `json:"topicUserMemory"`
+	EpisodeMemory    int `json:"episodeMemory"`
+	EpisodeCount     int `json:"episodeCount"`
+	Summary          int `json:"summary"`
+	RecentMessages   int `json:"recentMessages"`
+	CurrentEvidence  int `json:"currentEvidence"`
+	// PreRetrievalEvidence is what the server-side pre-retrieval put into the
+	// window before the model was asked anything. It is evidence the turn
+	// already holds, so it is paid for out of the evidence reserve and it
+	// reduces what a later search may still bring back.
+	PreRetrievalEvidence int `json:"preRetrievalEvidence"`
+	CurrentQuestion      int `json:"currentQuestion"`
+	Assembled            int `json:"assembled"`
+	ProjectedInput       int `json:"projectedInput"`
+	DroppedMessages      int `json:"droppedMessages"`
+	TruncatedMessages    int `json:"truncatedMessages"`
 }
 
 type ContextWindow struct {
@@ -550,6 +555,9 @@ type SummarySnapshot struct {
 	Content          string
 	CoveredMessageID uint
 	Version          uint64
+	// Truncations says what the compression budget cut out of the summary
+	// this snapshot holds. It is empty for a snapshot that was not trimmed.
+	Truncations []model.SummaryTruncation
 }
 
 type EmptyMemoryProvider struct{}
@@ -909,8 +917,13 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	if err != nil {
 		// Summary is an optimization. Its model/timeout/storage failure must not
 		// make the source-of-truth recent messages unavailable to the Agent.
-		log.Printf("[agent-context] session summary degraded: session=%s error_type=%T", input.SessionID, err)
+		// The reason says which of the two happened: a compaction the failure
+		// cooldown held back is not a new failure, and counting it as one
+		// would hide the real failure rate behind the cooldown.
+		reason := SummaryFailureReasonOf(err)
+		log.Printf("[agent-context] session summary degraded: session=%s reason=%s error_type=%T", input.SessionID, reason, err)
 		observability.Memory.ProviderDegraded("session_summary")
+		observability.Memory.SummaryOutcome(string(reason))
 	}
 	history, err := b.history.ListRecentAfter(ctx, input.SessionID, summary.CoveredMessageID, b.config.HistoryFetchLimit)
 	if err != nil {
@@ -925,8 +938,30 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	// registered spends 6500 of the 20000 input target on nothing, and it does
 	// so on exactly the questions that most need conversation history.
 	evidenceReserve := 0
-	if documentKnowledgeReachable(input.Question) {
+	if documentKnowledgeReachable(input.Question, input.KnowledgePolicy) {
 		evidenceReserve = b.config.EvidenceReserve
+	}
+	// The server-side pre-retrieval is a search of the learner's own material,
+	// and its result belongs in the window: the model is handed the passages
+	// before it is asked anything. It is paid for out of the evidence reserve,
+	// because that reserve is exactly the budget for "material this turn may
+	// still bring back" - and the pre-retrieval has already spent part of it.
+	//
+	// The block is also charged against the assembled context below, so the two
+	// together keep the projected input where it was: the reserve shrinks by
+	// the block's cost, and the block's cost is taken out of the room the
+	// other blocks had. A pre-retrieval therefore never pushes the window past
+	// the target, and it never costs the conversation history more than the
+	// evidence it saved.
+	preRetrievalText := renderPreRetrievalBlock(input.Relevance)
+	preRetrievalCost := 0
+	if preRetrievalText != "" {
+		preRetrievalCost = messageTokenCost(preRetrievalText)
+		if preRetrievalCost > evidenceReserve {
+			preRetrievalText = ""
+			preRetrievalCost = 0
+		}
+		evidenceReserve -= preRetrievalCost
 	}
 	breakdown := BudgetBreakdown{InputTarget: b.config.InputTargetTokens, OutputReserved: b.config.OutputReserveTokens, EvidenceReserved: evidenceReserve}
 	systemPrompt := SystemPromptFor(b.config.MemoryReadMode)
@@ -946,6 +981,12 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		messages = append(messages, schema.SystemMessage(taskState))
 	}
 	remaining := baseBudget - required
+	if preRetrievalText != "" {
+		cost := preRetrievalCost
+		messages = append(messages, schema.SystemMessage(preRetrievalText))
+		breakdown.PreRetrievalEvidence = cost
+		remaining -= cost
+	}
 
 	// Mastery is injected before long-term memory: it tells the model how to
 	// explain, which stays useful even when everything below is trimmed away.
@@ -1080,7 +1121,7 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	}
 	messages = append(messages, selected...)
 	messages = append(messages, schema.UserMessage(input.Question))
-	breakdown.Assembled = breakdown.System + breakdown.TaskState + breakdown.Mastery + breakdown.GlobalUserMemory + breakdown.TopicUserMemory + breakdown.EpisodeMemory + breakdown.Summary + breakdown.RecentMessages + breakdown.CurrentQuestion + breakdown.CurrentEvidence
+	breakdown.Assembled = breakdown.System + breakdown.TaskState + breakdown.Mastery + breakdown.GlobalUserMemory + breakdown.TopicUserMemory + breakdown.EpisodeMemory + breakdown.Summary + breakdown.RecentMessages + breakdown.CurrentQuestion + breakdown.CurrentEvidence + breakdown.PreRetrievalEvidence
 	breakdown.ProjectedInput = breakdown.Assembled + breakdown.EvidenceReserved
 	if breakdown.ProjectedInput > breakdown.InputTarget {
 		return ContextWindow{}, fmt.Errorf("assembled context exceeded target: %d > %d", breakdown.ProjectedInput, breakdown.InputTarget)

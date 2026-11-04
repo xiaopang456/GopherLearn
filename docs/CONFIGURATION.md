@@ -19,6 +19,7 @@
   - [`[mainConfig]`](#mainconfig)
   - [`[mysqlConfig]`](#mysqlconfig)
   - [`[redisConfig]`](#redisconfig)
+  - [Redis 持久化](#redis-持久化服务端的配置不是-toml-里的键)
   - [`[jwtConfig]`](#jwtconfig)
   - [`[knowledgeConfig]`](#knowledgeconfig)
   - [`[ragModelConfig]`](#ragmodelconfig)
@@ -48,7 +49,7 @@
 | 位置 | 管谁 | 取哪些字段 |
 |---|---|---|
 | `[isolatedEntry]` | **学习 Agent** 的 chat 客户端，外加 **embedding 服务的密钥** | `chatKey`、`chatModel`、`chatBaseURL`、`embeddingKey` |
-| `[ragModelConfig]` | **embedding 服务**的模型名/地址/维度；**Agent 侧 chat 模型的模型名**；思考开关的方言 | `embeddingModel`、`embeddingBaseUrl`、`dimension`、`chatModelName`、`baseUrl`、`chatThinkingDialect` |
+| `[ragModelConfig]` | **embedding 服务**的模型名/地址/维度；情景关系分类器**身份标签**里的模型名（不发给 provider，见下表）；思考开关的方言 | `embeddingModel`、`embeddingBaseUrl`、`dimension`、`chatModelName`、`baseUrl`、`chatThinkingDialect` |
 | `[ordinaryChat]` | **普通聊天**（直连，不经 Agent 回路）的 chat 客户端 | `GOPHERLEARN_OPENAI_BASE_URL`、`GOPHERLEARN_OPENAI_API_KEY`、`GOPHERLEARN_OPENAI_MODEL` |
 
 **大多数部署三处填同一个模型就行**：学习 Agent 与普通聊天用同一个 chat 模型，embedding 用同一家（也可以是另一家）的 embedding 模型。
@@ -59,12 +60,14 @@
 |---|---|---|
 | `[isolatedEntry].chatKey` / `chatModel` / `chatBaseURL` | 构造学习 Agent 的 chat 客户端 | `v2/internal/isolated/dependencies.go`（`ProductionDependencies` → `ChatModel`） |
 | `[isolatedEntry].embeddingKey` | 构造 embedder（模型名与地址来自 `[ragModelConfig]`） | `v2/internal/isolated/dependencies.go`（`ProductionDependencies` → `Embedder`） |
-| `[ragModelConfig].chatModelName` | 情景记忆的**关系分类器**把它当模型名用 | `v2/internal/agent/wiring.go` |
+| `[ragModelConfig].chatModelName` | 情景记忆**关系分类器的身份标签**——它不进请求体，答问题用的模型来自 `[isolatedEntry].chatModel` | `v2/internal/isolated/wiring.go`（`episoderelation.NewChatClassifier` 的 `Chat` 是 Agent 那个客户端，`ModelName` 只拼进 `identity`） |
 | `[ragModelConfig].baseUrl` | **目前没有任何客户端从它构建**；入口只在启动校验时要求它非空 | `v2/config/config.go`（`RagModelConfig.Validate`） |
 | `[ragModelConfig].chatThinkingDialect` | 决定思考开关怎么写进请求体 | `v2/internal/isolated/dependencies.go` → `aihelper.ThinkingExtraFields` |
 | `[ordinaryChat].*` | 构造普通聊天的 OpenAI 兼容客户端 | `conversation/client.go` → `internal/openai` |
 
 > `baseUrl` 目前**只被校验、不被使用**：Agent 的 chat 客户端地址取自 `[isolatedEntry].chatBaseURL`。填错它不会立刻报错，但它是个必填项——这是历史结构留下的形状。
+>
+> `chatModelName` 同理容易被误解：它**不是**发给 provider 的模型名，只被拼进情景关系分类器的身份字符串（`relation_<名字>_<版本>`），身份是「关系判定提案」的键。所以把它写成与 `chatModel` 不同的值**不会报错**，但会出现"提案键写着 A 模型、实际答题的是 B 模型"——而"模型升级就换键"这个设计正是靠它俩一致才成立。**请与 `[isolatedEntry].chatModel` 写成同一个值。**
 
 ---
 
@@ -119,6 +122,32 @@
 
 隔离靠**独立实例**，不靠库号：在共用实例上选一个非 0 库不是隔离，也不会被入口发现。
 
+#### Redis 持久化（服务端的配置，不是 TOML 里的键）
+
+`[redisConfig]` 只管**连到哪一台**，不管那一台**怎么存**。存的方式在 Redis 服务端这一侧，
+它决定「Redis 重启之后检索索引还在不在、还全不全」——MySQL 里记着「文档已就绪」，
+Redis 里如果少了几百个块，检索会悄悄变差，而且**不会有任何报错**。
+
+服务端这一侧要满足三件事：
+
+| 要做到 | 怎么做 |
+|---|---|
+| 写入不只活在内存里 | 服务端配置里开 `appendonly yes` + `appendfsync everysec`（最多丢一秒的写入）；RDB 快照也保留 |
+| 正常停止不丢数据 | 用 `deploy/redis-stack-start.sh` 起服务，别用镜像自带的入口 |
+| 数据目录在容器外 | 把数据目录挂到 `/data`（compose 文件里的 `gopherlearn-integrated-redis-data` 卷） |
+
+镜像自带的入口脚本把 `redis-server` 作为 **shell 的子进程**跑起来：停止信号先到 shell，
+shell 死掉，服务还活着，容器在宽限期结束后被强杀——服务来不及写最后那张快照，
+**正常停止就会丢掉上次快照之后的全部写入**。`deploy/redis-stack-start.sh` 做的是同样的事，
+但最后一步用 `exec` 交出进程，服务自己就是 1 号进程，收到停止信号后写完快照再退出。
+
+服务端配置的模板是 [`redis.integrated.conf.example`](../redis.integrated.conf.example)，
+里面已经带上了这三项持久化设置；复制成 `redis.integrated.conf.local` 时不用删。
+**老部署的配置里没有这三行**：preflight 会在启动时打印一行提示（分类信息，不含配置内容），
+但不会拒绝启动；照上面的说法更新配置并重启一次即可，AOF 会把重启前没落盘的内容补上。
+
+完整的启动与验证方式见 [整合栈部署参考 · 搜索索引](INTEGRATED-DEPLOYMENT.md#4-搜索索引redis-stack)。
+
 ### `[jwtConfig]`
 
 | 键 | 必填 | 默认值 | 说明 |
@@ -151,7 +180,7 @@
 | `embeddingModel` | ✅ | `qwen3.7-text-embedding` | embedding 模型名，不能为空 |
 | `embeddingBaseUrl` | ✅ | `https://dashscope.aliyuncs.com/compatible-mode/v1` | embedding 服务地址，不能为空。客户端会自己拼 `/embeddings` |
 | `dimension` | ✅ | `1024` | 向量维度，必须大于 0，且**必须与模型实际输出一致**；改它等于改索引 schema，和已有向量对不上 |
-| `chatModelName` | ✅ | `qwen3.8-max` | Agent 侧 chat 模型的模型名，不能为空 |
+| `chatModelName` | ✅ | `qwen3.8-max` | 情景关系分类器**身份标签**里的模型名，不能为空；**它不决定答题用哪个模型**（那个来自 `[isolatedEntry].chatModel`），但必须与它写成同一个值，否则提案键与实际模型不一致。见上面「三处模型配置各管什么」 |
 | `baseUrl` | ✅ | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 必填，但**当前没有任何客户端从它构建**；见上面「三处模型配置各管什么」 |
 | `chatThinkingDialect` | | `qwen` | 思考开关的方言，取值 `qwen` / `deepseek` / `none`，**写错的值在启动时就被拒** |
 | `rerankEnabled` | | `false` | 是否开启重排 |
@@ -174,9 +203,18 @@
 | `deadlineThinkingSeconds` | `60` | 单轮时间预算（**思考开启时**）。思考开启的回答要等思考写完再写，实测最后那一次生成本身就要四十秒左右，用 45 秒会把这些轮次切在答案出现之前；思考关闭的轮次仍用 `deadlineSeconds` |
 | `knowledgeDefaultTopK` | `5` | 知识库默认取几段 |
 | `knowledgeMaxTopK` | `8` | 知识库最多取几段 |
+| `knowledgeRelevanceThreshold` | `0.80` | **服务端预检索的相关性门槛**。模型回答之前，服务端先拿这个问题去检索学习者的笔记，重排分数高于这个值的片段才会作为证据放进提示词；低于门槛就不给证据，只在窗口里说明"这次没找到高相关内容"。取值 0 到 1，**0 表示完全不启用预检索**（没有重排服务的部署本来也拿不到重排分数）。**注意**：预检索跑不起来时（没有重排、重排或向量化失败），退回的是**改动前的强制检索规则**——除寒暄、回忆对话、明说别查、别人的资料外，其余问题仍然强制先查一次笔记；预检索真正跑起来（命中或低于门槛）之后，才由模型自己决定要不要再搜 |
 | `memoryReadMode` | `legacy_v2` | 长期记忆的整条读取路径模式 |
 | `episodeRecallMode` | `shadow_only` | 情景召回模式 |
 | `episodeRelationMode` | `off` | 情景关系抽取模式 |
+| `summaryGroupItemLimit` | `20` | 摘要里**每一组**最多留多少条。超出时按「留最新、丢最早」截断，**整份摘要不会被丢掉** |
+| `summaryOpenLoopsItemLimit` | `20` | 摘要里「待办」这一组最多留多少条。待办涨得最快，单独给一个上限，方便实测发现砍太狠时调大 |
+| `summaryEvidenceIDLimit` | `64` | 整份摘要最多引用多少条**不同的消息编号**。超出时丢最旧的条目 |
+
+三个上限是**预算**，不是"合法/非法"的开关：以前某一组超限会让整份摘要被拒，于是这个会话的摘要从此不再更新，只能退回旧摘要加原始消息。现在超限走截断，被截掉的部分会在日志和指标里如实记一笔（`summary_truncated`），也会在评测报告里单独计数。
+
+- 把 `summaryOpenLoopsItemLimit` 调大时，`summaryEvidenceIDLimit` 通常也要一起调大：每条待办至少引用一条消息，条目多了、编号上限没跟上，结果还是会被引用上限截掉。
+- 上限调小 = 少留历史、省 token；上限调大 = 多留历史，但摘要更长、更占上下文预算。
 
 `maxToolCalls` / `maxModelCalls` / `maxGraphSteps` 三个数必须**互相够得着**，否则启动报错并说明是哪一处不够：
 

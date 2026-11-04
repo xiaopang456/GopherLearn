@@ -1,4 +1,4 @@
-# Phase 11A: Redis with the RediSearch module, for the opt-in semantic retrieval mode.
+# Redis with the RediSearch module, for the opt-in semantic retrieval mode.
 #
 # This file brings up a vector index and nothing else. It is not part of the default
 # stack: `compose.app.yml` still describes MySQL + backend + web, and that stack starts and
@@ -37,6 +37,13 @@ services:
     image: redis/redis-stack-server@sha256:798ab84d9f266936b034ab11c4d04a2b8e4b441884c5aa7d17ac951eefdf742a
     container_name: gopherlearn-redis-11a
     restart: unless-stopped
+    # The image's own /entrypoint.sh starts redis-server as a child of a shell, so the stop
+    # signal never reaches the server and the final snapshot is never written: a normal
+    # `docker stop` loses everything written since the last snapshot. The checked-in script
+    # does the same work and hands the server over with exec, so the server is the process
+    # Docker stops. The sealed entry evidence is
+    # tutorial/v2-j1-knowledge/frozen/image-entry-evidence/entrypoint.sh.txt:1,25-36.
+    entrypoint: ["/bin/sh", "/redis-stack-start.sh"]
     ports:
       # Host loopback only.
       - "127.0.0.1:6380:6379"
@@ -49,7 +56,17 @@ services:
       # could ask for; leaving it at the image default (10000) is a way for a mistyped
       # request to cost more than the application ever would.
       REDISEARCH_ARGS: MAXSEARCHRESULTS 1000 MAXAGGREGATERESULTS 1000
+      # Persistence: every change is written to the append-only file, so at most one second
+      # of writes can be lost, and the periodic snapshots stay on as well. These are the
+      # server's own flags and carry no credential.
+      REDIS_ARGS: --appendonly yes --appendfsync everysec
     volumes:
+      - type: bind
+        source: ./deploy/redis-stack-start.sh
+        target: /redis-stack-start.sh
+        read_only: true
+        bind:
+          create_host_path: false
       - data:/data
     healthcheck:
       # "started" is not "queryable": the entrypoint loads the search module before it

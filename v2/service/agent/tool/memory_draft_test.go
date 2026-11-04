@@ -93,7 +93,7 @@ func TestMemoryDraftToolDropsUnknownModelTagsBeforeStrictServiceBoundary(t *test
 	if err != nil || len(tools) != 1 {
 		t.Fatalf("tools=%d err=%v", len(tools), err)
 	}
-	if _, err = tools[0].(tool.InvokableTool).InvokableRun(context.Background(), `{"scope":"topic","subject":"HTTP","content":"我会混淆两种消息边界","tags":["network","confusion","nimbustream-913"],"topic_key":"NimbusStream-913","durability":"stable"}`); err != nil {
+	if _, err = tools[0].(tool.InvokableTool).InvokableRun(context.Background(), `{"scope":"topic","subject":"HTTP","content":"HTTP 困惑","tags":["network","confusion","nimbustream-913"],"topic_key":"NimbusStream-913","durability":"stable"}`); err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.Join(proposer.last.Input.Tags, ","); got != "network" {
@@ -101,9 +101,14 @@ func TestMemoryDraftToolDropsUnknownModelTagsBeforeStrictServiceBoundary(t *test
 	}
 }
 
-func TestMemoryDraftToolIsHiddenWithoutExplicitUserIntent(t *testing.T) {
-	proposer := &fakeDraftProposer{}
-	registry, err := NewMemoryDraftRegistry(proposer)
+// The draft tool is on the table every turn.
+//
+// It used to be hidden unless the question matched a fixed phrase list, and
+// that made the phrase list a gate on the whole feature: a learner who said
+// "存到我的记忆里" got no tool at all. The rule about when to propose saving
+// belongs in the prompt, and the prompt is rendered per turn.
+func TestMemoryDraftToolIsAlwaysOffered(t *testing.T) {
+	registry, err := NewMemoryDraftRegistry(&fakeDraftProposer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,17 +122,16 @@ func TestMemoryDraftToolIsHiddenWithoutExplicitUserIntent(t *testing.T) {
 		tools, err := registry.Tools(context.Background(), serviceagent.RunContext{
 			UserID: 7, SessionID: "session", RunID: "run", Question: question,
 		})
-		if err != nil || len(tools) != 0 {
+		if err != nil || len(tools) != 1 {
 			t.Fatalf("question=%q tools=%d err=%v", question, len(tools), err)
 		}
 	}
 }
 
+// The intent predicate still decides whether the prompt tells the model to
+// propose saving. It moved to the agent package, because that is where the
+// prompt is built.
 func TestExplicitMemoryIntentAcceptsDirectAndPersistentInstructions(t *testing.T) {
-	registry, err := NewMemoryDraftRegistry(&fakeDraftProposer{})
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, question := range []string{
 		"请记住我的讲解偏好",
 		"这个踩坑帮我记下来",
@@ -135,11 +139,17 @@ func TestExplicitMemoryIntentAcceptsDirectAndPersistentInstructions(t *testing.T
 		"今后分析线上故障时，请始终先确认数据是否还能恢复",
 		"From now on, always explain concurrency with a timeline.",
 	} {
-		tools, err := registry.Tools(context.Background(), serviceagent.RunContext{
-			UserID: 7, SessionID: "session", RunID: "run", Question: question,
-		})
-		if err != nil || len(tools) != 1 {
-			t.Fatalf("question=%q tools=%d err=%v", question, len(tools), err)
+		if !serviceagent.ExplicitMemoryIntent(question) {
+			t.Errorf("ExplicitMemoryIntent(%q) = false", question)
+		}
+	}
+	for _, question := range []string{
+		"你还记得我的讲解偏好吗？",
+		"Do you remember my preferred explanation style?",
+		"解释一下 TCP 粘包",
+	} {
+		if serviceagent.ExplicitMemoryIntent(question) {
+			t.Errorf("ExplicitMemoryIntent(%q) = true", question)
 		}
 	}
 }
