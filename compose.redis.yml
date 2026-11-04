@@ -1,4 +1,4 @@
-# Phase 11A: Redis with the RediSearch module, for the opt-in semantic retrieval mode.
+# Redis with the RediSearch module, for the opt-in semantic retrieval mode.
 #
 # This file brings up a vector index and nothing else. It is not part of the default
 # stack: `compose.app.yml` still describes MySQL + backend + web, and that stack starts and
