@@ -23,3 +23,36 @@ deploy/redis-stack-start.sh text eol=lf
 # 两个失败都与行尾有关，与业务逻辑无关；把它们钉成 LF 是修掉失败，不是放宽断言。
 compose.integrated.yml text eol=lf
 cmd/gopherlearn/main.go text eol=lf
+
+# 同一类的第二批：这几个文件也被测试按行读取，而本机 `core.autocrlf=true` 的检出是 CRLF，
+# 于是五条用例在**未改动的 main 上**就已经红了（Linux CI 检出是 LF，所以 CI 一直是绿的 ——
+# 红只出现在本机，很容易被当成"环境问题"放过去）。
+#
+# 有两种机制会被 `\r` 打穿，两种都算数：
+#
+# 一、断言用的正则以 `$` 收尾。CRLF 下该行最后一个字符是 `\r`，`$` 落不到位置：
+# - Dockerfile.backend：`(?m)^ARG GO_IMAGE=(\S+)$`（internal/app/docker_stack_config_test.go:119），
+#   报 `Dockerfile.backend declares no GO_IMAGE default`。
+# - internal/httpapi/server.go：`(?m)^const maxRequestBytes = (\d+)\s*<<\s*(\d+)$`（同文件 :173），
+#   报 `the request body limit is no longer a const maxRequestBytes = N << M in internal/httpapi`。
+# - compose.mysql.yml：`(?m)^\s*stop_grace_period: (\d+)(s|m|h)$`（同文件 :320 的 stopGraceSeconds），
+#   报 `compose.mysql.yml gives the mysql service no stop_grace_period`。
+#
+# 二、把文本按 `\n` 切开后做**整行相等比较**。retrieval_stack_config_test.go:104-106 的
+# servicesBlock 判的是 `line != "services:"`，CRLF 下那一行是 `services:\r`，于是报
+# `no top-level "services:" line`。它作用在一个 glob 到的全部 compose 文件上
+# （:147 起），所以 compose.app.yml、compose.mysql.yml、compose.provider.yml、
+# compose.redis.yml 都要是 LF —— compose.integrated.yml 上面那条钉，本来就是这个原因。
+#
+# 实测过再钉：把 app.yml 与 provider.yml 退回 CRLF、其余四个保持 LF，根模块就重新出现
+# `TestRedisIsDeclaredOnlyInRegisteredComposeFiles` 一条红；六个都钉上则 24 个包全绿。
+#
+# 不钉的：Dockerfile.frontend、.gitignore、.dockerignore、.env.compose.example。它们也被读，
+# 但读法是子串（例如以 `\n  mysql:` 取段）或只锚行首（`(?m)^FROM `、`(?m)^\s*include:`），
+# `\r` 碰不到，CRLF 检出下今天就是绿的。钉一个不影响断言的文件，只是无谓改变所有工作区的字节。
+Dockerfile.backend text eol=lf
+internal/httpapi/server.go text eol=lf
+compose.mysql.yml text eol=lf
+compose.redis.yml text eol=lf
+compose.app.yml text eol=lf
+compose.provider.yml text eol=lf
