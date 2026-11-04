@@ -14,12 +14,11 @@ type Settings struct {
 	Entry  EntrySettings
 }
 type EntrySettings struct {
-	Isolated     bool   `toml:"isolated"`
-	Migrate      bool   `toml:"migrate"`
-	ChatKey      string `toml:"chatKey"`
-	ChatModel    string `toml:"chatModel"`
-	ChatBaseURL  string `toml:"chatBaseURL"`
-	EmbeddingKey string `toml:"embeddingKey"`
+	Isolated    bool   `toml:"isolated"`
+	Migrate     bool   `toml:"migrate"`
+	ChatKey     string `toml:"chatKey"`
+	ChatModel   string `toml:"chatModel"`
+	ChatBaseURL string `toml:"chatBaseURL"`
 }
 
 func Load(path string) (*Settings, error) {
@@ -34,7 +33,7 @@ func Load(path string) (*Settings, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, key := range [][]string{{"mysqlConfig", "host"}, {"mysqlConfig", "port"}, {"mysqlConfig", "databaseName"}, {"mysqlConfig", "user"}, {"mysqlConfig", "charset"}, {"redisConfig", "host"}, {"redisConfig", "port"}, {"redisConfig", "db"}, {"mainConfig", "host"}, {"mainConfig", "port"}, {"knowledgeConfig", "storageDir"}, {"ragModelConfig", "embeddingModel"}, {"ragModelConfig", "embeddingBaseUrl"}, {"ragModelConfig", "dimension"}} {
+	for _, key := range [][]string{{"mysqlConfig", "host"}, {"mysqlConfig", "port"}, {"mysqlConfig", "databaseName"}, {"mysqlConfig", "user"}, {"mysqlConfig", "charset"}, {"redisConfig", "host"}, {"redisConfig", "port"}, {"redisConfig", "db"}, {"mainConfig", "host"}, {"mainConfig", "port"}, {"knowledgeConfig", "storageDir"}, {"ragModelConfig", "embeddingModel"}, {"ragModelConfig", "embeddingBaseUrl"}, {"ragModelConfig", "embeddingApiKey"}, {"ragModelConfig", "dimension"}} {
 		if !metadata.IsDefined(key...) {
 			return nil, fmt.Errorf("explicit independent setting required: %s", strings.Join(key, "."))
 		}
@@ -56,7 +55,12 @@ func (s *Settings) Validate() error {
 	if c.MainConfig.Host == "" || c.MainConfig.Port <= 0 {
 		return fmt.Errorf("explicit HTTP host/port required")
 	}
-	if strings.TrimSpace(s.Entry.ChatKey) == "" || s.Entry.ChatModel == "" || s.Entry.ChatBaseURL == "" || strings.TrimSpace(s.Entry.EmbeddingKey) == "" {
+	// A key is required here rather than in the RAG section's own validation, the
+	// way the chat key is: a default configuration must not carry a secret, and a
+	// tool that only reads the model name and address (the schema tool, an offline
+	// harness) must still be able to load one. This is the entry that spends the
+	// key, so this is where its absence is refused.
+	if strings.TrimSpace(s.Entry.ChatKey) == "" || s.Entry.ChatModel == "" || s.Entry.ChatBaseURL == "" || strings.TrimSpace(c.RagEmbeddingAPIKey) == "" {
 		return fmt.Errorf("explicit model settings required; environment credentials are not read")
 	}
 	if err := c.AgentConfig.Validate(); err != nil {

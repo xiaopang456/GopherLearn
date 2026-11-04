@@ -5,14 +5,16 @@
 # <stem>.local.toml 这种中缀名就谁都不命中），填占位值，再以 `-config` 显式传给入口。
 # 真实凭据不得进入本文件、Git、构建上下文、日志或报告。
 #
-# 各段对应的读取位置（本轮没有新增配置面，也没有改任何默认值）：
-#   [isolatedEntry]  v2/internal/isolated/settings.go:16-23；migrate 由 hybrid/entry.go:27-29 拒绝
-#   其余 V2 段        v2/config/config.go:217-226 的段名与 toml 键名，未重命名、未合并
-#   [ordinaryChat]   conversation/client.go:13-19 的保留键白名单；白名单外的键在装载期被拒
+# 各段对应的读取位置：
+#   [isolatedEntry]  v2/internal/isolated/settings.go 的 EntrySettings；migrate 由 hybrid/entry.go:27-29 拒绝
+#   其余 V2 段        v2/config/config.go 的段名与 toml 键名
+#   [ordinaryChat]   conversation/client.go 的保留键白名单；白名单外的键在装载期被拒
 #
 # 三类约束要分清（详见 docs/INTEGRATED-DEPLOYMENT.md 的措辞表）：
 #   入口会**拒绝**的：缺 -config、非法 TOML、缺强制字段、isolated=false、migrate=true、
-#                     ordinaryChat 未知键、普通客户端不是 openai_compatible、密钥短于 32 字节。
+#                     ordinaryChat 未知键、普通客户端不是 openai_compatible、密钥短于 32 字节，
+#                     以及**已经废弃的配置项**（ragModelConfig.baseUrl、isolatedEntry.embeddingKey
+#                     ——它们被指名拒绝并说明改到哪里，而不是被宽容地忽略掉）。
 #   模板给的**默认值**：下面的库名/库号/目录/端口都是本整合栈的取值，不是入口的强制检查。
 #   **操作人员**必须保证：这些取值指向的是整合栈自己的 schema、Redis 实例与目录，
 #                     不与基线入口共用——入口无法识别"这是旧库"，它只能识别"没显式写"。
@@ -23,7 +25,6 @@ migrate = false
 chatKey = "REPLACE_WITH_CHAT_PROVIDER_KEY"
 chatModel = "REPLACE_WITH_CHAT_MODEL_NAME"
 chatBaseURL = "https://provider.invalid/v1"
-embeddingKey = "REPLACE_WITH_EMBEDDING_PROVIDER_KEY"
 
 [mainConfig]
 # 宿主直跑用 127.0.0.1:18082（避开基线后端的 8080）；容器里跑要改成 0.0.0.0:8080，
@@ -80,8 +81,10 @@ storageDir = "data/gopherlearn-integrated/knowledge"
 [ragModelConfig]
 embeddingModel = "REPLACE_WITH_EMBEDDING_MODEL_NAME"
 embeddingBaseUrl = "https://embedding.invalid/v1"
+# 嵌入服务的密钥。它和它认证的模型名、地址在同一段里；过去它写在
+# [isolatedEntry].embeddingKey，把一件事拆成了两段——那个位置现在会被拒绝并说明去处。
+embeddingApiKey = "REPLACE_WITH_EMBEDDING_PROVIDER_KEY"
 chatModelName = "REPLACE_WITH_CHAT_MODEL_NAME"
-baseUrl = "https://provider.invalid/v1"
 # 思考开关的方言（可选，默认 "qwen"）。
 # qwen   —— 发 enable_thinking（Qwen 扩展）
 # deepseek —— 发 thinking = {type = "enabled"|"disabled"}（DeepSeek 扩展）

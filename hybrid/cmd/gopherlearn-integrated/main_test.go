@@ -26,7 +26,7 @@ func validConfig(t *testing.T) (path, secret string) {
 	secret = "synthetic-never-sent-key"
 	text := strings.ReplaceAll(string(data), `key = ""`, `key = "`+strings.Repeat(secret, 2)+`"`)
 	text = strings.ReplaceAll(text, `chatKey = ""`, `chatKey = "`+secret+`"`)
-	text = strings.ReplaceAll(text, `embeddingKey = ""`, `embeddingKey = "`+secret+`"`)
+	text = strings.ReplaceAll(text, `embeddingApiKey = ""`, `embeddingApiKey = "`+secret+`"`)
 	text += "\n[ordinaryChat]\nGOPHERLEARN_AI_PROVIDER = \"openai_compatible\"\n" +
 		"GOPHERLEARN_OPENAI_BASE_URL = \"https://provider.invalid/v1\"\n" +
 		"GOPHERLEARN_OPENAI_API_KEY = \"" + secret + "\"\n" +

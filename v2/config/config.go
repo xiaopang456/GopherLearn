@@ -144,10 +144,14 @@ type Rabbitmq struct {
 type RagModelConfig struct {
 	RagEmbeddingModel   string `toml:"embeddingModel"`
 	RagEmbeddingBaseURL string `toml:"embeddingBaseUrl"`
-	RagChatModelName    string `toml:"chatModelName"`
-	RagDocDir           string `toml:"docDir"`
-	RagBaseUrl          string `toml:"baseUrl"`
-	RagDimension        int    `toml:"dimension"`
+	// RagEmbeddingAPIKey sits with the model name and address it belongs to. It
+	// used to live in the entry envelope, which split one service's three settings
+	// across two sections. It has no default: a key is never something a build
+	// ships.
+	RagEmbeddingAPIKey string `toml:"embeddingApiKey"`
+	RagChatModelName   string `toml:"chatModelName"`
+	RagDocDir          string `toml:"docDir"`
+	RagDimension       int    `toml:"dimension"`
 	// RagChatThinkingDialect selects how the chat model's thinking switch is
 	// expressed on the wire. See the ChatThinkingDialect* constants.
 	//
@@ -440,8 +444,8 @@ func defaultConfig() *Config {
 		Subject:        "gopherai-user",
 	}, RagModelConfig: RagModelConfig{
 		RagEmbeddingModel: "qwen3.7-text-embedding", RagEmbeddingBaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-		RagChatModelName: "qwen3.8-max", RagBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-		RagDimension: 1024, RagRerankEnabled: false, RagRerankProvider: RerankProviderLocal, RagRerankEndpoint: "http://host.docker.internal:18081",
+		RagChatModelName: "qwen3.8-max",
+		RagDimension:     1024, RagRerankEnabled: false, RagRerankProvider: RerankProviderLocal, RagRerankEndpoint: "http://host.docker.internal:18081",
 	}, KnowledgeConfig: KnowledgeConfig{
 		StorageDir:          "data/knowledge",
 		MaxFileSizeBytes:    5 * mib,
@@ -583,7 +587,6 @@ func applyRagEnv(c *RagModelConfig) error {
 		set  func(string)
 	}{
 		{"OPENAI_MODEL_NAME", func(value string) { c.RagChatModelName = value }},
-		{"OPENAI_BASE_URL", func(value string) { c.RagBaseUrl = value }},
 		{"OPENAI_THINKING_DIALECT", func(value string) { c.RagChatThinkingDialect = value }},
 		{"EMBEDDING_MODEL_NAME", func(value string) { c.RagEmbeddingModel = value }},
 		{"EMBEDDING_BASE_URL", func(value string) { c.RagEmbeddingBaseURL = value }},
@@ -637,8 +640,8 @@ func applyRerankTokenEnv(c *RagModelConfig) error {
 }
 
 func (c RagModelConfig) Validate() error {
-	if strings.TrimSpace(c.RagChatModelName) == "" || strings.TrimSpace(c.RagBaseUrl) == "" {
-		return fmt.Errorf("chat model name and base URL are required")
+	if strings.TrimSpace(c.RagChatModelName) == "" {
+		return fmt.Errorf("chat model name is required")
 	}
 	if strings.TrimSpace(c.RagEmbeddingModel) == "" || strings.TrimSpace(c.RagEmbeddingBaseURL) == "" || c.RagDimension <= 0 {
 		return fmt.Errorf("embedding model name, base URL and positive dimension are required")

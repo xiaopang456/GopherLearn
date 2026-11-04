@@ -181,7 +181,7 @@ func summarySettings(repository, storage, chatModel string) (*entry.Settings, er
 	}
 	settings.Entry.ChatModel = chatModel
 	settings.Entry.ChatKey = "placeholder-proxy-injected"
-	settings.Entry.EmbeddingKey = "placeholder-proxy-injected"
+	settings.Config.RagModelConfig.RagEmbeddingAPIKey = "placeholder-proxy-injected"
 	settings.Config.RagModelConfig.RagChatThinkingDialect = config.ChatThinkingDialectDeepSeek
 	settings.Config.AgentThinkingEnabled = true
 	return settings, settings.Validate()

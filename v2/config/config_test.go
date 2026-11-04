@@ -137,16 +137,23 @@ func TestRagRerankEnvironmentAndValidation(t *testing.T) {
 func TestRagChatAndEmbeddingEnvironmentAreIndependent(t *testing.T) {
 	cfg := defaultConfig().RagModelConfig
 	t.Setenv("OPENAI_MODEL_NAME", "qwen3.8-max")
-	t.Setenv("OPENAI_BASE_URL", "https://chat.example/v1")
 	t.Setenv("EMBEDDING_MODEL_NAME", "qwen3.7-text-embedding")
 	t.Setenv("EMBEDDING_BASE_URL", "https://embedding.example/v1")
+	// The retired variable stays set: the parse must succeed with nothing taken
+	// from it, rather than refusing a file that still carries the name in the
+	// environment. Only the file form is refused by name, because there the
+	// operator can see and delete the line.
+	t.Setenv("OPENAI_BASE_URL", "https://chat.example/v1")
+	// A key is never read from the environment, so the test supplies the one
+	// field Validate insists on.
+	cfg.RagEmbeddingAPIKey = "synthetic-key-never-sent"
 	if err := applyRagEnv(&cfg); err != nil {
 		t.Fatal(err)
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.RagChatModelName != "qwen3.8-max" || cfg.RagBaseUrl != "https://chat.example/v1" {
+	if cfg.RagChatModelName != "qwen3.8-max" {
 		t.Fatalf("chat override mismatch: %+v", cfg)
 	}
 	if cfg.RagEmbeddingModel != "qwen3.7-text-embedding" || cfg.RagEmbeddingBaseURL != "https://embedding.example/v1" || cfg.RagDimension != 1024 {
@@ -377,7 +384,7 @@ func TestReadOnlyAccessorsReportWhatTheRunWillUse(t *testing.T) {
 	// writes the configuration it reads. The assertions are about the values
 	// the accessors report, not about a file that happens to exist.
 	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(path, []byte("[ragModelConfig]\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("[ragModelConfig]\nembeddingApiKey = \"synthetic-key-never-sent\"\n"), 0o600); err != nil {
 		t.Fatalf("write configuration: %v", err)
 	}
 	rag, err := LoadRagEmbedding(path)
@@ -385,7 +392,7 @@ func TestReadOnlyAccessorsReportWhatTheRunWillUse(t *testing.T) {
 		t.Fatalf("rag load: %v", err)
 	}
 	if rag.RagEmbeddingModel == "" || rag.RagEmbeddingBaseURL == "" || rag.RagDimension <= 0 ||
-		rag.RagChatModelName == "" || rag.RagBaseUrl == "" {
+		rag.RagChatModelName == "" || rag.RagEmbeddingAPIKey == "" {
 		t.Fatalf("the RAG accessor left a field unset: %+v", rag)
 	}
 	budget, err := LoadEpisodeTokenBudget(path)
