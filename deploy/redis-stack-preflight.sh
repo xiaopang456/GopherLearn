@@ -48,6 +48,14 @@ case "$secret" in
 esac
 [ "${#secret}" -ge "$MIN_SECRET_BYTES" ] || refuse "requirepass is shorter than the agreed floor"
 
+# Persistence is a warning, not a refusal: an operator whose configuration predates the
+# append-only file must still be able to start the server, and the start is where they learn
+# that a stop can lose everything written since the last snapshot. The category is printed;
+# the file, the value and the line are not.
+if ! grep -q '^[[:space:]]*appendonly[[:space:]]\{1,\}yes[[:space:]]*$' "$CONF"; then
+    echo "redis-stack preflight: the append-only file is not enabled; a stop can lose everything written since the last snapshot" >&2
+fi
+
 # Only now hand over to the image's own entrypoint. The exec keeps the same process, so Docker
 # still owns start and stop, and the arguments stay exactly what the image declares.
 exec "$ENTRY"

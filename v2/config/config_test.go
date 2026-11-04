@@ -247,6 +247,7 @@ func TestDefaultAgentConfigAndEnvironmentOverrides(t *testing.T) {
 		got.ContextMaxSummaryTokens != 2000 || got.ContextMaxMasteryTokens != 900 || got.ContextMaxEpisodeTokens != 1000 || got.EpisodeRecallMode != "shadow_only" || got.ContextHistoryFetchLimit != 128 ||
 		got.SummaryTriggerMessages != 12 || got.SummaryTriggerTokens != 6000 || got.SummaryRetainMessages != 8 ||
 		got.SummaryMaxInputTokens != 8000 || got.SummaryFetchLimit != 512 || got.SummaryTimeoutSeconds != 20 || got.SummaryFailureCooldownSeconds != 30 ||
+		got.SummaryGroupItemLimit != 20 || got.SummaryOpenLoopsItemLimit != 20 || got.SummaryEvidenceIDLimit != 64 ||
 		got.EpisodeWorkerCount != 1 || got.EpisodeQueueSize != 32 || got.EpisodeQuietWindowSeconds != 600 ||
 		got.EpisodeMaxInputTokens != 12000 || got.EpisodeMaxMessages != 4096 {
 		t.Fatalf("unexpected agent defaults: %+v", got)
@@ -354,6 +355,9 @@ func TestAgentConfigRejectsUnsafeLimits(t *testing.T) {
 		{"summary fetch", func(c *AgentConfig) { c.SummaryFetchLimit = 1 }},
 		{"summary timeout", func(c *AgentConfig) { c.SummaryTimeoutSeconds = 0 }},
 		{"summary cooldown", func(c *AgentConfig) { c.SummaryFailureCooldownSeconds = 0 }},
+		{"summary group item limit", func(c *AgentConfig) { c.SummaryGroupItemLimit = 0 }},
+		{"summary open loops item limit", func(c *AgentConfig) { c.SummaryOpenLoopsItemLimit = 0 }},
+		{"summary evidence id limit", func(c *AgentConfig) { c.SummaryEvidenceIDLimit = 1 }},
 		{"episode workers", func(c *AgentConfig) { c.EpisodeWorkerCount = 0 }},
 		{"episode queue", func(c *AgentConfig) { c.EpisodeQueueSize = 0 }},
 		{"episode scan", func(c *AgentConfig) { c.EpisodeScanIntervalSeconds = 0 }},

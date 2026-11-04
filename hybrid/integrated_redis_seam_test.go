@@ -544,10 +544,11 @@ func TestIndexDeclarationChecksRejectTheWrongShapes(t *testing.T) {
 
 // deploymentScriptsMounted are the checked-in plumbing this stack mounts into the index
 // container. They are the only host paths allowed besides the operator's own `.local` files, so
-// the registry is deliberately two entries long and each must exist.
+// the registry is deliberately three entries long and each must exist.
 var deploymentScriptsMounted = map[string]bool{
 	"./deploy/redis-stack-preflight.sh":   true,
 	"./deploy/redis-stack-healthcheck.sh": true,
+	"./deploy/redis-stack-start.sh":       true,
 }
 
 // mountedSourcesJudged reads the bind sources the stack actually declares.

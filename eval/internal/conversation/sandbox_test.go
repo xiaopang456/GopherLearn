@@ -89,9 +89,9 @@ func TestSandboxIntegration(t *testing.T) {
 
 type syntheticGenerator struct{ calls int }
 
-func (g *syntheticGenerator) GenerateSummary(_ context.Context, _ string, _ []model.Message) (string, error) {
+func (g *syntheticGenerator) GenerateSummary(_ context.Context, _ string, _ []model.Message) (agent.SummaryGeneration, error) {
 	g.calls++
-	return `{"schema_version":2,"current_goal":"practice"}`, nil
+	return agent.SummaryGeneration{Content: `{"schema_version":2,"current_goal":"practice"}`}, nil
 }
 func TestSandboxWarmupIntegration(t *testing.T) {
 	if os.Getenv("GL_SANDBOX_TEST") != "1" {

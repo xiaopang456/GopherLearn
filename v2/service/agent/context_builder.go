@@ -555,6 +555,9 @@ type SummarySnapshot struct {
 	Content          string
 	CoveredMessageID uint
 	Version          uint64
+	// Truncations says what the compression budget cut out of the summary
+	// this snapshot holds. It is empty for a snapshot that was not trimmed.
+	Truncations []model.SummaryTruncation
 }
 
 type EmptyMemoryProvider struct{}
@@ -914,8 +917,13 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	if err != nil {
 		// Summary is an optimization. Its model/timeout/storage failure must not
 		// make the source-of-truth recent messages unavailable to the Agent.
-		log.Printf("[agent-context] session summary degraded: session=%s error_type=%T", input.SessionID, err)
+		// The reason says which of the two happened: a compaction the failure
+		// cooldown held back is not a new failure, and counting it as one
+		// would hide the real failure rate behind the cooldown.
+		reason := SummaryFailureReasonOf(err)
+		log.Printf("[agent-context] session summary degraded: session=%s reason=%s error_type=%T", input.SessionID, reason, err)
 		observability.Memory.ProviderDegraded("session_summary")
+		observability.Memory.SummaryOutcome(string(reason))
 	}
 	history, err := b.history.ListRecentAfter(ctx, input.SessionID, summary.CoveredMessageID, b.config.HistoryFetchLimit)
 	if err != nil {
