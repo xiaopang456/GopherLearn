@@ -68,6 +68,11 @@ type SessionSummarySegmentChange struct {
 	OldMessageIDs []uint `json:"old_message_ids,omitempty"`
 	NewMessageIDs []uint `json:"new_message_ids,omitempty"`
 	Removed       bool   `json:"removed,omitempty"`
+	// Suspected marks a change the engine inferred rather than observed: the
+	// board still carries a value that the learner's own messages look like
+	// they replaced. The engine does not know the correct value, so it records
+	// the suspicion and leaves the board alone.
+	Suspected bool `json:"suspected,omitempty"`
 }
 
 // SessionSummarySegment is one written-once stretch of a session's turns.
