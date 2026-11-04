@@ -1473,15 +1473,21 @@ func (s *runState) toolMiddleware() compose.InvokableToolMiddleware {
 				s.mu.Unlock()
 			}
 			if CapabilityOf(input.Name) == CapabilityMemoryDraft && output != nil {
-				card, parseErr := parseMemoryDraftCard(output.Result)
+				card, rejected, parseErr := parseMemoryDraftResult(output.Result)
 				if parseErr != nil {
 					return nil, parseErr
 				}
-				s.mu.Lock()
-				s.memoryDraft = card
-				s.mu.Unlock()
-				if sendErr := sendEvent(ctx, s.sink, Event{Type: EventWaitingConfirmation, RunID: s.input.RunID, MemoryDraft: cloneMemoryDraftCard(card)}); sendErr != nil {
-					return nil, sendErr
+				// A refused draft is a result, not a failure. There is no card to
+				// show, so nothing is shown; the reason the tool gave is in the
+				// observation the model reads, and the turn goes on so the
+				// learner still gets an answer.
+				if !rejected {
+					s.mu.Lock()
+					s.memoryDraft = card
+					s.mu.Unlock()
+					if sendErr := sendEvent(ctx, s.sink, Event{Type: EventWaitingConfirmation, RunID: s.input.RunID, MemoryDraft: cloneMemoryDraftCard(card)}); sendErr != nil {
+						return nil, sendErr
+					}
 				}
 			}
 			for index := range newSources {
@@ -1542,23 +1548,42 @@ func toolBudgetObservation(name string, err error) string {
 	return string(encoded)
 }
 
-func parseMemoryDraftCard(value string) (*MemoryDraftCard, error) {
+// parseMemoryDraftResult reads what the draft tool said.
+//
+// A tool that refuses is not a tool that failed: the draft tool refuses a
+// content that did not come from the learner's own message, and it says so in
+// the result it returns. That result has no draft in it, so there is no card
+// to show - but the turn continues, because a learner who asked the assistant
+// to remember something should get an answer even when the thing it tried to
+// remember was not theirs to remember.
+//
+// Everything else has to be a draft: a result that claims neither a draft nor
+// a refusal is a broken contract, and it is worth failing on.
+func parseMemoryDraftResult(value string) (*MemoryDraftCard, bool, error) {
 	var payload struct {
-		DraftID     string                 `json:"draft_id"`
-		Scope       model.MemoryScope      `json:"scope"`
-		Subject     string                 `json:"subject"`
-		Content     string                 `json:"content"`
-		Tags        model.StringList       `json:"tags"`
-		TopicKey    string                 `json:"topic_key"`
-		Durability  model.MemoryDurability `json:"durability"`
-		ValidUntil  *time.Time             `json:"valid_until"`
-		ConflictIDs model.StringList       `json:"conflict_ids"`
-		Requires    bool                   `json:"requires_user_confirmation"`
+		DraftID         string                 `json:"draft_id"`
+		Scope           model.MemoryScope      `json:"scope"`
+		Subject         string                 `json:"subject"`
+		Content         string                 `json:"content"`
+		Tags            model.StringList       `json:"tags"`
+		TopicKey        string                 `json:"topic_key"`
+		Durability      model.MemoryDurability `json:"durability"`
+		ValidUntil      *time.Time             `json:"valid_until"`
+		ConflictIDs     model.StringList       `json:"conflict_ids"`
+		Requires        bool                   `json:"requires_user_confirmation"`
+		Rejected        bool                   `json:"rejected"`
+		RejectionReason string                 `json:"rejection_reason"`
 	}
-	if err := json.Unmarshal([]byte(value), &payload); err != nil || payload.DraftID == "" || !payload.Requires {
-		return nil, fmt.Errorf("invalid memory draft tool result")
+	if err := json.Unmarshal([]byte(value), &payload); err != nil {
+		return nil, false, fmt.Errorf("invalid memory draft tool result")
 	}
-	return &MemoryDraftCard{DraftID: payload.DraftID, Scope: payload.Scope, Subject: payload.Subject, Content: payload.Content, Tags: payload.Tags, TopicKey: payload.TopicKey, Durability: payload.Durability, ValidUntil: payload.ValidUntil, ConflictIDs: payload.ConflictIDs}, nil
+	if payload.Rejected {
+		return nil, true, nil
+	}
+	if payload.DraftID == "" || !payload.Requires {
+		return nil, false, fmt.Errorf("invalid memory draft tool result")
+	}
+	return &MemoryDraftCard{DraftID: payload.DraftID, Scope: payload.Scope, Subject: payload.Subject, Content: payload.Content, Tags: payload.Tags, TopicKey: payload.TopicKey, Durability: payload.Durability, ValidUntil: payload.ValidUntil, ConflictIDs: payload.ConflictIDs}, false, nil
 }
 
 func parseHistoryEvidence(value string) (bool, error) {

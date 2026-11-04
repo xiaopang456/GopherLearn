@@ -11,6 +11,7 @@ import (
 
 	modelcomponent "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/tool"
+	toolutils "github.com/cloudwego/eino/components/tool/utils"
 	"github.com/cloudwego/eino/schema"
 )
 
@@ -443,4 +444,64 @@ func renderMessageText(messages []*schema.Message) string {
 		out.WriteString("\n")
 	}
 	return out.String()
+}
+
+// A draft the server refused leaves no card, and it does not take the turn
+// with it.
+//
+// The draft tool refuses a content that did not come from the learner's own
+// message. That refusal used to reach the runner as a result it could not
+// parse, and an unparsable tool result is an error - so a learner who asked
+// the assistant to remember something lost the whole answer because the
+// assistant tried to remember something that was not theirs to remember.
+func TestRefusedDraftLeavesNoCardAndKeepsTheTurn(t *testing.T) {
+	fake := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {
+		if call == 1 {
+			return schema.AssistantMessage("", []schema.ToolCall{{
+				ID: "draft-call", Type: "function",
+				Function: schema.FunctionCall{Name: proposeMemoryToolName, Arguments: `{"scope":"topic","subject":"个人理解","content":"我从别处抄来的一句话","durability":"stable"}`},
+			}}), nil
+		}
+		return schema.AssistantMessage("这一轮我还是回答了。", nil), nil
+	}}
+	registry := StaticToolRegistry{Registered: []tool.BaseTool{mustRefusingDraftTool(t)}}
+	runner := mustRunner(t, fake, registry, newMemoryStepRepository(), DefaultRunnerConfig())
+	input := testRunContext()
+	input.Question = "请记住我用队列理解 Redis"
+	input.MemoryEvidence = NewMemoryEvidenceRegistry()
+	result, err := runner.Run(context.Background(), input, DiscardEvents)
+	if err != nil {
+		t.Fatalf("a refused draft failed the turn: %v", err)
+	}
+	if result.MemoryDraft != nil {
+		t.Fatalf("a refused draft produced a card: %#v", result.MemoryDraft)
+	}
+	if result.Answer == "" {
+		t.Fatal("the turn ended without an answer")
+	}
+	// The model is told why, so it can write the content the right way.
+	if window := renderMessageText(fake.received[len(fake.received)-1]); !strings.Contains(window, "rejected") {
+		t.Fatalf("the model was not told the draft was refused: %s", window)
+	}
+}
+
+// refusingDraftOutput is what the draft tool returns when the server refuses
+// the content: a result, not an error.
+type refusingDraftOutput struct {
+	DraftID         string `json:"draft_id"`
+	Rejected        bool   `json:"rejected"`
+	RejectionReason string `json:"rejection_reason"`
+}
+
+// mustRefusingDraftTool is a draft tool that always refuses.
+func mustRefusingDraftTool(t *testing.T) tool.InvokableTool {
+	t.Helper()
+	result, err := toolutils.InferTool(proposeMemoryToolName, "propose a memory draft",
+		func(_ context.Context, _ *map[string]any) (*refusingDraftOutput, error) {
+			return &refusingDraftOutput{Rejected: true, RejectionReason: "the draft may only record what the learner's current message says"}, nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
 }
