@@ -148,10 +148,12 @@ type RunnerConfig struct {
 	// RelevanceThreshold is the rerank score above which the server-side
 	// pre-retrieval hands its evidence to the model.
 	//
-	// Zero means the pre-retrieval does not run at all, which is what every
-	// deployment did before it existed and what every mode that registers no
-	// document tools still gets. The threshold is written against rerank
-	// scores, so a deployment without a reranker never produces one and the
+	// Zero means the pre-retrieval does not run at all. It does not mean the
+	// model decides on its own: a pre-retrieval that could not run - zero
+	// threshold, no reranker, a reranker that timed out - falls back to the
+	// rule that was in force before the pre-retrieval existed, which forces
+	// the document search. The threshold is written against rerank scores, so
+	// a deployment without a reranker never produces one and the
 	// pre-retrieval stays off there too.
 	RelevanceThreshold float64
 }
