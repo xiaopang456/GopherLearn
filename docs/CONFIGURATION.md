@@ -49,7 +49,7 @@
 | 位置 | 管谁 | 取哪些字段 |
 |---|---|---|
 | `[isolatedEntry]` | **学习 Agent** 的 chat 客户端，外加 **embedding 服务的密钥** | `chatKey`、`chatModel`、`chatBaseURL`、`embeddingKey` |
-| `[ragModelConfig]` | **embedding 服务**的模型名/地址/维度；**Agent 侧 chat 模型的模型名**；思考开关的方言 | `embeddingModel`、`embeddingBaseUrl`、`dimension`、`chatModelName`、`baseUrl`、`chatThinkingDialect` |
+| `[ragModelConfig]` | **embedding 服务**的模型名/地址/维度；情景关系分类器**身份标签**里的模型名（不发给 provider，见下表）；思考开关的方言 | `embeddingModel`、`embeddingBaseUrl`、`dimension`、`chatModelName`、`baseUrl`、`chatThinkingDialect` |
 | `[ordinaryChat]` | **普通聊天**（直连，不经 Agent 回路）的 chat 客户端 | `GOPHERLEARN_OPENAI_BASE_URL`、`GOPHERLEARN_OPENAI_API_KEY`、`GOPHERLEARN_OPENAI_MODEL` |
 
 **大多数部署三处填同一个模型就行**：学习 Agent 与普通聊天用同一个 chat 模型，embedding 用同一家（也可以是另一家）的 embedding 模型。
@@ -60,12 +60,14 @@
 |---|---|---|
 | `[isolatedEntry].chatKey` / `chatModel` / `chatBaseURL` | 构造学习 Agent 的 chat 客户端 | `v2/internal/isolated/dependencies.go`（`ProductionDependencies` → `ChatModel`） |
 | `[isolatedEntry].embeddingKey` | 构造 embedder（模型名与地址来自 `[ragModelConfig]`） | `v2/internal/isolated/dependencies.go`（`ProductionDependencies` → `Embedder`） |
-| `[ragModelConfig].chatModelName` | 情景记忆的**关系分类器**把它当模型名用 | `v2/internal/agent/wiring.go` |
+| `[ragModelConfig].chatModelName` | 情景记忆**关系分类器的身份标签**——它不进请求体，答问题用的模型来自 `[isolatedEntry].chatModel` | `v2/internal/isolated/wiring.go`（`episoderelation.NewChatClassifier` 的 `Chat` 是 Agent 那个客户端，`ModelName` 只拼进 `identity`） |
 | `[ragModelConfig].baseUrl` | **目前没有任何客户端从它构建**；入口只在启动校验时要求它非空 | `v2/config/config.go`（`RagModelConfig.Validate`） |
 | `[ragModelConfig].chatThinkingDialect` | 决定思考开关怎么写进请求体 | `v2/internal/isolated/dependencies.go` → `aihelper.ThinkingExtraFields` |
 | `[ordinaryChat].*` | 构造普通聊天的 OpenAI 兼容客户端 | `conversation/client.go` → `internal/openai` |
 
 > `baseUrl` 目前**只被校验、不被使用**：Agent 的 chat 客户端地址取自 `[isolatedEntry].chatBaseURL`。填错它不会立刻报错，但它是个必填项——这是历史结构留下的形状。
+>
+> `chatModelName` 同理容易被误解：它**不是**发给 provider 的模型名，只被拼进情景关系分类器的身份字符串（`relation_<名字>_<版本>`），身份是「关系判定提案」的键。所以把它写成与 `chatModel` 不同的值**不会报错**，但会出现"提案键写着 A 模型、实际答题的是 B 模型"——而"模型升级就换键"这个设计正是靠它俩一致才成立。**请与 `[isolatedEntry].chatModel` 写成同一个值。**
 
 ---
 
@@ -178,7 +180,7 @@ shell 死掉，服务还活着，容器在宽限期结束后被强杀——服�
 | `embeddingModel` | ✅ | `qwen3.7-text-embedding` | embedding 模型名，不能为空 |
 | `embeddingBaseUrl` | ✅ | `https://dashscope.aliyuncs.com/compatible-mode/v1` | embedding 服务地址，不能为空。客户端会自己拼 `/embeddings` |
 | `dimension` | ✅ | `1024` | 向量维度，必须大于 0，且**必须与模型实际输出一致**；改它等于改索引 schema，和已有向量对不上 |
-| `chatModelName` | ✅ | `qwen3.8-max` | Agent 侧 chat 模型的模型名，不能为空 |
+| `chatModelName` | ✅ | `qwen3.8-max` | 情景关系分类器**身份标签**里的模型名，不能为空；**它不决定答题用哪个模型**（那个来自 `[isolatedEntry].chatModel`），但必须与它写成同一个值，否则提案键与实际模型不一致。见上面「三处模型配置各管什么」 |
 | `baseUrl` | ✅ | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 必填，但**当前没有任何客户端从它构建**；见上面「三处模型配置各管什么」 |
 | `chatThinkingDialect` | | `qwen` | 思考开关的方言，取值 `qwen` / `deepseek` / `none`，**写错的值在启动时就被拒** |
 | `rerankEnabled` | | `false` | 是否开启重排 |
@@ -201,6 +203,7 @@ shell 死掉，服务还活着，容器在宽限期结束后被强杀——服�
 | `deadlineThinkingSeconds` | `60` | 单轮时间预算（**思考开启时**）。思考开启的回答要等思考写完再写，实测最后那一次生成本身就要四十秒左右，用 45 秒会把这些轮次切在答案出现之前；思考关闭的轮次仍用 `deadlineSeconds` |
 | `knowledgeDefaultTopK` | `5` | 知识库默认取几段 |
 | `knowledgeMaxTopK` | `8` | 知识库最多取几段 |
+| `knowledgeRelevanceThreshold` | `0.80` | **服务端预检索的相关性门槛**。模型回答之前，服务端先拿这个问题去检索学习者的笔记，重排分数高于这个值的片段才会作为证据放进提示词；低于门槛就不给证据，只在窗口里说明"这次没找到高相关内容"。取值 0 到 1，**0 表示完全不启用预检索**（没有重排服务的部署本来也拿不到重排分数）。**注意**：预检索跑不起来时（没有重排、重排或向量化失败），退回的是**改动前的强制检索规则**——除寒暄、回忆对话、明说别查、别人的资料外，其余问题仍然强制先查一次笔记；预检索真正跑起来（命中或低于门槛）之后，才由模型自己决定要不要再搜 |
 | `memoryReadMode` | `legacy_v2` | 长期记忆的整条读取路径模式 |
 | `episodeRecallMode` | `shadow_only` | 情景召回模式 |
 | `episodeRelationMode` | `off` | 情景关系抽取模式 |

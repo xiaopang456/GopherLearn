@@ -380,6 +380,28 @@ type AgentConfig struct {
 	EpisodeMaxInputTokens           int    `toml:"episodeMaxInputTokens"`
 	EpisodeMaxOutputTokens          int    `toml:"episodeMaxOutputTokens"`
 	EpisodeMaxMessages              int    `toml:"episodeMaxMessages"`
+
+	// KnowledgeRelevanceThreshold is the rerank score above which the
+	// server-side pre-retrieval hands the learner's own material to the
+	// model before it answers.
+	//
+	// The default is 0.80. It sits above the highest score the material's
+	// own calibration reached on a question it does not answer (0.733) and
+	// below the median of the questions it does answer (0.937), so the
+	// default hands over the passages that answer the question and leaves
+	// the rest to the model. It is a setting rather than a constant
+	// because the reranker's scores move when the corpus or the model
+	// moves, and the comparison run is what should move this one.
+	//
+	// Zero turns the pre-retrieval off entirely. That is what a deployment
+	// without a reranker gets anyway: no rerank score, no pre-retrieval.
+	// It does not mean "the model decides without evidence" - a
+	// pre-retrieval that could not run falls back to the rule that was in
+	// force before it existed, which forces the document search.
+	//
+	// The value is a literal rather than a constant from the agent
+	// package, because the configuration must not import a service.
+	KnowledgeRelevanceThreshold float64 `toml:"knowledgeRelevanceThreshold"`
 }
 
 type Config struct {
@@ -441,6 +463,10 @@ func defaultConfig() *Config {
 		// default nobody agreed to.
 		AgentThinkingEnabled: false,
 		KnowledgeDefaultTopK: 5, KnowledgeMaxTopK: 8, KnowledgeMaxResultTokens: 700,
+		// The pre-retrieval hands over the passages that answer the question and
+		// leaves the rest alone. 0.80 is the score the reranker's own
+		// calibration put between the two.
+		KnowledgeRelevanceThreshold:   0.80,
 		KnowledgeMaxObservationTokens: 2200, KnowledgeMaxRunTokens: 6500,
 		DocumentReadMaxLines: 240, DocumentReadMaxBytes: 32 * 1024, DocumentReadMaxObservationTokens: 3000,
 		ContextModelWindowTokens: 32768, ContextInputTargetTokens: 28000, ContextOutputReserveTokens: 4000,
@@ -941,6 +967,13 @@ func (c AgentConfig) Validate() error {
 	}
 	if c.KnowledgeMaxResultTokens < 32 || c.KnowledgeMaxResultTokens > 4000 {
 		return fmt.Errorf("knowledgeMaxResultTokens must be between 32 and 4000")
+	}
+	// The pre-retrieval threshold is a rerank score. Zero means the
+	// pre-retrieval does not run at all, so it is allowed; anything above
+	// one could never be reached and would silently disable the feature, so
+	// it is not.
+	if c.KnowledgeRelevanceThreshold < 0 || c.KnowledgeRelevanceThreshold > 1 {
+		return fmt.Errorf("knowledgeRelevanceThreshold must be between 0 and 1")
 	}
 	if c.KnowledgeMaxObservationTokens < 256 || c.KnowledgeMaxObservationTokens > 8000 {
 		return fmt.Errorf("knowledgeMaxObservationTokens must be between 256 and 8000")

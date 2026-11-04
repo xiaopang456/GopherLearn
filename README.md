@@ -130,7 +130,7 @@ Copy-Item config.integrated.example.toml config.integrated.toml.local   # PowerS
 **三处模型配置分别管什么**——这是最容易填错的地方：
 
 - `[isolatedEntry]` —— **学习 Agent** 的 chat 模型（地址、模型名、密钥），外加 **embedding 服务的密钥**；
-- `[ragModelConfig]` —— **embedding 服务**的模型名、地址与向量维度，**Agent 侧 chat 模型的模型名**（和上一段用同一个模型时就写一样的），以及**思考开关的方言**；
+- `[ragModelConfig]` —— **embedding 服务**的模型名、地址与向量维度，情景关系分类器**身份标签**里的模型名（它不决定答题用哪个模型，但请写成和上面 `chatModel` 一样的值），以及**思考开关的方言**；
 - `[ordinaryChat]` —— **普通聊天**的模型（地址、模型名、密钥）。
 
 **大多数部署三处填同一个模型就行**：学习 Agent 与普通聊天用同一个 chat 模型，embedding 用同一家（也可以是另一家）的 embedding 模型。
@@ -153,8 +153,9 @@ embeddingKey = "<你的百炼 API Key>"
 embeddingModel = "qwen3.7-text-embedding"
 embeddingBaseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 dimension = 1024
-# Agent 侧 chat 模型的模型名：和上面同一个模型就写一样的
+# 情景关系分类器的身份标签用这个名字（答题用的模型来自上面的 chatModel）：请写成和 chatModel 一样的值
 chatModelName = "deepseek-flash"
+# 必填项，但当前没有客户端从它构建（详见 docs/CONFIGURATION.md）
 baseUrl = "https://api.deepseek.com/v1"
 # 思考开关的方言：DeepSeek 用 deepseek（默认的 qwen 写法它不认）
 chatThinkingDialect = "deepseek"
@@ -193,7 +194,7 @@ host = "127.0.0.1"
 port = 18082
 ```
 
-> 换 provider 时改四处：`chatModel` / `chatBaseURL` / `baseUrl` / `chatModelName` 换成你的模型名与地址，两把密钥换成你的，`chatThinkingDialect` 改成对方认的写法（默认 `qwen`）。
+> 换 provider 时要动四处，但只有两半是真的在用：`chatModel` / `chatBaseURL` 决定学习 Agent 用哪个模型、哪个地址；`chatModelName` 是关系分类器的身份标签（**照抄 `chatModel`**），`baseUrl` 是必填但当前没有消费者的一项（**照抄 `chatBaseURL`**）。两把密钥换成你自己的，`chatThinkingDialect` 改成对方认的写法（默认 `qwen`）。
 > 完整字段表、每个字段的默认值与校验规则见 [配置参考](docs/CONFIGURATION.md)。
 
 ### 5.2 可选功能

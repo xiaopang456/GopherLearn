@@ -34,6 +34,11 @@ export const KnowledgeReason = Object.freeze({
   InvalidCitation: 'invalid_citation',
   MissingCitation: 'missing_citation',
   FallbackCitation: 'fallback_citation',
+  // The turn answered without retrieving from the learner's material at all.
+  // It is a different fact from `no_candidate` (a search ran and found
+  // nothing), and the Go side names it the same way
+  // (`answer_policy.go`: KnowledgeReasonSearchNotPerformed).
+  SearchNotPerformed: 'search_not_performed',
 })
 
 export const KnowledgePolicy = Object.freeze({

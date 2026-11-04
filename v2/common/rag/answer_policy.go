@@ -78,6 +78,17 @@ const (
 	KnowledgeReasonInvalidCitation  KnowledgeReason = "invalid_citation"
 	KnowledgeReasonMissingCitation  KnowledgeReason = "missing_citation"
 	KnowledgeReasonFallbackCitation KnowledgeReason = "fallback_citation"
+	// KnowledgeReasonSearchNotPerformed says the turn answered without
+	// retrieving from the learner's material at all.
+	//
+	// It is a distinct reason because "no evidence" and "no search" are
+	// different facts, and a reader can act on them differently: one means the
+	// material was searched and had nothing, the other means the material was
+	// never consulted. The old vocabulary could only say the first, so a turn
+	// that answered from general knowledge without searching was recorded as
+	// though a search had found nothing - and the learner's own card said the
+	// notes had nothing to say about it.
+	KnowledgeReasonSearchNotPerformed KnowledgeReason = "search_not_performed"
 )
 
 func (r KnowledgeReason) Valid() bool {
@@ -86,7 +97,8 @@ func (r KnowledgeReason) Valid() bool {
 		KnowledgeReasonNoCandidate, KnowledgeReasonModelAbstained, KnowledgeReasonEmbedding,
 		KnowledgeReasonVector, KnowledgeReasonLexical, KnowledgeReasonIndex,
 		KnowledgeReasonDocumentMetadata, KnowledgeReasonInvalidCitation,
-		KnowledgeReasonMissingCitation, KnowledgeReasonFallbackCitation:
+		KnowledgeReasonMissingCitation, KnowledgeReasonFallbackCitation,
+		KnowledgeReasonSearchNotPerformed:
 		return true
 	default:
 		return false

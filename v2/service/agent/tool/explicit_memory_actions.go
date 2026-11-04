@@ -129,13 +129,16 @@ func explicitActionDigest[In, Out any](name, description string,
 // HasExplicitMemoryIntent exposes the write gate as a read-only question.
 //
 // It exists for STABILIZE-061's offline material audit and for nothing else.
-// The gate decides whether the draft tool is exposed at all, so a confirmation
-// question that asks to save something the gate does not recognise would be
-// measuring the old phrase list rather than the new contract - and would record
-// a failure the contract could not have prevented. Being able to ask before
-// freezing is the difference between choosing the material and discovering the
-// problem in the results.
+// The gate decides whether the prompt tells the model to propose saving, so a
+// confirmation question that asks to save something the gate does not
+// recognise would be measuring the old phrase list rather than the new
+// contract - and would record a failure the contract could not have prevented.
+// Being able to ask before freezing is the difference between choosing the
+// material and discovering the problem in the results.
 //
-// It adds no phrase and changes no behaviour. It is the same predicate the
-// registry already consults, read rather than written.
-func HasExplicitMemoryIntent(question string) bool { return explicitMemoryIntent(question) }
+// The predicate lives in the agent package now, because that is where the
+// prompt is built and the prompt is what the gate decides. This function
+// stays so that the audit does not have to know that.
+func HasExplicitMemoryIntent(question string) bool {
+	return serviceagent.ExplicitMemoryIntent(question)
+}

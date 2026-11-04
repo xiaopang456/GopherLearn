@@ -205,6 +205,10 @@ func agentRunnerConfig(mode memoryrecall.ReadMode, agentConf config.AgentConfig,
 		// stays where it was for every turn whose thinking is off.
 		DeadlineThinking: time.Duration(agentConf.DeadlineThinkingSeconds) * time.Second,
 		ThinkingDialect:  thinkingDialect,
+		// The pre-retrieval's threshold is a deployment setting, because the
+		// reranker's scores move with the corpus and with the reranker itself,
+		// and the comparison run is what should move this number.
+		RelevanceThreshold: agentConf.KnowledgeRelevanceThreshold,
 	}
 	if mode.UsesMemorySearchTool() {
 		runnerConfig.PerTool = agentService.AgentMemoryToolRunnerConfig().PerTool
