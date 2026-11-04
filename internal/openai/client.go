@@ -202,7 +202,7 @@ type wireRequest struct {
 	// the Qwen dialect keeps the field above, and the none dialect sends
 	// neither.
 	Thinking *wireThinking `json:"thinking,omitempty"`
-	Stream   bool           `json:"stream"`
+	Stream   bool          `json:"stream"`
 	// Tools is sent only when the caller offered definitions, so a plain chat
 	// request keeps the exact byte shape it had before tools existed.
 	Tools []wireToolDefinition `json:"tools,omitempty"`

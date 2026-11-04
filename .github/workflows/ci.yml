@@ -31,7 +31,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: v2/go.mod
-      - run: gofmt -l .
+      # Fail the job on an unformatted file, not just print one: `gofmt -l .` on its own
+      # leaves the step green while listing offenders, so a formatting regression can be
+      # merged and only shows up as scrollback. Same form the eval job already uses.
+      - run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test -count=1 ./...
 

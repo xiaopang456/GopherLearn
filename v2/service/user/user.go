@@ -1,7 +1,6 @@
 package user
 
 import (
-	"errors"
 	"GopherAI/common/code"
 	myemail "GopherAI/common/email"
 	myredis "GopherAI/common/redis"
@@ -9,6 +8,7 @@ import (
 	"GopherAI/model"
 	"GopherAI/utils"
 	"GopherAI/utils/myjwt"
+	"errors"
 	"log"
 	"net/mail"
 	"strings"
