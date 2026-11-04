@@ -204,6 +204,73 @@ type KnowledgeConfig struct {
 	// earlier build fails loudly instead of being silently downgraded to
 	// local processing.
 	ExecutionMode string `toml:"executionMode"`
+	// StartupIndexAudit selects what the service does when it starts and finds
+	// that the knowledge index holds fewer blocks than the record says.
+	StartupIndexAudit StartupIndexAuditConfig `toml:"startupIndexAudit"`
+}
+
+// Startup index audit modes.
+const (
+	// StartupIndexAuditModeOff does not compare the index with the record.
+	StartupIndexAuditModeOff = "off"
+	// StartupIndexAuditModeAudit compares them and only reports the result.
+	StartupIndexAuditModeAudit = "audit"
+	// StartupIndexAuditModeRebuild compares them and sends the documents that
+	// are short back to the indexer.
+	StartupIndexAuditModeRebuild = "rebuild"
+)
+
+// DefaultStartupIndexAuditRebuildLimit is the number of documents one start
+// may send back to the indexer when the configuration does not say.
+//
+// A rebuild is not free: every document that goes back is parsed, chunked and
+// embedded again, so the limit keeps a single start from spending an unbounded
+// number of embeddings.
+const DefaultStartupIndexAuditRebuildLimit = 20
+
+// StartupIndexAuditConfig configures the startup comparison between the
+// knowledge record and the knowledge index.
+//
+// The comparison never refuses the start: an index that is thinner than the
+// record says is a retrieval that answers less, not a service that cannot run.
+// What the mode selects is how much the service does about it.
+type StartupIndexAuditConfig struct {
+	// Mode is "off", "audit" or "rebuild". An empty value means "audit".
+	Mode string `toml:"mode"`
+	// RebuildLimit is the largest number of documents one start may send back
+	// to the indexer in rebuild mode. Zero means the default.
+	RebuildLimit int `toml:"rebuildLimit"`
+}
+
+// StartupIndexAuditMode returns the configured mode with the default applied.
+func (c StartupIndexAuditConfig) StartupIndexAuditMode() string {
+	mode := strings.ToLower(strings.TrimSpace(c.Mode))
+	if mode == "" {
+		return StartupIndexAuditModeAudit
+	}
+	return mode
+}
+
+// StartupIndexAuditRebuildLimit returns the configured rebuild limit with the
+// default applied.
+func (c StartupIndexAuditConfig) StartupIndexAuditRebuildLimit() int {
+	if c.RebuildLimit <= 0 {
+		return DefaultStartupIndexAuditRebuildLimit
+	}
+	return c.RebuildLimit
+}
+
+// Validate checks the startup index audit settings.
+func (c StartupIndexAuditConfig) Validate() error {
+	switch c.StartupIndexAuditMode() {
+	case StartupIndexAuditModeOff, StartupIndexAuditModeAudit, StartupIndexAuditModeRebuild:
+	default:
+		return fmt.Errorf("startupIndexAudit.mode must be %q, %q or %q", StartupIndexAuditModeOff, StartupIndexAuditModeAudit, StartupIndexAuditModeRebuild)
+	}
+	if c.RebuildLimit < 0 {
+		return fmt.Errorf("startupIndexAudit.rebuildLimit must not be negative")
+	}
+	return nil
 }
 
 // Execution modes accepted by KnowledgeConfig.ExecutionMode.
@@ -451,6 +518,10 @@ func defaultConfig() *Config {
 		QueueSize:           100,
 		ScanIntervalSeconds: 5,
 		IndexTimeoutSeconds: 300,
+		StartupIndexAudit: StartupIndexAuditConfig{
+			Mode:         StartupIndexAuditModeAudit,
+			RebuildLimit: DefaultStartupIndexAuditRebuildLimit,
+		},
 	}, AgentConfig: AgentConfig{
 		MaxToolCalls: 3, MaxModelCalls: 4, MaxGraphSteps: 10, DeadlineSeconds: 45,
 		// A thinking turn writes its answer after the thinking, and the
@@ -1168,6 +1239,9 @@ func (c KnowledgeConfig) Validate() error {
 	}
 	if c.IndexTimeoutSeconds <= 0 {
 		return fmt.Errorf("indexTimeoutSeconds must be greater than zero")
+	}
+	if err := c.StartupIndexAudit.Validate(); err != nil {
+		return err
 	}
 	return c.ValidateExecutionMode()
 }

@@ -248,6 +248,15 @@ docker run -d --name gopherlearn-redis -p 127.0.0.1:16360:6379 \
 >
 > `redis.integrated.conf.local` 里的 `requirepass` 必须是**一个未加引号的词**、长度 ≥ 32 字节。
 
+Redis 里存的是**可重建的检索索引**，不是业务数据。索引比记录少块时，检索只会少给证据，不会报错——所以后端启动时会自己比一次（`[knowledgeConfig].startupIndexAudit.mode`，默认 `audit`，只把不一致的文档清单和重建命令写进日志）。随时也可以手工查一次，**只读，不删键、不重建文档**：
+
+```bash
+# 在仓库根目录执行；go -C 会把程序的工作目录切到 v2/，所以配置写成 ../config.integrated.toml.local
+go -C v2 run ./cmd/indexaudit -config ../config.integrated.toml.local
+```
+
+输出里每个缺块的文档都带一条重建命令：`POST /api/v1/knowledge/documents/<id>/reindex`。
+
 ### 步骤 2 · 复制并填写配置模板
 
 ```bash

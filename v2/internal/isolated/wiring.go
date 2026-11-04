@@ -11,6 +11,7 @@ import (
 	myemail "GopherAI/common/email"
 	"GopherAI/common/memoryrecall"
 	"GopherAI/common/mysql"
+	"GopherAI/common/observability"
 	"GopherAI/common/rag"
 	"GopherAI/common/redis"
 	"GopherAI/config"
@@ -23,6 +24,7 @@ import (
 	memoryDAO "GopherAI/dao/memory"
 	"GopherAI/dao/message"
 	sessionDAO "GopherAI/dao/session"
+	"GopherAI/internal/indexaudit"
 	"GopherAI/model"
 	agentService "GopherAI/service/agent"
 	agentTool "GopherAI/service/agent/tool"
@@ -96,6 +98,7 @@ func buildKnowledgeRuntime(ctx context.Context, conf *config.Config, deps Depend
 	}
 	documentRepository := knowledgeDAO.NewRepository(mysql.DB)
 	documentService := knowledgeService.NewDocumentService(documentRepository, storage, conf.KnowledgeConfig)
+	runStartupIndexAudit(ctx, conf, documentRepository)
 	workerConfig := knowledgeService.WorkerConfig{
 		WorkerCount:  conf.KnowledgeConfig.WorkerCount,
 		QueueSize:    conf.KnowledgeConfig.QueueSize,
@@ -154,6 +157,61 @@ func buildKnowledgeRuntime(ctx context.Context, conf *config.Config, deps Depend
 		}
 	}
 	return &knowledgeRuntime{index: indexWorker, cleanup: cleanupWorker, retrieval: retrievalService, documents: documentService, embedder: embedder}, nil
+}
+
+// startupIndexAuditTimeout bounds the startup comparison.
+//
+// The comparison walks the whole knowledge index, so it can take a while on a
+// large corpus. The bound keeps a slow comparison from turning into a slow
+// start: an audit that did not finish is reported as unfinished, and the
+// service starts anyway.
+const startupIndexAuditTimeout = 2 * time.Minute
+
+// runStartupIndexAudit compares the knowledge record with the knowledge index
+// and reports what it finds.
+//
+// The audit never refuses the start. An index that holds fewer blocks than
+// the record says is a retrieval that answers less, not a service that cannot
+// run, so the outcome is a report in the log and in the metrics. Only the
+// documents that are short are worth an operator's attention, and each of them
+// is listed with the command that rebuilds it.
+//
+// In rebuild mode the documents that are short go back to the indexer, at most
+// rebuildLimit of them; the rest are reported and wait for the next start.
+func runStartupIndexAudit(ctx context.Context, conf *config.Config, documentRepository *knowledgeDAO.Repository) {
+	mode, err := indexaudit.ParseMode(conf.KnowledgeConfig.StartupIndexAudit.Mode)
+	if err != nil {
+		log.Printf("startup index audit skipped: %v", err)
+		observability.Memory.KnowledgeIndexAudit(string(indexaudit.ModeOff), "failed", 0, 0, 0, 0, 0, 0)
+		return
+	}
+	if mode == indexaudit.ModeOff {
+		return
+	}
+	auditCtx, cancel := context.WithTimeout(ctx, startupIndexAuditTimeout)
+	defer cancel()
+	auditor := indexaudit.NewAuditor(
+		indexaudit.MySQLSource{DB: mysql.DB, ExcludeInFlight: true},
+		indexaudit.RedisCounter{Client: redis.Rdb},
+		documentRepository,
+		log.Printf,
+	)
+	result, auditErr := auditor.Run(auditCtx, mode, conf.KnowledgeConfig.StartupIndexAudit.StartupIndexAuditRebuildLimit())
+	if auditErr != nil {
+		log.Printf("startup index audit failed: %v", auditErr)
+		observability.Memory.KnowledgeIndexAudit(string(mode), "failed", 0, 0, 0, 0, 0, 0)
+		return
+	}
+	status := "consistent"
+	switch {
+	case len(result.Blockers) > 0:
+		status = "incomplete"
+	case result.Skipped > 0 || result.Failed > 0:
+		status = "partial"
+	case len(result.Missing) > 0 || len(result.Extra) > 0:
+		status = "inconsistent"
+	}
+	observability.Memory.KnowledgeIndexAudit(string(mode), status, result.Compared, len(result.Missing), len(result.Extra), result.Rebuilt, result.Skipped, result.Failed)
 }
 
 // buildMemoryIndex keeps the old re-buildable topic index synchronized for

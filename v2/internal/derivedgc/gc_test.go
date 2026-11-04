@@ -11,7 +11,7 @@ import (
 func TestParseManagedKeys(t *testing.T) {
 	t.Parallel()
 	user, identity, problem := parseKnowledgeKey(redisCommon.KnowledgeChunkKeyPrefix, "gopherai:knowledge:chunk:42:doc:3:chunk")
-	if problem != "" || user != 42 || identity.(knowledgeIdentity) != (knowledgeIdentity{42, "doc", 3}) {
+	if problem != "" || user != 42 || identity.(knowledgeIdentity) != (knowledgeIdentity{UserID: 42, DocumentID: "doc", Version: 3}) {
 		t.Fatalf("unexpected knowledge parse: %d %#v %q", user, identity, problem)
 	}
 	user, identity, problem = parseExactKey(redisCommon.EpisodeKeyPrefix, "gopherai:episode:vec:9:episode")
@@ -27,11 +27,11 @@ func TestParseManagedKeys(t *testing.T) {
 
 func TestReconcileKnowledgeKeepsOnlyActiveTuplesAndBlocksCountMismatch(t *testing.T) {
 	t.Parallel()
-	active := knowledgeIdentity{1, "active", 2}
+	active := knowledgeIdentity{UserID: 1, DocumentID: "active", Version: 2}
 	scanned := scannedFamily{Name: "knowledge", Prefix: redisCommon.KnowledgeChunkKeyPrefix, IndexDocs: 3, Keys: []scannedKey{
 		{Key: "keep", UserID: 1, identity: active, Hash: true},
-		{Key: "orphan-a", UserID: 2, identity: knowledgeIdentity{2, "old", 1}, Hash: true},
-		{Key: "orphan-b", UserID: 2, identity: knowledgeIdentity{2, "old", 1}, Hash: true},
+		{Key: "orphan-a", UserID: 2, identity: knowledgeIdentity{UserID: 2, DocumentID: "old", Version: 1}, Hash: true},
+		{Key: "orphan-b", UserID: 2, identity: knowledgeIdentity{UserID: 2, DocumentID: "old", Version: 1}, Hash: true},
 	}}
 	report, candidates := reconcileKnowledge(scanned, map[knowledgeIdentity]int{active: 1})
 	if !report.Ready() || report.Expected != 1 || report.Kept != 1 || report.Orphans != 2 || !reflect.DeepEqual(candidates, []string{"orphan-a", "orphan-b"}) {

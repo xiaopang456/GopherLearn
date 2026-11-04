@@ -77,6 +77,20 @@ storageDir = "data/gopherlearn-integrated/knowledge"
 # GET /api/v1/knowledge/documents/:id/processing —— 回答 {"mode":"legacy","status":<index_status>}。
 # 这个接口只回答文档所有者自己的文档状态。
 
+# 启动时校验知识索引：把记录里的块数和 Redis 里实际存的块数对一遍。
+#
+# mode 三选一：
+#   off     —— 不比对；
+#   audit   —— 只比对，把不一致的文档清单和重建命令写进日志和指标（默认）；
+#   rebuild —— 比对之后，把缺块的文档退回 pending，交给索引 worker 重建。
+#
+# 校验永远不阻止启动：索引缺块是"检索少给证据"，不是"服务起不来"。
+# rebuild 每次启动最多退回 rebuildLimit 个文档，超出的只告警，等下一次启动；
+# 重建会重新调用 embedding 接口，是要花钱的，所以默认档是只比对。
+[knowledgeConfig.startupIndexAudit]
+mode = "audit"
+rebuildLimit = 20
+
 [ragModelConfig]
 embeddingModel = "REPLACE_WITH_EMBEDDING_MODEL_NAME"
 embeddingBaseUrl = "https://embedding.invalid/v1"
