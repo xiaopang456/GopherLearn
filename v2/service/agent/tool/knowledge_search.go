@@ -215,9 +215,15 @@ func (r *Registry) resolvedSurface() serviceagent.ToolSurface {
 // The threshold is written against rerank scores. A retrieval that did not
 // rerank cannot be judged against it - the candidate pool is then ordered by
 // similarity rather than by relevance to the question, and a similarity score
-// is not on the same scale - so such a retrieval reports "unavailable" and the
-// run proceeds without a pre-retrieval. The model then decides for itself,
-// exactly as it did before the pre-retrieval existed.
+// is not on the same scale - so such a retrieval reports "unavailable".
+//
+// "Unavailable" is not a shrug. It is the server saying it has no evidence to
+// judge the question with, and the decision the pre-retrieval was going to
+// make goes back to the server: the forced document search comes back the way
+// it was before the pre-retrieval existed. A deployment without a reranker
+// never gets a relevance score, and if the force were dropped as well it
+// would have nothing at all - the model would answer every question from its
+// own head.
 //
 // A retrieval that fails is not a verdict about the material either. The
 // pre-retrieval is an optimisation, and an optimisation that cannot run must

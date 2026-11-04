@@ -395,6 +395,9 @@ type AgentConfig struct {
 	//
 	// Zero turns the pre-retrieval off entirely. That is what a deployment
 	// without a reranker gets anyway: no rerank score, no pre-retrieval.
+	// It does not mean "the model decides without evidence" - a
+	// pre-retrieval that could not run falls back to the rule that was in
+	// force before it existed, which forces the document search.
 	//
 	// The value is a literal rather than a constant from the agent
 	// package, because the configuration must not import a service.

@@ -629,8 +629,13 @@ func renderWindowPrompt(window ContextWindow, input RunContext, availableTools [
 //
 // A pre-retrieval that fails is not an error. It is an optimisation, and an
 // optimisation that cannot run must not become a reason to refuse to answer:
-// the run goes on without it, exactly as it went on before the pre-retrieval
-// existed.
+// the run goes on. It does not go on "as if the pre-retrieval had run" -
+// it goes on the way it went before the pre-retrieval existed, which means
+// the forced document search comes back (see documentSearchIsForced). A
+// deployment without a reranker never gets a relevance score, so it never
+// gets the pre-retrieval, and if the force were dropped as well it would
+// have nothing at all: the model would answer every question from its own
+// head and the learner's notes would never be opened.
 func (r *Runner) probeRelevance(ctx context.Context, input RunContext) *RelevanceOutcome {
 	if r.config.RelevanceThreshold <= 0 {
 		return nil
@@ -2108,6 +2113,23 @@ func (s *runState) documentSources() []rag.Source {
 	return merged
 }
 
+// citationsResolve reports whether every citation the answer used points at
+// something this turn actually showed the model.
+//
+// The caller holds the state lock.
+func (s *runState) citationsResolve(wanted map[int]struct{}) bool {
+	known := make(map[int]struct{})
+	for _, source := range s.documentSources() {
+		known[source.Citation] = struct{}{}
+	}
+	for citation := range wanted {
+		if _, ok := known[citation]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 // finalizeGroundedAnswer is the server-side evidence boundary. A returned
 // action can grant one tool-free general-knowledge call or one citation-repair
 // call. Neither action exposes the unverified draft to the client.
@@ -2203,26 +2225,12 @@ func (s *runState) finalizeGroundedAnswer(answer string, allowRepair, allowFallb
 			s.knowledgeReason = rag.KnowledgeReasonNone
 			return answer, groundingFinalized
 		}
-		if s.knowledgeSearchAvailable && requiresDocumentSearch(s.input.Question, s.knowledgePolicy) {
+		if s.knowledgeSearchAvailable && s.documentSearchIsForced() {
 			s.sources = nil
 			s.answerBasis = rag.AnswerBasisRefused
 			s.knowledgeStatus = rag.KnowledgeStatusInvalidGrounding
 			s.knowledgeReason = rag.KnowledgeReasonSearchRequired
 			return UnsupportedGroundingAnswer, groundingFinalized
-		}
-		// The server's pre-retrieval searched the material and found nothing
-		// above the relevance threshold.
-		//
-		// That is a search that happened and had nothing, which is a different
-		// fact from a turn that never searched at all, and a learner can act on
-		// the two differently. So it is recorded as the first and not as the
-		// second.
-		if s.input.Relevance != nil && s.input.Relevance.Status == RelevanceBelowThreshold &&
-			s.knowledgeStatus != rag.KnowledgeStatusUnavailable {
-			s.answerBasis = rag.AnswerBasisGeneralKnowledge
-			s.knowledgeStatus = rag.KnowledgeStatusNoEvidence
-			s.knowledgeReason = rag.KnowledgeReasonNoCandidate
-			return answer, groundingFinalized
 		}
 		// The answer cites a document this turn never retrieved.
 		//
@@ -2233,12 +2241,33 @@ func (s *runState) finalizeGroundedAnswer(answer string, allowRepair, allowFallb
 		// would be sent to a line of their notes that may say something else
 		// entirely. A citation that resolves to nothing is a fabricated
 		// citation, and it is refused like one.
-		if len(wanted) > 0 && len(s.documentSources()) == 0 {
+		//
+		// It is checked one citation at a time, against everything this turn
+		// showed the model: the pre-retrieval's passages and the search's
+		// results. One number that resolves to nothing is enough.
+		if len(wanted) > 0 && !s.citationsResolve(wanted) {
 			s.sources = nil
 			s.answerBasis = rag.AnswerBasisRefused
 			s.knowledgeStatus = rag.KnowledgeStatusInvalidGrounding
 			s.knowledgeReason = rag.KnowledgeReasonInvalidCitation
 			return UnsupportedGroundingAnswer, groundingFinalized
+		}
+		// The server's pre-retrieval searched the material, and the answer does
+		// not rest on what it found.
+		//
+		// That is a search that happened and had nothing to work with, which
+		// is a different fact from a turn that never searched at all, and a
+		// learner can act on the two differently. So it is recorded as the
+		// first and not as the second.
+		//
+		// It covers the two ways the pre-retrieval can leave an answer
+		// unsupported: it found nothing above the threshold, and it found
+		// something the model then did not use.
+		if s.preRetrievalRan() && s.knowledgeStatus != rag.KnowledgeStatusUnavailable {
+			s.answerBasis = rag.AnswerBasisGeneralKnowledge
+			s.knowledgeStatus = rag.KnowledgeStatusNoEvidence
+			s.knowledgeReason = rag.KnowledgeReasonNoCandidate
+			return answer, groundingFinalized
 		}
 		// The model answered without retrieving anything. The answer is from
 		// its own head, and the record says exactly that.
@@ -2632,10 +2661,46 @@ func (s *runState) forcedToolName() string {
 	if s.memorySearchAvailable && isHistoryRecallQuestion(s.input.Question) {
 		return ""
 	}
-	if s.knowledgeSearchAvailable && requiresDocumentSearch(s.input.Question, s.knowledgePolicy) && !s.groundingUsed {
+	if s.knowledgeSearchAvailable && !s.groundingUsed && s.documentSearchIsForced() {
 		return MustToolNameFor(CapabilityKnowledgeSearch, s.config.Surface())
 	}
 	return ""
+}
+
+// documentSearchIsForced reports whether this turn must bind the document
+// search as its first tool.
+//
+// The pre-retrieval, when it ran, is what makes the model's own judgement
+// enough. It either handed over the passages that answer the question - in
+// which case the model can see whether they answer it - or it said that this
+// one search found nothing close, which is a fact about that search and not a
+// verdict about the material. Either way the model is in a position to decide,
+// and the server does not decide on top of it.
+//
+// When the pre-retrieval could not run - no reranker to score with, a reranker
+// that timed out, an embedder that refused - the window holds no evidence and
+// the model's judgement is only a guess. A guess is what the old forced rule
+// existed to prevent, so the old rule comes back.
+//
+// The old rule is not the new rule with the force removed: it is the rule that
+// was in force before the pre-retrieval existed, and it excludes the
+// questions a document cannot answer.
+func (s *runState) documentSearchIsForced() bool {
+	if s.input.Relevance != nil && s.input.Relevance.Status != RelevanceUnavailable {
+		return requiresDocumentSearch(s.input.Question, s.knowledgePolicy)
+	}
+	return requiresForcedDocumentSearch(s.input.Question)
+}
+
+// preRetrievalRan reports whether the server-side pre-retrieval actually ran.
+//
+// It is not the same question as "did anything reach the material": the
+// pre-retrieval is the server's own retrieval, and the label has to say
+// whether it happened, because "the material was searched and the answer does
+// not rest on it" and "the material was never opened" are different facts and
+// a learner can act on them differently.
+func (s *runState) preRetrievalRan() bool {
+	return s.input.Relevance != nil && s.input.Relevance.Status != RelevanceUnavailable
 }
 
 // memorySearchSummary renders a step summary for a memory search without

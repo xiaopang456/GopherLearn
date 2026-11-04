@@ -30,9 +30,25 @@ import (
 
 // userConfirmedRunnerConfig is the run envelope of the user-confirmed mode:
 // agent_memory_tool_v1's budget, unchanged, plus the knowledge-first rule.
+// preRetrievalRunnerConfig turns the pre-retrieval on for a mode's budget.
+//
+// The mode budgets are budgets: they say how many calls and how much time a
+// mode may spend. The pre-retrieval's threshold is a feature setting, and a
+// budget that leaves it at zero says "no pre-retrieval", which is a decision
+// no budget should make.
+func preRetrievalRunnerConfig(config RunnerConfig) RunnerConfig {
+	config.RelevanceThreshold = DefaultRelevanceThreshold
+	return config
+}
+
 func userConfirmedRunnerConfig() RunnerConfig {
 	config := AgentMemoryToolRunnerConfig()
 	config.ForcesKnowledgeSearchWithMemoryTool = true
+	// The pre-retrieval needs a threshold to run at all. It is a feature
+	// setting rather than a budget, and production reads it from the
+	// configuration file; here it is stated so that a registry which can
+	// probe actually probes.
+	config.RelevanceThreshold = DefaultRelevanceThreshold
 	return config
 }
 
@@ -75,13 +91,22 @@ func groundedResults() []structuredEvidenceResult {
 }
 
 // runConfirmedMode drives one turn in the user-confirmed envelope.
+//
+// The last argument is optional: when it is given, the registry can also run
+// the server-side pre-retrieval and reports that outcome. Without it the
+// registry has no pre-retrieval, which is the state a deployment without a
+// reranker is in.
 func runConfirmedMode(t *testing.T, question string, tools []tool.BaseTool, builder ContextBuilder,
-	policy rag.KnowledgePolicy, script func(int) *schema.Message) (*scriptedChatModel, RunnerResult) {
+	policy rag.KnowledgePolicy, script func(int) *schema.Message, probe ...*RelevanceOutcome) (*scriptedChatModel, RunnerResult) {
 	t.Helper()
 	fake := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {
 		return script(call), nil
 	}}
-	runner, err := NewRunner(fake, StaticToolRegistry{Registered: tools}, newMemoryStepRepository(),
+	var registry ToolRegistry = StaticToolRegistry{Registered: tools}
+	if len(probe) > 0 {
+		registry = &proberRegistry{StaticToolRegistry: StaticToolRegistry{Registered: tools}, outcome: *probe[0]}
+	}
+	runner, err := NewRunner(fake, registry, newMemoryStepRepository(),
 		builder, userConfirmedRunnerConfig())
 	if err != nil {
 		t.Fatal(err)
@@ -253,6 +278,11 @@ func TestSearchDecisionDoesNotDependOnTheConfirmedTopics(t *testing.T) {
 
 // 4b. The same question without the pointer at the material is the model's
 // call, and the server spends no tool slot on it.
+//
+// That holds while the server-side pre-retrieval ran: it handed the model
+// what the material looks like for this question, and the judgement is the
+// model's. Without a pre-retrieval there is nothing to judge on, and the old
+// rule comes back - see tool_behavior_test.go.
 func TestOrdinaryTechnicalQuestionIsNotForcedIntoKnowledgeSearch(t *testing.T) {
 	search := &trackedKnowledgeSearch{}
 	memory := &scriptedMemorySearch{}
@@ -260,7 +290,7 @@ func TestOrdinaryTechnicalQuestionIsNotForcedIntoKnowledgeSearch(t *testing.T) {
 		[]tool.BaseTool{memory.build(t), search.build(t, groundedResults())},
 		MinimalContextBuilder{}, rag.KnowledgePreferred, func(call int) *schema.Message {
 			return schema.AssistantMessage("粘包处理和编解码注册表之间是一套配合。", nil)
-		})
+		}, &RelevanceOutcome{Status: RelevanceBelowThreshold, Threshold: DefaultRelevanceThreshold})
 
 	if fake.ForcedToolChoiceCount() != 0 {
 		t.Fatalf("an ordinary technical question forced %d tool choices", fake.ForcedToolChoiceCount())
@@ -592,14 +622,19 @@ func TestOldRuleStillReproducesTheSearchRequiredRefusal(t *testing.T) {
 // still a gate: the answer cites "[1]" and nothing was ever retrieved, so the
 // citation is fabricated and the turn is refused - just not for the reason it
 // used to be.
+//
+// The pre-retrieval ran here and found nothing above the threshold, so the
+// model was left to decide and it decided to cite something nobody showed it.
+// Without a pre-retrieval the search would have been forced instead, and the
+// refusal would have been for not searching.
 func TestOrdinaryTechnicalQuestionIsRefusedForAFabricatedCitation(t *testing.T) {
 	search := &trackedKnowledgeSearch{}
 	memory := &scriptedMemorySearch{}
 	fake := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {
 		return citedAnswer(call), nil
 	}}
-	runner := mustRunner(t, fake, StaticToolRegistry{Registered: []tool.BaseTool{memory.build(t),
-		search.build(t, groundedResults())}}, newMemoryStepRepository(), AgentMemoryToolRunnerConfig())
+	runner := mustRunner(t, fake, &proberRegistry{StaticToolRegistry: StaticToolRegistry{Registered: []tool.BaseTool{memory.build(t),
+		search.build(t, groundedResults())}}, outcome: RelevanceOutcome{Status: RelevanceBelowThreshold, Threshold: DefaultRelevanceThreshold}}, newMemoryStepRepository(), preRetrievalRunnerConfig(AgentMemoryToolRunnerConfig()))
 	input := testRunContext()
 	input.Question = "Go 里 defer 的执行顺序是怎样的？"
 	input.MemoryEvidence = NewMemoryEvidenceRegistry()

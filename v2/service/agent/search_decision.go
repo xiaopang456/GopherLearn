@@ -75,6 +75,45 @@ func requiresDocumentSearch(question string, policy rag.KnowledgePolicy) bool {
 	return mentionsOwnMaterial(question)
 }
 
+// requiresForcedDocumentSearch reports whether this turn must retrieve from
+// the learner's own material because the server could not look first.
+//
+// This is the rule that was in force before the pre-retrieval existed, and it
+// comes back whenever the pre-retrieval could not run: no reranker to score
+// with, a reranker that timed out, an embedder that refused. In those cases
+// the window holds no evidence, and a model asked to judge for itself answers
+// from its own head - "Redis 的 AOF 有几种策略" is a question the learner's
+// notes answer, and a model that answers it from memory answers it
+// differently from the notes without ever saying that it did so.
+//
+// So the two rules are not one rule with the force removed. The pre-retrieval
+// replaces the force only when it ran: it either handed over the passages that
+// answer the question, or it said that this one search found nothing close.
+// Either way the model has something to judge on.
+//
+// It excludes the questions a document cannot answer, whichever way the
+// question is put: a greeting, a question about this conversation, a question
+// about the learner's own past, another user's material (which is refused
+// before any search), and a learner who said not to look in their notes.
+func requiresForcedDocumentSearch(question string) bool {
+	if isSessionContextQuestion(question) {
+		return false
+	}
+	if isCrossUserKnowledgeRequest(question) {
+		return false
+	}
+	if isHistoryRecallQuestion(question) {
+		return false
+	}
+	if isDirectGreeting(question) {
+		return false
+	}
+	if isExplicitNoSearchQuestion(question) {
+		return false
+	}
+	return true
+}
+
 // ownMaterialMarkers are the phrases that point the question at the learner's
 // own uploaded notes, files or documents.
 var ownMaterialMarkers = []string{

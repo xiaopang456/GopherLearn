@@ -26,7 +26,13 @@ import (
 //     that cites it cites real material, and the final citation check resolves
 //     it like any other.
 //
-// It is a relevance signal, not a decision. The model still decides.
+// It is a relevance signal, not a decision - but only while it runs. A
+// pre-retrieval that could not run (no reranker, a reranker that timed out, an
+// embedder that refused) leaves the window with no evidence in it, and the
+// model asked to judge for itself answers from its own head. So the decision
+// the pre-retrieval was going to make goes back to the server, which forces
+// the document search the way it did before the pre-retrieval existed. See
+// documentSearchIsForced.
 
 // RelevanceStatus is what the pre-retrieval concluded.
 type RelevanceStatus string
@@ -41,8 +47,14 @@ const (
 	// else: the material may well contain an answer this one query missed.
 	RelevanceBelowThreshold RelevanceStatus = "below_threshold"
 	// RelevanceUnavailable means the pre-retrieval could not run - the index
-	// was down, the embedder refused, the reranker timed out. It is not a
-	// statement about the material, and the model is told so.
+	// was down, the embedder refused, the reranker timed out, or there is no
+	// reranker to score with. It is not a statement about the material, and
+	// the model is told so.
+	//
+	// It also means the decision the pre-retrieval was going to make goes
+	// back to the server: the window holds no evidence, so the forced
+	// document search comes back rather than leaving the question to the
+	// model's guess.
 	RelevanceUnavailable RelevanceStatus = "unavailable"
 )
 
@@ -111,10 +123,11 @@ func (o RelevanceOutcome) Sources() []rag.Source {
 
 // RelevanceProber is the optional capability a tool registry may implement.
 //
-// It is optional on purpose. A registry that does not implement it simply has
-// no pre-retrieval, and the run proceeds exactly as it did before the
-// pre-retrieval existed - which is what every test fixture and every mode that
-// registers no document tools gets.
+// It is optional on purpose. A registry that does not implement it has no
+// pre-retrieval, and the run proceeds the way it did before the pre-retrieval
+// existed - which means the forced document search is still forced. That is
+// what every test fixture and every mode that registers no document tools
+// gets, and it is also what a deployment without a reranker gets.
 type RelevanceProber interface {
 	// ProbeRelevance runs one retrieval for the question and reports whether
 	// the learner's material covers it. The threshold is the score above which

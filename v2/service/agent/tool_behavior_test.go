@@ -193,7 +193,11 @@ func TestPreRetrievalBelowThresholdTellsTheModelItMaySearchAgain(t *testing.T) {
 
 // A pre-retrieval that could not run says nothing at all, because it says
 // nothing about the material.
-func TestPreRetrievalThatCouldNotRunSaysNothing(t *testing.T) {
+//
+// And the forced document search comes back: the window holds no evidence, so
+// the model's own judgement would be a guess, and the old rule is what keeps
+// a guess from becoming an answer.
+func TestPreRetrievalThatCouldNotRunSaysNothingAndForcesTheSearch(t *testing.T) {
 	fake := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {
 		return schema.AssistantMessage("粘包是因为应用层没有划定消息边界。", nil), nil
 	}}
@@ -212,12 +216,123 @@ func TestPreRetrievalThatCouldNotRunSaysNothing(t *testing.T) {
 	if strings.Contains(window, "search") && strings.Contains(window, "before this turn") {
 		t.Fatalf("the window talks about a search that did not happen: %s", window)
 	}
-	// Nothing was retrieved and nothing was searched, and that is what the
-	// record says.
-	if result.AnswerBasis != rag.AnswerBasisGeneralKnowledge ||
-		result.KnowledgeStatus != rag.KnowledgeStatusNotRequired ||
-		result.KnowledgeReason != rag.KnowledgeReasonSearchNotPerformed {
+	// The search is forced, because the pre-retrieval could not run and there
+	// is nothing else in the window to judge on.
+	if fake.ForcedToolChoiceCount() != 1 || !fake.HasExclusiveToolBinding(knowledgeSearchToolName) {
+		t.Fatalf("the document search was not forced: choices=%d bindings=%v", fake.ForcedToolChoiceCount(), fake.BoundToolCalls())
+	}
+	// The model did not search, and the record says so.
+	if result.AnswerBasis != rag.AnswerBasisRefused ||
+		result.KnowledgeStatus != rag.KnowledgeStatusInvalidGrounding ||
+		result.KnowledgeReason != rag.KnowledgeReasonSearchRequired {
 		t.Fatalf("basis=%s status=%s reason=%s", result.AnswerBasis, result.KnowledgeStatus, result.KnowledgeReason)
+	}
+}
+
+// A deployment without a reranker never gets a relevance score, so it never
+// gets the pre-retrieval.
+//
+// If the force were dropped as well it would have nothing at all: the model
+// would answer every question from its own head, and the learner's notes
+// would never be opened. "Redis 的 AOF 有几种策略" is a question the notes
+// answer and the model's memory answers too - differently, and without saying
+// so.
+func TestWithoutARerankerTheDocumentSearchIsForcedAgain(t *testing.T) {
+	fake := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {
+		return schema.AssistantMessage("AOF 有三种策略。", nil), nil
+	}}
+	registry := StaticToolRegistry{Registered: []tool.BaseTool{mustNamedEvidenceTool(t, knowledgeSearchToolName, nil)}}
+	runner := mustRunner(t, fake, registry, newMemoryStepRepository(), DefaultRunnerConfig())
+	input := testRunContext()
+	input.Question = "Redis 的 AOF 有几种策略？"
+	input.MemoryEvidence = NewMemoryEvidenceRegistry()
+	if _, err := runner.Run(context.Background(), input, DiscardEvents); err != nil {
+		t.Fatal(err)
+	}
+	if fake.ForcedToolChoiceCount() != 1 || !fake.HasExclusiveToolBinding(knowledgeSearchToolName) {
+		t.Fatalf("the document search was not forced: choices=%d bindings=%v", fake.ForcedToolChoiceCount(), fake.BoundToolCalls())
+	}
+}
+
+// The same question, with a pre-retrieval that ran, is the model's call.
+//
+// This is the whole difference the pre-retrieval makes: it hands the model
+// something to judge on, and then the judgement is the model's.
+func TestWhenThePreRetrievalRanTheModelDecides(t *testing.T) {
+	fake := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {
+		return schema.AssistantMessage("AOF 有三种策略。", nil), nil
+	}}
+	registry := &proberRegistry{StaticToolRegistry: StaticToolRegistry{Registered: []tool.BaseTool{
+		mustNamedEvidenceTool(t, knowledgeSearchToolName, nil),
+	}}, outcome: belowThresholdOutcome()}
+	runner := mustRunner(t, fake, registry, newMemoryStepRepository(), DefaultRunnerConfig())
+	input := testRunContext()
+	input.Question = "Redis 的 AOF 有几种策略？"
+	input.MemoryEvidence = NewMemoryEvidenceRegistry()
+	if _, err := runner.Run(context.Background(), input, DiscardEvents); err != nil {
+		t.Fatal(err)
+	}
+	if registry.probes != 1 {
+		t.Fatalf("the pre-retrieval ran %d times", registry.probes)
+	}
+	if fake.ForcedToolChoiceCount() != 0 {
+		t.Fatalf("the document search was forced %d times although the pre-retrieval ran", fake.ForcedToolChoiceCount())
+	}
+}
+
+// A pre-retrieval that failed falls back to the same rule.
+//
+// The difference between "there is no reranker to score with" and "the
+// reranker timed out" is the reason, not the consequence: in both cases the
+// server has no evidence to judge the question with, so the decision goes back
+// to the server.
+func TestWhenThePreRetrievalFailedTheDocumentSearchIsForcedAgain(t *testing.T) {
+	fake := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {
+		return schema.AssistantMessage("AOF 有三种策略。", nil), nil
+	}}
+	registry := &proberRegistry{StaticToolRegistry: StaticToolRegistry{Registered: []tool.BaseTool{
+		mustNamedEvidenceTool(t, knowledgeSearchToolName, nil),
+	}}, outcome: RelevanceOutcome{Status: RelevanceUnavailable, Threshold: DefaultRelevanceThreshold}}
+	runner := mustRunner(t, fake, registry, newMemoryStepRepository(), DefaultRunnerConfig())
+	input := testRunContext()
+	input.Question = "Redis 的 AOF 有几种策略？"
+	input.MemoryEvidence = NewMemoryEvidenceRegistry()
+	if _, err := runner.Run(context.Background(), input, DiscardEvents); err != nil {
+		t.Fatal(err)
+	}
+	if fake.ForcedToolChoiceCount() != 1 || !fake.HasExclusiveToolBinding(knowledgeSearchToolName) {
+		t.Fatalf("the document search was not forced: choices=%d bindings=%v", fake.ForcedToolChoiceCount(), fake.BoundToolCalls())
+	}
+}
+
+// A threshold of zero turns the pre-retrieval off, and the old rule comes
+// back with it.
+//
+// This is what "off" means. It does not mean "the model decides without
+// evidence", because that is the half of the change that makes the notes go
+// unopened; it means "the pre-retrieval does not run, so the run is the one
+// that was in force before it existed".
+func TestThresholdZeroTurnsThePreRetrievalOffAndTheOldRuleBack(t *testing.T) {
+	fake := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {
+		return schema.AssistantMessage("AOF 有三种策略。", nil), nil
+	}}
+	registry := &proberRegistry{StaticToolRegistry: StaticToolRegistry{Registered: []tool.BaseTool{
+		mustNamedEvidenceTool(t, knowledgeSearchToolName, nil),
+	}}, outcome: hitOutcome()}
+	config := DefaultRunnerConfig()
+	config.RelevanceThreshold = 0
+	runner := mustRunner(t, fake, registry, newMemoryStepRepository(), config)
+	input := testRunContext()
+	input.Question = "Redis 的 AOF 有几种策略？"
+	input.MemoryEvidence = NewMemoryEvidenceRegistry()
+	if _, err := runner.Run(context.Background(), input, DiscardEvents); err != nil {
+		t.Fatal(err)
+	}
+	if registry.probes != 0 {
+		t.Fatalf("the pre-retrieval ran %d times with the threshold at zero", registry.probes)
+	}
+	if fake.ForcedToolChoiceCount() != 1 || !fake.HasExclusiveToolBinding(knowledgeSearchToolName) {
+		t.Fatalf("the document search was not forced: choices=%d bindings=%v", fake.ForcedToolChoiceCount(), fake.BoundToolCalls())
 	}
 }
 

@@ -963,7 +963,11 @@ func TestRunnerRejectsKnowledgeScopedAnswerWhenModelSkipsSearch(t *testing.T) {
 	}}
 	knowledgeTool := mustNamedEvidenceTool(t, knowledgeSearchToolName, nil)
 	historyTool := mustNamedEvidenceTool(t, readHistoryMessageToolName, nil)
-	runner := mustRunner(t, fake, StaticToolRegistry{Registered: []tool.BaseTool{historyTool, knowledgeTool}}, newMemoryStepRepository(), DefaultRunnerConfig())
+	// The pre-retrieval ran and found nothing above the threshold, so the
+	// search was the model's call to make.
+	registry := &proberRegistry{StaticToolRegistry: StaticToolRegistry{Registered: []tool.BaseTool{historyTool, knowledgeTool}},
+		outcome: RelevanceOutcome{Status: RelevanceBelowThreshold, Threshold: DefaultRelevanceThreshold}}
+	runner := mustRunner(t, fake, registry, newMemoryStepRepository(), DefaultRunnerConfig())
 	input := testRunContext()
 	input.Question = "gopherai-agent-learning-notes-v2.md 中如何解释 ToolCall？"
 	result, err := runner.Run(context.Background(), input, DiscardEvents)
@@ -973,10 +977,10 @@ func TestRunnerRejectsKnowledgeScopedAnswerWhenModelSkipsSearch(t *testing.T) {
 	if result.Answer != UnsupportedGroundingAnswer || len(result.Sources) != 0 {
 		t.Fatalf("result = %#v", result)
 	}
-	// The search is no longer forced: a file name in the question is the
-	// model's call to act on. What is not the model's call is a citation it
-	// invented - an answer that points at "[1]" when no document was ever
-	// retrieved is refused, and it is refused as what it is.
+	// The search was the model's call to make: a file name in the question is
+	// not a pointer at the material. What is not the model's call is a
+	// citation it invented - an answer that points at "[1]" when no document
+	// was ever retrieved is refused, and it is refused as what it is.
 	if result.KnowledgeReason != rag.KnowledgeReasonInvalidCitation {
 		t.Fatalf("reason = %s, want the fabricated citation to be named", result.KnowledgeReason)
 	}
