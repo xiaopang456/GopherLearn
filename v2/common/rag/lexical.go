@@ -111,6 +111,15 @@ func isASCIIIdentifierRune(value rune) bool {
 func RRFRankConstant() int { return rrfRankConstant }
 
 func FuseRRF(vectorResults, lexicalResults []RedisChunkSearchResult, topK int) []RedisChunkSearchResult {
+	return FuseWeightedRRF(vectorResults, lexicalResults, topK, 1)
+}
+
+// FuseWeightedRRF is FuseRRF with the keyword channel's contribution scaled by lexicalWeight.
+// With a weight of 1 it is FuseRRF exactly. A lower weight lets the keyword channel
+// promote or demote candidates the vector channel already found, but not outrank the
+// vector channel on its own: a candidate only the keyword channel found scores at most
+// lexicalWeight/(k+1). FusionScore is normalized by the best possible score under the weights.
+func FuseWeightedRRF(vectorResults, lexicalResults []RedisChunkSearchResult, topK int, lexicalWeight float64) []RedisChunkSearchResult {
 	if topK <= 0 {
 		return []RedisChunkSearchResult{}
 	}
@@ -142,11 +151,11 @@ func FuseRRF(vectorResults, lexicalResults []RedisChunkSearchResult, topK int) [
 			entry.candidate.LexicalScore = candidate.LexicalScore
 		}
 		entry.candidate.LexicalRank = index + 1
-		entry.score += 1 / float64(rrfRankConstant+index+1)
+		entry.score += lexicalWeight / float64(rrfRankConstant+index+1)
 	}
 	channelCount := 1.0
 	if len(lexicalResults) > 0 {
-		channelCount = 2
+		channelCount = 1 + lexicalWeight
 	}
 	maximum := channelCount / float64(rrfRankConstant+1)
 	entries := make([]fused, 0, len(byID))

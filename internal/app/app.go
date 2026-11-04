@@ -19,6 +19,7 @@ import (
 	"github.com/xiaopang456/GopherLearn/internal/knowledge"
 	"github.com/xiaopang456/GopherLearn/internal/model"
 	"github.com/xiaopang456/GopherLearn/internal/openai"
+	"github.com/xiaopang456/GopherLearn/internal/ordinaryconfig"
 	"github.com/xiaopang456/GopherLearn/internal/repository"
 	"github.com/xiaopang456/GopherLearn/internal/responder"
 	"github.com/xiaopang456/GopherLearn/internal/retrieval"
@@ -30,7 +31,7 @@ import (
 // the right default for development and the only safe default when nobody set the
 // variable: a backend that silently starts calling a paid endpoint because a key
 // appeared in the environment is not a backend anyone should deploy.
-type Provider string
+type Provider = ordinaryconfig.Provider
 
 // MemoryReadMode selects the complete production memory-read path. legacy_v2 is
 // the only mode enabled by this migration stage; experimental tool-driven modes
@@ -43,16 +44,19 @@ const (
 
 const (
 	// ProviderEcho answers deterministically and never dials a provider.
-	ProviderEcho Provider = "echo"
+	ProviderEcho = ordinaryconfig.ProviderEcho
 	// ProviderOpenAI completes turns through an OpenAI-compatible endpoint.
-	ProviderOpenAI Provider = "openai_compatible"
+	ProviderOpenAI = ordinaryconfig.ProviderOpenAI
 )
 
 // Environment variable names owned by this package.
 const (
-	EnvProvider           = "GOPHERLEARN_AI_PROVIDER"
-	EnvContextMaxMessages = "GOPHERLEARN_CONTEXT_MAX_MESSAGES"
-	EnvContextMaxRunes    = "GOPHERLEARN_CONTEXT_MAX_RUNES"
+	// The names ordinary conversation reads are declared once in internal/ordinaryconfig,
+	// which the integrated entry reads directly; these are the same strings under the
+	// names this package has always exported.
+	EnvProvider           = ordinaryconfig.EnvProvider
+	EnvContextMaxMessages = ordinaryconfig.EnvContextMaxMessages
+	EnvContextMaxRunes    = ordinaryconfig.EnvContextMaxRunes
 	EnvAgentMaxModelCalls = "GOPHERLEARN_AGENT_MAX_MODEL_CALLS"
 	EnvAgentMaxToolCalls  = "GOPHERLEARN_AGENT_MAX_TOOL_CALLS"
 	EnvAgentMaxSteps      = "GOPHERLEARN_AGENT_MAX_STEPS"
@@ -71,17 +75,17 @@ const (
 	// The rolling summary limits. Messages and runes are counted over stored rows; the
 	// token figure bounds what a refresh actually sends, including the previous
 	// summary it is revising.
-	EnvSummaryTriggerMessages    = "GOPHERLEARN_SUMMARY_TRIGGER_MESSAGES"
-	EnvSummaryTriggerTokens      = "GOPHERLEARN_SUMMARY_TRIGGER_TOKENS"
-	EnvSummaryKeepRecentMessages = "GOPHERLEARN_SUMMARY_KEEP_RECENT_MESSAGES"
-	EnvSummaryMaxInputTokens     = "GOPHERLEARN_SUMMARY_MAX_INPUT_TOKENS"
-	EnvSummaryMaxOutputTokens    = "GOPHERLEARN_SUMMARY_MAX_OUTPUT_TOKENS"
+	EnvSummaryTriggerMessages    = ordinaryconfig.EnvSummaryTriggerMessages
+	EnvSummaryTriggerTokens      = ordinaryconfig.EnvSummaryTriggerTokens
+	EnvSummaryKeepRecentMessages = ordinaryconfig.EnvSummaryKeepRecentMessages
+	EnvSummaryMaxInputTokens     = ordinaryconfig.EnvSummaryMaxInputTokens
+	EnvSummaryMaxOutputTokens    = ordinaryconfig.EnvSummaryMaxOutputTokens
 	// The summary's share of the turn's clock. Timeout bounds the call, StageBudget
 	// bounds the stage, and FailureCooldown decides how long a session stops trying
 	// after a refresh was refused.
-	EnvSummaryTimeout         = "GOPHERLEARN_SUMMARY_TIMEOUT"
-	EnvSummaryStageBudget     = "GOPHERLEARN_SUMMARY_STAGE_BUDGET"
-	EnvSummaryFailureCooldown = "GOPHERLEARN_SUMMARY_FAILURE_COOLDOWN"
+	EnvSummaryTimeout         = ordinaryconfig.EnvSummaryTimeout
+	EnvSummaryStageBudget     = ordinaryconfig.EnvSummaryStageBudget
+	EnvSummaryFailureCooldown = ordinaryconfig.EnvSummaryFailureCooldown
 	// EnvLocalLearningModel turns on the scripted question-and-grade model for the quiz
 	// workflow. It is a local development switch, not a provider: nothing dials out, and
 	// the questions say they came from a script. It is refused as soon as a real
@@ -107,7 +111,7 @@ const (
 var (
 	// ErrUnsupportedProvider reports a GOPHERLEARN_AI_PROVIDER value that is
 	// neither echo nor openai_compatible.
-	ErrUnsupportedProvider = errors.New("unsupported " + EnvProvider + " value")
+	ErrUnsupportedProvider = ordinaryconfig.ErrUnsupportedProvider
 	// ErrUnsupportedTaskMetrics reports a GOPHERLEARN_TASK_METRICS value that is
 	// neither off nor log.
 	ErrUnsupportedTaskMetrics = errors.New("unsupported " + EnvTaskMetrics + " value")
@@ -120,16 +124,15 @@ var (
 	// configuration claims a real provider.
 	ErrNoToolCapableModel = errors.New("openai_compatible needs a model that implements model.ToolChatModel")
 	// ErrInvalidContextLimit reports an unparseable or non-positive budget.
-	ErrInvalidContextLimit = errors.New(EnvContextMaxMessages + " and " + EnvContextMaxRunes + " must be positive integers")
+	ErrInvalidContextLimit = ordinaryconfig.ErrInvalidContextLimit
 	// ErrInvalidWindowLimit reports a context-window figure that is not a positive
 	// integer. It is refused by name rather than defaulted: a budget silently replaced
 	// by a default is a number the startup line would then report as the operator's.
 	ErrInvalidWindowLimit = errors.New("the " + EnvWindowTokens + " family must be positive integers")
 	// ErrInvalidSummaryLimit reports a summary figure that is not a positive integer.
-	ErrInvalidSummaryLimit = errors.New("the summary trigger and input limits must be positive integers")
+	ErrInvalidSummaryLimit = ordinaryconfig.ErrInvalidSummaryLimit
 	// ErrInvalidSummaryDuration reports an unparsable or non-positive summary duration.
-	ErrInvalidSummaryDuration = errors.New(EnvSummaryTimeout + ", " + EnvSummaryStageBudget + " and " +
-		EnvSummaryFailureCooldown + " must be Go durations such as 20s, and positive")
+	ErrInvalidSummaryDuration = ordinaryconfig.ErrInvalidSummaryDuration
 	// ErrInvalidAgentDeadline reports an unparseable agent time budget.
 	ErrInvalidAgentDeadline = errors.New(EnvAgentDeadline + " must be a Go duration such as 45s")
 	// ErrUnsupportedLocalLearningModel reports a GOPHERLEARN_LOCAL_LEARNING_MODEL value
@@ -248,20 +251,11 @@ func ConfigFromEnvironment(lookup func(string) string) (Config, error) {
 	}
 	config := Config{Provider: ProviderEcho, Context: service.ContextBudget{}.Normalize()}
 
-	provider := Provider(strings.ToLower(strings.TrimSpace(lookup(EnvProvider))))
-	switch provider {
-	case "", ProviderEcho:
-		config.Provider = ProviderEcho
-	case ProviderOpenAI:
-		config.Provider = ProviderOpenAI
-		modelConfig, err := openai.ConfigFromEnvironment(lookup)
-		if err != nil {
-			return Config{}, err
-		}
-		config.Model = modelConfig
-	default:
-		return Config{}, fmt.Errorf("%w: %q", ErrUnsupportedProvider, string(provider))
+	provider, modelConfig, err := ordinaryconfig.ProviderAndModel(lookup)
+	if err != nil {
+		return Config{}, err
 	}
+	config.Provider, config.Model = provider, modelConfig
 
 	// The scripted quiz model is read after the provider, because whether it is lawful
 	// depends on what was just chosen. Anything that names a real provider - the mode
@@ -278,11 +272,7 @@ func ConfigFromEnvironment(lookup func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("%w: %q", ErrUnsupportedLocalLearningModel, local)
 	}
 
-	messages, err := positiveInt(lookup(EnvContextMaxMessages))
-	if err != nil {
-		return Config{}, err
-	}
-	runes, err := positiveInt(lookup(EnvContextMaxRunes))
+	messages, runes, err := ordinaryconfig.ContextLimits(lookup)
 	if err != nil {
 		return Config{}, err
 	}
@@ -371,48 +361,10 @@ func ConfigFromEnvironment(lookup func(string) string) (Config, error) {
 	// seconds cannot also hand the answer the full forty-five.
 	config.Context.AgentTurnDeadline = config.Agent.Deadline
 
-	trigger, err := positiveIntIn(lookup(EnvSummaryTriggerMessages), ErrInvalidSummaryLimit)
+	config.Summary, err = ordinaryconfig.SummaryPolicy(lookup)
 	if err != nil {
 		return Config{}, err
 	}
-	triggerTokens, err := positiveIntIn(lookup(EnvSummaryTriggerTokens), ErrInvalidSummaryLimit)
-	if err != nil {
-		return Config{}, err
-	}
-	keepRecent, err := positiveIntIn(lookup(EnvSummaryKeepRecentMessages), ErrInvalidSummaryLimit)
-	if err != nil {
-		return Config{}, err
-	}
-	inputTokens, err := positiveIntIn(lookup(EnvSummaryMaxInputTokens), ErrInvalidSummaryLimit)
-	if err != nil {
-		return Config{}, err
-	}
-	outputTokens, err := positiveIntIn(lookup(EnvSummaryMaxOutputTokens), ErrInvalidSummaryLimit)
-	if err != nil {
-		return Config{}, err
-	}
-	stageTimeout, err := summaryDuration(lookup(EnvSummaryTimeout))
-	if err != nil {
-		return Config{}, err
-	}
-	stageBudget, err := summaryDuration(lookup(EnvSummaryStageBudget))
-	if err != nil {
-		return Config{}, err
-	}
-	cooldown, err := summaryDuration(lookup(EnvSummaryFailureCooldown))
-	if err != nil {
-		return Config{}, err
-	}
-	config.Summary = summary.Policy{
-		TriggerMessages:    trigger,
-		TriggerTokens:      triggerTokens,
-		KeepRecentMessages: keepRecent,
-		MaxInputTokens:     inputTokens,
-		MaxOutputTokens:    outputTokens,
-		Timeout:            stageTimeout,
-		StageBudget:        stageBudget,
-		FailureCooldown:    cooldown,
-	}.Normalize()
 
 	// Task metering is opt-in, and a value that is neither name stops startup: a
 	// typo left to default quietly to off would be a deployment that believes it is
@@ -462,45 +414,21 @@ func providerSettingsPresent(lookup func(string) string) bool {
 }
 
 func positiveInt(raw string) (int, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return 0, nil
-	}
-	value, err := strconv.Atoi(raw)
-	if err != nil || value <= 0 {
-		return 0, ErrInvalidContextLimit
-	}
-	return value, nil
+	return ordinaryconfig.PositiveInt(raw)
 }
 
 // positiveIntIn reads one optional positive integer and reports it under the family's
 // own error, so a bad window figure is refused as a window problem rather than as the
 // generic context-limit one. Absent means unset, which Resolve fills with its default.
 func positiveIntIn(raw string, refusal error) (int, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return 0, nil
-	}
-	value, err := strconv.Atoi(raw)
-	if err != nil || value <= 0 {
-		return 0, fmt.Errorf("%w: got %q", refusal, strings.TrimSpace(raw))
-	}
-	return value, nil
+	return ordinaryconfig.PositiveIntIn(raw, refusal)
 }
 
 // summaryDuration reads one optional duration. An unparsable value stops startup: a
 // silently ignored timeout is the one budget whose absence cannot be spotted in a line
 // about token counts.
 func summaryDuration(raw string) (time.Duration, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return 0, nil
-	}
-	value, err := time.ParseDuration(raw)
-	if err != nil || value <= 0 {
-		return 0, fmt.Errorf("%w: got %q", ErrInvalidSummaryDuration, raw)
-	}
-	return value, nil
+	return ordinaryconfig.SummaryDuration(raw)
 }
 
 // NewRetrievalPipeline builds the offline retrieval stack: BM25 plus the

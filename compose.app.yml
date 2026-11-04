@@ -1,5 +1,5 @@
-# Phase 8C: the three-service local stack - MySQL (8B.1's service, reused), the Go
-# backend and the web client - behind one command:
+# The three-service local stack - MySQL, the Go backend and the web client - behind
+# one command:
 #
 #   docker compose --env-file .env.compose.local \
 #     -f compose.mysql.yml -f compose.app.yml up --build

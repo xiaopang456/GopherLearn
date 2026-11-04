@@ -77,6 +77,20 @@ type RetrieveOptions struct {
 	// see (at most RerankCandidateK candidates, fused order, before any rerank),
 	// whether or not the reranker runs.
 	WantCandidates bool
+	// LexicalWeight is the weight of the keyword channel in the order returned when the
+	// reranker does not run. Zero is the production value, DefaultLexicalWeight; 1 is the
+	// original equal-weight fusion without the reserved identifier slot (what a retrieval
+	// returned before the weight existed); otherwise 0 < weight < 1. It never changes the
+	// candidate pool the reranker sees.
+	LexicalWeight float64
+}
+
+// lexicalWeight is the weight the retrieval uses.
+func (o RetrieveOptions) lexicalWeight() float64 {
+	if o.LexicalWeight == 0 {
+		return DefaultLexicalWeight
+	}
+	return o.LexicalWeight
 }
 
 // RetrieveOutcome is what RetrieveWithOptions returns.
@@ -117,6 +131,8 @@ func (o RetrieveOptions) validate(rerankerAttached bool) error {
 		return fmt.Errorf("%w: unknown retrieval mode %q", ErrInvalidRetrievalRequest, string(o.Mode))
 	case !o.Rerank.valid():
 		return fmt.Errorf("%w: unknown rerank policy %d", ErrInvalidRetrievalRequest, int(o.Rerank))
+	case o.LexicalWeight < 0 || o.LexicalWeight > 1:
+		return fmt.Errorf("%w: lexical weight %g is outside 0..1", ErrInvalidRetrievalRequest, o.LexicalWeight)
 	case o.CandidateDepth < 0 || o.CandidateDepth > maxRetrievalTopK:
 		return fmt.Errorf("%w: candidate depth %d is outside 0..%d", ErrInvalidRetrievalRequest, o.CandidateDepth, maxRetrievalTopK)
 	case o.Rerank == RerankForceOn && !rerankerAttached:

@@ -1,4 +1,4 @@
-# Phase 10A: run the same three-service stack against a real OpenAI-compatible endpoint.
+# Run the same three-service stack against a real OpenAI-compatible endpoint.
 #
 # This file changes one thing: which model answers. MySQL, the backend image, the Nginx
 # frontend, the loopback-only port, the internal `data` network and the round-specific
