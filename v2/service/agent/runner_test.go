@@ -1007,10 +1007,10 @@ func TestDocumentSearchDecision(t *testing.T) {
 		// say about it.
 		{question: "解释一下 Tool Schema、ToolCall 和 Tool Result", policy: rag.KnowledgePreferred, want: false},
 		{question: "Redis 的 TTL 是怎么实现的？", policy: rag.KnowledgePreferred, want: false},
-		{question: "note.md 中的 RPC 超时策略是什么？", policy: rag.KnowledgePreferred, want: false},
+		{question: "note.md 中的超时重试策略是什么？", policy: rag.KnowledgePreferred, want: false},
 		// A question that names the learner's material is forced.
 		{question: "我的笔记里讲了什么？", policy: rag.KnowledgePreferred, want: true},
-		{question: "我上传的文件里有讲 RPC 超时吗？", policy: rag.KnowledgePreferred, want: true},
+		{question: "我上传的文件里有讲超时重试吗？", policy: rag.KnowledgePreferred, want: true},
 		{question: "请结合我的学习记录讲。", policy: rag.KnowledgePreferred, want: true},
 		// The knowledge-only policy is the request's own instruction, and it
 		// outranks the learner's own material wording.

@@ -239,7 +239,7 @@ func TestConfirmedTopicsStillReceiptExactlyWhileKnowledgeSearchRuns(t *testing.T
 func TestSearchDecisionDoesNotDependOnTheConfirmedTopics(t *testing.T) {
 	search := &trackedKnowledgeSearch{}
 	memory := &scriptedMemorySearch{}
-	_, result := runConfirmedMode(t, "我的笔记里 RPC 粘包处理和 Codec 注册表之间是怎么配合的？",
+	_, result := runConfirmedMode(t, "我的笔记里 粘包处理和编解码注册表之间是怎么配合的？",
 		[]tool.BaseTool{memory.build(t), search.build(t, groundedResults())},
 		MinimalContextBuilder{}, rag.KnowledgePreferred, searchThenAnswer)
 
@@ -256,10 +256,10 @@ func TestSearchDecisionDoesNotDependOnTheConfirmedTopics(t *testing.T) {
 func TestOrdinaryTechnicalQuestionIsNotForcedIntoKnowledgeSearch(t *testing.T) {
 	search := &trackedKnowledgeSearch{}
 	memory := &scriptedMemorySearch{}
-	fake, _ := runConfirmedMode(t, "RPC 粘包处理和 Codec 注册表之间是怎么配合的？",
+	fake, _ := runConfirmedMode(t, "粘包处理和编解码注册表之间是怎么配合的？",
 		[]tool.BaseTool{memory.build(t), search.build(t, groundedResults())},
 		MinimalContextBuilder{}, rag.KnowledgePreferred, func(call int) *schema.Message {
-			return schema.AssistantMessage("RPC 粘包处理和 Codec 注册表之间是一套配合。", nil)
+			return schema.AssistantMessage("粘包处理和编解码注册表之间是一套配合。", nil)
 		})
 
 	if fake.ForcedToolChoiceCount() != 0 {
