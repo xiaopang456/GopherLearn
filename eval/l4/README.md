@@ -69,3 +69,13 @@ A run directory may hold more than one scored directory when the scoring rules c
 This implements the offline execution chain. Paid execution remains disabled. A real evaluation separately needs a frozen reviewed dataset, immutable corpus metadata bound to its shared index, a budget-enforcing upstream proxy, approved price accounting and calibrated semantic judgments. The fake command cannot certify model quality or real cost. `BackgroundAudit.Complete` is derived from journal verification, model coverage and successful shutdown, never from polling alone.
 
 For full-product runs, the planned protocol uses a fresh database per attempt and a 24-hour episode quiet window. Reports must state: full product service; no background execution before the measured answer; subsequent background calls accounted separately. Before/after job counts alone cannot prove no transient execution. Unattributed or incomplete observations invalidate an attempt.
+
+For real scenario runs, provide `-run-id`, `-arm`, `-qid` and `-condition`.
+The command derives the same evaluation user for preparation and all repeats,
+and a different user for each run, configuration, scenario and condition.
+Scenario users have an intentionally empty knowledge base: this evaluation
+measures conversation history. Do not provide a knowledge seed or explicit user
+identity for these phases. Redis user isolation requires validation against a
+real Redis Stack instance before a real run; the hash-derived ID has a small
+collision probability, so operators must check the generated identity manifest
+for duplicates before dispatch.

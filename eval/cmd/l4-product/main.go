@@ -31,6 +31,7 @@ func run(args []string, out io.Writer) error {
 	output := flags.String("output-dir", "", "new private output directory")
 	question := flags.String("question", "", "final question for answer phase")
 	questionFile := flags.String("question-file", "", "file holding the final question (UTF-8)")
+	runID := flags.String("run-id", "", "evaluation run identifier")
 	qid := flags.String("qid", "synthetic-offline", "scenario identifier for the scoring record")
 	arm := flags.String("arm", "current", "configuration identifier")
 	rep := flags.Int("rep", 0, "repeat number: 0, 1 or 2")
@@ -135,18 +136,23 @@ func run(args []string, out io.Writer) error {
 	var environment conversation.RealEnvironment
 	var seed *conversation.KnowledgeSeed
 	if real {
-		environment, err = realEnvironment(flags, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel, userID, userName, sessionID)
-		if err != nil {
-			return err
-		}
-		if *phase == "answer" {
-			seed, err = conversation.LoadKnowledgeSeed(*knowledgeSeed)
+		if *phase != "index" {
+			explicit := map[string]bool{}
+			flags.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+			if !explicit["run-id"] || !explicit["arm"] || !explicit["qid"] || !explicit["condition"] {
+				return fmt.Errorf("scenario identity requires explicit run-id, arm, qid and condition")
+			}
+			if *knowledgeSeed != "" || *userID != 0 || *userName != "" {
+				return fmt.Errorf("scenario runs require an empty knowledge base and derived identity")
+			}
+			*userID, *userName, err = scenarioIdentity(*runID, *arm, *qid, *condition)
 			if err != nil {
 				return err
 			}
-			if seed.UserID != environment.UserID {
-				return fmt.Errorf("the knowledge seed belongs to another evaluation user")
-			}
+		}
+		environment, err = realEnvironment(flags, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel, userID, userName, sessionID)
+		if err != nil {
+			return err
 		}
 	}
 	// Reserve the directory exclusively; partial/failed attempts remain visible.
@@ -241,6 +247,8 @@ func run(args []string, out io.Writer) error {
 		manifest["embedding_model"] = environment.EmbeddingModel
 		manifest["rerank_model"] = environment.RerankModel
 		manifest["user_id"] = environment.UserID
+		manifest["user_name"] = environment.UserName
+		manifest["run_id"] = *runID
 		manifest["session_id"] = environment.SessionID
 	}
 	if inputDigest != "" {
