@@ -4,6 +4,7 @@ import (
 	"GopherAI/common/aihelper"
 	"GopherAI/common/memoryrecall"
 	"GopherAI/common/observability"
+	"GopherAI/common/providerretry"
 	"GopherAI/common/rag"
 	"GopherAI/model"
 	"context"
@@ -13,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -892,6 +894,19 @@ func (s *runState) canSpendModelCall() bool {
 	return s.modelCalls < s.config.MaxModelCalls
 }
 
+// canSpendRetryModelCall reports whether the budget holds a generation for a
+// retry that decides about tools again.
+//
+// Such a retry may not take the generation that writes the answer, so the
+// budget has to hold one generation for the retry and one more for the
+// answer. A retry that writes the answer itself is checked against
+// canSpendModelCall instead.
+func (s *runState) canSpendRetryModelCall() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.modelCalls+1 < s.config.MaxModelCalls
+}
+
 func readAnswerStream(stream *schema.StreamReader[*schema.Message]) (string, error) {
 	if stream == nil {
 		return "", ErrEmptyAgentAnswer
@@ -1441,6 +1456,18 @@ func (s *runState) unknownToolHandler(ctx context.Context, name, arguments strin
 	return "", boundaryErr
 }
 
+// The one retry a turn may make when the provider never processed a request.
+//
+// The pause is short enough to stay inside a turn's time budget and long
+// enough for a gateway to have recovered. The remaining-time floor is the
+// other side of the same budget: a turn that has almost no time left cannot
+// use a retry, and starting one would only push the turn past its deadline
+// without making the answer more likely.
+const (
+	modelRetryBackoff      = 400 * time.Millisecond
+	modelRetryMinRemaining = 2 * time.Second
+)
+
 type boundedModel struct {
 	inner modelcomponent.ToolCallingChatModel
 	state *runState
@@ -1451,14 +1478,22 @@ type boundedModel struct {
 	thinkingDialect string
 }
 
-func (m *boundedModel) before(ctx context.Context) error {
+func (m *boundedModel) before(ctx context.Context, attempt int, reason string) error {
 	sequence, call, err := m.state.nextModelStep()
 	if err != nil {
 		return err
 	}
+	// A retry is a model call of its own, so it is counted and recorded as
+	// one. The summary says which one it is, because a run record that shows
+	// two generations for the same step has to show that the second one
+	// repeated the first.
+	summary := fmt.Sprintf("model generation %d", call)
+	if attempt > 0 {
+		summary = fmt.Sprintf("model generation %d (retry after %s)", call, reason)
+	}
 	step := &model.AgentStep{
 		UserID: m.state.input.UserID, RunID: m.state.input.RunID, Sequence: sequence,
-		Type: model.AgentStepPlan, ArgumentsSummary: fmt.Sprintf("model generation %d", call),
+		Type: model.AgentStepPlan, ArgumentsSummary: summary,
 	}
 	if err := m.state.appendStep(ctx, step); err != nil {
 		return err
@@ -1469,12 +1504,29 @@ func (m *boundedModel) before(ctx context.Context) error {
 	})
 }
 
-func (m *boundedModel) Generate(ctx context.Context, input []*schema.Message, opts ...modelcomponent.Option) (*schema.Message, error) {
-	if err := m.before(ctx); err != nil {
-		return nil, err
-	}
+// generation is the set of parameters one generation is made with.
+//
+// It is built once and reused by the retry. The retry has to ask the same
+// question as the attempt it replaces: a generation that was allowed to call
+// a tool must still be allowed to call it, and a generation that was the
+// turn's last one must still be the turn's last one. Recomputing the tool
+// choice after the retry spent a model call would turn a generation that
+// decides to call a tool into a generation that answers instead.
+type generation struct {
+	model      modelcomponent.ToolCallingChatModel
+	forcedTool string
+	// answers says the generation was asked to write the answer rather than
+	// to call a tool.
+	answers bool
+	opts    []modelcomponent.Option
+}
+
+// plan builds the parameters of a generation from the state of the turn.
+func (m *boundedModel) plan(opts []modelcomponent.Option) (generation, error) {
+	callOpts := append([]modelcomponent.Option(nil), opts...)
 	callModel := m.inner
 	forcedTool := ""
+	answers := false
 	if m.state.toolBudgetExhausted() || m.state.isLastModelCall() {
 		// MaxToolCalls bounds executions, not the Agent's ability to synthesize
 		// a final answer from evidence already collected. The finalizer still
@@ -1488,60 +1540,145 @@ func (m *boundedModel) Generate(ctx context.Context, input []*schema.Message, op
 		if m.state.toolBudgetExhausted() {
 			m.state.markToolBudgetClosed()
 		}
-		opts = append(opts, modelcomponent.WithToolChoice(schema.ToolChoiceForbidden))
+		callOpts = append(callOpts, modelcomponent.WithToolChoice(schema.ToolChoiceForbidden))
+		answers = true
 	} else if forcedTool = m.state.forcedToolName(); forcedTool != "" {
-		var err error
-		callModel, err = bindOnlyTool(m.inner, m.tools, forcedTool)
+		bound, err := bindOnlyTool(m.inner, m.tools, forcedTool)
 		if err != nil {
+			return generation{}, err
+		}
+		callModel = bound
+		callOpts = append(callOpts, modelcomponent.WithToolChoice(schema.ToolChoiceForced))
+	}
+	callOpts = append(callOpts, aihelper.ThinkingModelOptions(m.thinkingDialect, thinkingEnabledForModelCall(m.state.input.EnableThinking, forcedTool))...)
+	return generation{model: callModel, forcedTool: forcedTool, answers: answers, opts: callOpts}, nil
+}
+
+// retryAllowed reports whether the turn may send the request again.
+//
+// The provider decides whether the failure may be repeated at all; the turn
+// decides whether it still can. A retry needs three things: a failure the
+// provider never processed, a model-call budget that still holds a
+// generation, and enough of the turn's time left to make one. When the budget
+// is spent the original error is kept, because that error is the reason the
+// turn failed and a budget error would hide it.
+//
+// A retry that decides about tools again may not take the generation that
+// writes the answer: that slot belongs to the answer, and a retry that took
+// it would leave the turn without a way to answer. A retry that writes the
+// answer itself may take it.
+func (m *boundedModel) retryAllowed(ctx context.Context, err error, plan generation) bool {
+	if !providerretry.Retryable(err) {
+		return false
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	if plan.answers {
+		if !m.state.canSpendModelCall() {
+			return false
+		}
+	} else if !m.state.canSpendRetryModelCall() {
+		return false
+	}
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < modelRetryMinRemaining {
+		return false
+	}
+	return true
+}
+
+// noteRetry records that a failed generation is about to be sent again.
+//
+// The count is kept apart from the memory counters because this is the agent's
+// own model traffic, and the log line is the same shape the rest of the
+// agent writes.
+func (m *boundedModel) noteRetry(err error) {
+	reason := providerretry.Reason(err)
+	observability.Agent.ModelRetry(reason, modelRetryBackoff)
+	log.Printf("[agent-model] retrying a generation the provider did not process: run=%s reason=%s backoff_ms=%d",
+		m.state.input.RunID, reason, modelRetryBackoff.Milliseconds())
+}
+
+func (m *boundedModel) Generate(ctx context.Context, input []*schema.Message, opts ...modelcomponent.Option) (*schema.Message, error) {
+	var plan generation
+	attempt := 0
+	reason := ""
+	for {
+		if err := m.before(ctx, attempt, reason); err != nil {
 			return nil, err
 		}
-		opts = append(opts, modelcomponent.WithToolChoice(schema.ToolChoiceForced))
-	}
-	opts = append(opts, aihelper.ThinkingModelOptions(m.thinkingDialect, thinkingEnabledForModelCall(m.state.input.EnableThinking, forcedTool))...)
-	message, err := callModel.Generate(ctx, input, opts...)
-	if observation := newPublicModelCall(ctx, m.state, "generate_snapshot"); observation != nil {
-		if observeErr := observation.accept(ctx, message); observeErr != nil {
-			return nil, observeErr
+		if attempt == 0 {
+			built, err := m.plan(opts)
+			if err != nil {
+				return nil, err
+			}
+			plan = built
 		}
-		if observeErr := observation.end(ctx, err != nil); observeErr != nil {
-			return nil, observeErr
+		message, err := plan.model.Generate(ctx, input, plan.opts...)
+		if err != nil && attempt == 0 && m.retryAllowed(ctx, err, plan) {
+			// The provider never processed this request, so the turn sends it
+			// again with the same parameters. Nothing was published for the
+			// failed attempt: a generation that produced no text publishes
+			// nothing.
+			attempt++
+			reason = providerretry.Reason(err)
+			m.noteRetry(err)
+			if !providerretry.Wait(ctx, modelRetryBackoff) {
+				return nil, TypeProviderFailure(err)
+			}
+			continue
 		}
+		if observation := newPublicModelCall(ctx, m.state, "generate_snapshot"); observation != nil {
+			if observeErr := observation.accept(ctx, message); observeErr != nil {
+				return nil, observeErr
+			}
+			if observeErr := observation.end(ctx, err != nil); observeErr != nil {
+				return nil, observeErr
+			}
+		}
+		// The provider boundary is here, so the typing is here. Anything the chat
+		// model hands back that is not already a known category is a transport
+		// fault, and saying so at this line is what stops it arriving at the top of
+		// the stack as an untyped error nobody can classify afterwards.
+		return message, TypeProviderFailure(err)
 	}
-	// The provider boundary is here, so the typing is here. Anything the chat
-	// model hands back that is not already a known category is a transport
-	// fault, and saying so at this line is what stops it arriving at the top of
-	// the stack as an untyped error nobody can classify afterwards.
-	return message, TypeProviderFailure(err)
 }
 
 func (m *boundedModel) Stream(ctx context.Context, input []*schema.Message, opts ...modelcomponent.Option) (*schema.StreamReader[*schema.Message], error) {
-	if err := m.before(ctx); err != nil {
-		return nil, err
-	}
-	callModel := m.inner
-	forcedTool := ""
-	if m.state.toolBudgetExhausted() || m.state.isLastModelCall() {
-		// The same rule as Generate: the turn's last generation writes the
-		// answer, and a turn whose tool budget is spent writes it from what
-		// it already has.
-		if m.state.toolBudgetExhausted() {
-			m.state.markToolBudgetClosed()
-		}
-		opts = append(opts, modelcomponent.WithToolChoice(schema.ToolChoiceForbidden))
-	} else if forcedTool = m.state.forcedToolName(); forcedTool != "" {
-		var err error
-		callModel, err = bindOnlyTool(m.inner, m.tools, forcedTool)
-		if err != nil {
+	var plan generation
+	attempt := 0
+	reason := ""
+	for {
+		if err := m.before(ctx, attempt, reason); err != nil {
 			return nil, err
 		}
-		opts = append(opts, modelcomponent.WithToolChoice(schema.ToolChoiceForced))
+		if attempt == 0 {
+			built, err := m.plan(opts)
+			if err != nil {
+				return nil, err
+			}
+			plan = built
+		}
+		stream, err := plan.model.Stream(ctx, input, plan.opts...)
+		if err != nil {
+			if attempt == 0 && m.retryAllowed(ctx, err, plan) {
+				// The stream failed before it produced anything, so no content
+				// has reached the user and no content has been paid for twice.
+				// A stream that breaks after its first chunk is not retried:
+				// that failure arrives inside the stream, and repeating it
+				// would show the user the same text twice.
+				attempt++
+				reason = providerretry.Reason(err)
+				m.noteRetry(err)
+				if !providerretry.Wait(ctx, modelRetryBackoff) {
+					return nil, TypeProviderFailure(err)
+				}
+				continue
+			}
+			return nil, TypeProviderFailure(err)
+		}
+		return observePublicStream(ctx, requireCompleteModelStream(stream), newPublicModelCall(ctx, m.state, "model_stream")), nil
 	}
-	opts = append(opts, aihelper.ThinkingModelOptions(m.thinkingDialect, thinkingEnabledForModelCall(m.state.input.EnableThinking, forcedTool))...)
-	stream, err := callModel.Stream(ctx, input, opts...)
-	if err != nil {
-		return nil, TypeProviderFailure(err)
-	}
-	return observePublicStream(ctx, requireCompleteModelStream(stream), newPublicModelCall(ctx, m.state, "model_stream")), nil
 }
 
 // Qwen thinking mode rejects a request whose tool_choice is forced. A forced
