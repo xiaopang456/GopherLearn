@@ -4,7 +4,7 @@ import {checkScenario} from './scenarios.mjs'
 
 // Dataset checks complement the per-scenario structural checks; human review
 // remains necessary for semantics, transitions, paraphrases and relative dates.
-export function validateDataset(scenarios) {
+export function validateDataset(scenarios, priorTexts = []) {
  const errors = [], names = new Map(), ids = new Set()
  const add = (s, message) => errors.push({id:s.id, message})
  for (const s of scenarios) {
@@ -13,6 +13,7 @@ export function validateDataset(scenarios) {
   if (typeof s.entity_name !== 'string' || !s.entity_name.trim()) { add(s,'missing entity_name'); continue }
   const name=s.entity_name.normalize('NFKC').trim().toLowerCase()
   if (names.has(name)) add(s,`duplicate name: ${names.get(name)}`); names.set(name,s.id)
+  if (priorTexts.some(text => text.normalize('NFKC').toLowerCase().includes(name))) add(s,'name found in earlier dataset')
   const evidence = new Set(Array.isArray(s.evidence_turns) ? s.evidence_turns : [])
   const seen = new Set()
   for (const [i,t] of (s.turns || []).entries()) {
@@ -44,5 +45,7 @@ if (process.argv[1] && import.meta.url === new URL(`file:///${process.argv[1].re
  const dir=process.argv[2]; if (!dir) throw Error('supply scenario directory')
  const files=fs.readdirSync(dir).filter(x=>x.endsWith('.json')).sort()
  const data=files.map(f=>JSON.parse(fs.readFileSync(path.join(dir,f),'utf8').replace(/^\uFEFF/,'')))
- const report=validateDataset(data); console.log(JSON.stringify(report,null,2)); if (report.errors.length) process.exitCode=1
+ const priorDir=process.argv[3]
+ const readFiles = dir => fs.readdirSync(dir,{withFileTypes:true}).flatMap(e => e.isDirectory()?readFiles(path.join(dir,e.name)):/\.(json|jsonl|txt)$/i.test(e.name)?[fs.readFileSync(path.join(dir,e.name),'utf8')]:[])
+ const report=validateDataset(data,priorDir?readFiles(priorDir):[]); if (!priorDir) report.limitations.push('earlier dataset was not supplied for name checks'); console.log(JSON.stringify(report,null,2)); if (report.errors.length) process.exitCode=1
 }
