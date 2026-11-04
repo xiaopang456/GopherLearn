@@ -19,3 +19,22 @@
 # the environment or the command line.
 
 requirepass REPLACE_WITH_A_RANDOM_SECRET_OF_AT_LEAST_32_BYTES
+
+# Persistence. Two mechanisms, both on:
+#
+#   appendonly yes   every change is appended to a file in the data directory, so at most one
+#                    second of writes can be lost (with `appendfsync everysec`). Without it, a
+#                    stop or a crash loses everything written since the last snapshot.
+#   save ...         the periodic snapshots stay on as well, so a full dataset can be restored
+#                    from a compact file instead of by replaying the append-only file.
+#
+# The data directory is the container's `/data` volume (the image's entrypoint passes it as
+# `--dir`), so both files live on the mounted volume and survive a container replacement.
+#
+# An operator whose file predates these lines keeps the old behaviour until they add them: the
+# preflight says so on start, and it does not refuse the start - see the note in
+# docs/INTEGRATED-DEPLOYMENT.md.
+
+appendonly yes
+appendfsync everysec
+save 3600 1 300 100 60 10000

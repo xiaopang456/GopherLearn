@@ -289,7 +289,10 @@ func TestNativeEntryCapturesDefaultAndDeploymentTools(t *testing.T) {
 				}
 			}
 			sort.Strings(names)
-			want := []string{"document_read", "knowledge_search"}
+			// The draft tool is on the table every turn now. Whether the model
+			// is told to use it is decided by the question, not by whether it
+			// is there.
+			want := []string{"document_read", "knowledge_search", "propose_memory"}
 			if !reflect.DeepEqual(names, want) {
 				t.Fatalf("tools %v want %v", names, want)
 			}

@@ -49,9 +49,9 @@ func (s *storage) SaveSummary(_ context.Context, su *model.SessionSummary, versi
 	s.summary = &x
 	return nil
 }
-func (s *storage) GenerateSummary(_ context.Context, prev string, msgs []model.Message) (string, error) {
+func (s *storage) GenerateSummary(_ context.Context, prev string, msgs []model.Message) (agent.SummaryGeneration, error) {
 	s.calls++
-	return fmt.Sprintf("summary-%d", msgs[len(msgs)-1].ID), nil
+	return agent.SummaryGeneration{Content: fmt.Sprintf("summary-%d", msgs[len(msgs)-1].ID)}, nil
 }
 func TestPreparationUsesProductPolicyAfterUserMessage(t *testing.T) {
 	s := &storage{}
