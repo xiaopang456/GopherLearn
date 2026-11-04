@@ -6,7 +6,7 @@ import { assertOutsideWorktree } from '../l2l3/lib/pathguard.mjs'
 import { checkScenario } from './scenarios.mjs'
 import { scoreAttempt } from './score.mjs'
 import { pairedReport, singleReport } from './statistics.mjs'
-import { categoryReport, judgeInput, truncationReport } from './truncation.mjs'
+import { attemptKey, categoryReport, judgeCategories, judgeInput, truncationReport } from './truncation.mjs'
 const hash = data => crypto.createHash('sha256').update(data).digest('hex')
 const lines = file => fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line))
 export function main(args) {
@@ -18,12 +18,12 @@ export function main(args) {
   const allowed = command === 'score' ? ['dataset', 'records', 'out', 'split']
     : command === 'report' ? ['run', 'out', 'left', 'right', 'split']
       : command === 'truncation-report' ? ['dataset', 'prepare', 'out', 'arm']
-        : command === 'judge-input' ? ['dataset', 'records', 'out', 'categories']
+        : command === 'judge-input' ? ['dataset', 'records', 'out', 'categories', 'outcomes']
           : command === 'category-report' ? ['run', 'dataset', 'out', 'left', 'right', 'judgments', 'split'] : []
   if (!allowed.length || Object.keys(opts).some(k => !allowed.includes(k))) throw new Error('unknown command or option')
   const split = opts.split ?? 'dev'
   if (!['dev', 'sealed'].includes(split)) throw new Error('invalid split')
-  for (const k of command === 'score' ? ['dataset', 'records', 'out'] : command === 'judge-input' ? ['dataset', 'records', 'out'] : command === 'truncation-report' ? ['dataset', 'prepare', 'out'] : command === 'category-report' ? ['dataset', 'out'] : ['run', 'out']) assertOutsideWorktree(k, opts[k])
+  for (const k of command === 'score' ? ['dataset', 'records', 'out'] : command === 'judge-input' ? ['dataset', 'records', 'out', 'outcomes'] : command === 'truncation-report' ? ['dataset', 'prepare', 'out'] : command === 'category-report' ? ['dataset', 'out'] : ['run', 'out']) assertOutsideWorktree(k, opts[k])
   if (fs.existsSync(opts.out)) throw new Error('output exists')
   if (command === 'truncation-report') {
     const scenarios = new Map(lines(opts.dataset).map(s => [s.id, s]))
@@ -38,9 +38,24 @@ export function main(args) {
     fs.writeFileSync(opts.out, JSON.stringify(truncationReport(scenarios, warmups, { arm: opts.arm ?? 'unknown' }), null, 2), { flag: 'wx' })
   } else if (command === 'judge-input') {
     const scenarios = new Map(lines(opts.dataset).map(s => [s.id, s]))
-    const selected = opts.categories ? opts.categories.split(',').map(c => c.trim()).filter(Boolean) : ['constraint']
-    const rows = judgeInput(scenarios, lines(opts.records), { selected })
+    const selected = opts.categories ? opts.categories.split(',').map(c => c.trim()).filter(Boolean) : judgeCategories()
+    let pending = null
+    if (opts.outcomes) {
+      pending = new Set()
+      for (const row of lines(opts.outcomes)) {
+        if (row?.verdict !== 'needs_judge') continue
+        pending.add(attemptKey(row.id, row.arm, row.condition, row.rep))
+      }
+    }
+    const rows = judgeInput(scenarios, lines(opts.records), { selected, pending })
     fs.writeFileSync(opts.out, rows.map(row => JSON.stringify(row)).join('\n') + (rows.length ? '\n' : ''), { flag: 'wx' })
+    const broken = rows.filter(row => row.error)
+    if (broken.length) {
+      console.error(`${broken.length} attempt(s) could not be prepared for judging:`)
+      for (const row of broken) console.error(`  ${row.item_id} ${row.arm ?? '-'} ${row.condition} rep ${row.rep ?? '-'}: ${row.error}`)
+      console.error('The rows carry no input. Nothing was guessed; resolve them before judging.')
+      process.exitCode = 1
+    }
   } else if (command === 'category-report') {
     const scenarios = new Map(lines(opts.dataset).map(s => [s.id, s]))
     const manifest = JSON.parse(fs.readFileSync(path.join(opts.run, 'manifest.json'), 'utf8'))

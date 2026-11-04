@@ -34,15 +34,41 @@ A summary that outgrew its compression budget is trimmed instead of refused. The
 
 `truncation-report` reads the warmup report of every prepared conversation and the frozen scenarios, and matches the messages the dropped items cited to the turns they belong to. A scenario's evidence turns are known by their position in the history, so a lost evidence turn is a turn whose message was cited by an item the budget dropped. The report says, per scenario, how many items and messages were dropped, which evidence turns were among them, and how many messages could not be matched to a turn at all.
 
-`judge-input` prepares the rows a judge has to read for the scenarios whose answers are not decided by the structure: the answer of one attempt, the constraint the scenario asks for, and the rubric. The tool does not judge them. Whether an answer obeyed a stated constraint is a matter of meaning, and a script that pretended to decide it would report a number it did not earn.
+`judge-input` prepares the rows a judge has to read for the scenarios whose answers are not decided by the structure. Each row is one check point of one attempt, and the model reads the `input` object and nothing else:
 
-`category-report` compares two arms per category. A judgement settles a pending outcome and never overwrites a decided one; without judgements the pending category stays pending, and pending is reported apart from failure.
+```json
+{
+  "item_id": "l4-constraint-01",
+  "arm": "baseline",
+  "condition": "main",
+  "rep": 0,
+  "check_point_index": 0,
+  "input": {
+    "question": "...",
+    "answer_key": { "mode": "needs_judge", "required": ["只用 Go 标准库"] },
+    "evidence": [{ "turn": 6, "user": "...", "assistant": "..." }],
+    "response": "...",
+    "check_point": "只用 Go 标准库"
+  }
+}
+```
+
+The identity of the attempt — the scenario, the arm, the condition, the repeat and the check point — sits beside the payload and is not part of what the model reads: the judge is asked about an answer, not about which run produced it. The evidence is the history the question is about, taken whole and uncut. The check points are the ones the scenario requires, one call each; a scenario that requires nothing and asks for a current answer gets one synthetic check point.
+
+The evidence follows one fixed rule. The fabrication scenarios are read at every turn that mentions the name their question quotes, matched as a plain substring of the raw text, and the whole turn is taken. The other categories are read at the turns the scenario names, with no context added. A scenario where the rule finds nothing is written as a row with an error and no input, and the command says so and exits non-zero: nothing is guessed and nothing is silently dropped.
+
+The tool does not judge. Whether an answer obeyed a stated constraint is a matter of meaning, and a script that pretended to decide it would report a number it did not earn.
+
+`category-report` compares two arms per category. A judgement settles one check point of an attempt, and an attempt is decided only when every one of its check points is judged: one "no" fails it, otherwise one "error" fails it as a run, otherwise one "unsure" leaves it undecided, and only "yes" everywhere passes it. A judgement never overwrites an outcome the structure decided, and without judgements the pending category stays pending and is reported apart from failure. Each category is compared over the conditions its own attempts run under, and the conditions are named in the row: the paired scenarios run under two conditions and the rest under one, so a selector naming a single condition would otherwise leave a whole category empty and read as "nothing to compare".
 
 ```powershell
 node eval/l4/cli.mjs truncation-report --dataset C:\evaluation\dev.jsonl --prepare C:\evaluation\prepare --out C:\evaluation\truncation.json --arm truncation
-node eval/l4/cli.mjs judge-input --dataset C:\evaluation\dev.jsonl --records C:\evaluation\records.jsonl --out C:\evaluation\judge-input.jsonl --categories constraint
+node eval/l4/cli.mjs judge-input --dataset C:\evaluation\dev.jsonl --records C:\evaluation\records.jsonl --out C:\evaluation\judge-input.jsonl
+node eval/l4/cli.mjs judge-input --dataset C:\evaluation\dev.jsonl --records C:\evaluation\records.jsonl --outcomes C:\evaluation\scored\outcomes.jsonl --out C:\evaluation\judge-pending.jsonl
 node eval/l4/cli.mjs category-report --run C:\evaluation\scored --dataset C:\evaluation\dev.jsonl --out C:\evaluation\categories.json --left baseline:main --right truncation:main --judgments C:\evaluation\judgments.jsonl
 ```
+
+`judge-input` covers the four categories the structure cannot decide — the constraint, the irrelevance, the fabrication and the stale categories — and `--categories` narrows that list. With `--outcomes` it prepares only the attempts that are still pending. `category-report` reads the judgements as records of `{item_id, arm, condition, rep, check_point_index, verdict, reason}`, where the verdict is `yes`, `no`, `unsure` or `error`; the identity and the reason are kept beside the verdict and are not part of what the model reads.
 
 The two arms of one comparison are two `arm` values in the same records file; the categories are kept apart because the question is not whether the answers got worse but whether the answers that depend on what the summary kept got worse.
 
