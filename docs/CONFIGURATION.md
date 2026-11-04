@@ -19,6 +19,7 @@
   - [`[mainConfig]`](#mainconfig)
   - [`[mysqlConfig]`](#mysqlconfig)
   - [`[redisConfig]`](#redisconfig)
+  - [Redis 持久化](#redis-持久化服务端的配置不是-toml-里的键)
   - [`[jwtConfig]`](#jwtconfig)
   - [`[knowledgeConfig]`](#knowledgeconfig)
   - [`[ragModelConfig]`](#ragmodelconfig)
@@ -120,6 +121,32 @@
 | `password` | | 空 | 启动**不检查**，但必须与实例的 `requirepass` **逐字一致**，否则表现为检索不可用。`deploy/redis-stack-preflight.sh` 要求服务端那个值至少 32 字节且不是占位串 |
 
 隔离靠**独立实例**，不靠库号：在共用实例上选一个非 0 库不是隔离，也不会被入口发现。
+
+#### Redis 持久化（服务端的配置，不是 TOML 里的键）
+
+`[redisConfig]` 只管**连到哪一台**，不管那一台**怎么存**。存的方式在 Redis 服务端这一侧，
+它决定「Redis 重启之后检索索引还在不在、还全不全」——MySQL 里记着「文档已就绪」，
+Redis 里如果少了几百个块，检索会悄悄变差，而且**不会有任何报错**。
+
+服务端这一侧要满足三件事：
+
+| 要做到 | 怎么做 |
+|---|---|
+| 写入不只活在内存里 | 服务端配置里开 `appendonly yes` + `appendfsync everysec`（最多丢一秒的写入）；RDB 快照也保留 |
+| 正常停止不丢数据 | 用 `deploy/redis-stack-start.sh` 起服务，别用镜像自带的入口 |
+| 数据目录在容器外 | 把数据目录挂到 `/data`（compose 文件里的 `gopherlearn-integrated-redis-data` 卷） |
+
+镜像自带的入口脚本把 `redis-server` 作为 **shell 的子进程**跑起来：停止信号先到 shell，
+shell 死掉，服务还活着，容器在宽限期结束后被强杀——服务来不及写最后那张快照，
+**正常停止就会丢掉上次快照之后的全部写入**。`deploy/redis-stack-start.sh` 做的是同样的事，
+但最后一步用 `exec` 交出进程，服务自己就是 1 号进程，收到停止信号后写完快照再退出。
+
+服务端配置的模板是 [`redis.integrated.conf.example`](../redis.integrated.conf.example)，
+里面已经带上了这三项持久化设置；复制成 `redis.integrated.conf.local` 时不用删。
+**老部署的配置里没有这三行**：preflight 会在启动时打印一行提示（分类信息，不含配置内容），
+但不会拒绝启动；照上面的说法更新配置并重启一次即可，AOF 会把重启前没落盘的内容补上。
+
+完整的启动与验证方式见 [整合栈部署参考 · 搜索索引](INTEGRATED-DEPLOYMENT.md#4-搜索索引redis-stack)。
 
 ### `[jwtConfig]`
 

@@ -116,6 +116,12 @@ services:
         bind:
           create_host_path: false
       - type: bind
+        source: ./deploy/redis-stack-start.sh
+        target: /redis-stack-start.sh
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
         source: ./deploy/redis-stack-healthcheck.sh
         target: /redis-stack-healthcheck.sh
         read_only: true
@@ -128,6 +134,13 @@ services:
       # The image's entrypoint writes its dump here; naming it keeps the mount and the server
       # agreement in one place.
       REDIS_DATA_DIR: /data
+      # What the preflight hands over to. The image's own /entrypoint.sh starts redis-server as
+      # a child of a shell, so the stop signal never reaches the server and the final snapshot
+      # is never written: a normal `docker stop` loses everything written since the last
+      # snapshot. The checked-in script does the same work and hands the server over with exec,
+      # so the server is the process Docker stops. The sealed entry evidence is
+      # tutorial/v2-j1-knowledge/frozen/image-entry-evidence/entrypoint.sh.txt:1,25-36.
+      REDIS_STACK_ENTRYPOINT: /redis-stack-start.sh
     healthcheck:
       # /bin/sh runs the checked-in script, so nothing about the credential is in argv. The
       # script reads the value out of /redis-stack.conf at run time and passes it to redis-cli

@@ -237,9 +237,20 @@ docker run -d --name gopherlearn-mysql -p 127.0.0.1:13360:3306 \
 # Redis Stack（宿主端口 16360）。口令与配置里的 redisConfig.password 必须一致，
 # 因此这里同样用配置文件声明口令：
 #   cp redis.integrated.conf.example redis.integrated.conf.local   # 然后替换其中的 requirepass
+#
+# 三处都要照做：
+#   * 数据目录挂出来（-v ...:/data + REDIS_DATA_DIR=/data）：不挂的话容器一删，索引就没了。
+#   * 用仓库里的 deploy/redis-stack-start.sh 起服务：镜像自带的入口会把 redis-server 放在
+#     shell 下面，停止信号到不了服务本身，正常停止时最后那张快照就不会写，容器一停，
+#     上次快照之后写入的内容全丢（详见「Redis 持久化」一节）。
+#   * 示例配置里已经开了 AOF（appendonly yes），写入不会只活在内存里。
 docker run -d --name gopherlearn-redis -p 127.0.0.1:16360:6379 \
   -v "$PWD/redis.integrated.conf.local:/redis-stack.conf:ro" \
-  redis/redis-stack-server:latest
+  -v "$PWD/deploy/redis-stack-start.sh:/redis-stack-start.sh:ro" \
+  -v gopherlearn-redis-data:/data \
+  -e REDIS_DATA_DIR=/data \
+  --entrypoint /bin/sh \
+  redis/redis-stack-server:latest /redis-stack-start.sh
 ```
 
 > **PowerShell 与 Bash 的差异**：续行符不同（PowerShell 用反引号 `` ` ``，Bash 用 `\`），
@@ -256,6 +267,25 @@ go -C v2 run ./cmd/indexaudit -config ../config.integrated.toml.local
 ```
 
 输出里每个缺块的文档都带一条重建命令：`POST /api/v1/knowledge/documents/<id>/reindex`。
+
+#### Redis 持久化
+
+检索索引在 Redis 里，MySQL 里只记着「这个文档已经就绪」。所以 Redis 重启后如果索引是旧的或
+不完整的，检索会**悄悄变差**：命中的块变少、找不到本该找到的文档，但不会有任何报错。
+
+因此这一份部署要满足两件事：
+
+| 要做到 | 怎么做 |
+|---|---|
+| 写入不只活在内存里 | 配置文件里开 `appendonly yes` + `appendfsync everysec`（示例配置已经开了）；RDB 快照也保留 |
+| 正常停止不丢数据 | 用 `deploy/redis-stack-start.sh` 起服务（见上面的命令），并把数据目录挂到 `/data` |
+
+镜像自带的入口脚本会把 `redis-server` 作为 **shell 的子进程**跑起来：停止信号先到 shell，
+shell 死掉，服务还活着，容器在宽限期结束后被强杀——**服务来不及写最后那张快照**。仓库里的
+`deploy/redis-stack-start.sh` 做的是同样的事，但最后一步用 `exec` 交出进程，服务自己就是
+1 号进程，收到停止信号后会写完快照再退出。
+
+改这两处之后需要**重启一次 Redis 容器**才生效；重启前写入的内容不会丢（AOF 会补上）。
 
 ### 步骤 2 · 复制并填写配置模板
 
