@@ -136,20 +136,16 @@ func run(args []string, out io.Writer) error {
 	var environment conversation.RealEnvironment
 	var seed *conversation.KnowledgeSeed
 	if real {
-		if *phase != "index" {
-			explicit := map[string]bool{}
-			flags.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
-			if !explicit["run-id"] || !explicit["arm"] || !explicit["qid"] || !explicit["condition"] {
-				return fmt.Errorf("scenario identity requires explicit run-id, arm, qid and condition")
-			}
-			if *knowledgeSeed != "" || *userID != 0 || *userName != "" {
-				return fmt.Errorf("scenario runs require an empty knowledge base and derived identity")
-			}
-			*userID, *userName, err = scenarioIdentity(*runID, *arm, *qid, *condition)
-			if err != nil {
-				return err
-			}
+		explicit := map[string]bool{}
+		flags.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+		id, name, err := deriveScenarioIdentity(explicit, identityInput{
+			phase: *phase, run: *runID, arm: *arm, qid: *qid, condition: *condition,
+			rep: *rep, knowledgeSeed: *knowledgeSeed, userID: *userID, userName: *userName,
+		})
+		if err != nil {
+			return err
 		}
+		*userID, *userName = id, name
 		environment, err = realEnvironment(flags, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel, userID, userName, sessionID)
 		if err != nil {
 			return err
