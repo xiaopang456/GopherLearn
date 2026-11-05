@@ -30,7 +30,43 @@ function r2(id = 'update-example') {
  return {id, split: splitForId(id), schema_version: 'l4.scenario.draft.v3', category: 'R2', entity_name: 'Torch', turns: history, question: 'Torch 计划现在每次多长？', original_turn: 30, superseded_turn: 46, superseded_value: '41分钟', distance_to_question: 40, evidence_turns: [30, 46], answer: {mode: 'fact', accepted: ['26分钟'], forbidden: ['41分钟'], aliases: [], derived: false}}
 }
 
+// r3 asks for the ORIGINAL value: 19 minutes set in turn 30, replaced by 62 in
+// turn 46.
+function r3(id = 'original-example') {
+ const history = turns(id, 85)
+ history[29] = {...history[29], user: '错题重做叫菱潭，每次 19分钟', assistant: '先按每次 19分钟'}
+ history[45] = {...history[45], user: '菱潭改成每次 62分钟，替代原来的安排', assistant: '更新为每次 62分钟'}
+ return {id, split: splitForId(id), schema_version: 'l4.scenario.draft.v3', category: 'R3', entity_name: '菱潭', turns: history, question: '菱潭计划我最初每次定了多长？', original_turn: 30, superseded_turn: 46, superseded_value: '19分钟', distance_to_question: 40, evidence_turns: [30, 46], answer: {mode: 'fact', accepted: ['19分钟'], forbidden: ['62分钟'], aliases: [], derived: false}}
+}
+
+test('the turn that changed the value has to state the new one, whichever key it sits in', () => {
+ const clean = r3()
+ assert.deepEqual(validateDataset([clean]).errors, [])
+ const moved = r3('moved-example')
+ moved.turns[45] = {...moved.turns[45], user: '菱潭的时间安排我后面再说', assistant: '好'}
+ assert.ok(validateDataset([moved]).errors.some(x => x.message.includes('current value absent from superseded turn 46')), JSON.stringify(validateDataset([moved]).errors))
+ const wrongWay = r2()
+ wrongWay.turns[45] = {...wrongWay.turns[45], user: '日程冲突，Torch 每次改成 25分钟', assistant: '先按 25分钟'}
+ assert.ok(validateDataset([wrongWay]).errors.some(x => x.message.includes('current value absent from superseded turn 46')), JSON.stringify(validateDataset([wrongWay]).errors))
+})
+
 const errorsOf = report => report.errors.map(error => error.message)
+
+test('a topic map has to describe the history it is attached to', () => {
+ const s = r1()
+ s.segments = [{topic: 'Go', start_turn: 1, end_turn: 30}, {topic: '学习方法', start_turn: 31, end_turn: 60}]
+ assert.deepEqual(validateDataset([s]).errors, [])
+ s.segments = [{topic: 'Go', start_turn: 1, end_turn: 30}, {topic: '学习方法', start_turn: 31, end_turn: 59}]
+ assert.ok(validateDataset([s]).errors.some(x => x.message.includes('segments reach turn 59')), JSON.stringify(validateDataset([s]).errors))
+ s.segments = [{topic: 'Go', start_turn: 1, end_turn: 20}, {topic: '学习方法', start_turn: 22, end_turn: 60}]
+ assert.ok(validateDataset([s]).errors.some(x => x.message.includes('starts at 22, expected 21')), JSON.stringify(validateDataset([s]).errors))
+ s.segments = [{topic: '', start_turn: 1, end_turn: 60}]
+ assert.ok(validateDataset([s]).errors.some(x => x.message.includes('has no topic')), JSON.stringify(validateDataset([s]).errors))
+ delete s.segments
+ const review = validateDataset([s]).review
+ assert.ok(review.some(item => item.kind === 'no topic map'), JSON.stringify(review))
+})
+
 const kindsAt = (report, turn) => report.review.filter(item => item.turn === turn).map(item => item.kind)
 
 test('a clean dataset reports neither errors nor value leaks', () => {

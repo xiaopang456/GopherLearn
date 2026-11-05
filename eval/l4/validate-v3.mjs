@@ -118,8 +118,16 @@ export function validateDataset(scenarios, priorTexts = []) {
   if (keyTurn >= 1 && keyTurn <= (s.turns?.length ?? 0)) {
    const text = at(keyTurn)
    if (s.answer?.mode === 'fact') {
-    const wanted = middle ? [s.answer?.accepted?.[0] ?? ''] : (s.answer?.accepted ?? [])
-    if (!wanted.some(value => fold(value) && text.includes(fold(value)))) add(s, `accepted value absent from key turn ${keyTurn}`)
+    if (middle) {
+     // The turn that changed the value has to state the value that replaced the
+     // old one. Which key holds that value depends on what the question asks
+     // for: the current value is accepted when the question wants today's answer
+     // and forbidden when the question wants the original one.
+     const current = (s.category === 'R2' ? s.answer?.accepted : s.answer?.forbidden) ?? []
+     if (!current.some(value => fold(value) && text.includes(fold(value)))) add(s, `current value absent from superseded turn ${keyTurn}`)
+    } else if (!(s.answer?.accepted ?? []).some(value => fold(value) && text.includes(fold(value)))) {
+     add(s, `accepted value absent from key turn ${keyTurn}`)
+    }
    } else {
     note(s, 'key turn needs a reader', `turn ${keyTurn} is where the constraint is stated; whether it reads as lasting is not decidable here`, keyTurn)
    }
@@ -131,6 +139,21 @@ export function validateDataset(scenarios, priorTexts = []) {
    }
   }
   const seen = new Set()
+  // A topic map is what lets a reader check the transitions in order, so it has
+  // to describe the history it is attached to instead of drifting behind it.
+  const historyLength = s.turns?.length ?? 0
+  if (Array.isArray(s.segments) && s.segments.length) {
+   let next = 1
+   for (const [index, segment] of s.segments.entries()) {
+    if (!segment || typeof segment.topic !== 'string' || !segment.topic.trim()) { add(s, `segment ${index + 1} has no topic`); continue }
+    if (segment.start_turn !== next) { add(s, `segment ${index + 1} starts at ${segment.start_turn}, expected ${next}`); continue }
+    if (!Number.isInteger(segment.end_turn) || segment.end_turn < segment.start_turn) { add(s, `segment ${index + 1} has an invalid range`); continue }
+    next = segment.end_turn + 1
+   }
+   if (next !== historyLength + 1) add(s, `segments reach turn ${next - 1}, but the history has ${historyLength} turns`)
+  } else if (historyLength) {
+   note(s, 'no topic map', 'the scenario carries no segment list, so a reader cannot walk the topic order in one pass')
+  }
   for (const [index, turn] of (s.turns ?? []).entries()) {
    const number = index + 1
    const raw = turnText(turn)
