@@ -257,7 +257,7 @@ func (s *Service) resolveThinking(requested *bool) bool {
 	return s.thinkingEnabled
 }
 
-// resolveSessionPolicy turns what the request said into the one policy this run
+// ResolveSessionPolicy turns what the request said into the one policy this run
 // will use, given what the session is allowed to reach.
 //
 // A value that is not one of the three known policies is refused instead of being
@@ -265,12 +265,15 @@ func (s *Service) resolveThinking(requested *bool) bool {
 // library", which is a silent permission grab in the one direction that must not
 // be silent.
 //
+// The HTTP boundary calls it too, so an over-reach is answered 400 before a stream
+// starts rather than arriving as a failure frame inside one.
+//
 // A legacy chat session has no library to turn on: an absent value means the
 // conversation shape, and any value that asks for documents is refused rather than
 // quietly downgraded. Refusing it as invalid input is also what keeps the answer
 // honest - a client that believes it asked for the library and got a plain answer
 // would have no way to learn that this session was never granted one.
-func resolveSessionPolicy(mode model.SessionMode, requested rag.KnowledgePolicy) (rag.KnowledgePolicy, error) {
+func ResolveSessionPolicy(mode model.SessionMode, requested rag.KnowledgePolicy) (rag.KnowledgePolicy, error) {
 	resolved, err := rag.ResolveKnowledgePolicy(requested)
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", ErrInvalidRunRequest, err)
@@ -304,7 +307,7 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 	// here changes a session's mode - widening what a stored conversation may read
 	// is an authorisation the user has to give, not something a request earns by
 	// asking.
-	policy, err := resolveSessionPolicy(owned.Mode, request.KnowledgePolicy)
+	policy, err := ResolveSessionPolicy(owned.Mode, request.KnowledgePolicy)
 	if err != nil {
 		return RunResult{}, err
 	}

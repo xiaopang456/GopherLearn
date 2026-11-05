@@ -378,29 +378,25 @@ func (s *httpSurface) messages(w http.ResponseWriter, r *http.Request, uid int64
 			return
 		}
 		switch owned.Mode {
-		case model.SessionModeAgent:
-			s.agentMessage(w, r, uid, name, sid)
-			return
-		case model.SessionModeNormal:
+		case model.SessionModeAgent, model.SessionModeNormal:
 		default:
 			daoError(w, conversation.ErrInvalidArgument)
 			return
 		}
-		input, ok := inputTurn(w, r)
-		if !ok {
-			return
-		}
-		pair, err := s.chat.Send(r.Context(), strconv.FormatInt(uid, 10), sid, input.Content)
-		if err != nil {
-			conversation.WriteError(w, err, "message")
-			return
-		}
-		conversation.WriteEnvelope(w, 200, map[string]any{"user_message": messageView(pair.User), "assistant_message": messageView(pair.Assistant)})
+		// One turn path for both session kinds. Two engines here would break the
+		// promise the per-turn switch rests on: a conversation has one history and
+		// one summarizer, and a session whose turns are split between two writers
+		// gets that single summary row rewritten under two different budgets, which
+		// its compare-and-set then turns into losing writes. A legacy chat session
+		// cannot reach the library; the same policy the stream uses decides that
+		// here, and it answers before any turn is created.
+		s.agentMessage(w, r, uid, name, sid, owned.Mode)
+		return
 	default:
 		apiError(w, 405, "invalid_request", "method is not allowed")
 	}
 }
-func (s *httpSurface) agentMessage(w http.ResponseWriter, r *http.Request, uid int64, name, sid string) {
+func (s *httpSurface) agentMessage(w http.ResponseWriter, r *http.Request, uid int64, name, sid string, mode model.SessionMode) {
 	var input struct {
 		Content         string              `json:"content"`
 		RequestID       string              `json:"requestId"`
@@ -411,9 +407,25 @@ func (s *httpSurface) agentMessage(w http.ResponseWriter, r *http.Request, uid i
 		// turn's choice.
 		EnableThinking *bool                               `json:"enableThinking"`
 		TopicConsent   agentService.TopicConsentSubmission `json:"topicConsent"`
+		// The retired ordinary-chat fields, kept visible on purpose: a client that
+		// still sends them must be refused with the same conditions this endpoint
+		// has always used, not answered as if the request had not said anything.
+		Knowledge struct {
+			Enabled       bool     `json:"enabled"`
+			CollectionIDs []string `json:"collection_ids"`
+		} `json:"knowledge"`
+		StreamSteps bool `json:"stream_steps"`
 	}
 	if err := conversation.DecodeRequest(w, r, &input); err != nil {
 		apiError(w, 400, "invalid_request", "request body is invalid")
+		return
+	}
+	if message := retiredOrdinaryTurnRefusal(mode, input.StreamSteps, input.Knowledge.Enabled, input.Knowledge.CollectionIDs); message != "" {
+		apiError(w, 400, "invalid_request", message)
+		return
+	}
+	if _, err := agentService.ResolveSessionPolicy(mode, input.KnowledgePolicy); err != nil {
+		apiError(w, 400, "invalid_request", "request is invalid")
 		return
 	}
 	result, err := s.agent.Agent.Run(r.Context(), agentService.RunRequest{
@@ -421,6 +433,22 @@ func (s *httpSurface) agentMessage(w http.ResponseWriter, r *http.Request, uid i
 		RequestID: input.RequestID, KnowledgePolicy: input.KnowledgePolicy, EnableThinking: input.EnableThinking, TopicConsent: input.TopicConsent,
 	}, agentService.DiscardEvents)
 	if err == nil {
+		if mode != model.SessionModeAgent {
+			// A conversation turn keeps the envelope this endpoint has always
+			// returned - the learner's message and the answer - because moving the
+			// turn onto the shared history is not a reason to change what a client
+			// reads. Both rows are read by this run's id, not by position: a second
+			// turn can already have landed, and a replayed request id belongs to an
+			// older pair, so "the last two" would answer one turn's identity with
+			// another turn's text.
+			pair, pairErr := s.runPair(r.Context(), uid, sid, result.RunID)
+			if pairErr != nil {
+				conversation.WriteError(w, pairErr, "message")
+				return
+			}
+			conversation.WriteEnvelope(w, 200, pair)
+			return
+		}
 		conversation.WriteEnvelope(w, 200, result)
 		return
 	}
@@ -445,6 +473,41 @@ func (s *httpSurface) agentMessage(w http.ResponseWriter, r *http.Request, uid i
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{"data": result, "error": map[string]any{"code": key, "native_code": native, "message": native.Msg()}})
+}
+
+// retiredOrdinaryTurnRefusal keeps the exact conditions this endpoint has always
+// refused on a conversation turn: a request cannot ask a session for collections it
+// was never granted, and step frames on a turn that has no capabilities would
+// promise steps that cannot exist. Inert values (`stream_steps: false`,
+// `knowledge: {enabled: false}`, no collection ids) stay allowed, because clients
+// send them today - refusing those would be a new rule pretending to be an old one.
+func retiredOrdinaryTurnRefusal(mode model.SessionMode, streamSteps bool, knowledgeEnabled bool, collectionIDs []string) string {
+	if mode == model.SessionModeAgent {
+		return ""
+	}
+	if streamSteps || knowledgeEnabled || len(collectionIDs) > 0 {
+		return "request is invalid"
+	}
+	return ""
+}
+
+// runPair reads the two rows one turn wrote through the serializer the history read
+// already uses, so what a client sees immediately and what it sees after a reload
+// cannot drift into two shapes.
+func (s *httpSurface) runPair(ctx context.Context, uid int64, sid, runID string) (map[string]any, error) {
+	repository := messageDAO.NewRepository(s.db)
+	user, err := repository.ReadOwnedRunUser(ctx, uid, sid, runID)
+	if err != nil {
+		return nil, err
+	}
+	assistant, err := repository.ReadOwnedRunAssistant(ctx, uid, sid, runID)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"user_message":      messageView(domainMessage(*user)),
+		"assistant_message": messageView(domainMessage(*assistant)),
+	}, nil
 }
 
 func (s *httpSurface) history(ctx context.Context, uid int64, sid string) ([]any, error) {
@@ -504,46 +567,16 @@ func (s *httpSurface) stream(w http.ResponseWriter, r *http.Request, uid int64, 
 		daoError(w, err)
 		return
 	}
-	if owned.Mode == model.SessionModeAgent {
-		s.agentStream(w, r, uid, name)
-		return
-	}
-	if owned.Mode != model.SessionModeNormal {
+	switch owned.Mode {
+	case model.SessionModeAgent, model.SessionModeNormal:
+	default:
 		daoError(w, conversation.ErrInvalidArgument)
 		return
 	}
-	input, ok := inputTurn(w, r)
-	if !ok {
-		return
-	}
-	sid := sessionID(r)
-	user := strconv.FormatInt(uid, 10)
-	if err := s.chat.ValidateStream(r.Context(), user, sid, input.Content); err != nil {
-		conversation.WriteError(w, err, "stream")
-		return
-	}
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		apiError(w, 500, "internal_error", "streaming is unavailable")
-		return
-	}
-	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	terminal := false
-	emit := func(event conversation.Event) error {
-		if err := conversation.WriteEvent(w, event); err != nil {
-			return err
-		}
-		flusher.Flush()
-		if event.Name == "message.completed" || event.Name == "message.failed" {
-			terminal = true
-		}
-		return nil
-	}
-	err = s.chat.Stream(r.Context(), user, sid, input.Content, emit)
-	if err != nil && !terminal && r.Context().Err() == nil {
-		_ = emit(conversation.Event{Name: "message.failed", Code: "internal_error", Message: "回答生成失败。"})
-	}
+	// The same single path as the non-streaming turn, for the same reason: two
+	// writers on one conversation would leave its one summary row being rewritten
+	// under two different budgets, and the compare-and-set would make one of them
+	// lose. The frame shape of a conversation turn therefore becomes the shared
+	// one, which is a listed change, not a silent one.
+	s.agentStream(w, r, uid, name, owned.Mode)
 }
