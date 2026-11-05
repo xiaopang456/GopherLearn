@@ -167,7 +167,7 @@ func sqliteDatabase(t *testing.T) *gorm.DB {
 	}
 	sqlDB, _ := db.DB()
 	sqlDB.SetMaxOpenConns(1)
-	err = db.AutoMigrate(&model.User{}, &model.Session{}, &model.Message{}, &model.AgentRun{}, &model.AgentStep{}, &model.SessionSummary{}, &model.KnowledgeDocument{}, &model.LearningSession{}, &model.LearningQuestion{}, &model.LearningAttempt{}, &model.TopicProgress{}, &model.LongTermMemory{}, &model.MemoryDraft{}, &model.MemoryRevision{}, &model.MemoryCandidate{}, &model.MemoryExtractionJob{}, &model.MemoryDreamRun{}, &model.EpisodeMemory{}, &model.EpisodeProjectionJob{}, &model.EpisodeAssertionState{}, &model.EpisodeAssertionRelation{}, &model.EpisodeRelationProposal{})
+	err = db.AutoMigrate(&model.User{}, &model.Session{}, &model.Message{}, &model.AgentRun{}, &model.AgentStep{}, &model.SessionSummary{}, &model.SessionWhiteboard{}, &model.SessionSummarySegment{}, &model.SessionSummarySegmentJob{}, &model.KnowledgeDocument{}, &model.LearningSession{}, &model.LearningQuestion{}, &model.LearningAttempt{}, &model.TopicProgress{}, &model.LongTermMemory{}, &model.MemoryDraft{}, &model.MemoryRevision{}, &model.MemoryCandidate{}, &model.MemoryExtractionJob{}, &model.MemoryDreamRun{}, &model.EpisodeMemory{}, &model.EpisodeProjectionJob{}, &model.EpisodeAssertionState{}, &model.EpisodeAssertionRelation{}, &model.EpisodeRelationProposal{})
 	if err != nil {
 		sqlDB.Close()
 		t.Fatal(err)

@@ -84,7 +84,7 @@ func TestHTTPSessionDeleteUsesOriginalCascadeAndDerivedIndex(t *testing.T) {
 					t.Fatalf("delete %d %v", st, e)
 				}
 			}
-			for _, table := range []string{"sessions", "messages", "agent_runs", "agent_steps", "session_summaries", "episode_memories", "episode_projection_jobs", "memory_drafts", "memory_extraction_jobs", "memory_candidates", "memory_dream_runs"} {
+			for _, table := range []string{"sessions", "messages", "agent_runs", "agent_steps", "session_summaries", "session_whiteboards", "session_summary_segments", "session_summary_segment_jobs", "episode_memories", "episode_projection_jobs", "memory_drafts", "memory_extraction_jobs", "memory_candidates", "memory_dream_runs"} {
 				var count int64
 				if err := db.Table(table).Count(&count).Error; err != nil || count != 0 {
 					t.Fatalf("original cascade left %s count=%d err=%v", table, count, err)

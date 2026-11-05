@@ -15,7 +15,22 @@ import (
 type MemorySnapshot struct {
 	Counters map[string]uint64
 	Totals   map[string]int64
+	// Mode is the layered summary's mode at the time of the snapshot. The
+	// counters carry it too, so a snapshot can be read without knowing which
+	// mode produced it.
+	Mode string
 }
+
+// The layered summary's modes.
+//
+// Off writes nothing. Shadow writes the segments and the board but leaves the
+// context to the old path, so the write side can be watched without changing
+// what the model sees. On reads the new state back.
+const (
+	MemoryModeOff    = "off"
+	MemoryModeShadow = "shadow"
+	MemoryModeOn     = "on"
+)
 
 // MemoryRecorder keeps low-cardinality counters and emits the same values as
 // structured log lines. The snapshot is useful to focused diagnostics and
@@ -25,6 +40,7 @@ type MemoryRecorder struct {
 	mu       sync.RWMutex
 	counters map[string]uint64
 	totals   map[string]int64
+	mode     string
 	logf     func(string, ...any)
 }
 
@@ -32,10 +48,41 @@ func NewMemoryRecorder(logf func(string, ...any)) *MemoryRecorder {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	return &MemoryRecorder{counters: map[string]uint64{}, totals: map[string]int64{}, logf: logf}
+	return &MemoryRecorder{counters: map[string]uint64{}, totals: map[string]int64{}, mode: MemoryModeOff, logf: logf}
 }
 
 var Memory = NewMemoryRecorder(log.Printf)
+
+// SetMode records which mode the layered summary is running in.
+//
+// The mode is a property of the deployment rather than of a request, so it
+// lives on the recorder instead of being passed to every counter. The
+// counters carry it as a label because a shadow run and an applied run answer
+// different questions: a shadow run is asked how well the write side works,
+// an applied run is asked how well the whole thing works.
+func (r *MemoryRecorder) SetMode(mode string) {
+	mode = boundedLabel(mode, MemoryModeOff, MemoryModeShadow, MemoryModeOn)
+	r.mu.Lock()
+	r.mode = mode
+	r.mu.Unlock()
+}
+
+// Mode reports the mode the recorder is counting in.
+func (r *MemoryRecorder) Mode() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.mode
+}
+
+// modeLabel returns the mode as a metric label.
+func (r *MemoryRecorder) modeLabel() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.mode == "" {
+		return MemoryModeOff
+	}
+	return r.mode
+}
 
 func (r *MemoryRecorder) Projection(status, errorCode string, duration, lag time.Duration) {
 	status = boundedLabel(status, "completed", "failed")
@@ -147,10 +194,104 @@ func (r *MemoryRecorder) KnowledgeFallbackDuration(duration time.Duration) {
 	r.logf("memory_metric name=knowledge_fallback duration_ms=%d", duration.Milliseconds())
 }
 
+// Whiteboard records what one batch did to a session board.
+//
+// Every count here is an intervention the server had to make, so a rising
+// number names the part of the generator that is drifting. Nothing in this
+// call carries board text: the label set is fixed and the rest are counts.
+func (r *MemoryRecorder) Whiteboard(applied, changed, fabricated, suspiciousDelete, missedUpdate, truncated, dropped, droppedDone int) {
+	mode := r.modeLabel()
+	r.addTotal("whiteboard_applied_total", int64(applied))
+	r.addTotal("whiteboard_changed_total", int64(changed))
+	r.addTotal("whiteboard_fabricated_total", int64(fabricated))
+	r.addTotal("whiteboard_suspicious_delete_total", int64(suspiciousDelete))
+	r.addTotal("whiteboard_missed_update_total", int64(missedUpdate))
+	r.addTotal("whiteboard_truncated_total", int64(truncated))
+	r.addTotal("whiteboard_dropped_total", int64(dropped))
+	r.addTotal("whiteboard_dropped_done_total", int64(droppedDone))
+	if fabricated > 0 {
+		r.add("whiteboard_fabricated_batches_total{mode="+mode+"}", 1)
+	}
+	if suspiciousDelete > 0 {
+		r.add("whiteboard_suspicious_delete_batches_total{mode="+mode+"}", 1)
+	}
+	if missedUpdate > 0 {
+		r.add("whiteboard_missed_update_batches_total{mode="+mode+"}", 1)
+	}
+	r.logf("memory_metric name=whiteboard mode=%s applied=%d changed=%d fabricated=%d suspicious_delete=%d missed_update=%d truncated=%d dropped=%d dropped_done=%d",
+		mode, applied, changed, fabricated, suspiciousDelete, missedUpdate, truncated, dropped, droppedDone)
+}
+
+// SummarySegment records what one segment generation produced or why it did
+// not produce one.
+//
+// The outcome label is bounded, so a new failure reason has to be named here
+// before it can be reported; an unnamed one is counted as "other" rather than
+// stored as free text. The counts alongside it are what the generator had to
+// drop on the way to a storable segment.
+func (r *MemoryRecorder) SummarySegment(outcome, reason string, points, pointsDropped int) {
+	mode := r.modeLabel()
+	outcome = boundedLabel(outcome, "generated", "failed")
+	reason = boundedLabel(reason, "none", "invalid_output", "unknown_schema_version", "point_without_source",
+		"input_too_large", "output_too_large", "model_error", "empty_output")
+	r.add("summary_segment_total{mode="+mode+",outcome="+outcome+",reason="+reason+"}", 1)
+	if outcome == "failed" {
+		r.add("summary_segment_failed_total{mode="+mode+",reason="+reason+"}", 1)
+	}
+	r.addTotal("summary_segment_points_total", int64(points))
+	if pointsDropped > 0 {
+		r.addTotal("summary_segment_points_dropped_total", int64(pointsDropped))
+	}
+	r.logf("memory_metric name=summary_segment mode=%s outcome=%s reason=%s points=%d points_dropped=%d",
+		mode, outcome, reason, points, pointsDropped)
+}
+
+// SummarySegmentJob records what one background segment attempt did.
+//
+// The status label is bounded, and the error code is a fixed set, so neither
+// becomes free text in a metric name. The duration is the cost of the
+// attempt, which is the number that says whether the background is keeping up.
+func (r *MemoryRecorder) SummarySegmentJob(status, errorCode string, duration time.Duration) {
+	mode := r.modeLabel()
+	status = boundedLabel(status, "completed", "failed", "empty")
+	errorCode = boundedLabel(errorCode, "none", "task_timeout", "task_cancelled", "whiteboard_conflict",
+		"source_not_found", "invalid_model_output", "model_error", "generation_failed")
+	if status == "completed" || status == "empty" {
+		// An attempt that wrote a segment and an attempt that had no turns to
+		// write both ended without a failure, so there is no error to name.
+		errorCode = "none"
+	}
+	r.add("summary_segment_job_total{mode="+mode+",status="+status+",error_code="+errorCode+"}", 1)
+	r.addTotal("summary_segment_job_duration_ms", duration.Milliseconds())
+	r.logf("memory_metric name=summary_segment_job mode=%s status=%s error_code=%s duration_ms=%d",
+		mode, status, errorCode, duration.Milliseconds())
+}
+
+// SummarySegmentFallback records that the raw conversation was too big to
+// send and a segment was generated before the answer went out.
+//
+// The reason says which of the three happened: it was not needed, it ran, or
+// it failed and the raw conversation was truncated instead. The count is what
+// the raw conversation was worth, so a fallback that keeps happening can be
+// traced to the conversation that caused it.
+func (r *MemoryRecorder) SummarySegmentFallback(reason string, unsummarizedTokens int) {
+	mode := r.modeLabel()
+	reason = boundedLabel(reason, "not_needed", "generated_before_answer", "generation_failed",
+		"generator_unavailable", "background_queued", "background_running")
+	r.add("summary_segment_fallback_total{mode="+mode+",reason="+reason+"}", 1)
+	r.addTotal("summary_segment_fallback_tokens", int64(max(unsummarizedTokens, 0)))
+	r.logf("memory_metric name=summary_segment_fallback mode=%s reason=%s unsummarized_tokens=%d", mode, reason, unsummarizedTokens)
+}
+
 func (r *MemoryRecorder) Snapshot() MemorySnapshot {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	result := MemorySnapshot{Counters: make(map[string]uint64, len(r.counters)), Totals: make(map[string]int64, len(r.totals))}
+	if r.mode == "" {
+		result.Mode = MemoryModeOff
+	} else {
+		result.Mode = r.mode
+	}
 	for key, value := range r.counters {
 		result.Counters[key] = value
 	}

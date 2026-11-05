@@ -108,6 +108,7 @@ type Service struct {
 	episodes       EpisodeEventPublisher
 	shadow         EpisodeShadowObserver
 	episodeHistory EpisodeSessionHistoryReader
+	summarySegment SummarySegmentEnqueuer
 
 	// thinkingEnabled is the deployment's choice about the chat model's
 	// thinking. It is the value a request gets when the request says nothing
@@ -203,7 +204,8 @@ func NewService(sessions SessionRepository, runs RunRepository, messages Message
 	service := &Service{
 		sessions: sessions, runs: runs, messages: messages, runner: runner,
 		memory: DiscardMemoryEvents, episodes: DiscardEpisodeEvents, shadow: DiscardEpisodeShadow,
-		leaseDuration: defaultRunLeaseDuration, leaseHeartbeat: defaultRunHeartbeatInterval,
+		summarySegment: DiscardSummarySegmentEnqueues,
+		leaseDuration:  defaultRunLeaseDuration, leaseHeartbeat: defaultRunHeartbeatInterval,
 	}
 	for _, option := range options {
 		if option != nil {
@@ -239,6 +241,18 @@ func (s *Service) SetEpisodeShadowObserver(observer EpisodeShadowObserver) {
 // Shadow observer so production runs never execute the same recall twice.
 func (s *Service) SetEpisodeSessionHistoryReader(reader EpisodeSessionHistoryReader) {
 	s.episodeHistory = reader
+}
+
+// SetSummarySegmentEnqueuer enables the layered summary's enqueue.
+//
+// The enqueue runs after an answer is stored, so a turn never waits for it and
+// no model call is ever made in front of the learner.
+func (s *Service) SetSummarySegmentEnqueuer(enqueuer SummarySegmentEnqueuer) {
+	if enqueuer == nil {
+		s.summarySegment = DiscardSummarySegmentEnqueues
+		return
+	}
+	s.summarySegment = enqueuer
 }
 
 func NewDatabaseService(runner *Runner, options ...ServiceOption) (*Service, error) {
@@ -403,6 +417,14 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 		log.Printf("episode projection enqueue failed: session=%s error_type=%T", run.SessionID, err)
 	}
 	cancelEpisode()
+	// The layered summary's enqueue. It runs after the answer was stored, so
+	// the turn never waits for it, and it only decides whether a background
+	// job is wanted: no model call happens here.
+	summaryCtx, cancelSummary := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	if _, err := s.summarySegment.Consider(summaryCtx, run.UserID, run.SessionID, persistedAssistant.ID); err != nil {
+		log.Printf("summary segment enqueue failed: session=%s error_type=%T", run.SessionID, err)
+	}
+	cancelSummary()
 	publishCtx, cancelPublish := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	_ = s.memory.PublishAgentRun(publishCtx, run.UserID, run.SessionID, run.ID, request.Question, runnerResult.ToolCalls, runnerResult.MemoryDraft != nil)
 	cancelPublish()
