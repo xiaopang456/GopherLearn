@@ -1,6 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import {validateDataset} from '../validate-v3.mjs'
+import path from 'node:path'
+import {fileURLToPath} from 'node:url'
+import {isCliEntry, validateDataset} from '../validate-v3.mjs'
 import {splitForId} from '../scenarios.mjs'
 
 // label is digit-free, so a fixture never invents a number the validator would
@@ -216,6 +218,48 @@ test('a contradictory weekday is still detected', () => {
  const s = r1()
  s.turns[0].user = '2026-01-05 星期二'
  assert.ok(validateDataset([s]).errors.some(x => x.message.includes('weekday')))
+})
+
+test('the command entry point recognises the path it was invoked with', () => {
+ // The old comparison built "file:///" + argv[1]. An absolute POSIX path already
+ // starts with a slash, so it became "file:////home/...", never matched, and on
+ // Linux the command printed nothing and exited 0 without validating anything.
+ // Asserting against this module's own URL covers both path shapes on any system.
+ const self = new URL('../validate-v3.mjs', import.meta.url)
+ const asPath = fileURLToPath(self)
+ assert.equal(isCliEntry(asPath, self.href), true)
+ assert.equal(isCliEntry(path.relative(process.cwd(), asPath), self.href), true)
+ assert.equal(isCliEntry('/tmp/somewhere-else.mjs', self.href), false)
+ assert.equal(isCliEntry('', self.href), false)
+ assert.equal(isCliEntry(undefined, self.href), false)
+})
+
+test('a quantity written in ASCII units is still the answer value', () => {
+ for (const [text, want] of [
+  ['我一次读 1560s 的材料', 'in another unit'],
+  ['我一次读 1560 seconds 的材料', 'in another unit'],
+  ['我一次读 1560 秒的材料', 'in another unit'],
+  ['我一次读 26 minutes 的材料', 'in another unit'],
+  ['我一次读 26min 的材料', 'in another unit'],
+  ['我一次读 0.43333333333333335小时的材料', 'in another unit'],
+  ['我一次读 26 的材料', 'key number occurs outside evidence'],
+  ['我一次读 26 天的材料', 'key number occurs outside evidence'],
+ ]) {
+  const s = r2()
+  s.turns[60] = {...s.turns[60], user: text, assistant: '好的'}
+  const report = validateDataset([s])
+  assert.ok(report.errors.some(x => x.message.includes(want)), `${text} -> ${JSON.stringify(report.errors)}`)
+ }
+})
+
+test('a number the unit table does not know is listed instead of dropped', () => {
+ const s = r2()
+ s.turns[60] = {...s.turns[60], user: '我一次读 90 furlongs 的材料', assistant: '好的'}
+ const report = validateDataset([s])
+ assert.ok(kindsAt(report, 61).includes('number glued to letters'), JSON.stringify(report.review))
+ s.turns[61] = {...s.turns[61], user: '总计 1,560 分钟', assistant: '记下了'}
+ const grouped = validateDataset([s])
+ assert.ok(grouped.review.some(x => x.kind === 'grouped digits'), JSON.stringify(grouped.review))
 })
 
 test('duplicate turns inside one history are errors', () => {

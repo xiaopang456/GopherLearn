@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import {pathToFileURL} from 'node:url'
 import {checkScenario} from './scenarios.mjs'
 
 // Dataset checks complement the per-scenario structural checks; human review
@@ -7,11 +8,27 @@ import {checkScenario} from './scenarios.mjs'
 // Every check below either fails the dataset or lands on the review list with
 // the turn it came from; nothing is quietly dropped.
 
-const SECONDS_PER = {分钟: 60n, 分鐘: 60n, 分: 60n, min: 60n, mins: 60n, minute: 60n, minutes: 60n, 小时: 3600n, 小時: 3600n, 时: 3600n, 時: 3600n, h: 3600n, hr: 3600n, hrs: 3600n, hour: 3600n, hours: 3600n, 秒钟: 1n, 秒鐘: 1n, 秒: 1n, sec: 1n, secs: 1n, second: 1n, seconds: 1n, s: 1n}
-const QUANTITY = /^(\d+(?:\.\d+)?)(分钟|分鐘|分|mins?|minutes?|小时|小時|时|時|h|hrs?|hours?|秒钟|秒鐘|秒|secs?|seconds?)$/
+// One unit table drives both the extraction and the conversion. Two tables used
+// to live here and they disagreed: the scan did not know "minutes", the converter
+// did not know a bare "s", and the scan's unit list was ordered so "seconds" was
+// eaten as "s". All three readings of "26分钟" then looked unitless and were
+// reported as nothing at all.
+const TIME_UNITS = new Map([
+ ['分钟', 60n], ['分鐘', 60n], ['分', 60n], ['minutes', 60n], ['minute', 60n], ['mins', 60n], ['min', 60n],
+ ['小时', 3600n], ['小時', 3600n], ['时', 3600n], ['時', 3600n], ['hours', 3600n], ['hour', 3600n], ['hrs', 3600n], ['hr', 3600n], ['h', 3600n],
+ ['秒钟', 1n], ['秒鐘', 1n], ['秒', 1n], ['seconds', 1n], ['second', 1n], ['secs', 1n], ['sec', 1n], ['s', 1n],
+])
+const COUNT_UNITS = ['天', '周', '轮', '次', '题', '页', '条', '个', '段']
+const escapePattern = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+// Longest unit first, so "seconds" is never read as "s" with "econds" left over.
+const UNIT_ALTERNATION = [...new Set([...TIME_UNITS.keys(), ...COUNT_UNITS])].sort((a, b) => b.length - a.length).map(escapePattern).join('|')
+const QUANTITY = new RegExp(`^(\\d+(?:\\.\\d+)?)(${UNIT_ALTERNATION})$`)
 // A bare number is compared against the answer's own number, so the unit the
-// filler used never hides a near miss.
-const NUMBER = /(\d+(?:[.,]\d+)?)\s*(分钟|分鐘|小时|小時|秒钟|秒鐘|天|周|轮|次|题|页|条|个|段|分钟|ms|s|h|分|秒)?/g
+// filler used never hides a near miss. Any letters left after a known unit are
+// captured too, because a number glued to an unknown word must not be read as a
+// clean number.
+const NUMBER = new RegExp(`(\\d+(?:\\.\\d+)?)(${UNIT_ALTERNATION})?([a-z]*)`, 'gi')
+const GROUPED_DIGITS = /\d,\d{3}/
 const NEAR_TOLERANCE = 3
 const DERIVED_MULTIPLIERS = [2n, 3n, 4n]
 const GRAM_WIDTH = 12
@@ -25,24 +42,27 @@ const WEEKDAYS = {'日': 0, '天': 0, '一': 1, '二': 2, '三': 3, '四': 4, '�
 const fold = text => String(text ?? '').normalize('NFKC').replace(/\s+/gu, '').toLowerCase()
 const compact = text => String(text ?? '').normalize('NFKC').replace(/\s+/gu, '')
 
-// quantitySeconds turns "29分钟" into 1740 so a different spelling of the same
-// length is caught; a value with no unit returns null and is only compared as a
-// bare number.
+// quantitySeconds turns "29分钟" and "29min" into the same number, so a different
+// spelling of the same length is caught. A counting unit (天, 次) or no unit
+// returns null and leaves the value to be compared as a bare number.
 function quantitySeconds(value) {
  const match = QUANTITY.exec(fold(value))
  if (!match) return null
- const [whole, digits, unit] = match
+ const [, digits, unit] = match
+ const factor = TIME_UNITS.get(unit)
+ if (factor === undefined) return null
  const [integer, fraction = ''] = digits.split('.')
- return (BigInt(integer + fraction) * SECONDS_PER[unit]) / (10n ** BigInt(fraction.length))
+ return (BigInt(integer + fraction) * factor) / (10n ** BigInt(fraction.length))
 }
 
 function numbers(text) {
  const found = []
  for (const match of compact(text).matchAll(NUMBER)) {
-  const digits = match[1].replace(',', '.')
+  const digits = match[1]
   const value = Number(digits)
-  if (!Number.isFinite(value) || digits === '') continue
-  found.push({value, unit: match[2] ?? '', seconds: quantitySeconds(match[1] + (match[2] ?? '')), at: match.index})
+  if (!Number.isFinite(value)) continue
+  const unit = match[2] ?? ''
+  found.push({value, unit, tail: match[3] ?? '', seconds: quantitySeconds(digits + unit), at: match.index})
  }
  return found
 }
@@ -174,6 +194,11 @@ export function validateDataset(scenarios, priorTexts = []) {
    // A different spelling of the same quantity is still the answer.
    for (const item of numbers(text)) {
     if (item.seconds !== null && quantities.some(q => q.seconds === item.seconds)) add(s, `answer value occurs outside evidence at turn ${number} in another unit: ${item.value}${item.unit}`)
+    // The same number with no unit, or with a counting unit, is still the answer
+    // value: "26" in a filler sentence is exactly what a reader must not be able
+    // to confuse with the key.
+    if (item.seconds === null && bare.includes(item.value)) add(s, `key number occurs outside evidence at turn ${number}: ${item.value}${item.unit}`)
+    if (item.tail) note(s, 'number glued to letters', `turn ${number} says ${item.value}${item.unit}${item.tail}; the unit was not recognised`, number)
     const close = bare.find(own => Math.abs(own - item.value) <= NEAR_TOLERANCE && own !== item.value)
     if (close !== undefined) note(s, 'near value', `turn ${number} says ${item.value}${item.unit || ''}, within ${NEAR_TOLERANCE} of the key value ${close}`, number)
     for (const own of bare) for (const factor of DERIVED_MULTIPLIERS) {
@@ -185,6 +210,7 @@ export function validateDataset(scenarios, priorTexts = []) {
     }
    }
    for (const pattern of RELATIVE_TIME) if (pattern.test(raw)) note(s, 'relative time', `turn ${number} matches ${pattern.source}`, number)
+   if (GROUPED_DIGITS.test(raw)) note(s, 'grouped digits', `turn ${number} writes a number with a thousands separator, which the value scan reads as two numbers`, number)
    const {first, last} = scenarioRange(s)
    const conversationYear = Number.isFinite(first) ? new Date(first).getUTCFullYear() : Number.NaN
    const dated = []
@@ -254,13 +280,29 @@ export function validateDataset(scenarios, priorTexts = []) {
  ]}
 }
 
-if (process.argv[1] && import.meta.url === new URL(`file:///${process.argv[1].replaceAll('\\', '/')}`).href) {
+// isCliEntry decides whether this module was run as a command. Building the URL
+// by prefixing "file:///" is wrong for an absolute POSIX path, which already
+// starts with a slash: it produced "file:////home/..." and compared unequal, so on
+// Linux the command printed nothing, exited 0 and validated nothing.
+export function isCliEntry(argv1, moduleUrl) {
+ if (!argv1) return false
+ try {
+  return pathToFileURL(path.resolve(argv1)).href === moduleUrl
+ } catch {
+  return false
+ }
+}
+
+if (isCliEntry(process.argv[1], import.meta.url)) {
  const args = process.argv.slice(2)
  const outAt = args.indexOf('--out')
  const outFile = outAt >= 0 ? args.splice(outAt, 2)[1] : ''
  const dir = args[0]
  if (!dir) throw Error('supply scenario directory')
  const files = fs.readdirSync(dir).filter(x => x.endsWith('.json')).sort()
+ // An empty directory is a failure, not a clean report: a check that looked at
+ // nothing cannot report zero errors.
+ if (!files.length) throw Error(`no scenario files in ${dir}`)
  const data = files.map(f => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8').replace(/^\uFEFF/, '')))
  const priorDir = args[1]
  const readFiles = directory => fs.readdirSync(directory, {withFileTypes: true}).flatMap(e => e.isDirectory() ? readFiles(path.join(directory, e.name)) : /\.(json|jsonl|txt)$/i.test(e.name) ? [fs.readFileSync(path.join(directory, e.name), 'utf8')] : [])
