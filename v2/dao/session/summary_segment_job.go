@@ -15,10 +15,10 @@ import (
 
 var (
 	// ErrSummarySegmentJobNotFound means the job row is gone or not owned.
-	ErrSummarySegmentJobNotFound = errors.New("summary segment job not found")
+	ErrSummarySegmentJobNotFound = model.ErrSummarySegmentJobNotFound
 	// ErrSummarySegmentJobConflict means another worker holds the job, or the
 	// job is no longer claimable.
-	ErrSummarySegmentJobConflict = errors.New("summary segment job conflict")
+	ErrSummarySegmentJobConflict = model.ErrSummarySegmentJobConflict
 )
 
 // UpsertSummarySegmentJob records that a session wants a segment covering up
@@ -51,6 +51,11 @@ func (r *Repository) UpsertSummarySegmentJob(ctx context.Context, job *model.Ses
 	if job.AvailableAt.IsZero() {
 		job.AvailableAt = time.Now()
 	}
+	// The stored timestamp has millisecond precision, and MySQL rounds what it
+	// is given. Quantizing before the write keeps the value that comes back
+	// equal to the value that went in, so a job that is due now is not read
+	// back as due half a millisecond from now.
+	job.AvailableAt = quantizeSummarySegmentTime(job.AvailableAt)
 	var owned int64
 	if err := r.db.WithContext(ctx).Model(&model.Session{}).
 		Where("id = ? AND user_id = ?", job.SessionID, job.UserID).
@@ -110,6 +115,10 @@ func (r *Repository) getSummarySegmentJobBySession(ctx context.Context, userID i
 // CASE WHEN and MAX(). The semantics are identical in both dialects: a higher
 // target revives a finished or failed job, a live lease is never stolen, and
 // the target never moves backwards.
+//
+// A revived job starts its attempts over. The job that failed was a job about
+// an older target, and the turns that arrived after it are a new question: the
+// old failure says nothing about them.
 func summarySegmentJobUpsertUpdates(dialect string) clause.Set {
 	if dialect == "sqlite" {
 		return clause.Set{
@@ -117,6 +126,7 @@ func summarySegmentJobUpsertUpdates(dialect string) clause.Set {
 			{Column: clause.Column{Name: "lease_token"}, Value: gorm.Expr("CASE WHEN excluded.desired_message_id > desired_message_id AND status <> ? THEN '' ELSE lease_token END", model.SessionSummarySegmentJobProcessing)},
 			{Column: clause.Column{Name: "lease_ends_at"}, Value: gorm.Expr("CASE WHEN excluded.desired_message_id > desired_message_id AND status <> ? THEN NULL ELSE lease_ends_at END", model.SessionSummarySegmentJobProcessing)},
 			{Column: clause.Column{Name: "completed_at"}, Value: gorm.Expr("CASE WHEN excluded.desired_message_id > desired_message_id AND status <> ? THEN NULL ELSE completed_at END", model.SessionSummarySegmentJobProcessing)},
+			{Column: clause.Column{Name: "attempts"}, Value: gorm.Expr("CASE WHEN excluded.desired_message_id > desired_message_id AND status <> ? THEN 0 ELSE attempts END", model.SessionSummarySegmentJobProcessing)},
 			{Column: clause.Column{Name: "status"}, Value: gorm.Expr("CASE WHEN excluded.desired_message_id > desired_message_id AND status <> ? THEN ? ELSE status END", model.SessionSummarySegmentJobProcessing, model.SessionSummarySegmentJobPending)},
 			{Column: clause.Column{Name: "updated_at"}, Value: gorm.Expr("CASE WHEN excluded.desired_message_id > desired_message_id THEN excluded.updated_at ELSE updated_at END")},
 			{Column: clause.Column{Name: "desired_message_id"}, Value: gorm.Expr("MAX(desired_message_id, excluded.desired_message_id)")},
@@ -127,6 +137,7 @@ func summarySegmentJobUpsertUpdates(dialect string) clause.Set {
 		{Column: clause.Column{Name: "lease_token"}, Value: gorm.Expr("IF(VALUES(desired_message_id) > desired_message_id AND status <> ?, '', lease_token)", model.SessionSummarySegmentJobProcessing)},
 		{Column: clause.Column{Name: "lease_ends_at"}, Value: gorm.Expr("IF(VALUES(desired_message_id) > desired_message_id AND status <> ?, NULL, lease_ends_at)", model.SessionSummarySegmentJobProcessing)},
 		{Column: clause.Column{Name: "completed_at"}, Value: gorm.Expr("IF(VALUES(desired_message_id) > desired_message_id AND status <> ?, NULL, completed_at)", model.SessionSummarySegmentJobProcessing)},
+		{Column: clause.Column{Name: "attempts"}, Value: gorm.Expr("IF(VALUES(desired_message_id) > desired_message_id AND status <> ?, 0, attempts)", model.SessionSummarySegmentJobProcessing)},
 		{Column: clause.Column{Name: "status"}, Value: gorm.Expr("IF(VALUES(desired_message_id) > desired_message_id AND status <> ?, ?, status)", model.SessionSummarySegmentJobProcessing, model.SessionSummarySegmentJobPending)},
 		{Column: clause.Column{Name: "updated_at"}, Value: gorm.Expr("IF(VALUES(desired_message_id) > desired_message_id, VALUES(updated_at), updated_at)")},
 		{Column: clause.Column{Name: "desired_message_id"}, Value: gorm.Expr("GREATEST(desired_message_id, VALUES(desired_message_id))")},
@@ -142,6 +153,9 @@ func (r *Repository) ListDueSummarySegmentJobs(ctx context.Context, limit, maxAt
 	if r == nil || r.db == nil || limit < 1 || limit > 200 || maxAttempts < 1 || maxAttempts > 10 || now.IsZero() {
 		return nil, fmt.Errorf("invalid summary segment job query")
 	}
+	// The comparison is made on the precision the column holds, so a job that
+	// was written as due now is listed as due.
+	now = quantizeSummarySegmentTime(now)
 	var jobs []model.SessionSummarySegmentJob
 	err := r.db.WithContext(ctx).Model(&model.SessionSummarySegmentJob{}).
 		Select("session_summary_segment_jobs.*").
@@ -186,6 +200,10 @@ func (r *Repository) ClaimSummarySegmentJob(ctx context.Context, userID int64, j
 	if r == nil || r.db == nil || userID <= 0 || strings.TrimSpace(jobID) == "" || now.IsZero() || lease <= 0 || maxAttempts < 1 || maxAttempts > 10 {
 		return nil, fmt.Errorf("invalid summary segment job claim")
 	}
+	// The comparison is made on the precision the column holds, on both
+	// sides. Otherwise a job written as due now can read back as due half a
+	// millisecond from now, and the claim refuses a job that is ready.
+	now = quantizeSummarySegmentTime(now)
 	var claimed *model.SessionSummarySegmentJob
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var job model.SessionSummarySegmentJob
@@ -200,13 +218,18 @@ func (r *Repository) ClaimSummarySegmentJob(ctx context.Context, userID int64, j
 			return ErrSummarySegmentJobConflict
 		}
 		token := uuid.NewString()
-		leaseEnds := now.Add(lease)
+		leaseEnds := quantizeSummarySegmentTime(now.Add(lease))
 		result := tx.Model(&model.SessionSummarySegmentJob{}).
 			Where("id = ? AND user_id = ? AND status = ? AND desired_message_id = ?",
 				job.ID, userID, model.SessionSummarySegmentJobPending, job.DesiredMessageID).
 			Updates(map[string]any{
 				"status": model.SessionSummarySegmentJobProcessing, "attempts": gorm.Expr("attempts + 1"),
 				"lease_token": token, "lease_ends_at": leaseEnds, "error_code": "", "completed_at": nil,
+				// The batch is frozen here, on the first attempt of it. The
+				// target may move forward while the batch is retried, but the
+				// batch may not: a retry that reads further than the attempt
+				// that failed is not the same attempt again.
+				"batch_message_id": gorm.Expr("CASE WHEN batch_message_id = 0 THEN ? ELSE batch_message_id END", job.DesiredMessageID),
 			})
 		if result.Error != nil {
 			return result.Error
@@ -227,18 +250,142 @@ func (r *Repository) ClaimSummarySegmentJob(ctx context.Context, userID int64, j
 	return claimed, nil
 }
 
-// CompleteSummarySegmentJob finishes a job that produced its segment.
+// GetSummarySegmentJobBySession returns the session's single job row.
 //
-// A job whose target moved forward while it was running is not finished: it
-// returns to pending, because the stretch it covered is no longer the whole
-// stretch that needs one.
-func (r *Repository) CompleteSummarySegmentJob(ctx context.Context, claimed *model.SessionSummarySegmentJob, now time.Time) error {
+// It is what a reader needs to know whether the background is still working on
+// the session: a job that is pending or processing means it is, and a job
+// that failed means the background gave up on it.
+func (r *Repository) GetSummarySegmentJobBySession(ctx context.Context, userID int64, sessionID string) (*model.SessionSummarySegmentJob, error) {
+	if r == nil || r.db == nil || userID <= 0 || strings.TrimSpace(sessionID) == "" {
+		return nil, ErrSummarySegmentJobNotFound
+	}
+	var job model.SessionSummarySegmentJob
+	err := r.db.WithContext(ctx).
+		Where("user_id = ? AND session_id = ?", userID, sessionID).
+		First(&job).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrSummarySegmentJobNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &job, nil
+}
+
+// TakeOverSummarySegmentJob moves a session's job into the processing state
+// for an attempt that the background worker did not start.
+//
+// The takeover refuses while another holder has a live lease, so one session
+// never has two generations running at once, whoever started them. The target
+// is raised to the newest turn and the start is moved to the first turn no
+// segment covers, because the attempt is about the conversation as it is now
+// and not about the batch the background was working on.
+//
+// A job with no row yet gets one: the attempt needs a row to hold its lease,
+// and a row that does not exist cannot hold one.
+func (r *Repository) TakeOverSummarySegmentJob(
+	ctx context.Context,
+	userID int64,
+	sessionID string,
+	desired, start uint,
+	now time.Time,
+	lease time.Duration,
+) (*model.SessionSummarySegmentJob, error) {
+	if r == nil || r.db == nil || userID <= 0 || strings.TrimSpace(sessionID) == "" ||
+		desired == 0 || start > desired || now.IsZero() || lease <= 0 {
+		return nil, fmt.Errorf("invalid summary segment job takeover")
+	}
+	now = quantizeSummarySegmentTime(now)
+	leaseEnds := quantizeSummarySegmentTime(now.Add(lease))
+	var taken *model.SessionSummarySegmentJob
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var job model.SessionSummarySegmentJob
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ? AND session_id = ?", userID, sessionID).First(&job).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		if err == nil {
+			if job.Status == model.SessionSummarySegmentJobProcessing &&
+				job.LeaseEndsAt != nil && job.LeaseEndsAt.After(now) {
+				// Somebody else is holding the session. Two generations for
+				// one session would race on the board, and one of them would
+				// be paid for nothing.
+				return ErrSummarySegmentJobConflict
+			}
+			token := uuid.NewString()
+			target := job.DesiredMessageID
+			if desired > target {
+				target = desired
+			}
+			result := tx.Model(&model.SessionSummarySegmentJob{}).
+				Where("id = ? AND user_id = ?", job.ID, userID).
+				Updates(map[string]any{
+					"status":             model.SessionSummarySegmentJobProcessing,
+					"desired_message_id": target, "start_message_id": start,
+					"batch_message_id": 0, "attempts": gorm.Expr("attempts + 1"),
+					"lease_token": token, "lease_ends_at": leaseEnds,
+					"error_code": "", "completed_at": nil, "available_at": now,
+				})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return ErrSummarySegmentJobConflict
+			}
+			var found model.SessionSummarySegmentJob
+			if err := tx.Where("id = ? AND lease_token = ?", job.ID, token).First(&found).Error; err != nil {
+				return err
+			}
+			taken = &found
+			return nil
+		}
+		created := &model.SessionSummarySegmentJob{
+			ID: uuid.NewString(), UserID: userID, SessionID: sessionID,
+			DesiredMessageID: desired, StartMessageID: start,
+			Status: model.SessionSummarySegmentJobProcessing, Attempts: 1,
+			AvailableAt: now, LeaseToken: uuid.NewString(), LeaseEndsAt: &leaseEnds,
+		}
+		if err := tx.Create(created).Error; err != nil {
+			if isDuplicateKey(err) {
+				return ErrSummarySegmentJobConflict
+			}
+			return err
+		}
+		taken = created
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return taken, nil
+}
+
+// CompleteSummarySegmentJob finishes the batch a job was working on.
+//
+// coveredThrough is the newest turn the segment actually covers, which is not
+// always the end of the job's target: a segment may cover fewer turns than
+// the batch holds, and the turns it did not cover are still owed.
+//
+// The job is finished in one of three ways, and the difference matters:
+//
+//   - The batch was longer than one segment may cover. The job stays pending
+//     and the start moves past what was covered. The end of the batch does
+//     not move: the rest of it is the same batch, continued.
+//   - The target moved forward while the attempt ran. The job stays pending
+//     and the start moves past what was covered, so the next attempt reads
+//     the turns that are still uncovered instead of reading them again.
+//   - Everything the target asked for is covered. The job is done, and the
+//     start is left one turn past the coverage so that a later target for
+//     the same session starts where this one stopped.
+func (r *Repository) CompleteSummarySegmentJob(ctx context.Context, claimed *model.SessionSummarySegmentJob, coveredThrough uint, now time.Time) error {
 	if r == nil || r.db == nil {
 		return fmt.Errorf("session repository is not initialized")
 	}
 	if claimed == nil {
 		return fmt.Errorf("summary segment job is required")
 	}
+	now = quantizeSummarySegmentTime(now)
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var job model.SessionSummarySegmentJob
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
@@ -251,23 +398,36 @@ func (r *Repository) CompleteSummarySegmentJob(ctx context.Context, claimed *mod
 		if job.Status != model.SessionSummarySegmentJobProcessing || job.LeaseToken != claimed.LeaseToken {
 			return ErrSummarySegmentJobConflict
 		}
-		if job.DesiredMessageID > claimed.DesiredMessageID {
-			// The target moved while this job ran: the segment it produced
-			// covers only part of what now needs covering.
-			return tx.Model(&model.SessionSummarySegmentJob{}).
-				Where("id = ? AND user_id = ?", job.ID, job.UserID).
-				Updates(map[string]any{
-					"status": model.SessionSummarySegmentJobPending, "lease_token": "", "lease_ends_at": nil,
-					"attempts": 0, "error_code": "", "completed_at": nil,
-				}).Error
+		batchEnd := job.BatchMessageID
+		if batchEnd == 0 {
+			batchEnd = job.DesiredMessageID
+		}
+		updates := map[string]any{
+			"start_message_id": coveredThrough + 1,
+			"lease_token":      "", "lease_ends_at": nil,
+			"error_code": "", "completed_at": nil, "attempts": 0,
+		}
+		switch {
+		case coveredThrough < batchEnd:
+			// The batch holds more turns than one segment covers. The rest of
+			// it is owed, and it is still the same batch.
+			updates["status"] = model.SessionSummarySegmentJobPending
+			updates["available_at"] = now
+			updates["batch_message_id"] = batchEnd
+		case job.DesiredMessageID > coveredThrough:
+			// The target moved forward while this attempt ran.
+			updates["status"] = model.SessionSummarySegmentJobPending
+			updates["available_at"] = now
+			updates["batch_message_id"] = 0
+		default:
+			updates["status"] = model.SessionSummarySegmentJobCompleted
+			updates["completed_at"] = now
+			updates["batch_message_id"] = 0
 		}
 		result := tx.Model(&model.SessionSummarySegmentJob{}).
 			Where("id = ? AND user_id = ? AND status = ? AND lease_token = ?",
 				job.ID, job.UserID, model.SessionSummarySegmentJobProcessing, claimed.LeaseToken).
-			Updates(map[string]any{
-				"status": model.SessionSummarySegmentJobCompleted, "lease_token": "", "lease_ends_at": nil,
-				"error_code": "", "completed_at": now,
-			})
+			Updates(updates)
 		if result.Error != nil {
 			return result.Error
 		}
@@ -295,8 +455,11 @@ func (r *Repository) RetrySummarySegmentJob(ctx context.Context, claimed *model.
 	var completedAt any
 	if claimed.Attempts >= maxAttempts {
 		status = model.SessionSummarySegmentJobFailed
-		completedAt = time.Now()
+		completedAt = quantizeSummarySegmentTime(time.Now())
 	}
+	// The retry time is quantized for the same reason the claim time is: a
+	// value that was meant to be due now must read back as due now.
+	availableAt = quantizeSummarySegmentTime(availableAt)
 	result := r.db.WithContext(ctx).Model(&model.SessionSummarySegmentJob{}).
 		Where("id = ? AND user_id = ? AND status = ? AND lease_token = ?",
 			claimed.ID, claimed.UserID, model.SessionSummarySegmentJobProcessing, claimed.LeaseToken).
@@ -322,6 +485,10 @@ func (r *Repository) RecoverExpiredSummarySegmentJobs(ctx context.Context, now t
 	if r == nil || r.db == nil || now.IsZero() || maxAttempts < 1 {
 		return 0, fmt.Errorf("invalid summary segment job recovery")
 	}
+	// The comparison is made on the precision the column holds, so a lease
+	// that has just expired is recovered rather than waiting for the next
+	// millisecond to tick over.
+	now = quantizeSummarySegmentTime(now)
 	var affected int64
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		failed := tx.Model(&model.SessionSummarySegmentJob{}).
