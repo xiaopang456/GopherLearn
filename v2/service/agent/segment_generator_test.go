@@ -3,9 +3,11 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
+	"GopherAI/common/observability"
 	"GopherAI/model"
 
 	modelcomponent "github.com/cloudwego/eino/components/model"
@@ -67,6 +69,16 @@ func mustSegmentGenerator(t *testing.T, content string) (*ModelSegmentGenerator,
 		t.Fatal(err)
 	}
 	return generator, stub
+}
+
+// swapMemoryRecorder points the counters at a recorder the test owns.
+func swapMemoryRecorder(t *testing.T) *observability.MemoryRecorder {
+	t.Helper()
+	previous := observability.Memory
+	recorder := observability.NewMemoryRecorder(nil)
+	observability.Memory = recorder
+	t.Cleanup(func() { observability.Memory = previous })
+	return recorder
 }
 
 // One call produces both documents. A board written by one call and a segment
@@ -285,5 +297,147 @@ func TestSegmentGeneratorRendersTheBoardThePreviousSegmentAndTheMessages(t *test
 	// The assistant's body is not the learner's state, so it is not sent.
 	if strings.Contains(payload, "已经记下") {
 		t.Fatalf("the assistant body reached the payload: %s", payload)
+	}
+}
+
+// An output the generator cannot read has to be counted with its reason.
+// A failure nobody counted reads as a turn that was never due, and the next
+// run has nothing to compare against.
+func TestSegmentGeneratorCountsTheReasonAFailedOutputGave(t *testing.T) {
+	recorder := swapMemoryRecorder(t)
+	generator, _ := mustSegmentGenerator(t, "this is not json")
+	if _, err := generator.GenerateSegment(context.Background(), segmentTestInput()); err == nil {
+		t.Fatal("unparseable output must fail")
+	}
+	snapshot := recorder.Snapshot()
+	if snapshot.Counters["summary_segment_total{outcome=failed,reason=invalid_output}"] != 1 {
+		t.Fatalf("the failure reason was not counted: %#v", snapshot.Counters)
+	}
+	if snapshot.Counters["summary_segment_failed_total{reason=invalid_output}"] != 1 {
+		t.Fatalf("the failure was not counted: %#v", snapshot.Counters)
+	}
+}
+
+// A schema version nobody knows is its own reason, not a generic one.
+func TestSegmentGeneratorCountsAnUnknownSchemaVersionAsItsOwnReason(t *testing.T) {
+	recorder := swapMemoryRecorder(t)
+	generator, _ := mustSegmentGenerator(t, `{"schema_version": 2, "segment": {}, "whiteboard": {}}`)
+	if _, err := generator.GenerateSegment(context.Background(), segmentTestInput()); err == nil {
+		t.Fatal("an unknown schema version must fail")
+	}
+	snapshot := recorder.Snapshot()
+	if snapshot.Counters["summary_segment_total{outcome=failed,reason=unknown_schema_version}"] != 1 {
+		t.Fatalf("the schema version was not named in the counters: %#v", snapshot.Counters)
+	}
+}
+
+// Points the generator had to drop are counted, because a segment that keeps
+// losing points is a generator that is drifting.
+func TestSegmentGeneratorCountsThePointsItDropped(t *testing.T) {
+	recorder := swapMemoryRecorder(t)
+	generator, _ := mustSegmentGenerator(t, `{
+      "schema_version": 1,
+      "segment": {
+        "topic": "t",
+        "points": [
+          {"text": "凭空捏造", "evidence_message_ids": [99]},
+          {"text": "真实发生的事", "evidence_message_ids": [21]}
+        ],
+        "names": [], "numbers": []
+      },
+      "whiteboard": {"schema_version": 1}
+    }`)
+	result, err := generator.GenerateSegment(context.Background(), segmentTestInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Diagnostics.DroppedPoints != 1 {
+		t.Fatalf("dropped points = %d, want 1", result.Diagnostics.DroppedPoints)
+	}
+	snapshot := recorder.Snapshot()
+	if snapshot.Totals["summary_segment_points_dropped_total"] != 1 {
+		t.Fatalf("the dropped points were not counted: %#v", snapshot.Totals)
+	}
+	if snapshot.Totals["summary_segment_points_total"] != 1 {
+		t.Fatalf("the kept points were not counted: %#v", snapshot.Totals)
+	}
+}
+
+// A batch that lost every point it produced fails, and the points it lost are
+// counted with the failure: a batch that lost everything is a different
+// failure from one that never had a point.
+func TestSegmentGeneratorCountsThePointsLostByABatchThatFailed(t *testing.T) {
+	recorder := swapMemoryRecorder(t)
+	generator, _ := mustSegmentGenerator(t, `{
+      "schema_version": 1,
+      "segment": {
+        "topic": "t",
+        "points": [
+          {"text": "凭空捏造一", "evidence_message_ids": [98]},
+          {"text": "凭空捏造二", "evidence_message_ids": [99]}
+        ],
+        "names": [], "numbers": []
+      },
+      "whiteboard": {"schema_version": 1}
+    }`)
+	if _, err := generator.GenerateSegment(context.Background(), segmentTestInput()); err == nil {
+		t.Fatal("a segment with no usable point must fail")
+	}
+	snapshot := recorder.Snapshot()
+	if snapshot.Counters["summary_segment_total{outcome=failed,reason=point_without_source}"] != 1 {
+		t.Fatalf("the reason was not counted: %#v", snapshot.Counters)
+	}
+	if snapshot.Totals["summary_segment_points_dropped_total"] != 2 {
+		t.Fatalf("the points lost by the failed batch were not counted: %#v", snapshot.Totals)
+	}
+}
+
+// The board counters are reported even when the generation fails after the
+// engine ran, because that work still happened. A board that had to be
+// trimmed and then failed for another reason still cost the engine work, and
+// that work is what the counters exist to show.
+func TestSegmentGeneratorCountsTheBoardEvenWhenTheGenerationFailsAfterwards(t *testing.T) {
+	recorder := swapMemoryRecorder(t)
+	// Ten long entries make the board bigger than the output budget, so the
+	// generation fails on the board after the engine has already merged it.
+	entries := make([]map[string]any, 0, 10)
+	for index := 0; index < 10; index++ {
+		entries = append(entries, map[string]any{
+			"key":                fmt.Sprintf("constraint-%d", index),
+			"text":               strings.Repeat("字", model.SessionWhiteboardTextMaxRunes),
+			"value":              "值",
+			"source_message_ids": []int{21},
+		})
+	}
+	payload, err := json.Marshal(map[string]any{
+		"schema_version": 1,
+		"segment": map[string]any{
+			"topic":   "t",
+			"points":  []map[string]any{{"text": "p", "evidence_message_ids": []int{21}}},
+			"names":   []string{},
+			"numbers": []string{},
+		},
+		"whiteboard": map[string]any{
+			"schema_version": 1,
+			"constraints":   entries,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := &stubSegmentModel{content: string(payload)}
+	generator, err := NewModelSegmentGenerator(stub, 8000, 300)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := generator.GenerateSegment(context.Background(), segmentTestInput()); err == nil {
+		t.Fatal("a board over the output budget must fail")
+	}
+	snapshot := recorder.Snapshot()
+	if snapshot.Counters["summary_segment_total{outcome=failed,reason=output_too_large}"] != 1 {
+		t.Fatalf("the reason was not counted: %#v", snapshot.Counters)
+	}
+	if snapshot.Totals["whiteboard_applied_total"] == 0 {
+		t.Fatalf("the board counters were not reported for the failed generation: %#v", snapshot.Totals)
 	}
 }

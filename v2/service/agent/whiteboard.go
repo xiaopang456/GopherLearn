@@ -92,6 +92,11 @@ type WhiteboardDiagnostics struct {
 	// DroppedDonePlan is how many finished plan entries were dropped
 	// first: a completed step should not occupy the board.
 	DroppedDonePlan int
+	// DroppedPoints is how many segment points were dropped before the
+	// segment could be stored. The whiteboard engine does not set it; the
+	// generator does, because the points belong to the segment and the
+	// counters are reported together.
+	DroppedPoints int
 }
 
 // WhiteboardResult is the outcome of applying one proposal.
