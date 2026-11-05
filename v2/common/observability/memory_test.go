@@ -51,3 +51,49 @@ func TestMemoryRecorderUsesMetadataOnlyBoundedLabels(t *testing.T) {
 		}
 	}
 }
+
+// The board and segment counters have to stay bounded: a label that comes
+// from a model or from free text would otherwise become a metric name.
+func TestMemoryRecorderBoundsTheWhiteboardAndSegmentLabels(t *testing.T) {
+	secret := "private-board-body"
+	var logs []string
+	recorder := NewMemoryRecorder(func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) })
+	recorder.Whiteboard(1, 2, 3, 4, 5, 6, 7, 8)
+	recorder.SummarySegment("failed", secret, 0, 0)
+	recorder.SummarySegment("generated", "none", 4, 2)
+
+	snapshot := recorder.Snapshot()
+	if snapshot.Totals["whiteboard_applied_total"] != 1 ||
+		snapshot.Totals["whiteboard_changed_total"] != 2 ||
+		snapshot.Totals["whiteboard_fabricated_total"] != 3 ||
+		snapshot.Totals["whiteboard_suspicious_delete_total"] != 4 ||
+		snapshot.Totals["whiteboard_missed_update_total"] != 5 ||
+		snapshot.Totals["whiteboard_truncated_total"] != 6 ||
+		snapshot.Totals["whiteboard_dropped_total"] != 7 ||
+		snapshot.Totals["whiteboard_dropped_done_total"] != 8 {
+		t.Fatalf("unexpected whiteboard totals: %#v", snapshot.Totals)
+	}
+	if snapshot.Counters["whiteboard_fabricated_batches_total"] != 1 ||
+		snapshot.Counters["whiteboard_suspicious_delete_batches_total"] != 1 ||
+		snapshot.Counters["whiteboard_missed_update_batches_total"] != 1 {
+		t.Fatalf("unexpected whiteboard batch counters: %#v", snapshot.Counters)
+	}
+	if snapshot.Counters["summary_segment_total{outcome=failed,reason=other}"] != 1 {
+		t.Fatalf("an unnamed failure reason was not bounded: %#v", snapshot.Counters)
+	}
+	if snapshot.Counters["summary_segment_total{outcome=generated,reason=none}"] != 1 {
+		t.Fatalf("unexpected segment counters: %#v", snapshot.Counters)
+	}
+	if snapshot.Counters["summary_segment_failed_total{reason=other}"] != 1 {
+		t.Fatalf("unexpected segment failure counters: %#v", snapshot.Counters)
+	}
+	if snapshot.Totals["summary_segment_points_total"] != 4 ||
+		snapshot.Totals["summary_segment_points_dropped_total"] != 2 {
+		t.Fatalf("unexpected segment totals: %#v", snapshot.Totals)
+	}
+	for _, line := range logs {
+		if strings.Contains(line, secret) {
+			t.Fatalf("log format leaked caller text: %q", line)
+		}
+	}
+}

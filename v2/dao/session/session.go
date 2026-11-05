@@ -96,6 +96,15 @@ func (r *Repository) DeleteOwned(ctx context.Context, userID int64, sessionID st
 				return tx.Where("user_id = ? AND session_id = ?", userID, sessionID).Delete(&model.SessionSummary{}).Error
 			},
 			func() error {
+				return tx.Where("user_id = ? AND session_id = ?", userID, sessionID).Delete(&model.SessionWhiteboard{}).Error
+			},
+			func() error {
+				return tx.Where("user_id = ? AND session_id = ?", userID, sessionID).Delete(&model.SessionSummarySegment{}).Error
+			},
+			func() error {
+				return tx.Where("user_id = ? AND session_id = ?", userID, sessionID).Delete(&model.SessionSummarySegmentJob{}).Error
+			},
+			func() error {
 				return tx.Where("user_id = ? AND session_id = ?", userID, sessionID).Delete(&model.EpisodeProjectionJob{}).Error
 			},
 			func() error {
