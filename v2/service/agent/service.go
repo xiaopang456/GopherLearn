@@ -362,11 +362,18 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 			episodeRecallReady = true
 		}
 	}
-	shadowCtx, cancelShadow := context.WithTimeout(context.WithoutCancel(runCtx), 2*time.Second)
-	if err := s.shadow.Observe(shadowCtx, owned.UserID, owned.ID, request.Question); err != nil {
-		log.Printf("episode shadow recall failed: session=%s error_type=%T", owned.ID, err)
+	// Shadow recall reaches the same retriever the injected path uses, so it pays
+	// for the same embedding, and it does that from outside the context builder -
+	// the builder's ceiling would not have stopped it. A capability-free turn is
+	// therefore not observed at all: an off turn that quietly indexed itself would
+	// be a turn that did the thing it was switched off for.
+	if policy.CarriesAnyCapability() {
+		shadowCtx, cancelShadow := context.WithTimeout(context.WithoutCancel(runCtx), 2*time.Second)
+		if err := s.shadow.Observe(shadowCtx, owned.UserID, owned.ID, request.Question); err != nil {
+			log.Printf("episode shadow recall failed: session=%s error_type=%T", owned.ID, err)
+		}
+		cancelShadow()
 	}
-	cancelShadow()
 
 	runID, userRole := run.ID, model.MessageAgentRunRoleUser
 	if err := s.messages.Create(runCtx, &model.Message{

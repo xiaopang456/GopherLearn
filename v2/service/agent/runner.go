@@ -2000,9 +2000,13 @@ func (m *boundedModel) WithTools(tools []*schema.ToolInfo) (modelcomponent.ToolC
 
 // CapabilityFreeEmptyAnswer is what a turn with no capabilities falls back to when
 // the model answered with a tool call and no plain answer could be obtained for it.
-// It is text the learner can read rather than a failed run: the capabilities were
-// switched off for this turn, so there is nothing to retry and nothing to search.
-const CapabilityFreeEmptyAnswer = "这一轮没有开启任何资料与工具，我暂时没能给出回答；把开关打开后再问我一次就可以。"
+// It is text the learner can read rather than a failed run.
+//
+// It names what actually happened - there was no usable content - and nothing more.
+// It deliberately does not suggest turning capabilities back on: the fault is that
+// the provider returned no text, and switching the library back on neither fixes
+// that nor is something this message should be nudging the learner toward.
+const CapabilityFreeEmptyAnswer = "这一轮我没能拿到可用的回答内容；请再说一次你的问题。"
 
 // answerPlainlyAfterToolCall is the recovery a capability-free turn makes when the
 // model reaches for a tool it was never given: one more generation, asked for the
