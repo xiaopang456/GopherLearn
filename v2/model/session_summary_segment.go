@@ -220,6 +220,42 @@ func MarshalSessionSummarySegmentContent(content SessionSummarySegmentContent) (
 	return string(encoded), nil
 }
 
+// MarshalSessionSummarySegmentChanges encodes the board changes a segment
+// caused.
+//
+// The stored form is a list, and an empty list is written as "[]" rather than
+// an empty string: the column is a JSON list and an empty string is not one.
+func MarshalSessionSummarySegmentChanges(changes []SessionSummarySegmentChange) (string, error) {
+	if changes == nil {
+		changes = []SessionSummarySegmentChange{}
+	}
+	encoded, err := json.Marshal(changes)
+	if err != nil {
+		return "", fmt.Errorf("encode summary segment changes: %w", err)
+	}
+	return string(encoded), nil
+}
+
+// MarshalSessionSummarySegmentTerms encodes the names and numbers a segment
+// carries into the one string the row stores.
+//
+// The two lists are kept apart by their separators so a reader can tell a
+// name from a number without re-parsing the segment body.
+func MarshalSessionSummarySegmentTerms(names, numbers []string) string {
+	parts := make([]string, 0, len(names)+len(numbers))
+	for _, name := range names {
+		if trimmed := strings.TrimSpace(name); trimmed != "" {
+			parts = append(parts, "name:"+trimmed)
+		}
+	}
+	for _, number := range numbers {
+		if trimmed := strings.TrimSpace(number); trimmed != "" {
+			parts = append(parts, "number:"+trimmed)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
 // SegmentChanges is the stored list of board changes a segment caused.
 type SegmentChanges []SessionSummarySegmentChange
 

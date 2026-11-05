@@ -197,6 +197,38 @@ func (r *MemoryRecorder) SummarySegment(outcome, reason string, points, pointsDr
 		outcome, reason, points, pointsDropped)
 }
 
+// SummarySegmentJob records what one background segment attempt did.
+//
+// The status label is bounded, and the error code is a fixed set, so neither
+// becomes free text in a metric name. The duration is the cost of the
+// attempt, which is the number that says whether the background is keeping up.
+func (r *MemoryRecorder) SummarySegmentJob(status, errorCode string, duration time.Duration) {
+	status = boundedLabel(status, "completed", "failed")
+	errorCode = boundedLabel(errorCode, "none", "task_timeout", "task_cancelled", "whiteboard_conflict",
+		"source_not_found", "invalid_model_output", "generation_failed")
+	if status == "completed" {
+		errorCode = "none"
+	}
+	r.add("summary_segment_job_total{status="+status+",error_code="+errorCode+"}", 1)
+	r.addTotal("summary_segment_job_duration_ms", duration.Milliseconds())
+	r.logf("memory_metric name=summary_segment_job status=%s error_code=%s duration_ms=%d",
+		status, errorCode, duration.Milliseconds())
+}
+
+// SummarySegmentFallback records that the raw conversation was too big to
+// send and a segment was generated before the answer went out.
+//
+// The reason says which of the three happened: it was not needed, it ran, or
+// it failed and the raw conversation was truncated instead. The count is what
+// the raw conversation was worth, so a fallback that keeps happening can be
+// traced to the conversation that caused it.
+func (r *MemoryRecorder) SummarySegmentFallback(reason string, unsummarizedTokens int) {
+	reason = boundedLabel(reason, "not_needed", "generated_before_answer", "generation_failed", "generator_unavailable")
+	r.add("summary_segment_fallback_total{reason="+reason+"}", 1)
+	r.addTotal("summary_segment_fallback_tokens", int64(max(unsummarizedTokens, 0)))
+	r.logf("memory_metric name=summary_segment_fallback reason=%s unsummarized_tokens=%d", reason, unsummarizedTokens)
+}
+
 func (r *MemoryRecorder) Snapshot() MemorySnapshot {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

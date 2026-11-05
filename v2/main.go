@@ -1145,6 +1145,20 @@ func main() {
 		log.Printf("start episode worker: %v", err)
 		return
 	}
+	// The layered summary's write path. It is assembled only when the mode
+	// says it should run: a segment that is written and never read costs a
+	// model call per batch and answers nothing.
+	summarySegmentAssembly, err := buildSummarySegmentAssembly(conf, agentModel)
+	if err != nil {
+		log.Printf("initialize summary segment assembly: %v", err)
+		return
+	}
+	if summarySegmentAssembly.Enabled() {
+		if err := summarySegmentAssembly.Start(appCtx); err != nil {
+			log.Printf("start summary segment worker: %v", err)
+			return
+		}
+	}
 	if err := runLeaseReaper.Start(appCtx); err != nil {
 		log.Printf("start agent run lease reaper: %v", err)
 		return
@@ -1182,12 +1196,38 @@ func main() {
 	if err := episodeWorker.Stop(shutdownCtx); err != nil {
 		log.Printf("episode worker graceful shutdown: %v", err)
 	}
+	if summarySegmentAssembly.Enabled() {
+		if err := summarySegmentAssembly.Stop(shutdownCtx); err != nil {
+			log.Printf("summary segment worker graceful shutdown: %v", err)
+		}
+	}
 	if err := runLeaseReaper.Stop(shutdownCtx); err != nil {
 		log.Printf("agent run lease reaper graceful shutdown: %v", err)
 	}
 	if err := memoryUsage.Stop(shutdownCtx); err != nil {
 		log.Printf("memory usage recorder graceful shutdown: %v", err)
 	}
+}
+
+// buildSummarySegmentAssembly wires the layered summary's write path.
+//
+// It returns nil when the mode is off, which is the shipped default: the
+// tables exist and the worker is one line away, but nothing reads the
+// segments yet.
+func buildSummarySegmentAssembly(conf *config.Config, chatModel modelcomponent.ToolCallingChatModel) (*agentService.SummarySegmentAssembly, error) {
+	settings, err := agentService.SummarySegmentAssemblyConfigFromSettings(conf.AgentConfig)
+	if err != nil {
+		return nil, err
+	}
+	if settings.Mode == "off" {
+		return nil, nil
+	}
+	return agentService.NewSummarySegmentAssembly(
+		settings,
+		sessionDAO.DefaultRepository(),
+		nil,
+		chatModel,
+	)
 }
 
 // buildPlannedMemoryProvider wires model_planned_v1 and nothing else.

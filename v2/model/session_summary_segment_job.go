@@ -42,6 +42,17 @@ type SessionSummarySegmentJob struct {
 // already holds the row.
 var ErrSummarySegmentJobConflict = errors.New("summary segment job conflict")
 
+// SummarySegmentGap is a conversation whose latest turn is not covered by any
+// summary segment yet.
+//
+// It lives here because both the repository that finds the gaps and the
+// service that repairs them have to agree on what a gap is.
+type SummarySegmentGap struct {
+	UserID          int64  `gorm:"column:user_id"`
+	SessionID       string `gorm:"column:session_id"`
+	LatestMessageID uint   `gorm:"column:latest_message_id"`
+}
+
 // Validate checks the job's shape.
 func (j *SessionSummarySegmentJob) Validate() error {
 	if j == nil {
