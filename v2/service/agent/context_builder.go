@@ -811,7 +811,20 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	var confirmedKeys []string
 	var confirmedStates []ConfirmedTopicLearningState
 	var confirmedRecords []TopicMemoryRecord
-	if !b.config.MemoryReadMode.AutoInjectsTopicAndEpisodeMemory() {
+	if !input.KnowledgePolicy.CarriesAnyCapability() {
+		// A turn that switched its own capabilities off reads no personal state.
+		//
+		// This is the ceiling, not a degradation: nothing is logged as a provider
+		// failure and no budget is spent, because the learner decided what this
+		// turn may look at. Empty-handed is exactly what the readers would return
+		// on a bad day, so every block downstream already knows how to render it.
+		//
+		// Reading these providers anyway was the mistake this branch closes: the
+		// episode retriever issues an embedding before fusion can reject the
+		// candidate, so a turn that was told to touch nothing could still pay for
+		// a query vector and pull in a long-term memory line. An empty tool ledger
+		// would not have shown any of it.
+	} else if !b.config.MemoryReadMode.AutoInjectsTopicAndEpisodeMemory() {
 		// Global only. Topic notes and Episodes are not read here at all: under
 		// this mode they exist for the Agent to ask for, and a builder that
 		// fetched them anyway would pay for a retrieval it then discards while

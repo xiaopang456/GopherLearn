@@ -860,6 +860,20 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	}
 	if !knowledgeTerminal {
 		finalAnswer = strings.TrimSpace(answer.String())
+		if finalAnswer == "" && !policy.CarriesAnyCapability() {
+			// The learner switched this turn's capabilities off; they did not
+			// cancel their question. A model that answers with a tool call under a
+			// request that carries no tool definitions has said nothing usable, and
+			// the call is dropped rather than ending the turn: one more generation
+			// asked for the answer plainly - still with no tools bound and
+			// tool_choice forbidding them - and if that cannot be spent or still
+			// brings nothing, the turn answers honestly that there was nothing to
+			// give instead of failing.
+			finalAnswer = state.answerPlainlyAfterToolCall(ctx, bounded, messages, input.Question)
+			if finalAnswer == "" {
+				finalAnswer = CapabilityFreeEmptyAnswer
+			}
+		}
 		if finalAnswer == "" {
 			return state.result(), ErrEmptyAgentAnswer
 		}
@@ -1773,7 +1787,14 @@ func (m *boundedModel) plan(opts []modelcomponent.Option) (generation, error) {
 	callModel := m.inner
 	forcedTool := ""
 	answers := false
-	if m.state.toolBudgetExhausted() || m.state.isLastModelCall() {
+	if !m.state.knowledgePolicy.CarriesAnyCapability() {
+		// A capability-free turn asks for no tool definitions at all - the model
+		// it calls is the unbound one - and tool_choice says so as well, because a
+		// provider that reads the switch may otherwise still answer with a call to
+		// a tool it was never shown.
+		callOpts = append(callOpts, modelcomponent.WithToolChoice(schema.ToolChoiceForbidden))
+		answers = true
+	} else if m.state.toolBudgetExhausted() || m.state.isLastModelCall() {
 		// MaxToolCalls bounds executions, not the Agent's ability to synthesize
 		// a final answer from evidence already collected. The finalizer still
 		// enforces citations, while a provider that violates tool_choice=none
@@ -1975,6 +1996,37 @@ func (m *boundedModel) WithTools(tools []*schema.ToolInfo) (modelcomponent.ToolC
 		return nil, err
 	}
 	return &boundedModel{inner: bound, state: m.state, tools: append([]*schema.ToolInfo(nil), tools...), thinkingDialect: m.thinkingDialect}, nil
+}
+
+// CapabilityFreeEmptyAnswer is what a turn with no capabilities falls back to when
+// the model answered with a tool call and no plain answer could be obtained for it.
+// It is text the learner can read rather than a failed run: the capabilities were
+// switched off for this turn, so there is nothing to retry and nothing to search.
+const CapabilityFreeEmptyAnswer = "这一轮没有开启任何资料与工具，我暂时没能给出回答；把开关打开后再问我一次就可以。"
+
+// answerPlainlyAfterToolCall is the recovery a capability-free turn makes when the
+// model reaches for a tool it was never given: one more generation, asked for the
+// answer plainly, still with no tool definitions bound and tool_choice forbidding
+// them. It returns "" when the turn has no generation left to spend or the second
+// generation brings no text either; the caller then uses the honest fallback text.
+func (s *runState) answerPlainlyAfterToolCall(ctx context.Context, bounded *boundedModel, messages []*schema.Message, question string) string {
+	if !s.canSpendModelCall() {
+		log.Printf("[agent-turn] capability-free turn had no generation left for the plain retry: session=%s", s.input.SessionID)
+		return ""
+	}
+	requested := append([]*schema.Message(nil), messages...)
+	requested = append(requested, schema.UserMessage("这一轮不使用任何工具、不查阅任何资料，请就上面的问题直接回答。"))
+	stream, err := bounded.Stream(ctx, requested)
+	if err != nil {
+		log.Printf("[agent-turn] capability-free plain retry failed: session=%s error_type=%T", s.input.SessionID, err)
+		return ""
+	}
+	answer, err := readAnswerStream(stream)
+	if err != nil {
+		log.Printf("[agent-turn] capability-free plain retry stream failed: session=%s error_type=%T", s.input.SessionID, err)
+		return ""
+	}
+	return strings.TrimSpace(answer)
 }
 
 func bindOnlyTool(chatModel modelcomponent.ToolCallingChatModel, tools []*schema.ToolInfo, name string) (modelcomponent.ToolCallingChatModel, error) {

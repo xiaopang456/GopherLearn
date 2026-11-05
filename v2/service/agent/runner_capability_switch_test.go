@@ -11,12 +11,12 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-// These two cases sit at the runner rather than at the HTTP surface on purpose.
-// The service validates the policy first, so a test that only goes through the
-// service cannot tell whether the runner would have caught it: the runner's own
-// refusal is the last thing standing between a value nobody recognises and a turn
-// that reads the learner's documents anyway, and a defence that nothing exercises
-// is a defence that can be removed silently.
+// These cases sit at the runner rather than at the HTTP surface on purpose. The
+// service validates the policy first, so a test that only goes through the service
+// cannot tell whether the runner would have caught it: the runner's own refusal is
+// the last thing standing between a value nobody recognises and a turn that reads
+// the learner's documents anyway, and a defence that nothing exercises is a defence
+// that can be removed silently.
 
 func TestRunnerRefusesAnUnknownPolicyBeforeAnyCall(t *testing.T) {
 	var executions atomic.Int32
@@ -42,29 +42,24 @@ func TestRunnerRefusesAnUnknownPolicyBeforeAnyCall(t *testing.T) {
 	}
 }
 
-// A switched-off turn has to run on the path that already existed for a turn with
-// no capabilities, not on a duplicated one: the point of taking the tools away
-// instead of adding a mode is that the prompt, the evidence reserve, the
-// finalisation rules and the retry behaviour stay single-defined.
+// A switched-off turn runs on the path that already existed for a turn with no
+// capabilities, not on a duplicated one: taking the tools away instead of adding a
+// mode is what keeps the prompt, the evidence reserve, the finalisation rules and
+// the retry behaviour single-defined.
 //
-// The pair of cases is what makes that claim testable rather than decorative. The
-// same script - one generation that asks for a tool, one that answers - is run
-// under both policies, and only the turn without capabilities fails to carry it
-// out. A test that scripted a polite answer instead would pass on either path,
-// because a ReAct loop with nothing to call also answers in one generation.
+// The pair is what makes that claim testable. A script that simply answers takes
+// one generation whether or not the tools were removed, so such a test passes on
+// both paths. The same script is therefore asked for a tool under both policies:
+// only the turn with capabilities executes it.
 func TestRunnerSwitchedOffTurnCannotRunACapabilityTheModelAsksFor(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		policy     rag.KnowledgePolicy
-		wantErr    bool
 		wantTools  int
 		wantModels int
 	}{
-		// The switched-off turn has nothing to answer with once the model reaches
-		// for a tool, and it ends as a refusal rather than quietly doing the one
-		// thing the learner asked it not to do.
-		{name: "switched off", policy: rag.KnowledgeDisabled, wantErr: true, wantTools: 0, wantModels: 1},
-		{name: "switched on", policy: rag.KnowledgePreferred, wantErr: false, wantTools: 1, wantModels: 2},
+		{name: "switched off", policy: rag.KnowledgeDisabled, wantTools: 0, wantModels: 2},
+		{name: "switched on", policy: rag.KnowledgePreferred, wantTools: 1, wantModels: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var executions atomic.Int32
@@ -81,11 +76,8 @@ func TestRunnerSwitchedOffTurnCannotRunACapabilityTheModelAsksFor(t *testing.T) 
 			input := testRunContext()
 			input.KnowledgePolicy = tc.policy
 			result, err := runner.Run(context.Background(), input, newEventCollector())
-			if tc.wantErr && err == nil {
-				t.Fatal("a capability-free turn carried out the tool call anyway")
-			}
-			if !tc.wantErr && err != nil {
-				t.Fatalf("%s: %v", tc.name, err)
+			if err != nil {
+				t.Fatalf("%s: the turn failed instead of answering: %v", tc.name, err)
 			}
 			if int(executions.Load()) != tc.wantTools {
 				t.Fatalf("%s: tool executed %d times, want %d", tc.name, executions.Load(), tc.wantTools)
@@ -96,11 +88,42 @@ func TestRunnerSwitchedOffTurnCannotRunACapabilityTheModelAsksFor(t *testing.T) 
 			if fake.CallCount() != tc.wantModels {
 				t.Fatalf("%s: generations = %d, want %d", tc.name, fake.CallCount(), tc.wantModels)
 			}
+			if strings.TrimSpace(result.Answer) == "" {
+				t.Fatalf("%s: the turn produced no answer text", tc.name)
+			}
 			for _, recorded := range steps.steps {
 				if tc.wantTools == 0 && strings.TrimSpace(recorded.ToolName) != "" {
 					t.Fatalf("the ledger names a capability this turn was not given: %s", recorded.ToolName)
 				}
 			}
 		})
+	}
+}
+
+// The second half of the same promise. A provider that ignores tool_choice=none and
+// answers with a tool call every time must not end the turn in failure: the calls
+// are dropped and the learner gets readable text, because switching a capability off
+// is not the same as cancelling the question.
+func TestRunnerCapabilityFreeTurnNeverEndsInFailureOnToolCalls(t *testing.T) {
+	var executions atomic.Int32
+	fake := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {
+		return fakeToolCall(call, "topic-1"), nil
+	}}
+	runner := mustRunner(t, fake, StaticToolRegistry{Registered: []tool.BaseTool{mustFakeTool(t, &executions)}}, newMemoryStepRepository(), DefaultRunnerConfig())
+
+	input := testRunContext()
+	input.KnowledgePolicy = rag.KnowledgeDisabled
+	result, err := runner.Run(context.Background(), input, newEventCollector())
+	if err != nil {
+		t.Fatalf("a capability-free turn failed the learner out of a provider that ignored tool_choice: %v", err)
+	}
+	if executions.Load() != 0 {
+		t.Fatalf("the turn ran a tool %d times", executions.Load())
+	}
+	if strings.TrimSpace(result.Answer) == "" {
+		t.Fatal("the turn answered with nothing")
+	}
+	if result.Answer != CapabilityFreeEmptyAnswer {
+		t.Fatalf("the turn neither got a plain answer nor used the honest fallback: %q", result.Answer)
 	}
 }
