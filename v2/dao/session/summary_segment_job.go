@@ -51,6 +51,11 @@ func (r *Repository) UpsertSummarySegmentJob(ctx context.Context, job *model.Ses
 	if job.AvailableAt.IsZero() {
 		job.AvailableAt = time.Now()
 	}
+	// The stored timestamp has millisecond precision, and MySQL rounds what it
+	// is given. Quantizing before the write keeps the value that comes back
+	// equal to the value that went in, so a job that is due now is not read
+	// back as due half a millisecond from now.
+	job.AvailableAt = quantizeSummarySegmentTime(job.AvailableAt)
 	var owned int64
 	if err := r.db.WithContext(ctx).Model(&model.Session{}).
 		Where("id = ? AND user_id = ?", job.SessionID, job.UserID).
@@ -142,6 +147,9 @@ func (r *Repository) ListDueSummarySegmentJobs(ctx context.Context, limit, maxAt
 	if r == nil || r.db == nil || limit < 1 || limit > 200 || maxAttempts < 1 || maxAttempts > 10 || now.IsZero() {
 		return nil, fmt.Errorf("invalid summary segment job query")
 	}
+	// The comparison is made on the precision the column holds, so a job that
+	// was written as due now is listed as due.
+	now = quantizeSummarySegmentTime(now)
 	var jobs []model.SessionSummarySegmentJob
 	err := r.db.WithContext(ctx).Model(&model.SessionSummarySegmentJob{}).
 		Select("session_summary_segment_jobs.*").
@@ -186,6 +194,10 @@ func (r *Repository) ClaimSummarySegmentJob(ctx context.Context, userID int64, j
 	if r == nil || r.db == nil || userID <= 0 || strings.TrimSpace(jobID) == "" || now.IsZero() || lease <= 0 || maxAttempts < 1 || maxAttempts > 10 {
 		return nil, fmt.Errorf("invalid summary segment job claim")
 	}
+	// The comparison is made on the precision the column holds, on both
+	// sides. Otherwise a job written as due now can read back as due half a
+	// millisecond from now, and the claim refuses a job that is ready.
+	now = quantizeSummarySegmentTime(now)
 	var claimed *model.SessionSummarySegmentJob
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var job model.SessionSummarySegmentJob
@@ -200,7 +212,7 @@ func (r *Repository) ClaimSummarySegmentJob(ctx context.Context, userID int64, j
 			return ErrSummarySegmentJobConflict
 		}
 		token := uuid.NewString()
-		leaseEnds := now.Add(lease)
+		leaseEnds := quantizeSummarySegmentTime(now.Add(lease))
 		result := tx.Model(&model.SessionSummarySegmentJob{}).
 			Where("id = ? AND user_id = ? AND status = ? AND desired_message_id = ?",
 				job.ID, userID, model.SessionSummarySegmentJobPending, job.DesiredMessageID).
@@ -239,6 +251,7 @@ func (r *Repository) CompleteSummarySegmentJob(ctx context.Context, claimed *mod
 	if claimed == nil {
 		return fmt.Errorf("summary segment job is required")
 	}
+	now = quantizeSummarySegmentTime(now)
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var job model.SessionSummarySegmentJob
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
@@ -295,8 +308,11 @@ func (r *Repository) RetrySummarySegmentJob(ctx context.Context, claimed *model.
 	var completedAt any
 	if claimed.Attempts >= maxAttempts {
 		status = model.SessionSummarySegmentJobFailed
-		completedAt = time.Now()
+		completedAt = quantizeSummarySegmentTime(time.Now())
 	}
+	// The retry time is quantized for the same reason the claim time is: a
+	// value that was meant to be due now must read back as due now.
+	availableAt = quantizeSummarySegmentTime(availableAt)
 	result := r.db.WithContext(ctx).Model(&model.SessionSummarySegmentJob{}).
 		Where("id = ? AND user_id = ? AND status = ? AND lease_token = ?",
 			claimed.ID, claimed.UserID, model.SessionSummarySegmentJobProcessing, claimed.LeaseToken).
@@ -322,6 +338,10 @@ func (r *Repository) RecoverExpiredSummarySegmentJobs(ctx context.Context, now t
 	if r == nil || r.db == nil || now.IsZero() || maxAttempts < 1 {
 		return 0, fmt.Errorf("invalid summary segment job recovery")
 	}
+	// The comparison is made on the precision the column holds, so a lease
+	// that has just expired is recovered rather than waiting for the next
+	// millisecond to tick over.
+	now = quantizeSummarySegmentTime(now)
 	var affected int64
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		failed := tx.Model(&model.SessionSummarySegmentJob{}).
