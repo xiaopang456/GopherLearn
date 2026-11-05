@@ -47,7 +47,6 @@ func NewMemoryContextSupply(store repository.Repository, config MemoryAccessConf
 	return service.NewMemoryContextSupply(store, authorizer, config.Search)
 }
 
-//
 // It exists so the opt-in has exactly one door. Handing a deployment
 // service.NewLearningTopicGrant directly would mean the base grant, the store and the
 // bounds are assembled by whoever happened to want the feature; this keeps the pairing with
