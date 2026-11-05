@@ -31,7 +31,7 @@ func entryConfigFile(t *testing.T, modify func(string) string) string {
 	}
 	text := strings.ReplaceAll(string(raw), `key = ""`, `key = "synthetic-isolated-test-key-at-least-32-characters"`)
 	text = strings.ReplaceAll(text, `chatKey = ""`, `chatKey = "synthetic-provider-never-sent"`)
-	text = strings.ReplaceAll(text, `embeddingKey = ""`, `embeddingKey = "synthetic-embedding-never-sent"`)
+	text = strings.ReplaceAll(text, `embeddingApiKey = ""`, `embeddingApiKey = "synthetic-embedding-never-sent"`)
 	text = strings.ReplaceAll(text, `storageDir = "data/v2-isolated/knowledge"`, fmt.Sprintf("storageDir = %q", filepath.ToSlash(t.TempDir())))
 	text += `
 [ordinaryChat]

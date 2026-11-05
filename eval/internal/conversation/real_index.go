@@ -107,7 +107,6 @@ func BuildSharedIndex(ctx context.Context, repository string, env RealEnvironmen
 	}
 	settings.Entry.ChatBaseURL = wire.URL + "/v1"
 	settings.Config.RagRerankEndpoint = wire.URL + "/v1/rerank"
-	settings.Config.RagBaseUrl = wire.URL + "/v1"
 	settings.Config.RagEmbeddingBaseURL = wire.URL + "/v1"
 	settings.Config.JwtConfig.Key, err = randomHex(32)
 	if err != nil {

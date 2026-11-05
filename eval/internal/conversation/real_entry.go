@@ -191,7 +191,7 @@ func realSettings(repository, storage string, env RealEnvironment) (*entry.Setti
 	}
 	settings.Entry.ChatModel = env.ChatModel
 	settings.Entry.ChatKey = "placeholder-proxy-injected"
-	settings.Entry.EmbeddingKey = "placeholder-proxy-injected"
+	settings.Config.RagModelConfig.RagEmbeddingAPIKey = "placeholder-proxy-injected"
 	settings.Config.RagModelConfig.RagEmbeddingModel = env.EmbeddingModel
 	settings.Config.RagModelConfig.RagRerankModel = env.RerankModel
 	settings.Config.RagModelConfig.RagChatModelName = env.ChatModel
@@ -398,7 +398,6 @@ func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, que
 	}
 	settings.Entry.ChatBaseURL = wire.URL + "/v1"
 	settings.Config.RagRerankEndpoint = wire.URL + "/v1/rerank"
-	settings.Config.RagBaseUrl = wire.URL + "/v1"
 	settings.Config.RagEmbeddingBaseURL = wire.URL + "/v1"
 	settings.Config.JwtConfig.Key, err = randomHex(32)
 	if err != nil {

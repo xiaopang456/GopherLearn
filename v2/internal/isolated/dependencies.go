@@ -48,7 +48,7 @@ func ProductionDependencies(settings *Settings) Dependencies {
 			return openai.NewChatModel(ctx, &openai.ChatModelConfig{BaseURL: s.Entry.ChatBaseURL, Model: s.Entry.ChatModel, APIKey: s.Entry.ChatKey, ExtraFields: aihelper.ThinkingExtraFields(dialect, false)})
 		},
 		Embedder: func(ctx context.Context, c *config.Config) (embedding.Embedder, error) {
-			return embeddingArk.NewEmbedder(ctx, &embeddingArk.EmbeddingConfig{BaseURL: c.RagEmbeddingBaseURL, Model: c.RagEmbeddingModel, APIKey: settings.Entry.EmbeddingKey})
+			return embeddingArk.NewEmbedder(ctx, &embeddingArk.EmbeddingConfig{BaseURL: c.RagEmbeddingBaseURL, Model: c.RagEmbeddingModel, APIKey: c.RagEmbeddingAPIKey})
 		},
 		Chunks: func(client *redisclient.Client, dim int) (ChunkStore, error) {
 			return rag.NewRedisChunkRepository(client, dim)

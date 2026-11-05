@@ -20,7 +20,7 @@ key = "a-jwt-secret-of-at-least-thirty-two-bytes"
 embeddingModel = "qwen3.7-text-embedding"
 embeddingBaseUrl = "https://embedding.example.invalid/v1"
 chatModelName = "qwen3.8-max"
-baseUrl = "https://chat.example.invalid/v1"
+embeddingApiKey = "synthetic-key-never-sent-upstream"
 dimension = 1024
 rerankEnabled = true
 rerankEndpoint = "https://rerank.example.invalid/v1/rerank"
@@ -109,7 +109,7 @@ key = "a-jwt-secret-of-at-least-thirty-two-bytes"
 embeddingModel = "qwen3.7-text-embedding"
 embeddingBaseUrl = "https://embedding.example.invalid/v1"
 chatModelName = "qwen3.8-max"
-baseUrl = "https://chat.example.invalid/v1"
+embeddingApiKey = "synthetic-key-never-sent-upstream"
 dimension = 1024
 rerankEnabled = false
 `
@@ -158,6 +158,7 @@ func TestLoadExplicitForSchemaIgnoresAnUnknownRerankProvider(t *testing.T) {
 
 func TestRerankProviderValidation(t *testing.T) {
 	base := defaultConfig().RagModelConfig
+	base.RagEmbeddingAPIKey = "synthetic-key-never-sent-upstream"
 	base.RagRerankEnabled = true
 	base.RagRerankToken = strings.Repeat("k", 32)
 
