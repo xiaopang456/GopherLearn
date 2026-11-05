@@ -148,13 +148,16 @@ var _ interface {
 	GetWhiteboard(context.Context, int64, string) (*model.SessionWhiteboard, error)
 	GetSummarySegmentWatermark(context.Context, int64, string) (uint, int, error)
 	ListSummarySegments(context.Context, int64, string, int) ([]model.SessionSummarySegment, error)
+	GetLatestSummarySegment(context.Context, int64, string) (*model.SessionSummarySegment, error)
 	SaveSummarySegmentAndWhiteboard(context.Context, *model.SessionSummarySegment, *model.SessionWhiteboard, uint64) error
 	NextSummarySegmentSeq(context.Context, int64, string) (int, error)
 	ListDueSummarySegmentJobs(context.Context, int, int, time.Time) ([]model.SessionSummarySegmentJob, error)
 	ClaimSummarySegmentJob(context.Context, int64, string, time.Time, time.Duration, int) (*model.SessionSummarySegmentJob, error)
-	CompleteSummarySegmentJob(context.Context, *model.SessionSummarySegmentJob, time.Time) error
+	CompleteSummarySegmentJob(context.Context, *model.SessionSummarySegmentJob, uint, time.Time) error
 	RetrySummarySegmentJob(context.Context, *model.SessionSummarySegmentJob, string, time.Time, int) error
 	RecoverExpiredSummarySegmentJobs(context.Context, time.Time, int) (int64, error)
 	ListSummarySegmentGaps(context.Context, int) ([]model.SummarySegmentGap, error)
 	UpsertSummarySegmentJob(context.Context, *model.SessionSummarySegmentJob) error
+	GetSummarySegmentJobBySession(context.Context, int64, string) (*model.SessionSummarySegmentJob, error)
+	TakeOverSummarySegmentJob(context.Context, int64, string, uint, uint, time.Time, time.Duration) (*model.SessionSummarySegmentJob, error)
 } = (*Repository)(nil)

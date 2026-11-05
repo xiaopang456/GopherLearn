@@ -57,6 +57,26 @@ type SummarySegmentTriggerRepository interface {
 	UpsertSummarySegmentJob(ctx context.Context, job *model.SessionSummarySegmentJob) error
 }
 
+// SummarySegmentEnqueuer is what the service calls after a turn is answered.
+//
+// It is the write side of the layered summary. The enqueue itself makes no
+// model call, and it happens after the answer was stored, so nothing about it
+// can make a learner wait.
+type SummarySegmentEnqueuer interface {
+	Consider(ctx context.Context, userID int64, sessionID string, latestMessageID uint) (TriggerOutcome, error)
+}
+
+// discardSummarySegmentEnqueuer drops the enqueue.
+type discardSummarySegmentEnqueuer struct{}
+
+func (discardSummarySegmentEnqueuer) Consider(context.Context, int64, string, uint) (TriggerOutcome, error) {
+	return TriggerOutcome{}, nil
+}
+
+// DiscardSummarySegmentEnqueues is the enqueuer a deployment uses when the
+// layered summary is not running.
+var DiscardSummarySegmentEnqueues SummarySegmentEnqueuer = discardSummarySegmentEnqueuer{}
+
 // SummarySegmentTrigger enqueues a segment when a turn leaves enough
 // unsummarized conversation behind.
 type SummarySegmentTrigger struct {
@@ -108,9 +128,10 @@ const (
 // stored. The segment is wanted when the conversation has grown past what the
 // raw messages can carry.
 //
-// The enqueue names the session's own watermark as the start, so the segment
-// covers only the turns that are not covered yet, and it never moves the
-// start backwards: a job that is already running keeps its start.
+// The enqueue names the first turn after the session's own watermark as the
+// start, so the segment covers only the turns that are not covered yet, and it
+// never moves the start backwards: a job that is already running keeps its
+// start.
 func (t *SummarySegmentTrigger) Consider(ctx context.Context, userID int64, sessionID string, latestMessageID uint) (TriggerOutcome, error) {
 	if t == nil || t.repository == nil {
 		return TriggerOutcome{}, fmt.Errorf("summary segment trigger is not initialized")
@@ -148,9 +169,12 @@ func (t *SummarySegmentTrigger) Consider(ctx context.Context, userID int64, sess
 		UserID:           userID,
 		SessionID:        sessionID,
 		DesiredMessageID: latestMessageID,
-		StartMessageID:   watermark,
-		Status:           model.SessionSummarySegmentJobPending,
-		AvailableAt:      t.now(),
+		// The start is the first turn after the watermark, not the watermark
+		// itself: the watermark is the last turn a segment already covers, and
+		// a segment that covers it again would answer for a turn twice.
+		StartMessageID: watermark + 1,
+		Status:         model.SessionSummarySegmentJobPending,
+		AvailableAt:    t.now(),
 	}
 	if err := t.repository.UpsertSummarySegmentJob(ctx, job); err != nil {
 		return outcome, err

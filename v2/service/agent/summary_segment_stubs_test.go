@@ -83,10 +83,17 @@ func (s *stubSegmentSource) ListSummarySegmentMessages(_ context.Context, userID
 	if s.messagesErr != nil {
 		return nil, s.messagesErr
 	}
-	if limit > 0 && len(s.messages) > limit {
-		return s.messages[:limit], nil
+	// The range is inclusive of both ends, the way the repository reads it.
+	var out []model.Message
+	for _, message := range s.messages {
+		if message.ID >= startMessageID && message.ID <= endMessageID {
+			out = append(out, message)
+		}
 	}
-	return s.messages, nil
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 func (s *stubSegmentSource) GetWhiteboard(_ context.Context, userID int64, sessionID string) (*model.SessionWhiteboard, error) {
@@ -103,6 +110,14 @@ func (s *stubSegmentSource) GetSummarySegmentWatermark(_ context.Context, userID
 
 func (s *stubSegmentSource) ListSummarySegments(_ context.Context, userID int64, sessionID string, limit int) ([]model.SessionSummarySegment, error) {
 	return s.segments, nil
+}
+
+func (s *stubSegmentSource) GetLatestSummarySegment(_ context.Context, userID int64, sessionID string) (*model.SessionSummarySegment, error) {
+	if len(s.segments) == 0 {
+		return nil, model.ErrSummarySegmentNotFound
+	}
+	latest := s.segments[len(s.segments)-1]
+	return &latest, nil
 }
 
 // stubSegmentSink is what the producer writes to.
@@ -178,11 +193,16 @@ func (r *stubTriggerRepository) UpsertSummarySegmentJob(_ context.Context, job *
 	return nil
 }
 
-// stubFallbackRepository is what the fallback reads.
+// stubFallbackRepository is what the fallback reads and writes.
 type stubFallbackRepository struct {
 	messages    []model.Message
 	watermark   uint
 	messagesErr error
+	job         *model.SessionSummarySegmentJob
+	taken       *model.SessionSummarySegmentJob
+	takeoverErr error
+	completed   []*model.SessionSummarySegmentJob
+	retried     []*model.SessionSummarySegmentJob
 }
 
 func (r *stubFallbackRepository) ListSummarySegmentMessages(_ context.Context, userID int64, sessionID string, startMessageID, endMessageID uint, limit int) ([]model.Message, error) {
@@ -194,6 +214,37 @@ func (r *stubFallbackRepository) ListSummarySegmentMessages(_ context.Context, u
 
 func (r *stubFallbackRepository) GetSummarySegmentWatermark(_ context.Context, userID int64, sessionID string) (uint, int, error) {
 	return r.watermark, 1, nil
+}
+
+func (r *stubFallbackRepository) GetSummarySegmentJobBySession(_ context.Context, userID int64, sessionID string) (*model.SessionSummarySegmentJob, error) {
+	if r.job == nil {
+		return nil, model.ErrSummarySegmentJobNotFound
+	}
+	return r.job, nil
+}
+
+func (r *stubFallbackRepository) TakeOverSummarySegmentJob(_ context.Context, userID int64, sessionID string, desired, start uint, now time.Time, lease time.Duration) (*model.SessionSummarySegmentJob, error) {
+	if r.takeoverErr != nil {
+		return nil, r.takeoverErr
+	}
+	taken := &model.SessionSummarySegmentJob{
+		ID: "fallback-job", UserID: userID, SessionID: sessionID,
+		DesiredMessageID: desired, StartMessageID: start,
+		Status: model.SessionSummarySegmentJobProcessing, Attempts: 1,
+		LeaseToken: "fallback-token",
+	}
+	r.taken = taken
+	return taken, nil
+}
+
+func (r *stubFallbackRepository) CompleteSummarySegmentJob(_ context.Context, claimed *model.SessionSummarySegmentJob, coveredThrough uint, now time.Time) error {
+	r.completed = append(r.completed, claimed)
+	return nil
+}
+
+func (r *stubFallbackRepository) RetrySummarySegmentJob(_ context.Context, claimed *model.SessionSummarySegmentJob, errorCode string, availableAt time.Time, maxAttempts int) error {
+	r.retried = append(r.retried, claimed)
+	return nil
 }
 
 // errStubProducer fails on demand.
@@ -247,6 +298,14 @@ func (r *stubSegmentRepository) ListSummarySegments(_ context.Context, userID in
 	return r.segments, nil
 }
 
+func (r *stubSegmentRepository) GetLatestSummarySegment(_ context.Context, userID int64, sessionID string) (*model.SessionSummarySegment, error) {
+	if len(r.segments) == 0 {
+		return nil, model.ErrSummarySegmentNotFound
+	}
+	latest := r.segments[len(r.segments)-1]
+	return &latest, nil
+}
+
 func (r *stubSegmentRepository) SaveSummarySegmentAndWhiteboard(_ context.Context, segment *model.SessionSummarySegment, board *model.SessionWhiteboard, expectedVersion uint64) error {
 	return nil
 }
@@ -263,7 +322,7 @@ func (r *stubSegmentRepository) ClaimSummarySegmentJob(_ context.Context, userID
 	return nil, errors.New("nothing to claim")
 }
 
-func (r *stubSegmentRepository) CompleteSummarySegmentJob(_ context.Context, claimed *model.SessionSummarySegmentJob, now time.Time) error {
+func (r *stubSegmentRepository) CompleteSummarySegmentJob(_ context.Context, claimed *model.SessionSummarySegmentJob, coveredThrough uint, now time.Time) error {
 	return nil
 }
 
@@ -282,4 +341,12 @@ func (r *stubSegmentRepository) ListSummarySegmentGaps(_ context.Context, limit 
 func (r *stubSegmentRepository) UpsertSummarySegmentJob(_ context.Context, job *model.SessionSummarySegmentJob) error {
 	r.upserted = job
 	return nil
+}
+
+func (r *stubSegmentRepository) GetSummarySegmentJobBySession(_ context.Context, userID int64, sessionID string) (*model.SessionSummarySegmentJob, error) {
+	return nil, model.ErrSummarySegmentJobNotFound
+}
+
+func (r *stubSegmentRepository) TakeOverSummarySegmentJob(_ context.Context, userID int64, sessionID string, desired, start uint, now time.Time, lease time.Duration) (*model.SessionSummarySegmentJob, error) {
+	return nil, model.ErrSummarySegmentJobConflict
 }

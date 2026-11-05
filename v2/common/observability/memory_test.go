@@ -73,18 +73,18 @@ func TestMemoryRecorderBoundsTheWhiteboardAndSegmentLabels(t *testing.T) {
 		snapshot.Totals["whiteboard_dropped_done_total"] != 8 {
 		t.Fatalf("unexpected whiteboard totals: %#v", snapshot.Totals)
 	}
-	if snapshot.Counters["whiteboard_fabricated_batches_total"] != 1 ||
-		snapshot.Counters["whiteboard_suspicious_delete_batches_total"] != 1 ||
-		snapshot.Counters["whiteboard_missed_update_batches_total"] != 1 {
+	if snapshot.Counters["whiteboard_fabricated_batches_total{mode=off}"] != 1 ||
+		snapshot.Counters["whiteboard_suspicious_delete_batches_total{mode=off}"] != 1 ||
+		snapshot.Counters["whiteboard_missed_update_batches_total{mode=off}"] != 1 {
 		t.Fatalf("unexpected whiteboard batch counters: %#v", snapshot.Counters)
 	}
-	if snapshot.Counters["summary_segment_total{outcome=failed,reason=other}"] != 1 {
+	if snapshot.Counters["summary_segment_total{mode=off,outcome=failed,reason=other}"] != 1 {
 		t.Fatalf("an unnamed failure reason was not bounded: %#v", snapshot.Counters)
 	}
-	if snapshot.Counters["summary_segment_total{outcome=generated,reason=none}"] != 1 {
+	if snapshot.Counters["summary_segment_total{mode=off,outcome=generated,reason=none}"] != 1 {
 		t.Fatalf("unexpected segment counters: %#v", snapshot.Counters)
 	}
-	if snapshot.Counters["summary_segment_failed_total{reason=other}"] != 1 {
+	if snapshot.Counters["summary_segment_failed_total{mode=off,reason=other}"] != 1 {
 		t.Fatalf("unexpected segment failure counters: %#v", snapshot.Counters)
 	}
 	if snapshot.Totals["summary_segment_points_total"] != 4 ||
@@ -95,5 +95,46 @@ func TestMemoryRecorderBoundsTheWhiteboardAndSegmentLabels(t *testing.T) {
 		if strings.Contains(line, secret) {
 			t.Fatalf("log format leaked caller text: %q", line)
 		}
+	}
+}
+
+// The counters carry the mode, because a shadow run and an applied run answer
+// different questions: a shadow run is asked how well the write side works,
+// an applied run is asked how well the whole thing works. Numbers that cannot
+// be told apart are numbers that cannot be read.
+func TestMemoryRecorderLabelsTheCountersWithTheMode(t *testing.T) {
+	recorder := NewMemoryRecorder(nil)
+	recorder.SetMode(MemoryModeShadow)
+	recorder.SummarySegmentJob("failed", "model_error", 0)
+	recorder.SummarySegmentFallback("generation_failed", 100)
+
+	snapshot := recorder.Snapshot()
+	if snapshot.Mode != MemoryModeShadow {
+		t.Fatalf("the snapshot reports mode %q", snapshot.Mode)
+	}
+	if snapshot.Counters["summary_segment_job_total{mode=shadow,status=failed,error_code=model_error}"] != 1 {
+		t.Fatalf("the job counter is not labelled with the mode: %#v", snapshot.Counters)
+	}
+	if snapshot.Counters["summary_segment_fallback_total{mode=shadow,reason=generation_failed}"] != 1 {
+		t.Fatalf("the fallback counter is not labelled with the mode: %#v", snapshot.Counters)
+	}
+	// The same counters under a different mode are separate numbers.
+	recorder.SetMode(MemoryModeOn)
+	recorder.SummarySegmentJob("completed", "", 0)
+	snapshot = recorder.Snapshot()
+	if snapshot.Counters["summary_segment_job_total{mode=on,status=completed,error_code=none}"] != 1 {
+		t.Fatalf("the applied mode is not counted separately: %#v", snapshot.Counters)
+	}
+	if snapshot.Counters["summary_segment_job_total{mode=shadow,status=failed,error_code=model_error}"] != 1 {
+		t.Fatalf("the shadow count was lost: %#v", snapshot.Counters)
+	}
+}
+
+// An unknown mode is not a free-text label.
+func TestMemoryRecorderBoundsTheModeLabel(t *testing.T) {
+	recorder := NewMemoryRecorder(nil)
+	recorder.SetMode("something else")
+	if recorder.Mode() != "other" {
+		t.Fatalf("the mode is %q", recorder.Mode())
 	}
 }

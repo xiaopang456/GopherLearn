@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"testing"
 
 	"GopherAI/config"
@@ -68,6 +69,73 @@ func TestTheSettingsAreCheckedEvenWhenTheModeIsOff(t *testing.T) {
 	conf.SummarySegmentTaskTimeoutSeconds = 30
 	if _, err := SummarySegmentAssemblyConfigFromSettings(conf); err == nil {
 		t.Fatal("a lease shorter than the task timeout must be refused")
+	}
+}
+
+// The shadow mode assembles the write path but not the fallback. The
+// fallback generates a segment before the answer goes out, which is a change
+// to what the learner waits for, and in shadow the context is the old path's
+// job.
+func TestTheShadowModeWritesWithoutChangingWhatTheModelSees(t *testing.T) {
+	settings, err := SummarySegmentAssemblyConfigFromSettings(segmentAssemblySettings("shadow"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assembly, err := NewSummarySegmentAssembly(settings, &stubSegmentRepository{},
+		stubSegmentGeneratorWith(t, []model.SessionSummarySegmentPoint{{Text: "p", EvidenceMessageIDs: []uint{1}}}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assembly == nil || !assembly.Enabled() {
+		t.Fatalf("the shadow mode did not assemble a write path: %+v", assembly)
+	}
+	if assembly.Worker == nil || assembly.Trigger == nil || assembly.Producer == nil {
+		t.Fatalf("the shadow mode did not assemble the write side: %+v", assembly)
+	}
+	if assembly.Fallback != nil {
+		t.Fatal("the shadow mode assembled the fallback, which would change what the model sees")
+	}
+	if assembly.Applies() {
+		t.Fatal("the shadow mode reports itself as applied")
+	}
+}
+
+// The fallback in the shadow mode does nothing rather than fail: the caller
+// asks for it on every turn, and in shadow there is no fallback to make.
+func TestTheFallbackDoesNothingInTheShadowMode(t *testing.T) {
+	settings, err := SummarySegmentAssemblyConfigFromSettings(segmentAssemblySettings("shadow"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assembly, err := NewSummarySegmentAssembly(settings, &stubSegmentRepository{},
+		stubSegmentGeneratorWith(t, []model.SessionSummarySegmentPoint{{Text: "p", EvidenceMessageIDs: []uint{1}}}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := assembly.StartSummarySegmentFallback(context.Background(), 1, "s1", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.FellBack {
+		t.Fatalf("the shadow mode ran a fallback: %+v", record)
+	}
+}
+
+// The applied mode is the only one that reads the new state back.
+func TestOnlyTheAppliedModeReadsTheNewStateBack(t *testing.T) {
+	for mode, expected := range map[string]bool{"off": false, "shadow": false, "on": true} {
+		settings, err := SummarySegmentAssemblyConfigFromSettings(segmentAssemblySettings(mode))
+		if err != nil {
+			t.Fatal(err)
+		}
+		assembly, err := NewSummarySegmentAssembly(settings, &stubSegmentRepository{},
+			stubSegmentGeneratorWith(t, []model.SessionSummarySegmentPoint{{Text: "p", EvidenceMessageIDs: []uint{1}}}), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if assembly != nil && assembly.Applies() != expected {
+			t.Fatalf("the %s mode applies = %v, want %v", mode, assembly.Applies(), expected)
+		}
 	}
 }
 

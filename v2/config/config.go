@@ -381,9 +381,14 @@ type AgentConfig struct {
 	EpisodeMaxOutputTokens          int    `toml:"episodeMaxOutputTokens"`
 	EpisodeMaxMessages              int    `toml:"episodeMaxMessages"`
 
-	// SummarySegmentMode decides whether the layered summary writes anything:
-	// "off" leaves the rolling summary in charge, "on" lets the segment
-	// worker run.
+	// SummarySegmentMode decides whether the layered summary writes anything
+	// and whether the new state is read back:
+	//
+	//   - "off" writes nothing.
+	//   - "shadow" writes the segments and the board, but the context still
+	//     comes from the old path. The write side is watched without changing
+	//     what the model sees.
+	//   - "on" reads the new state back.
 	//
 	// The default is off. The tables and the worker exist, but nothing reads
 	// the segments yet, and a segment that is written and never read is a
@@ -1184,9 +1189,9 @@ func (c AgentConfig) Validate() error {
 		return fmt.Errorf("summaryFailureCooldownSeconds must be between 1 and 600")
 	}
 	switch c.SummarySegmentMode {
-	case "off", "on":
+	case "off", "shadow", "on":
 	default:
-		return fmt.Errorf("summarySegmentMode must be off or on")
+		return fmt.Errorf("summarySegmentMode must be off, shadow or on")
 	}
 	if c.SummarySegmentWorkerCount < 1 || c.SummarySegmentWorkerCount > 16 ||
 		c.SummarySegmentQueueSize < c.SummarySegmentWorkerCount || c.SummarySegmentQueueSize > 1000 {

@@ -50,8 +50,9 @@ type SummarySegmentSource interface {
 	// GetSummarySegmentWatermark returns the message id the session's segments
 	// cover and the next sequence number.
 	GetSummarySegmentWatermark(ctx context.Context, userID int64, sessionID string) (uint, int, error)
-	// ListSummarySegments returns a session's segments in order.
-	ListSummarySegments(ctx context.Context, userID int64, sessionID string, limit int) ([]model.SessionSummarySegment, error)
+	// GetLatestSummarySegment returns the session's newest segment, which is
+	// the one before the batch the generator is about to write.
+	GetLatestSummarySegment(ctx context.Context, userID int64, sessionID string) (*model.SessionSummarySegment, error)
 }
 
 // SummarySegmentSink is what a producer writes to.
@@ -131,12 +132,19 @@ func (p *ModelSummarySegmentProducer) ProduceSegment(ctx context.Context, job *m
 		return SummarySegmentOutcome{}, fmt.Errorf("summary segment job is required")
 	}
 	// The batch is fixed before anything else, and it is the same batch the
-	// last attempt read: the job's start does not move because nothing was
-	// written, and the target only ever moves forward with new turns.
+	// last attempt read: the end of the batch is frozen when the batch starts,
+	// so a target that moved forward while the attempt was retried does not
+	// widen the batch.
 	start := job.StartMessageID
-	target := job.DesiredMessageID
-	if target <= start {
-		return SummarySegmentOutcome{}, fmt.Errorf("%w: the job covers no turns", ErrSummarySegmentMessagesUnavailable)
+	target := job.BatchMessageID
+	if target == 0 {
+		target = job.DesiredMessageID
+	}
+	if target < start {
+		// There is nothing between the start of the batch and its end. The
+		// batch is accounted for without a segment, because there are no
+		// turns to write about.
+		return SummarySegmentOutcome{NothingToCover: true, StartMessageID: start, EndMessageID: target}, nil
 	}
 	// The batch is read from the start and stops at the target. How many turns
 	// that is depends on the conversation, not on the difference between the
@@ -147,7 +155,9 @@ func (p *ModelSummarySegmentProducer) ProduceSegment(ctx context.Context, job *m
 		return SummarySegmentOutcome{}, fmt.Errorf("%w: %v", ErrSummarySegmentMessagesUnavailable, err)
 	}
 	if len(messages) == 0 {
-		return SummarySegmentOutcome{}, fmt.Errorf("%w: no turns in the batch", ErrSummarySegmentMessagesUnavailable)
+		// The range holds no turns. The batch is accounted for without a
+		// segment: the turns it would have covered are not there to cover.
+		return SummarySegmentOutcome{NothingToCover: true, StartMessageID: start, EndMessageID: target}, nil
 	}
 	// The batch ends at the last turn that was actually read. A segment that
 	// said it covered more turns than it summarized would answer for turns
@@ -191,12 +201,13 @@ func (p *ModelSummarySegmentProducer) readContext(ctx context.Context, job *mode
 		whiteboardVersion = board.Version
 	}
 	previousSegment := ""
-	segments, err := p.source.ListSummarySegments(ctx, job.UserID, job.SessionID, 1)
+	segment, err := p.source.GetLatestSummarySegment(ctx, job.UserID, job.SessionID)
 	if err != nil {
-		return "", 0, "", fmt.Errorf("read summary segments: %w", err)
-	}
-	if len(segments) > 0 {
-		previousSegment = segments[len(segments)-1].Content
+		if !errors.Is(err, model.ErrSummarySegmentNotFound) {
+			return "", 0, "", fmt.Errorf("read summary segments: %w", err)
+		}
+	} else if segment != nil {
+		previousSegment = segment.Content
 	}
 	return whiteboardContent, whiteboardVersion, previousSegment, nil
 }

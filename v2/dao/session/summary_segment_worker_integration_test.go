@@ -240,7 +240,7 @@ func TestAJobThatIsDueNowIsClaimableRightAway(t *testing.T) {
 		if err != nil {
 			t.Fatalf("a job that was due was refused on attempt %d: %v", attempt, err)
 		}
-		if err := fixture.repo.CompleteSummarySegmentJob(ctx, claimed, now); err != nil {
+		if err := fixture.repo.CompleteSummarySegmentJob(ctx, claimed, 20, now); err != nil {
 			t.Fatal(err)
 		}
 	}

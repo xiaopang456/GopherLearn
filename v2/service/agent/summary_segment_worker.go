@@ -22,8 +22,10 @@ import (
 // Three properties are what make the retry safe:
 //
 //   - The batch of turns a retry covers is the same batch the failed attempt
-//     covered. A failed segment never lands, so the watermark does not move,
-//     and the next attempt starts where the last one started.
+//     covered. The end of the batch is frozen when the batch starts, so a
+//     target that moved forward while the attempt was retried does not widen
+//     the batch, and a failed segment never lands, so the start does not move
+//     either.
 //   - One session has one job. The row is unique per session and the lease
 //     makes it exclusive, so two workers cannot summarize the same stretch.
 //   - The board moves with the segment or not at all. The segment and the
@@ -41,7 +43,9 @@ type SummarySegmentJobRepository interface {
 	// ClaimSummarySegmentJob takes one job for one worker.
 	ClaimSummarySegmentJob(ctx context.Context, userID int64, jobID string, now time.Time, lease time.Duration, maxAttempts int) (*model.SessionSummarySegmentJob, error)
 	// CompleteSummarySegmentJob records that the job produced its segment.
-	CompleteSummarySegmentJob(ctx context.Context, claimed *model.SessionSummarySegmentJob, now time.Time) error
+	// coveredThrough is the newest turn the segment covers, which is not
+	// always the end of the job's target.
+	CompleteSummarySegmentJob(ctx context.Context, claimed *model.SessionSummarySegmentJob, coveredThrough uint, now time.Time) error
 	// RetrySummarySegmentJob puts a failed job back in the queue.
 	RetrySummarySegmentJob(ctx context.Context, claimed *model.SessionSummarySegmentJob, errorCode string, availableAt time.Time, maxAttempts int) error
 	// RecoverExpiredSummarySegmentJobs requeues the jobs whose worker died.
@@ -65,6 +69,11 @@ type SummarySegmentOutcome struct {
 	WhiteboardVersion uint64
 	// WhiteboardChanges is how many board entries the segment changed.
 	WhiteboardChanges int
+	// NothingToCover says the batch held no turns to summarize.
+	//
+	// Nothing was written in that case, and the batch is accounted for: the
+	// job moves past it instead of reading it again.
+	NothingToCover bool
 }
 
 // ErrSummarySegmentWorkerAlreadyStarted is what a second Start returns.
@@ -323,9 +332,15 @@ func (w *SummarySegmentWorker) process(ctx context.Context, listed model.Session
 	cancel()
 
 	if produceErr == nil {
-		observability.Memory.SummarySegmentJob("completed", "", w.now().Sub(started))
-		w.logf("summary segment written: job=%s seq=%d covered=%d..%d changes=%d",
-			claimed.ID, outcome.SegmentSeq, outcome.StartMessageID, outcome.EndMessageID, outcome.WhiteboardChanges)
+		if outcome.NothingToCover {
+			observability.Memory.SummarySegmentJob("empty", "", w.now().Sub(started))
+			w.logf("summary segment batch held no turns: job=%s batch=%d..%d",
+				claimed.ID, outcome.StartMessageID, outcome.EndMessageID)
+		} else {
+			observability.Memory.SummarySegmentJob("completed", "", w.now().Sub(started))
+			w.logf("summary segment written: job=%s seq=%d covered=%d..%d changes=%d",
+				claimed.ID, outcome.SegmentSeq, outcome.StartMessageID, outcome.EndMessageID, outcome.WhiteboardChanges)
+		}
 	} else {
 		observability.Memory.SummarySegmentJob("failed", summarySegmentErrorCode(produceErr), w.now().Sub(started))
 	}
@@ -333,14 +348,18 @@ func (w *SummarySegmentWorker) process(ctx context.Context, listed model.Session
 	persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancelPersist()
 	if produceErr == nil {
-		if err := w.repository.CompleteSummarySegmentJob(persistCtx, claimed, w.now()); err != nil && ctx.Err() == nil {
+		// The job is finished with what the segment actually covered, not
+		// with what the job asked for. A segment that covers fewer turns than
+		// the target asked for leaves the rest of the turns owed, and the job
+		// has to stay open for them.
+		if err := w.repository.CompleteSummarySegmentJob(persistCtx, claimed, outcome.EndMessageID, w.now()); err != nil && ctx.Err() == nil {
 			w.logf("summary segment worker completion failed: job=%s error_type=%T", claimed.ID, err)
 		}
 		return
 	}
 	// The retry covers the same stretch of turns as the attempt that failed.
-	// The failed segment never landed, so the watermark did not move and the
-	// next attempt starts at the same message.
+	// The failed segment never landed, so the start did not move, and the end
+	// of the batch is still frozen where the failed attempt found it.
 	if err := w.repository.RetrySummarySegmentJob(persistCtx, claimed, summarySegmentErrorCode(produceErr),
 		w.now().Add(w.config.RetryDelay), w.config.MaxAttempts); err != nil && ctx.Err() == nil {
 		w.logf("summary segment worker retry failed: job=%s error_type=%T", claimed.ID, err)

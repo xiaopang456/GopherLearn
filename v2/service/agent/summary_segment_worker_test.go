@@ -20,6 +20,7 @@ type stubSegmentJobRepository struct {
 	due         []model.SessionSummarySegmentJob
 	claimed     []*model.SessionSummarySegmentJob
 	completed   []*model.SessionSummarySegmentJob
+	covered     []uint
 	retried     []*model.SessionSummarySegmentJob
 	recovered   int
 	claimErr    error
@@ -61,16 +62,22 @@ func (r *stubSegmentJobRepository) ClaimSummarySegmentJob(_ context.Context, use
 	job.LeaseToken = "token-" + jobID
 	ends := now.Add(lease)
 	job.LeaseEndsAt = &ends
+	if job.BatchMessageID == 0 {
+		// The batch is frozen on the first attempt of it, the way the
+		// repository freezes it.
+		job.BatchMessageID = job.DesiredMessageID
+	}
 	r.jobs[jobID] = job
 	r.claimed = append(r.claimed, &job)
 	return &job, nil
 }
 
-func (r *stubSegmentJobRepository) CompleteSummarySegmentJob(_ context.Context, claimed *model.SessionSummarySegmentJob, now time.Time) error {
+func (r *stubSegmentJobRepository) CompleteSummarySegmentJob(_ context.Context, claimed *model.SessionSummarySegmentJob, coveredThrough uint, now time.Time) error {
 	if r.completeErr != nil {
 		return r.completeErr
 	}
 	r.completed = append(r.completed, claimed)
+	r.covered = append(r.covered, coveredThrough)
 	return nil
 }
 
@@ -112,6 +119,19 @@ func segmentWorkerConfig() SummarySegmentWorkerConfig {
 	config.ScanInterval = 10 * time.Millisecond
 	config.ReconcileInterval = 10 * time.Millisecond
 	config.RecoveryInterval = 10 * time.Millisecond
+	return config
+}
+
+// segmentFallbackConfig builds a fallback configuration for a test.
+//
+// The lease has to outlast the stage budget, the way it does in a deployment:
+// the fallback holds the session while it generates.
+func segmentFallbackConfig(rawTokenLimit int) SummarySegmentFallbackConfig {
+	config := DefaultSummarySegmentFallbackConfig()
+	config.RawMessageTokenLimit = rawTokenLimit
+	config.StageBudget = time.Second
+	config.Lease = 30 * time.Second
+	config.MaxAttempts = 3
 	return config
 }
 
@@ -163,6 +183,73 @@ func TestTheRetryCoversTheSameTurnsAsTheAttemptThatFailed(t *testing.T) {
 	}
 	if retried.DesiredMessageID != job.DesiredMessageID {
 		t.Fatalf("the retry targets %d, want %d", retried.DesiredMessageID, job.DesiredMessageID)
+	}
+}
+
+// The batch a producer reads ends where the frozen batch ends, not where the
+// target moved to. A retry that reads further is not the same attempt again.
+func TestTheProducerReadsTheFrozenBatchAndNotTheMovedTarget(t *testing.T) {
+	source := &stubSegmentSource{messages: []model.Message{
+		{ID: 100, IsUser: true, Content: "a"},
+		{ID: 200, IsUser: false, Content: "b"},
+		{ID: 400, IsUser: true, Content: "c"},
+	}}
+	sink := &stubSegmentSink{}
+	generator := stubSegmentGeneratorWith(t, []model.SessionSummarySegmentPoint{{Text: "p", EvidenceMessageIDs: []uint{100}}})
+	producer, err := NewModelSummarySegmentProducer(source, sink, generator, DefaultSummarySegmentProducerConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := &model.SessionSummarySegmentJob{
+		UserID: 1, SessionID: "s1",
+		DesiredMessageID: 400, StartMessageID: 100, BatchMessageID: 200,
+	}
+	outcome, err := producer.ProduceSegment(context.Background(), job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.readStart != 100 || source.readEnd != 200 {
+		t.Fatalf("the batch read was %d..%d, want 100..200", source.readStart, source.readEnd)
+	}
+	if outcome.EndMessageID != 200 {
+		t.Fatalf("the segment covers up to %d, want 200", outcome.EndMessageID)
+	}
+}
+
+// A job is finished with what the segment actually covered, not with what the
+// target asked for. A segment that covers fewer turns than the batch holds
+// leaves the rest of the turns owed, and finishing the job with the target
+// would drop them.
+func TestTheJobIsFinishedWithWhatTheSegmentCovered(t *testing.T) {
+	repository := newStubSegmentJobRepository()
+	job := model.SessionSummarySegmentJob{
+		ID: "job-1", UserID: 1, SessionID: "s1",
+		DesiredMessageID: 300, StartMessageID: 100,
+		Status: model.SessionSummarySegmentJobPending, AvailableAt: time.Now(),
+	}
+	repository.jobs[job.ID] = job
+	repository.due = []model.SessionSummarySegmentJob{job}
+	producer := &stubSegmentProducer{outcomes: []SummarySegmentOutcome{
+		{SegmentSeq: 1, StartMessageID: 100, EndMessageID: 150},
+	}}
+
+	worker := newTestWorker(t, repository, producer)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := worker.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop(context.Background())
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && len(repository.completed) == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(repository.completed) == 0 {
+		t.Fatal("the job was never finished")
+	}
+	if repository.covered[0] != 150 {
+		t.Fatalf("the job was finished with %d, want the turn the segment covered 150", repository.covered[0])
 	}
 }
 
@@ -414,7 +501,7 @@ func TestTheFailureReasonIsNamed(t *testing.T) {
 
 // The batch the producer reads must have its ends in order. An inverted
 // range would read the turns between the two ids backwards.
-func TestTheProducerRefusesAnEmptyBatch(t *testing.T) {
+func TestTheProducerAccountsForABatchThatHoldsNoTurns(t *testing.T) {
 	source := &stubSegmentSource{}
 	sink := &stubSegmentSink{}
 	generator := stubSegmentGeneratorWith(t, []model.SessionSummarySegmentPoint{{Text: "p", EvidenceMessageIDs: []uint{100}}})
@@ -425,8 +512,18 @@ func TestTheProducerRefusesAnEmptyBatch(t *testing.T) {
 	job := &model.SessionSummarySegmentJob{
 		UserID: 1, SessionID: "s1", DesiredMessageID: 100, StartMessageID: 100,
 	}
-	if _, err := producer.ProduceSegment(context.Background(), job); err == nil {
-		t.Fatal("a job that covers no turns must fail")
+	outcome, err := producer.ProduceSegment(context.Background(), job)
+	if err != nil {
+		t.Fatalf("a batch that holds no turns is not a failure: %v", err)
+	}
+	if !outcome.NothingToCover {
+		t.Fatalf("the outcome does not say that nothing was covered: %+v", outcome)
+	}
+	if generator.calls != 0 {
+		t.Fatal("the model was asked to summarize turns that are not there")
+	}
+	if sink.segment != nil {
+		t.Fatal("a segment was written for a batch that holds no turns")
 	}
 }
 
@@ -454,8 +551,8 @@ func TestTheTriggerWaitsUntilTheConversationIsBigEnough(t *testing.T) {
 }
 
 // The trigger enqueues once the threshold is reached, and the job it records
-// starts where the last segment stopped.
-func TestTheTriggerEnqueuesWithTheSessionsOwnWatermarkAsTheStart(t *testing.T) {
+// starts after the last segment, not on it.
+func TestTheTriggerStartsAfterTheSessionOwnWatermark(t *testing.T) {
 	messages := make([]model.Message, 0, 12)
 	for index := 0; index < 12; index++ {
 		messages = append(messages, model.Message{ID: uint(200 + index), IsUser: index%2 == 0, Content: "x"})
@@ -475,8 +572,11 @@ func TestTheTriggerEnqueuesWithTheSessionsOwnWatermarkAsTheStart(t *testing.T) {
 	if repository.upserted == nil {
 		t.Fatal("no job was recorded")
 	}
-	if repository.upserted.StartMessageID != 150 {
-		t.Fatalf("the job starts at %d, want the watermark 150", repository.upserted.StartMessageID)
+	// The watermark is the last turn the last segment covered. The next
+	// segment starts after it: a segment that covers it again would answer
+	// for that turn twice.
+	if repository.upserted.StartMessageID != 151 {
+		t.Fatalf("the job starts at %d, want the turn after the watermark 151", repository.upserted.StartMessageID)
 	}
 	if repository.upserted.DesiredMessageID != 211 {
 		t.Fatalf("the job targets %d, want 211", repository.upserted.DesiredMessageID)
@@ -509,9 +609,7 @@ func TestTheFallbackRunsOnlyWhenTheRawConversationIsTooBig(t *testing.T) {
 		{ID: 100, IsUser: true, Content: "a"},
 	}}
 	producer := &stubSegmentProducer{}
-	fallback, err := NewSummarySegmentFallback(repository, producer, SummarySegmentFallbackConfig{
-		RawMessageTokenLimit: 100000, StageBudget: time.Second,
-	})
+	fallback, err := NewSummarySegmentFallback(repository, producer, segmentFallbackConfig(100000))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -525,6 +623,9 @@ func TestTheFallbackRunsOnlyWhenTheRawConversationIsTooBig(t *testing.T) {
 	if record.Reason != summarySegmentFallbackNotNeeded {
 		t.Fatalf("the reason is %q", record.Reason)
 	}
+	if producer.calls != 0 {
+		t.Fatal("the model was asked for a conversation that fits")
+	}
 }
 
 // A fallback that had to run is recorded, and so is one that failed. A
@@ -533,7 +634,7 @@ func TestTheFallbackRecordsWhatItDid(t *testing.T) {
 	repository := &stubFallbackRepository{messages: []model.Message{
 		{ID: 100, IsUser: true, Content: string(make([]byte, 4000))},
 	}}
-	config := SummarySegmentFallbackConfig{RawMessageTokenLimit: 100, StageBudget: time.Second}
+	config := segmentFallbackConfig(100)
 
 	working := &stubSegmentProducer{}
 	fallback, err := NewSummarySegmentFallback(repository, working, config)
@@ -549,6 +650,9 @@ func TestTheFallbackRecordsWhatItDid(t *testing.T) {
 	}
 	if record.Reason != summarySegmentFallbackRan {
 		t.Fatalf("the reason is %q", record.Reason)
+	}
+	if len(repository.completed) != 1 {
+		t.Fatalf("the attempt was not finished: %+v", repository.completed)
 	}
 
 	failing := &stubSegmentProducer{err: errors.New("model refused")}
@@ -566,19 +670,20 @@ func TestTheFallbackRecordsWhatItDid(t *testing.T) {
 	if record.Reason != summarySegmentFallbackFailed {
 		t.Fatalf("the reason is %q", record.Reason)
 	}
+	if len(repository.retried) != 1 {
+		t.Fatalf("the failed attempt was not handed back: %+v", repository.retried)
+	}
 }
 
-// The fallback covers the same stretch the background job would have covered,
-// and it does not move the start.
+// The fallback covers the stretch no segment covers, and it starts after the
+// last turn a segment already covered.
 func TestTheFallbackCoversTheUncoveredStretchOnly(t *testing.T) {
 	repository := &stubFallbackRepository{
 		messages:  []model.Message{{ID: 300, IsUser: true, Content: string(make([]byte, 4000))}},
 		watermark: 150,
 	}
 	producer := &stubSegmentProducer{}
-	fallback, err := NewSummarySegmentFallback(repository, producer, SummarySegmentFallbackConfig{
-		RawMessageTokenLimit: 100, StageBudget: time.Second,
-	})
+	fallback, err := NewSummarySegmentFallback(repository, producer, segmentFallbackConfig(100))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -588,16 +693,115 @@ func TestTheFallbackCoversTheUncoveredStretchOnly(t *testing.T) {
 	if producer.lastJob == nil {
 		t.Fatal("the fallback produced nothing")
 	}
-	if producer.lastJob.StartMessageID != 150 {
-		t.Fatalf("the fallback started at %d, want the watermark 150", producer.lastJob.StartMessageID)
+	if producer.lastJob.StartMessageID != 151 {
+		t.Fatalf("the fallback started at %d, want the turn after the watermark 151", producer.lastJob.StartMessageID)
 	}
 	if producer.lastJob.DesiredMessageID != 300 {
 		t.Fatalf("the fallback targeted %d, want 300", producer.lastJob.DesiredMessageID)
 	}
 }
 
+// The background goes first. While it has the session queued or in flight, the
+// fallback stands back: a second generation of the same stretch would cost
+// twice and race it on the board.
+func TestTheFallbackStandsBackWhileTheBackgroundHasTheSession(t *testing.T) {
+	lease := time.Now().Add(time.Minute)
+	for _, status := range []string{
+		model.SessionSummarySegmentJobPending,
+		model.SessionSummarySegmentJobProcessing,
+	} {
+		repository := &stubFallbackRepository{
+			messages:  []model.Message{{ID: 300, IsUser: true, Content: string(make([]byte, 4000))}},
+			watermark: 150,
+			job: &model.SessionSummarySegmentJob{
+				ID: "job-1", UserID: 1, SessionID: "s1",
+				DesiredMessageID: 300, StartMessageID: 151,
+				Status: status, LeaseEndsAt: &lease,
+			},
+		}
+		producer := &stubSegmentProducer{}
+		fallback, err := NewSummarySegmentFallback(repository, producer, segmentFallbackConfig(100))
+		if err != nil {
+			t.Fatal(err)
+		}
+		record, err := fallback.Decide(context.Background(), 1, "s1", 300)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if record.FellBack {
+			t.Fatalf("the fallback ran next to the background: %+v", record)
+		}
+		if producer.calls != 0 {
+			t.Fatal("the model was asked to summarize a session the background is working on")
+		}
+		if repository.taken != nil {
+			t.Fatal("the fallback took a session the background holds")
+		}
+	}
+}
+
+// When the background gave up, the fallback takes the session. It takes the
+// lease as well, so the background worker cannot start the same generation at
+// the same time.
+func TestTheFallbackTakesTheSessionTheBackgroundGaveUpOn(t *testing.T) {
+	repository := &stubFallbackRepository{
+		messages:  []model.Message{{ID: 300, IsUser: true, Content: string(make([]byte, 4000))}},
+		watermark: 150,
+		job: &model.SessionSummarySegmentJob{
+			ID: "job-1", UserID: 1, SessionID: "s1",
+			DesiredMessageID: 300, StartMessageID: 151,
+			Status: model.SessionSummarySegmentJobFailed, Attempts: 3,
+		},
+	}
+	producer := &stubSegmentProducer{}
+	fallback, err := NewSummarySegmentFallback(repository, producer, segmentFallbackConfig(100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := fallback.Decide(context.Background(), 1, "s1", 300)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !record.FellBack || !record.Succeeded {
+		t.Fatalf("the fallback did not run: %+v", record)
+	}
+	if repository.taken == nil {
+		t.Fatal("the fallback did not take the session")
+	}
+	if repository.taken.LeaseToken == "" {
+		t.Fatal("the fallback took the session without a lease")
+	}
+	if len(repository.completed) != 1 {
+		t.Fatalf("the attempt was not finished: %+v", repository.completed)
+	}
+}
+
+// The fallback does not take a session that somebody else is holding.
+func TestTheFallbackStandsBackWhenTheSessionIsTakenFromUnderIt(t *testing.T) {
+	repository := &stubFallbackRepository{
+		messages:    []model.Message{{ID: 300, IsUser: true, Content: string(make([]byte, 4000))}},
+		watermark:   150,
+		takeoverErr: model.ErrSummarySegmentJobConflict,
+	}
+	producer := &stubSegmentProducer{}
+	fallback, err := NewSummarySegmentFallback(repository, producer, segmentFallbackConfig(100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := fallback.Decide(context.Background(), 1, "s1", 300)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.FellBack {
+		t.Fatalf("the fallback ran although the session was taken: %+v", record)
+	}
+	if producer.calls != 0 {
+		t.Fatal("the model was asked to summarize a session somebody else holds")
+	}
+}
+
 // The reconciler enqueues the sessions that owe a segment, and it starts them
-// at the session's own watermark.
+// after the last segment stopped.
 func TestTheReconcilerEnqueuesTheSessionsThatOweASegment(t *testing.T) {
 	repository := &stubReconcileRepository{
 		gaps:      []model.SummarySegmentGap{{UserID: 1, SessionID: "s1", LatestMessageID: 300}},
@@ -617,8 +821,10 @@ func TestTheReconcilerEnqueuesTheSessionsThatOweASegment(t *testing.T) {
 	if repository.upserted == nil {
 		t.Fatal("no job was recorded")
 	}
-	if repository.upserted.StartMessageID != 120 {
-		t.Fatalf("the job starts at %d, want the watermark 120", repository.upserted.StartMessageID)
+	// The start is the first turn after the watermark: the watermark is the
+	// last turn a segment already covered.
+	if repository.upserted.StartMessageID != 121 {
+		t.Fatalf("the job starts at %d, want the turn after the watermark 121", repository.upserted.StartMessageID)
 	}
 	if repository.upserted.DesiredMessageID != 300 {
 		t.Fatalf("the job targets %d, want 300", repository.upserted.DesiredMessageID)

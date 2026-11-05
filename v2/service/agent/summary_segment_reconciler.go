@@ -53,10 +53,11 @@ func NewSummarySegmentReconciler(repository SummarySegmentReconcileRepository, b
 
 // RunOnce finds the sessions that owe a segment and enqueues them.
 //
-// The enqueue names the session's own watermark as the start, so a segment
-// covers only the turns that are not covered yet. A session that already has
-// a job keeps its job: the job row is unique per session, and the upsert
-// moves its target forward rather than adding a second one.
+// The enqueue names the first turn after the session's own watermark as the
+// start, so a segment covers only the turns that are not covered yet. A
+// session that already has a job keeps its job: the job row is unique per
+// session, and the upsert moves its target forward rather than adding a
+// second one.
 func (r *SummarySegmentReconciler) RunOnce(ctx context.Context) (int, error) {
 	gaps, err := r.repository.ListSummarySegmentGaps(ctx, r.batchSize)
 	if err != nil {
@@ -76,9 +77,12 @@ func (r *SummarySegmentReconciler) RunOnce(ctx context.Context) (int, error) {
 			UserID:           gap.UserID,
 			SessionID:        gap.SessionID,
 			DesiredMessageID: gap.LatestMessageID,
-			StartMessageID:   watermark,
-			Status:           model.SessionSummarySegmentJobPending,
-			AvailableAt:      r.now(),
+			// The start is the first turn after the watermark. The watermark
+			// is the last turn a segment already covers, and covering it
+			// again would answer for a turn twice.
+			StartMessageID: watermark + 1,
+			Status:         model.SessionSummarySegmentJobPending,
+			AvailableAt:    r.now(),
 		}
 		if err := r.repository.UpsertSummarySegmentJob(ctx, job); err != nil {
 			if ctx.Err() != nil {

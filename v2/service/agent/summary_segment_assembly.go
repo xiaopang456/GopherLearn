@@ -26,20 +26,33 @@ type SummarySegmentAssembly struct {
 	// conversation behind. Nil when the mode is off.
 	Trigger *SummarySegmentTrigger
 	// Fallback generates a segment before the answer when the raw
-	// conversation no longer fits. Nil when the mode is off.
+	// conversation no longer fits. Nil when the mode is off or shadow.
 	Fallback *SummarySegmentFallback
 	// Producer is what both the worker and the fallback use.
 	Producer *ModelSummarySegmentProducer
+	// Mode is the mode this assembly runs in.
+	Mode string
 }
 
 // Enabled says whether the write path is assembled.
+//
+// It is false only in the off mode. The shadow mode writes, so it is
+// enabled.
 func (a *SummarySegmentAssembly) Enabled() bool {
 	return a != nil && a.Worker != nil
 }
 
+// Applies says whether the new state is read back.
+//
+// It is true only in the applied mode. The shadow mode writes without being
+// read, which is the whole point of it.
+func (a *SummarySegmentAssembly) Applies() bool {
+	return a != nil && a.Mode == SummarySegmentModeOn
+}
+
 // SummarySegmentAssemblyConfig is what the assembly needs from the settings.
 type SummarySegmentAssemblyConfig struct {
-	// Mode is "off" or "on".
+	// Mode is "off", "shadow" or "on".
 	Mode string
 	// WorkerConfig is the worker's timing and limits.
 	WorkerConfig SummarySegmentWorkerConfig
@@ -51,6 +64,23 @@ type SummarySegmentAssemblyConfig struct {
 	FallbackConfig SummarySegmentFallbackConfig
 }
 
+// The layered summary's modes.
+const (
+	// SummarySegmentModeOff writes nothing.
+	SummarySegmentModeOff = "off"
+	// SummarySegmentModeShadow writes the segments and the board, but the
+	// context still comes from the old path.
+	//
+	// It is the mode for watching the write side: the segments and the board
+	// are produced and stored exactly as they would be in the applied mode,
+	// and their success rate, failure reasons, cost and latency can be read
+	// off the counters. What the model sees is unchanged, so a shadow run
+	// cannot affect a learner.
+	SummarySegmentModeShadow = "shadow"
+	// SummarySegmentModeOn reads the new state back.
+	SummarySegmentModeOn = "on"
+)
+
 // SummarySegmentAssemblyConfigFromSettings reads the assembly's settings.
 //
 // The mode is the one thing that decides whether the write path exists at
@@ -58,6 +88,14 @@ type SummarySegmentAssemblyConfig struct {
 // that a deployment which turns the mode on does not fail on a setting that
 // was never checked.
 func SummarySegmentAssemblyConfigFromSettings(conf config.AgentConfig) (SummarySegmentAssemblyConfig, error) {
+	fallbackBudget := time.Duration(conf.SummarySegmentFallbackBudgetSeconds) * time.Second
+	fallbackLease := time.Duration(conf.SummarySegmentLeaseSeconds) * time.Second
+	if fallbackLease <= fallbackBudget {
+		// The fallback holds the session while it generates. Its lease has to
+		// outlast its own budget, or the background worker would take the
+		// session back while the fallback is still working on it.
+		fallbackLease = fallbackBudget + 5*time.Second
+	}
 	assembly := SummarySegmentAssemblyConfig{
 		Mode: conf.SummarySegmentMode,
 		WorkerConfig: SummarySegmentWorkerConfig{
@@ -84,7 +122,9 @@ func SummarySegmentAssemblyConfigFromSettings(conf config.AgentConfig) (SummaryS
 		},
 		FallbackConfig: SummarySegmentFallbackConfig{
 			RawMessageTokenLimit: conf.SummarySegmentFallbackTokens,
-			StageBudget:          time.Duration(conf.SummarySegmentFallbackBudgetSeconds) * time.Second,
+			StageBudget:          fallbackBudget,
+			Lease:                fallbackLease,
+			MaxAttempts:          conf.SummarySegmentMaxAttempts,
 		},
 	}
 	if err := assembly.WorkerConfig.Validate(); err != nil {
@@ -100,9 +140,9 @@ func SummarySegmentAssemblyConfigFromSettings(conf config.AgentConfig) (SummaryS
 		return SummarySegmentAssemblyConfig{}, err
 	}
 	switch assembly.Mode {
-	case "off", "on":
+	case SummarySegmentModeOff, SummarySegmentModeShadow, SummarySegmentModeOn:
 	default:
-		return SummarySegmentAssemblyConfig{}, fmt.Errorf("summary segment mode must be off or on")
+		return SummarySegmentAssemblyConfig{}, fmt.Errorf("summary segment mode must be off, shadow or on")
 	}
 	return assembly, nil
 }
@@ -111,13 +151,18 @@ func SummarySegmentAssemblyConfigFromSettings(conf config.AgentConfig) (SummaryS
 //
 // It returns nil when the mode is off, so the caller does not have to decide
 // whether the path exists: a nil assembly is the off state.
+//
+// The shadow mode assembles the worker and the trigger but not the fallback.
+// The fallback generates a segment before the answer goes out, which is a
+// change to what the learner waits for; in shadow the context is the old
+// path's job, so the fallback has nothing to do.
 func NewSummarySegmentAssembly(
 	settings SummarySegmentAssemblyConfig,
 	repository SummarySegmentRepository,
 	generator SegmentGenerator,
 	chatModel modelcomponent.ToolCallingChatModel,
 ) (*SummarySegmentAssembly, error) {
-	if settings.Mode == "off" {
+	if settings.Mode == SummarySegmentModeOff {
 		return nil, nil
 	}
 	if repository == nil {
@@ -150,16 +195,33 @@ func NewSummarySegmentAssembly(
 	if err != nil {
 		return nil, err
 	}
-	fallback, err := NewSummarySegmentFallback(repository, producer, settings.FallbackConfig)
-	if err != nil {
-		return nil, err
-	}
-	return &SummarySegmentAssembly{
+	assembly := &SummarySegmentAssembly{
 		Worker:   worker,
 		Trigger:  trigger,
-		Fallback: fallback,
 		Producer: producer,
-	}, nil
+		Mode:     settings.Mode,
+	}
+	if settings.Mode == SummarySegmentModeOn {
+		fallback, err := NewSummarySegmentFallback(repository, producer, settings.FallbackConfig)
+		if err != nil {
+			return nil, err
+		}
+		assembly.Fallback = fallback
+	}
+	return assembly, nil
+}
+
+// Enqueuer returns the part of the write path the service calls after an
+// answer, or nil when the write path is off.
+//
+// It is a method rather than a field so that a caller can ask an assembly
+// that does not exist: the off mode has no assembly at all, and a field
+// access on it would panic.
+func (a *SummarySegmentAssembly) Enqueuer() SummarySegmentEnqueuer {
+	if a == nil || a.Trigger == nil {
+		return nil
+	}
+	return a.Trigger
 }
 
 // SummarySegmentRepository is the storage the write path needs.

@@ -40,6 +40,13 @@ const (
 	SessionSummarySegmentIndexFailed  = "failed"
 )
 
+// ErrSummarySegmentNotFound means the session has no such segment.
+//
+// It lives here rather than in the repository because the writer that reads
+// the segment before the batch has to tell "no segment yet" from "a segment I
+// may not read", and it is not the only one that has to know.
+var ErrSummarySegmentNotFound = errors.New("summary segment not found")
+
 // SessionSummarySegmentPoint is one thing that happened in the segment.
 type SessionSummarySegmentPoint struct {
 	Text               string `json:"text"`

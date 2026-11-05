@@ -12,7 +12,7 @@ import (
 
 var (
 	// ErrSummarySegmentNotFound means the session has no such segment.
-	ErrSummarySegmentNotFound = errors.New("summary segment not found")
+	ErrSummarySegmentNotFound = model.ErrSummarySegmentNotFound
 	// ErrSummarySegmentConflict means another writer already claimed this
 	// segment's sequence number.
 	ErrSummarySegmentConflict = errors.New("summary segment sequence conflict")
@@ -66,6 +66,33 @@ func (r *Repository) ListSummarySegments(ctx context.Context, userID int64, sess
 		return nil, err
 	}
 	return segments, nil
+}
+
+// GetLatestSummarySegment returns the session's newest segment.
+//
+// It is the segment a generator needs as the one before the batch it is about
+// to write. Asking for a list and taking the last of it is not the same
+// thing: a list is read in order from the oldest, so a bounded list answers
+// with the oldest segments rather than the newest.
+func (r *Repository) GetLatestSummarySegment(ctx context.Context, userID int64, sessionID string) (*model.SessionSummarySegment, error) {
+	if r == nil || r.db == nil {
+		return nil, fmt.Errorf("session repository is not initialized")
+	}
+	if userID <= 0 || strings.TrimSpace(sessionID) == "" {
+		return nil, ErrSummarySegmentNotFound
+	}
+	var segment model.SessionSummarySegment
+	err := r.db.WithContext(ctx).
+		Where("user_id = ? AND session_id = ?", userID, sessionID).
+		Order("seq DESC").
+		First(&segment).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrSummarySegmentNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &segment, nil
 }
 
 // ListSummarySegmentsAfter returns the segments that cover messages after the

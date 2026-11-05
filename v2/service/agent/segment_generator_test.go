@@ -310,10 +310,10 @@ func TestSegmentGeneratorCountsTheReasonAFailedOutputGave(t *testing.T) {
 		t.Fatal("unparseable output must fail")
 	}
 	snapshot := recorder.Snapshot()
-	if snapshot.Counters["summary_segment_total{outcome=failed,reason=invalid_output}"] != 1 {
+	if snapshot.Counters["summary_segment_total{mode=off,outcome=failed,reason=invalid_output}"] != 1 {
 		t.Fatalf("the failure reason was not counted: %#v", snapshot.Counters)
 	}
-	if snapshot.Counters["summary_segment_failed_total{reason=invalid_output}"] != 1 {
+	if snapshot.Counters["summary_segment_failed_total{mode=off,reason=invalid_output}"] != 1 {
 		t.Fatalf("the failure was not counted: %#v", snapshot.Counters)
 	}
 }
@@ -326,7 +326,7 @@ func TestSegmentGeneratorCountsAnUnknownSchemaVersionAsItsOwnReason(t *testing.T
 		t.Fatal("an unknown schema version must fail")
 	}
 	snapshot := recorder.Snapshot()
-	if snapshot.Counters["summary_segment_total{outcome=failed,reason=unknown_schema_version}"] != 1 {
+	if snapshot.Counters["summary_segment_total{mode=off,outcome=failed,reason=unknown_schema_version}"] != 1 {
 		t.Fatalf("the schema version was not named in the counters: %#v", snapshot.Counters)
 	}
 }
@@ -384,7 +384,7 @@ func TestSegmentGeneratorCountsThePointsLostByABatchThatFailed(t *testing.T) {
 		t.Fatal("a segment with no usable point must fail")
 	}
 	snapshot := recorder.Snapshot()
-	if snapshot.Counters["summary_segment_total{outcome=failed,reason=point_without_source}"] != 1 {
+	if snapshot.Counters["summary_segment_total{mode=off,outcome=failed,reason=point_without_source}"] != 1 {
 		t.Fatalf("the reason was not counted: %#v", snapshot.Counters)
 	}
 	if snapshot.Totals["summary_segment_points_dropped_total"] != 2 {
@@ -419,7 +419,7 @@ func TestSegmentGeneratorCountsTheBoardEvenWhenTheGenerationFailsAfterwards(t *t
 		},
 		"whiteboard": map[string]any{
 			"schema_version": 1,
-			"constraints":   entries,
+			"constraints":    entries,
 		},
 	})
 	if err != nil {
@@ -434,7 +434,7 @@ func TestSegmentGeneratorCountsTheBoardEvenWhenTheGenerationFailsAfterwards(t *t
 		t.Fatal("a board over the output budget must fail")
 	}
 	snapshot := recorder.Snapshot()
-	if snapshot.Counters["summary_segment_total{outcome=failed,reason=output_too_large}"] != 1 {
+	if snapshot.Counters["summary_segment_total{mode=off,outcome=failed,reason=output_too_large}"] != 1 {
 		t.Fatalf("the reason was not counted: %#v", snapshot.Counters)
 	}
 	if snapshot.Totals["whiteboard_applied_total"] == 0 {

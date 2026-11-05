@@ -17,6 +17,7 @@ import (
 	"GopherAI/common/aihelper"
 	"GopherAI/common/memoryrecall"
 	"GopherAI/common/mysql"
+	"GopherAI/common/observability"
 	"GopherAI/common/rabbitmq"
 	"GopherAI/common/rag"
 	"GopherAI/common/redis"
@@ -1159,6 +1160,9 @@ func main() {
 			return
 		}
 	}
+	// The enqueue that feeds the background worker runs after every answer.
+	// It is wired here because the assembly is built after the service.
+	configuredAgentService.SetSummarySegmentEnqueuer(summarySegmentAssembly.Enqueuer())
 	if err := runLeaseReaper.Start(appCtx); err != nil {
 		log.Printf("start agent run lease reaper: %v", err)
 		return
@@ -1214,12 +1218,17 @@ func main() {
 // It returns nil when the mode is off, which is the shipped default: the
 // tables exist and the worker is one line away, but nothing reads the
 // segments yet.
+//
+// The mode is recorded on the counters before anything is assembled, so the
+// metrics carry it from the first attempt. A shadow run and an applied run
+// answer different questions, and their numbers have to be told apart.
 func buildSummarySegmentAssembly(conf *config.Config, chatModel modelcomponent.ToolCallingChatModel) (*agentService.SummarySegmentAssembly, error) {
 	settings, err := agentService.SummarySegmentAssemblyConfigFromSettings(conf.AgentConfig)
 	if err != nil {
 		return nil, err
 	}
-	if settings.Mode == "off" {
+	observability.Memory.SetMode(settings.Mode)
+	if settings.Mode == agentService.SummarySegmentModeOff {
 		return nil, nil
 	}
 	return agentService.NewSummarySegmentAssembly(
