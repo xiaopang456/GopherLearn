@@ -95,3 +95,97 @@ func TestCLIInvalidConfigurationDoesNotPrintValues(t *testing.T) {
 		t.Fatal("invalid configuration echoed its own text")
 	}
 }
+
+// writeDerived takes the file validConfig produces, rewrites it, and returns the
+// new path. The base file stays the single source of a loadable configuration so
+// these cases cannot drift into inventing their own idea of a valid one.
+func writeDerived(t *testing.T, mutate func(string) string) (path, secret string) {
+	t.Helper()
+	base, secret := validConfig(t)
+	data, err := os.ReadFile(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := mutate(string(data))
+	if text == string(data) {
+		t.Fatal("the mutation did not change the configuration; the anchor is gone")
+	}
+	path = filepath.Join(t.TempDir(), "derived.toml")
+	if err := os.WriteFile(path, []byte(text), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path, secret
+}
+
+// A release that retires a configuration key makes an existing deployment fail to
+// start. One generic sentence tells the operator nothing, so the refusal they have
+// to act on is printed with its own sentence - while a failure that could quote a
+// value (the parse case above) still gets only the generic line.
+func TestCLIPrintsTheRetiredSettingItRefuses(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		mutate  func(string) string
+		mustSee string
+	}{
+		{
+			name: "retired agent base URL",
+			mutate: func(text string) string {
+				return strings.Replace(text, `chatModelName = "explicit-model-name"`,
+					"baseUrl = \"https://provider.invalid/v1\"\nchatModelName = \"explicit-model-name\"", 1)
+			},
+			mustSee: "retired configuration setting: ragModelConfig.baseUrl was removed",
+		},
+		{
+			name: "retired embedding key",
+			mutate: func(text string) string {
+				return strings.Replace(text, `chatBaseURL = "https://provider.invalid/v1"`,
+					"chatBaseURL = \"https://provider.invalid/v1\"\nembeddingKey = \"explicit-key-in-the-wrong-section\"", 1)
+			},
+			mustSee: "retired configuration setting: isolatedEntry.embeddingKey moved to ragModelConfig.embeddingApiKey",
+		},
+		{
+			name: "a required setting left out",
+			mutate: func(text string) string {
+				return strings.Replace(text, `embeddingApiKey = "synthetic-never-sent-key"`, "", 1)
+			},
+			mustSee: "explicit independent setting required: ragModelConfig.embeddingApiKey",
+		},
+	} {
+		path, secret := writeDerived(t, tc.mutate)
+		var out, errOut bytes.Buffer
+		if code := runCLI(context.Background(), []string{"-config", path}, &out, &errOut); code == 0 {
+			t.Fatalf("%s: the entry started anyway", tc.name)
+		}
+		printed := errOut.String()
+		if !strings.Contains(printed, tc.mustSee) {
+			t.Fatalf("%s: operator cannot see what to change; got %q", tc.name, printed)
+		}
+		if strings.Contains(printed, "integrated entry refused or failed") {
+			t.Fatalf("%s: a refusal the entry can explain still got the generic line: %q", tc.name, printed)
+		}
+		if strings.Contains(printed, secret) {
+			t.Fatalf("%s: the printed sentence carried a configuration value: %q", tc.name, printed)
+		}
+	}
+}
+
+// The safety half of the same rule, measured rather than assumed: a malformed file
+// fails inside the decoder, whose message quotes the offending token, so it must
+// stay behind the generic line even though it is also a configuration failure.
+func TestCLIDecodeFailureStaysGeneric(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "broken.toml")
+	if err := os.WriteFile(path, []byte("[isolatedEntry]\nisolated = true\nSENTINEL_VALUE_FOR_THIS_LINE 3\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if code := runCLI(context.Background(), []string{"-config", path}, &out, &errOut); code == 0 {
+		t.Fatal("a malformed configuration started the entry")
+	}
+	printed := errOut.String()
+	if strings.Contains(printed, "SENTINEL_VALUE_FOR_THIS_LINE") {
+		t.Fatalf("the decoder's own text reached the terminal: %q", printed)
+	}
+	if !strings.Contains(printed, "integrated entry refused or failed") {
+		t.Fatalf("an unexplainable failure lost its generic line: %q", printed)
+	}
+}

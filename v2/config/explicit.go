@@ -66,7 +66,7 @@ func LoadExplicitForSchema(path string) (*Config, error) {
 // given. It reads nothing else: no default file, no environment.
 func loadExplicitFile(path string) (*Config, error) {
 	if strings.TrimSpace(path) == "" {
-		return nil, fmt.Errorf("isolated V2 requires an explicit configuration path")
+		return nil, Refusef("isolated V2 requires an explicit configuration path")
 	}
 	loaded := defaultConfig()
 	metadata, err := toml.DecodeFile(path, loaded)
@@ -102,7 +102,7 @@ var retiredSettings = map[string]string{
 func refuseRetiredSettings(metadata toml.MetaData) error {
 	for _, key := range metadata.Keys() {
 		if refusal, retired := retiredSettings[key.String()]; retired {
-			return fmt.Errorf("retired configuration setting: %s", refusal)
+			return Refusef("retired configuration setting: %s", refusal)
 		}
 	}
 	return nil
