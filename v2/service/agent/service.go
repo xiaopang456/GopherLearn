@@ -257,6 +257,36 @@ func (s *Service) resolveThinking(requested *bool) bool {
 	return s.thinkingEnabled
 }
 
+// resolveSessionPolicy turns what the request said into the one policy this run
+// will use, given what the session is allowed to reach.
+//
+// A value that is not one of the three known policies is refused instead of being
+// folded. The folding this replaces read a misspelt or stale "off" as "use the
+// library", which is a silent permission grab in the one direction that must not
+// be silent.
+//
+// A legacy chat session has no library to turn on: an absent value means the
+// conversation shape, and any value that asks for documents is refused rather than
+// quietly downgraded. Refusing it as invalid input is also what keeps the answer
+// honest - a client that believes it asked for the library and got a plain answer
+// would have no way to learn that this session was never granted one.
+func resolveSessionPolicy(mode model.SessionMode, requested rag.KnowledgePolicy) (rag.KnowledgePolicy, error) {
+	resolved, err := rag.ResolveKnowledgePolicy(requested)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrInvalidRunRequest, err)
+	}
+	if mode != model.SessionModeAgent {
+		if resolved != "" && resolved != rag.KnowledgeDisabled {
+			return "", fmt.Errorf("%w: this session was never granted its knowledge base, so knowledgePolicy=%s cannot be honoured", ErrInvalidRunRequest, resolved)
+		}
+		return rag.KnowledgeDisabled, nil
+	}
+	if resolved == "" {
+		return rag.KnowledgePreferred, nil
+	}
+	return resolved, nil
+}
+
 func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (RunResult, error) {
 	if err := validateRunRequest(request); err != nil {
 		return RunResult{}, err
@@ -268,15 +298,25 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 	if err != nil {
 		return RunResult{}, err
 	}
-	if owned.Mode != model.SessionModeAgent {
-		return RunResult{}, ErrAgentSessionRequired
+	// A session's mode is its capability ceiling, not the type of turn it may
+	// contain: an Agent session can hold turns that use the library and turns that
+	// do not, while a legacy chat session may only hold the second kind. Nothing
+	// here changes a session's mode - widening what a stored conversation may read
+	// is an authorisation the user has to give, not something a request earns by
+	// asking.
+	policy, err := resolveSessionPolicy(owned.Mode, request.KnowledgePolicy)
+	if err != nil {
+		return RunResult{}, err
 	}
 	requestKey := strings.TrimSpace(request.RequestID)
 	enableThinking := s.resolveThinking(request.EnableThinking)
+	// The effective policy is always in the identity, including when it is the
+	// switch being off. Identifying a turn by a field the request might have left
+	// out would give a turn that read the learner's documents and a turn that was
+	// told not to the same hash, and the replay path would answer the second
+	// question with the first one's answer.
 	digestInput := request.Question
-	if request.KnowledgePolicy != "" {
-		digestInput += "\x00knowledge_policy=" + string(request.KnowledgePolicy)
-	}
+	digestInput += "\x00knowledge_policy=" + string(policy)
 	digestInput += fmt.Sprintf("\x00enable_thinking=%t", enableThinking)
 	inputDigest := sha256.Sum256([]byte(digestInput))
 	now := time.Now()
@@ -343,7 +383,7 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 	runnerResult, runErr := s.runner.Run(runCtx, RunContext{
 		RunID: run.ID, LeaseToken: run.LeaseToken, InitialStepSequence: acquisition.NextStepSequence,
 		UserID: owned.UserID, UserName: owned.UserName,
-		SessionID: owned.ID, Question: request.Question, KnowledgePolicy: request.KnowledgePolicy,
+		SessionID: owned.ID, Question: request.Question, KnowledgePolicy: policy,
 		EnableThinking:           enableThinking,
 		CurrentSessionHasHistory: currentSessionHasHistory, EpisodeRecallReady: episodeRecallReady,
 		RequestID: request.RequestID, TopicConsent: request.TopicConsent,

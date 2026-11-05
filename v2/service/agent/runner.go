@@ -688,9 +688,9 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	// window builder and the runner must agree about it: one decides whether
 	// the notes can be reached at all, the other decides what happens when
 	// they were not.
-	policy := rag.NormalizeKnowledgePolicy(input.KnowledgePolicy, rag.KnowledgePreferred)
-	if requiresKnowledgeOnly(input.Question) {
-		policy = rag.KnowledgeOnly
+	policy, err := resolveKnowledgePolicy(input.KnowledgePolicy, input.Question)
+	if err != nil {
+		return RunnerResult{}, err
 	}
 	input.KnowledgePolicy = policy
 	// The server-side pre-retrieval answers the one question the model cannot:
@@ -718,7 +718,15 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	if err != nil {
 		return RunnerResult{}, fmt.Errorf("load agent tools: %w", err)
 	}
-	if !documentKnowledgeReachable(input.Question, input.KnowledgePolicy) {
+	if input.KnowledgePolicy == rag.KnowledgeDisabled {
+		// The switch off selects the ordinary conversation shape: one generation
+		// over the history and nothing else. With an empty tool table the run
+		// takes the single-call path the assembly already uses, so this is not a
+		// second engine - it is the same engine with its capabilities taken away,
+		// which is why no prompt text, evidence reserve or finalisation rule has
+		// to be duplicated for it.
+		registered = nil
+	} else if !documentKnowledgeReachable(input.Question, input.KnowledgePolicy) {
 		registered, err = withoutDocumentKnowledgeTools(ctx, registered)
 		if err != nil {
 			return RunnerResult{}, err
@@ -2618,6 +2626,36 @@ var directConversationQuestions = map[string]struct{}{
 	"help": {}, "帮助": {},
 }
 
+// resolveKnowledgePolicy turns what the request said into the one value this run
+// uses, and refuses to guess.
+//
+// Nothing said falls back to knowledge preferred, which is what every client that
+// predates the per-turn switch expects. A value that is neither empty nor known is
+// an error rather than a folded default: folding turned a turn that meant to switch
+// the library off into a turn that read the learner's documents anyway, and the
+// direction of that mistake is the one that costs someone their privacy.
+//
+// An explicit switch-off outranks the question-text tightening. The phrases that
+// force knowledge-only are a reading of how something was worded, while the switch
+// is a decision the learner made with their hand on this turn; one sentence must
+// not overrule the other, and a turn cannot both forbid the library and require it.
+func resolveKnowledgePolicy(value rag.KnowledgePolicy, question string) (rag.KnowledgePolicy, error) {
+	resolved, err := rag.ResolveKnowledgePolicy(value)
+	if err != nil {
+		return "", err
+	}
+	if resolved == "" {
+		return rag.KnowledgePreferred, nil
+	}
+	if resolved == rag.KnowledgeDisabled {
+		return rag.KnowledgeDisabled, nil
+	}
+	if requiresKnowledgeOnly(question) {
+		return rag.KnowledgeOnly, nil
+	}
+	return resolved, nil
+}
+
 // requiresKnowledgeOnly can only tighten a server/request policy. The narrow
 // phrases avoid treating ordinary mentions of notes as a refusal to use a
 // clearly labelled general-knowledge fallback; the UI enum remains primary.
@@ -2706,8 +2744,13 @@ func isSessionContextQuestion(question string) bool {
 //
 // The knowledge-only policy wins over a question that says "do not look in my
 // notes": the request asked for answers from the notes and nothing else, and
-// a turn that cannot reach the notes could not honour it.
+// a turn that cannot reach the notes could not honour it. A turn that switched
+// the library off wins over everything else, because that value is not a reading
+// of the wording - it is the learner's decision about this turn, made by hand.
 func documentKnowledgeReachable(question string, policy rag.KnowledgePolicy) bool {
+	if policy == rag.KnowledgeDisabled {
+		return false
+	}
 	if isSessionContextQuestion(question) {
 		return false
 	}
