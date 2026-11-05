@@ -164,9 +164,22 @@ func (p *ModelSummarySegmentProducer) ProduceSegment(ctx context.Context, job *m
 	// nobody can read back.
 	end := messages[len(messages)-1].ID
 
-	whiteboardContent, whiteboardVersion, previousSegment, err := p.readContext(ctx, job)
+	whiteboardContent, whiteboardVersion, whiteboardCovered, previousSegment, err := p.readContext(ctx, job)
 	if err != nil {
 		return SummarySegmentOutcome{}, err
+	}
+	if whiteboardCovered >= end {
+		// The batch was already written. A process that died between the
+		// write and the job's completion leaves the job pointing at turns
+		// that are already summarized: the board says how far it reaches, and
+		// the job is finished without writing the same segment again.
+		//
+		// Without this the attempt would write the same stretch once more,
+		// the write would be refused because the board did not move, and the
+		// job would spend its attempts on a conflict it cannot win.
+		return SummarySegmentOutcome{
+			AlreadyCovered: true, StartMessageID: start, EndMessageID: whiteboardCovered,
+		}, nil
 	}
 
 	result, err := p.generator.GenerateSegment(ctx, SegmentGenerationInput{
@@ -188,28 +201,33 @@ func (p *ModelSummarySegmentProducer) ProduceSegment(ctx context.Context, job *m
 // write is compared against. Reading the board twice would let the content
 // and the version come from two different boards: the content the model saw
 // would be one board and the version the write is checked against another.
-func (p *ModelSummarySegmentProducer) readContext(ctx context.Context, job *model.SessionSummarySegmentJob) (string, uint64, string, error) {
+//
+// The board also comes back with how far it reaches, because that says
+// whether the batch is still to be written at all.
+func (p *ModelSummarySegmentProducer) readContext(ctx context.Context, job *model.SessionSummarySegmentJob) (string, uint64, uint, string, error) {
 	whiteboardContent := ""
 	var whiteboardVersion uint64
+	var whiteboardCovered uint
 	board, err := p.source.GetWhiteboard(ctx, job.UserID, job.SessionID)
 	if err != nil {
 		if !errors.Is(err, model.ErrWhiteboardNotFound) {
-			return "", 0, "", fmt.Errorf("read session whiteboard: %w", err)
+			return "", 0, 0, "", fmt.Errorf("read session whiteboard: %w", err)
 		}
 	} else {
 		whiteboardContent = board.Content
 		whiteboardVersion = board.Version
+		whiteboardCovered = board.CoveredMessageID
 	}
 	previousSegment := ""
 	segment, err := p.source.GetLatestSummarySegment(ctx, job.UserID, job.SessionID)
 	if err != nil {
 		if !errors.Is(err, model.ErrSummarySegmentNotFound) {
-			return "", 0, "", fmt.Errorf("read summary segments: %w", err)
+			return "", 0, 0, "", fmt.Errorf("read summary segments: %w", err)
 		}
 	} else if segment != nil {
 		previousSegment = segment.Content
 	}
-	return whiteboardContent, whiteboardVersion, previousSegment, nil
+	return whiteboardContent, whiteboardVersion, whiteboardCovered, previousSegment, nil
 }
 
 // persist writes the segment and the board together.

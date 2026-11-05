@@ -184,6 +184,9 @@ func (f *SummarySegmentFallback) Decide(ctx context.Context, userID int64, sessi
 		return record, err
 	}
 	if watermark >= latestMessageID {
+		// Every turn is covered already. The decision is still a decision,
+		// and an unrecorded decision is one nobody can count.
+		observability.Memory.SummarySegmentFallback(record.Reason, record.UnsummarizedTokens)
 		return record, nil
 	}
 	messages, err := f.repository.ListSummarySegmentMessages(ctx, userID, sessionID, watermark+1, latestMessageID, 1024)
@@ -197,6 +200,7 @@ func (f *SummarySegmentFallback) Decide(ctx context.Context, userID int64, sessi
 	record.UnsummarizedMessages = len(messages)
 	record.UnsummarizedTokens = tokens
 	if len(messages) == 0 || tokens <= f.config.RawMessageTokenLimit {
+		observability.Memory.SummarySegmentFallback(record.Reason, record.UnsummarizedTokens)
 		return record, nil
 	}
 	if f.producer == nil {

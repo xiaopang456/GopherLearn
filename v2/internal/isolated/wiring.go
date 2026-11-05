@@ -11,6 +11,7 @@ import (
 	myemail "GopherAI/common/email"
 	"GopherAI/common/memoryrecall"
 	"GopherAI/common/mysql"
+	"GopherAI/common/observability"
 	"GopherAI/common/rag"
 	"GopherAI/common/redis"
 	"GopherAI/config"
@@ -38,6 +39,7 @@ import (
 	userService "GopherAI/service/user"
 
 	"github.com/cloudwego/eino/components/embedding"
+	modelcomponent "github.com/cloudwego/eino/components/model"
 )
 
 // knowledgeRetriever is the one method the agent's knowledge tool and the learning evidence
@@ -1035,6 +1037,15 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		return nil, fmt.Errorf("initialize episode publisher: %v", err)
 	}
 	configuredAgentService.SetEpisodePublisher(episodePublisher)
+	// The layered summary's write path. It is assembled only when the mode
+	// says it should run, and the enqueue that feeds it is wired either way:
+	// an assembly that nobody asks does nothing, and an assembly that is
+	// asked but not started is a queue that fills up and nobody drains.
+	summarySegmentAssembly, err := buildSummarySegmentAssembly(conf, agentModel)
+	if err != nil {
+		return nil, fmt.Errorf("initialize summary segment assembly: %v", err)
+	}
+	configuredAgentService.SetSummarySegmentEnqueuer(summarySegmentAssembly.Enqueuer())
 	if err := agentService.SetDefaultService(configuredAgentService); err != nil {
 		return nil, fmt.Errorf("configure agent service: %v", err)
 	}
@@ -1059,6 +1070,9 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	}
 	workers := knowledgeWorkers(runtime)
 	workers = append(workers, namedWorker{"episode", episodeWorker}, namedWorker{"run lease reaper", runLeaseReaper}, namedWorker{"memory usage", memoryUsage})
+	if summarySegmentAssembly.Enabled() {
+		workers = append(workers, namedWorker{"summary segment", summarySegmentAssembly})
+	}
 	for _, entry := range workers {
 		if err := l.start(appCtx, entry.name, entry.worker); err != nil {
 			return nil, err
@@ -1066,4 +1080,30 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	}
 	handler := buildRouter(runtime.documents, conf, registration)
 	return &Application{Lifecycle: l, Handler: handler, Agent: configuredAgentService, Runner: agentRunner, Context: contextBuilder, Documents: runtime.documents, EpisodeIndex: deletionEpisodeIndex}, nil
+}
+
+// buildSummarySegmentAssembly wires the layered summary's write path.
+//
+// It returns nil when the mode is off, which is the shipped default: the
+// tables exist and the worker is one line away, but nothing reads the
+// segments yet.
+//
+// The mode is recorded on the counters before anything is assembled, so the
+// metrics carry it from the first attempt. A shadow run and an applied run
+// answer different questions, and their numbers have to be told apart.
+func buildSummarySegmentAssembly(conf *config.Config, chatModel modelcomponent.ToolCallingChatModel) (*agentService.SummarySegmentAssembly, error) {
+	settings, err := agentService.SummarySegmentAssemblyConfigFromSettings(conf.AgentConfig)
+	if err != nil {
+		return nil, err
+	}
+	observability.Memory.SetMode(settings.Mode)
+	if settings.Mode == agentService.SummarySegmentModeOff {
+		return nil, nil
+	}
+	return agentService.NewSummarySegmentAssembly(
+		settings,
+		sessionDAO.DefaultRepository(),
+		nil,
+		chatModel,
+	)
 }

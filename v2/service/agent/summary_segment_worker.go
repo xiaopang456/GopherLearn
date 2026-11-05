@@ -74,6 +74,13 @@ type SummarySegmentOutcome struct {
 	// Nothing was written in that case, and the batch is accounted for: the
 	// job moves past it instead of reading it again.
 	NothingToCover bool
+	// AlreadyCovered says the board already reaches past the batch, so the
+	// turns were summarized before and nothing was written this time.
+	//
+	// It is the case a process that died between the write and the job's
+	// completion leaves behind: the job points at turns that are already
+	// summarized, and the board says how far it reaches.
+	AlreadyCovered bool
 }
 
 // ErrSummarySegmentWorkerAlreadyStarted is what a second Start returns.
@@ -332,11 +339,16 @@ func (w *SummarySegmentWorker) process(ctx context.Context, listed model.Session
 	cancel()
 
 	if produceErr == nil {
-		if outcome.NothingToCover {
+		switch {
+		case outcome.NothingToCover:
 			observability.Memory.SummarySegmentJob("empty", "", w.now().Sub(started))
 			w.logf("summary segment batch held no turns: job=%s batch=%d..%d",
 				claimed.ID, outcome.StartMessageID, outcome.EndMessageID)
-		} else {
+		case outcome.AlreadyCovered:
+			observability.Memory.SummarySegmentJob("completed", "", w.now().Sub(started))
+			w.logf("summary segment batch was already covered: job=%s covered=%d",
+				claimed.ID, outcome.EndMessageID)
+		default:
 			observability.Memory.SummarySegmentJob("completed", "", w.now().Sub(started))
 			w.logf("summary segment written: job=%s seq=%d covered=%d..%d changes=%d",
 				claimed.ID, outcome.SegmentSeq, outcome.StartMessageID, outcome.EndMessageID, outcome.WhiteboardChanges)

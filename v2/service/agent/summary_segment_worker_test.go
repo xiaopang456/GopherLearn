@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
+	"GopherAI/common/observability"
 	"GopherAI/model"
 )
 
@@ -250,6 +252,84 @@ func TestTheJobIsFinishedWithWhatTheSegmentCovered(t *testing.T) {
 	}
 	if repository.covered[0] != 150 {
 		t.Fatalf("the job was finished with %d, want the turn the segment covered 150", repository.covered[0])
+	}
+}
+
+// A process that died between the write and the job's completion leaves the
+// job pointing at turns that are already summarized. The board says how far
+// it reaches, so the attempt finishes the job instead of writing the same
+// segment once more and losing a conflict it cannot win.
+func TestTheProducerFinishesABatchTheBoardAlreadyCovers(t *testing.T) {
+	source := &stubSegmentSource{
+		messages: []model.Message{
+			{ID: 100, IsUser: true, Content: "a"},
+			{ID: 150, IsUser: false, Content: "b"},
+		},
+		board: &model.SessionWhiteboard{Content: `{"schema_version":1}`, CoveredMessageID: 150, Version: 1},
+	}
+	sink := &stubSegmentSink{}
+	generator := stubSegmentGeneratorWith(t, []model.SessionSummarySegmentPoint{{Text: "p", EvidenceMessageIDs: []uint{100}}})
+	producer, err := NewModelSummarySegmentProducer(source, sink, generator, DefaultSummarySegmentProducerConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := &model.SessionSummarySegmentJob{
+		UserID: 1, SessionID: "s1", DesiredMessageID: 150, StartMessageID: 100,
+	}
+	outcome, err := producer.ProduceSegment(context.Background(), job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.AlreadyCovered {
+		t.Fatalf("the outcome does not say that the batch was already covered: %+v", outcome)
+	}
+	if generator.calls != 0 {
+		t.Fatal("the model was asked to summarize turns that are already summarized")
+	}
+	if sink.segment != nil {
+		t.Fatal("the segment was written a second time")
+	}
+	if outcome.EndMessageID != 150 {
+		t.Fatalf("the outcome reaches %d, want the board's 150", outcome.EndMessageID)
+	}
+}
+
+// A batch the board already covers finishes the job. The job is not retried:
+// those turns are summarized, and a retry would only lose the same conflict
+// again until the attempts run out.
+func TestTheAlreadyCoveredBatchFinishesTheJob(t *testing.T) {
+	repository := newStubSegmentJobRepository()
+	job := model.SessionSummarySegmentJob{
+		ID: "job-1", UserID: 1, SessionID: "s1",
+		DesiredMessageID: 300, StartMessageID: 100,
+		Status: model.SessionSummarySegmentJobPending, AvailableAt: time.Now(),
+	}
+	repository.jobs[job.ID] = job
+	repository.due = []model.SessionSummarySegmentJob{job}
+	producer := &stubSegmentProducer{outcomes: []SummarySegmentOutcome{
+		{AlreadyCovered: true, StartMessageID: 100, EndMessageID: 300},
+	}}
+
+	worker := newTestWorker(t, repository, producer)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := worker.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop(context.Background())
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && len(repository.completed) == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(repository.completed) == 0 {
+		t.Fatal("the job was never finished")
+	}
+	if len(repository.retried) != 0 {
+		t.Fatal("the job was retried although the batch was already covered")
+	}
+	if repository.covered[0] != 300 {
+		t.Fatalf("the job was finished with %d, want the board's 300", repository.covered[0])
 	}
 }
 
@@ -600,6 +680,47 @@ func TestTheTriggerDoesNothingWhenEverythingIsCovered(t *testing.T) {
 	if outcome.Reason != summarySegmentTriggerNoUnsummarized {
 		t.Fatalf("the reason is %q", outcome.Reason)
 	}
+}
+
+// Every decision is recorded. A decision nobody can count is a decision that
+// did not happen, and the two ways of not needing the fallback are the ones
+// that would otherwise go missing.
+func TestTheFallbackRecordsEveryDecision(t *testing.T) {
+	before := fallbackNotNeededCount()
+	// The raw conversation still fits.
+	repository := &stubFallbackRepository{messages: []model.Message{
+		{ID: 100, IsUser: true, Content: "a"},
+	}}
+	fallback, err := NewSummarySegmentFallback(repository, &stubSegmentProducer{}, segmentFallbackConfig(100000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fallback.Decide(context.Background(), 1, "s1", 100); err != nil {
+		t.Fatal(err)
+	}
+	// Every turn is covered already.
+	covered := &stubFallbackRepository{watermark: 300}
+	fallback, err = NewSummarySegmentFallback(covered, &stubSegmentProducer{}, segmentFallbackConfig(100000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fallback.Decide(context.Background(), 1, "s1", 300); err != nil {
+		t.Fatal(err)
+	}
+	if after := fallbackNotNeededCount(); after != before+2 {
+		t.Fatalf("the decisions were recorded %d times, want 2", after-before)
+	}
+}
+
+// fallbackNotNeededCount counts the recorded decisions that needed nothing.
+func fallbackNotNeededCount() uint64 {
+	var total uint64
+	for key, count := range observability.Memory.Snapshot().Counters {
+		if strings.Contains(key, "reason=not_needed") {
+			total += count
+		}
+	}
+	return total
 }
 
 // The fallback runs only when the raw conversation no longer fits, and every

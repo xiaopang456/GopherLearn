@@ -388,7 +388,11 @@ type AgentConfig struct {
 	//   - "shadow" writes the segments and the board, but the context still
 	//     comes from the old path. The write side is watched without changing
 	//     what the model sees.
-	//   - "on" reads the new state back.
+	//
+	// The applied mode is not offered yet: the parts that read the new state
+	// back, and the fallback that goes with them, are the next change. Until
+	// then "on" would write exactly what "shadow" writes and read nothing, so
+	// it is refused rather than accepted and mistaken for the real thing.
 	//
 	// The default is off. The tables and the worker exist, but nothing reads
 	// the segments yet, and a segment that is written and never read is a
@@ -1189,9 +1193,12 @@ func (c AgentConfig) Validate() error {
 		return fmt.Errorf("summaryFailureCooldownSeconds must be between 1 and 600")
 	}
 	switch c.SummarySegmentMode {
-	case "off", "shadow", "on":
+	case "off", "shadow":
 	default:
-		return fmt.Errorf("summarySegmentMode must be off, shadow or on")
+		// "on" reads the new state back, and the parts that read it back are
+		// not here yet. Accepting it would write segments that nothing reads
+		// and call it the applied mode.
+		return fmt.Errorf("summarySegmentMode must be off or shadow")
 	}
 	if c.SummarySegmentWorkerCount < 1 || c.SummarySegmentWorkerCount > 16 ||
 		c.SummarySegmentQueueSize < c.SummarySegmentWorkerCount || c.SummarySegmentQueueSize > 1000 {
