@@ -272,7 +272,7 @@ func TestTheRawConversationStartsWhereTheSegmentsStop(t *testing.T) {
 // and a fallback that is not recorded is a fallback nobody can count.
 func TestTheFallbackIsRecordedOnTheWindow(t *testing.T) {
 	reader := &fakeSegmentReader{watermark: 0}
-	history := &fakeHistoryReader{messages: []model.Message{{ID: 1, IsUser: true, Content: "一段没有��总结的原文"}}}
+	history := &fakeHistoryReader{messages: []model.Message{{ID: 1, IsUser: true, Content: "一段尚未被压缩的原文"}}}
 	window := buildLayeredWindow(t, reader, history, &stubFallback{record: SummarySegmentFallbackRecord{
 		FellBack: true, Reason: "generated_before_answer", Succeeded: true,
 	}}, nil)
