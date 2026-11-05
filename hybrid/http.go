@@ -1,6 +1,7 @@
 package hybrid
 
 import (
+	"io"
 	"github.com/google/uuid"
 	"GopherAI/common/code"
 	"GopherAI/common/mysql"
@@ -485,7 +486,7 @@ func (s *httpSurface) agentMessage(w http.ResponseWriter, r *http.Request, uid i
 // would otherwise become false and be silently accepted.
 func retiredBodyValues(knowledge, streamSteps json.RawMessage) (steps bool, enabled bool, collectionIDs []string, refusal string) {
 	if len(streamSteps) > 0 {
-		if err := json.Unmarshal(streamSteps, &steps); err != nil {
+		if err := strictUnmarshal(streamSteps, &steps); err != nil {
 			return false, false, nil, "request body is invalid"
 		}
 	}
@@ -494,12 +495,31 @@ func retiredBodyValues(knowledge, streamSteps json.RawMessage) (steps bool, enab
 			Enabled       bool     `json:"enabled"`
 			CollectionIDs []string `json:"collection_ids"`
 		}
-		if err := json.Unmarshal(knowledge, &body); err != nil {
+		if err := strictUnmarshal(knowledge, &body); err != nil {
 			return false, false, nil, "request body is invalid"
 		}
 		return steps, body.Enabled, body.CollectionIDs, ""
 	}
 	return steps, false, nil, ""
+}
+
+// strictUnmarshal keeps the request decoder's own rule inside these two nested
+// fields. Reading them by hand with a permissive decoder would silently accept
+// `knowledge: {"enabled_typo": true}` - a client that meant to ask for its notes
+// would then be answered as if it had not asked, which is the same failure the
+// DisallowUnknownFields at the top of the request exists to prevent
+// (internal/httpapi/server.go).
+func strictUnmarshal(raw json.RawMessage, value any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return errors.New("retired field carries more than one value")
+	}
+	return nil
 }
 
 // retiredOrdinaryBodyRefusal keeps each endpoint's own old rule, because they were
