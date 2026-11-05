@@ -33,7 +33,7 @@ func allExplicit() map[string]bool {
 }
 
 func scenarioInput() identityInput {
-	return identityInput{phase: "prepare", run: "l4-v2-run-a", arm: "layered", qid: "l4v2-r1-sample-01", condition: "main"}
+	return identityInput{phase: "prepare", run: "eval-run-a", arm: "config-a", qid: "scenario-01", condition: "main"}
 }
 
 // The preparation and the three repeats have to restore the same conversation
@@ -63,9 +63,9 @@ func TestDeriveScenarioIdentitySeparatesExperimentGroups(t *testing.T) {
 	seen := map[int64]string{}
 	seenNames := map[string]int64{}
 	combinations := 0
-	for _, run := range []string{"l4-v2-run-a", "l4-v2-run-b"} {
-		for _, arm := range []string{"frozen", "truncated", "layered"} {
-			for _, qid := range []string{"l4v2-r1-sample-01", "l4v2-r2-sample-01", "l4v2-r3-sample-01"} {
+	for _, run := range []string{"eval-run-a", "eval-run-b"} {
+		for _, arm := range []string{"config-a", "config-b", "config-c"} {
+			for _, qid := range []string{"scenario-01", "scenario-02", "scenario-03"} {
 				for _, condition := range []string{"main", "control", "distractor"} {
 					in := scenarioInput()
 					in.run, in.arm, in.qid, in.condition = run, arm, qid, condition
@@ -144,7 +144,7 @@ func TestScenarioIdentityCollisionCheckIsExhaustiveForListedGroups(t *testing.T)
 	ids := make([]int64, 0, 300)
 	for i := 0; i < 300; i++ {
 		in := scenarioInput()
-		in.qid = fmt.Sprintf("l4v2-r1-sample-%02d", i)
+		in.qid = fmt.Sprintf("scenario-%02d", i)
 		id, _, err := deriveScenarioIdentity(allExplicit(), in)
 		if err != nil {
 			t.Fatal(err)
