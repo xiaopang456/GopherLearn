@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"GopherAI/common/rag"
 	"GopherAI/model"
 	serviceagent "GopherAI/service/agent"
 	"github.com/cloudwego/eino/components/tool"
@@ -140,7 +141,7 @@ func (a summarySegmentEvidenceAdapter) LoadSummarySegmentEvidence(ctx context.Co
 	}
 	return SummarySegmentEvidenceFacts{
 		Seq: segment.Seq, UserID: segment.UserID, SessionID: segment.SessionID,
-		EndMessageID: segment.EndMessageID,
+		StartMessageID: segment.StartMessageID, EndMessageID: segment.EndMessageID,
 	}, nil
 }
 
@@ -229,13 +230,21 @@ func (r *BrowseSummarySegmentsRegistry) browse(ctx context.Context, run servicea
 	grants := make([]serviceagent.HistoryMessageGrant, 0, 8)
 	tokens := 0
 	for _, segment := range segments {
-		view, cost, segmentGrants := r.render(run, segment, document)
+		browsed, ok := r.render(segment, document)
+		if !ok {
+			continue
+		}
+		cost := estimateBrowseTokens(browsed)
 		if cost > maxBrowseSummaryTokens {
 			// A segment that does not fit inside one segment's budget is
 			// trimmed rather than dropped: the first points are the ones the
 			// generator put first, and they are the ones about the topic.
-			view = trimSummarySegmentView(view, maxBrowseSummaryTokens-tokens)
-			cost = estimateViewTokens(view)
+			//
+			// The budget is this segment's own, not what is left of the call's:
+			// a segment that arrives fifth is trimmed by the same rule as the
+			// one that arrives first.
+			browsed = trimBrowseSegment(browsed, maxBrowseSummaryTokens)
+			cost = estimateBrowseTokens(browsed)
 			out.Truncated = true
 		}
 		if tokens+cost > maxBrowseSummaryTokens*maxBrowseSummarySegments {
@@ -243,8 +252,10 @@ func (r *BrowseSummarySegmentsRegistry) browse(ctx context.Context, run servicea
 			break
 		}
 		tokens += cost
-		out.Segments = append(out.Segments, view)
-		grants = append(grants, segmentGrants...)
+		out.Segments = append(out.Segments, browsed.view)
+		// The grants follow the trimming: an id of a point that was cut
+		// is an id the model never saw.
+		grants = append(grants, r.grantsForView(run, segment, browsed)...)
 	}
 	out.ObservationTokens = tokens
 	// The ids the browse tool just showed the model are now readable, and the
@@ -316,20 +327,33 @@ func (r *BrowseSummarySegmentsRegistry) boardState(ctx context.Context, run serv
 	return document
 }
 
+// browsedSegment is one segment as it was rendered for the model.
+//
+// The points are kept next to the view because the view is a rendering of
+// them: the read-back authorisations are drawn from the points that survived
+// the budget, not from the segment's full record. A point the budget cut is a
+// point the model never saw, and an id it never saw is not one it may ask for.
+type browsedSegment struct {
+	view   SummarySegmentView
+	points []model.SessionSummarySegmentPoint
+}
+
 // render turns one stored segment into the view the model reads.
-func (r *BrowseSummarySegmentsRegistry) render(run serviceagent.RunContext, segment model.SessionSummarySegment,
-	document model.SessionWhiteboardDocument) (SummarySegmentView, int, []serviceagent.HistoryMessageGrant) {
+func (r *BrowseSummarySegmentsRegistry) render(segment model.SessionSummarySegment,
+	document model.SessionWhiteboardDocument) (browsedSegment, bool) {
 	content, err := model.DecodeSessionSummarySegmentContent(segment.Content)
 	if err != nil {
-		return SummarySegmentView{}, 0, nil
+		return browsedSegment{}, false
 	}
 	view := SummarySegmentView{
 		Seq: segment.Seq, StartMessageID: int(segment.StartMessageID), EndMessageID: int(segment.EndMessageID),
 		Topic: content.Topic, Points: []string{},
 	}
+	points := make([]model.SessionSummarySegmentPoint, 0, len(content.Points))
 	for _, point := range content.Points {
-		view.Points = append(view.Points, serviceagent.RenderSummarySegmentPoint(point))
+		points = append(points, point)
 	}
+	view.Points = renderSegmentPoints(points)
 	view.NamesAndNumbers = append(view.NamesAndNumbers, content.Names...)
 	view.NamesAndNumbers = append(view.NamesAndNumbers, content.Numbers...)
 	for _, note := range serviceagent.SummarySegmentSupersessionNotes(segment, document) {
@@ -337,48 +361,97 @@ func (r *BrowseSummarySegmentsRegistry) render(run serviceagent.RunContext, segm
 			fmt.Sprintf("%s: %s -> %s（第 %d 轮，以当前状态为准）", note.Key, note.OldValue, note.CurrentValue,
 				note.ChangedAtMessageID))
 	}
+	return browsedSegment{view: view, points: points}, true
+}
+
+// renderSegmentPoints renders the points the model reads.
+func renderSegmentPoints(points []model.SessionSummarySegmentPoint) []string {
+	out := make([]string, 0, len(points))
+	for _, point := range points {
+		out = append(out, serviceagent.RenderSummarySegmentPoint(point))
+	}
+	return out
+}
+
+// grantsForView draws the read-back authorisations for one browsed segment.
+//
+// The ids come from the points the view really carries, and they are bounded
+// by the segment's own stretch of turns: a message before the segment starts
+// or after it ends was not one of the messages this segment compressed.
+func (r *BrowseSummarySegmentsRegistry) grantsForView(run serviceagent.RunContext,
+	segment model.SessionSummarySegment, browsed browsedSegment) []serviceagent.HistoryMessageGrant {
 	grants := make([]serviceagent.HistoryMessageGrant, 0, 8)
-	for _, id := range content.EvidenceMessageIDs() {
-		if id == 0 || id > segment.EndMessageID {
-			continue
+	for _, point := range browsed.points {
+		for _, id := range point.EvidenceMessageIDs {
+			if id == 0 || id > segment.EndMessageID {
+				continue
+			}
+			if segment.StartMessageID > 0 && id < segment.StartMessageID {
+				continue
+			}
+			grants = append(grants, serviceagent.HistoryMessageGrant{
+				MessageID: id, SourceKind: serviceagent.HistorySourceSummarySegment,
+				SourceSessionID: run.SessionID, SegmentSeq: segment.Seq,
+				SegmentStartMessageID: segment.StartMessageID,
+				SegmentEndMessageID:   segment.EndMessageID,
+			})
 		}
-		grants = append(grants, serviceagent.HistoryMessageGrant{
-			MessageID: id, SourceKind: serviceagent.HistorySourceSummarySegment,
-			SourceSessionID: run.SessionID, SegmentSeq: segment.Seq,
-			SegmentEndMessageID: segment.EndMessageID,
-		})
 	}
-	return view, estimateViewTokens(view), grants
+	return grants
 }
 
-// trimSummarySegmentView drops the tail of a view until it fits.
-func trimSummarySegmentView(view SummarySegmentView, budget int) SummarySegmentView {
+// trimBrowseSegment cuts a browsed segment down to one segment's budget.
+//
+// The budget is the segment's own, not what is left of the call's, and every
+// part of the view counts against it: the topic, the recorded names and the
+// board notes are text too, and a long topic on its own can push a segment
+// over the limit. The parts are given up in the order that costs the model
+// least - the tail of the points first, then the board notes, then the names,
+// and only then the topic itself.
+func trimBrowseSegment(browsed browsedSegment, budget int) browsedSegment {
 	if budget <= 0 {
-		view.Points = []string{}
-		return view
+		browsed.points = nil
+		browsed.view.Points = []string{}
+		browsed.view.NamesAndNumbers = nil
+		browsed.view.WhiteboardStatus = nil
+		browsed.view.Topic = ""
+		return browsed
 	}
-	for len(view.Points) > 0 {
-		candidate := view
-		candidate.Points = view.Points[:len(view.Points)-1]
-		if estimateViewTokens(candidate) <= budget {
-			return candidate
+	for estimateBrowseTokens(browsed) > budget {
+		switch {
+		case len(browsed.points) > 0:
+			browsed.points = browsed.points[:len(browsed.points)-1]
+			browsed.view.Points = renderSegmentPoints(browsed.points)
+		case len(browsed.view.WhiteboardStatus) > 0:
+			browsed.view.WhiteboardStatus = browsed.view.WhiteboardStatus[:len(browsed.view.WhiteboardStatus)-1]
+		case len(browsed.view.NamesAndNumbers) > 0:
+			browsed.view.NamesAndNumbers = browsed.view.NamesAndNumbers[:len(browsed.view.NamesAndNumbers)-1]
+		case browsed.view.Topic != "":
+			// The topic is what the points are about, so it is the last
+			// thing to go, and it goes down to the words that fit.
+			room := budget - estimateBrowseTokens(browsed)
+			browsed.view.Topic = serviceagent.PrefixWithinTokens(browsed.view.Topic, room)
+		default:
+			return browsed
 		}
-		view.Points = candidate.Points
 	}
-	return view
+	return browsed
 }
 
-// estimateViewTokens is what one view costs the answer.
-func estimateViewTokens(view SummarySegmentView) int {
-	total := len(view.Topic) / 2
-	for _, point := range view.Points {
-		total += len(point) / 2
+// estimateBrowseTokens is what one browsed segment costs the answer.
+//
+// The estimator is the one the window uses, so a segment the browse tool
+// reports as fitting really does fit the limit it was given.
+func estimateBrowseTokens(browsed browsedSegment) int {
+	total := rag.EstimateTokens(browsed.view.Topic)
+	for _, point := range browsed.view.Points {
+		total += rag.EstimateTokens(point) + 1
 	}
-	for _, term := range view.NamesAndNumbers {
-		total += len(term) / 2
+	for _, term := range browsed.view.NamesAndNumbers {
+		total += rag.EstimateTokens(term) + 1
 	}
-	for _, status := range view.WhiteboardStatus {
-		total += len(status) / 2
+	for _, status := range browsed.view.WhiteboardStatus {
+		total += rag.EstimateTokens(status) + 1
 	}
-	return total + 8
+	return total + 12
 }

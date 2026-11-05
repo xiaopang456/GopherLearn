@@ -1286,11 +1286,15 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	retrievedText := ""
 	var segmentGrants []HistoryMessageGrant
 	if b.layered != nil {
-		if rendered := renderWhiteboardBlock(layered.BoardDocument, minInt(remaining-4, b.config.MaxWhiteboardTokens)); rendered != "" {
-			whiteboardText = rendered
-			breakdown.Whiteboard = messageTokenCost(rendered)
+		board := renderWhiteboardBlock(layered.BoardDocument, minInt(remaining-4, b.config.MaxWhiteboardTokens))
+		if board.Text != "" {
+			whiteboardText = board.Text
+			breakdown.Whiteboard = messageTokenCost(board.Text)
 			remaining -= breakdown.Whiteboard
-			segmentGrants = append(segmentGrants, whiteboardHistoryGrants(layered, input.SessionID)...)
+			// The grants come from the statements the board really showed.
+			// A statement the budget cut is one the model never saw, and an
+			// id it never saw is not one it may read back.
+			segmentGrants = append(segmentGrants, whiteboardHistoryGrants(board, layered, input.SessionID)...)
 		}
 		resident := renderSummarySegments(layered.Resident, layered.BoardDocument,
 			minInt(remaining-4, b.config.MaxResidentSegmentTokens), b.config.MaxSegmentTokens)
@@ -1465,12 +1469,16 @@ func latestHistoryMessageID(history []model.Message) uint {
 // A board entry is a compressed statement too, and the learner may ask what
 // they actually said. The board's own coverage bounds the grant: an entry
 // cannot cite a message the board does not reach.
-func whiteboardHistoryGrants(layered LayeredSummarySnapshot, sessionID string) []HistoryMessageGrant {
+//
+// The ids come from the statements the board really showed. A statement the
+// budget cut is one the model never saw, and granting its ids would let the
+// model read back a citation it was not shown.
+func whiteboardHistoryGrants(board renderedWhiteboard, layered LayeredSummarySnapshot, sessionID string) []HistoryMessageGrant {
 	if layered.Board == nil || layered.Board.CoveredMessageID == 0 || layered.Board.Version == 0 {
 		return nil
 	}
 	var grants []HistoryMessageGrant
-	for _, id := range layered.BoardDocument.EvidenceMessageIDs() {
+	for _, id := range board.EvidenceMessageIDs {
 		if id == 0 || id > layered.Board.CoveredMessageID {
 			continue
 		}
@@ -1486,24 +1494,22 @@ func whiteboardHistoryGrants(layered LayeredSummarySnapshot, sessionID string) [
 // summarySegmentHistoryGrants draws the read-back authorisations from the
 // segments that really reached the window.
 //
-// The grants come from the segments that were rendered, not from the ones
-// that were offered: a segment the budget trimmed away is a segment the model
-// never saw, and an id it never saw is not one it may read back.
-func summarySegmentHistoryGrants(segments []model.SessionSummarySegment, sessionID string) []HistoryMessageGrant {
+// The grants come from the points that were rendered, not from the ones that
+// were offered: a point the budget trimmed away is one the model never saw,
+// and an id it never saw is not one it may read back.
+func summarySegmentHistoryGrants(segments []renderedSummarySegment, sessionID string) []HistoryMessageGrant {
 	var grants []HistoryMessageGrant
-	for _, segment := range segments {
-		content, err := model.DecodeSessionSummarySegmentContent(segment.Content)
-		if err != nil {
-			continue
-		}
-		for _, id := range content.EvidenceMessageIDs() {
+	for _, rendered := range segments {
+		segment := rendered.Segment
+		for _, id := range rendered.EvidenceMessageIDs {
 			if id == 0 || id > segment.EndMessageID {
 				continue
 			}
 			grants = append(grants, HistoryMessageGrant{
 				MessageID: id, SourceKind: HistorySourceSummarySegment,
 				SourceSessionID: sessionID,
-				SegmentSeq:      segment.Seq, SegmentEndMessageID: segment.EndMessageID,
+				SegmentSeq:      segment.Seq, SegmentStartMessageID: segment.StartMessageID,
+				SegmentEndMessageID: segment.EndMessageID,
 			})
 		}
 	}
@@ -2127,6 +2133,15 @@ func prefixWithinTokens(value string, maxTokens int) string {
 }
 
 func messageTokenCost(content string) int { return rag.EstimateTokens(content) + 4 }
+
+// PrefixWithinTokens shortens a text to a token budget.
+//
+// It is exported because the browse tool has to shorten a segment's topic to
+// the same budget the window uses, and two estimators that disagree would
+// let a segment through the tool that the window would have cut.
+func PrefixWithinTokens(value string, maxTokens int) string {
+	return prefixWithinTokens(value, maxTokens)
+}
 func minInt(left, right int) int {
 	if left < right {
 		return left

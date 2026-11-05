@@ -55,10 +55,14 @@ type HistoryMessageGrant struct {
 	// SegmentSeq is the sequence number of the summary segment a grant came
 	// from, inside its own session.
 	SegmentSeq int
-	// SegmentEndMessageID is that segment's high-water mark. A grant above it
-	// is not a message the segment covers, and the segment is the only thing
-	// that said so.
-	SegmentEndMessageID uint
+	// SegmentStartMessageID and SegmentEndMessageID are the segment's range.
+	//
+	// Both ends are carried because one end is not enough: a segment that
+	// was deleted and a later one that took the same sequence number can end
+	// at the same message while starting somewhere else, and a check that
+	// only looked at the end would accept the replacement.
+	SegmentStartMessageID uint
+	SegmentEndMessageID   uint
 
 	// WhiteboardVersion is the board's version a grant came from, and
 	// WhiteboardCoveredMessageID is the message the board was last written
@@ -99,8 +103,13 @@ func (g HistoryMessageGrant) UsableIn(run RunContext) bool {
 		// A segment is a stretch of this session's own turns. The grant is
 		// good for the messages inside that stretch and nothing else: a
 		// segment cites the messages it was compressed from, and a message
-		// after the segment's end was not one of them.
+		// outside that stretch was not one of them.
+		//
+		// The lower bound is the segment's start. A grant below it is a
+		// message some other stretch covered, and this segment did not say
+		// anything about it.
 		return g.SegmentSeq > 0 && g.SegmentEndMessageID > 0 &&
+			(g.SegmentStartMessageID == 0 || g.MessageID >= g.SegmentStartMessageID) &&
 			g.MessageID <= g.SegmentEndMessageID &&
 			g.SourceSessionID == strings.TrimSpace(run.SessionID)
 	case HistorySourceWhiteboard:
@@ -128,7 +137,7 @@ func MergeHistoryMessageGrants(groups ...[]HistoryMessageGrant) []HistoryMessage
 		messageID, watermark       uint
 		summaryVersion, episodeVer uint64
 		segmentSeq                 int
-		segmentEnd                 uint
+		segmentStart, segmentEnd   uint
 		whiteboardVer              uint64
 		whiteboardEnd              uint
 	}
@@ -140,7 +149,8 @@ func MergeHistoryMessageGrants(groups ...[]HistoryMessageGrant) []HistoryMessage
 				kind: grant.SourceKind, session: grant.SourceSessionID, episodeID: grant.EpisodeID,
 				messageID: grant.MessageID, watermark: grant.SummaryWatermark,
 				summaryVersion: grant.SummaryVersion, episodeVer: grant.EpisodeVersion,
-				segmentSeq: grant.SegmentSeq, segmentEnd: grant.SegmentEndMessageID,
+				segmentSeq: grant.SegmentSeq, segmentStart: grant.SegmentStartMessageID,
+				segmentEnd:    grant.SegmentEndMessageID,
 				whiteboardVer: grant.WhiteboardVersion, whiteboardEnd: grant.WhiteboardCoveredMessageID,
 			}
 			if _, duplicate := seen[key]; duplicate {

@@ -216,9 +216,15 @@ type SummarySegmentEvidenceFacts struct {
 	// UserID and SessionID are who owns it.
 	UserID    int64
 	SessionID string
-	// EndMessageID is the segment's high-water mark. It is what tells a
-	// reordered segment from the one the grant was drawn from.
-	EndMessageID uint
+	// StartMessageID and EndMessageID are the segment's range of turns.
+	//
+	// Both ends are needed. A segment that was deleted and a later one that
+	// took its sequence number can end at the same message while starting
+	// somewhere else, and a check that only looked at the end would accept
+	// the replacement - which reads back a stretch of turns the grant never
+	// referred to.
+	StartMessageID uint
+	EndMessageID   uint
 }
 
 // SummarySegmentEvidenceReader loads those facts.
@@ -541,6 +547,12 @@ func (c *episodeFactsCache) confirmSegment(ctx context.Context, grant serviceage
 	}
 	if facts.EndMessageID != grant.SegmentEndMessageID {
 		// The sequence number belongs to a different stretch of turns now.
+		return refusalSegmentReordered, false
+	}
+	if grant.SegmentStartMessageID > 0 && facts.StartMessageID != grant.SegmentStartMessageID {
+		// The end still matches but the start does not: this is a segment
+		// that took the same number and the same end while covering a
+		// different stretch of turns. The end alone would have accepted it.
 		return refusalSegmentReordered, false
 	}
 	return "", true

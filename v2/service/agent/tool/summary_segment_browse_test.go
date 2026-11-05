@@ -190,3 +190,120 @@ func TestBrowseSummarySegmentsIsAKnownCapability(t *testing.T) {
 		t.Fatal("the description does not say what the tool reaches")
 	}
 }
+
+// One segment is trimmed to its own budget, whatever the rest of the call
+// spent.
+//
+// The per-segment bound is what keeps one long stretch of conversation from
+// taking the whole observation. Every part of the view counts against it: the
+// topic and the recorded names are text too, and a long topic on its own can
+// push a segment over the limit.
+func TestBrowseSummarySegmentsTrimsOneSegmentToItsOwnBudget(t *testing.T) {
+	registry, err := NewBrowseSummarySegmentsRegistry(&fakeSegmentBrowser{})
+	if err != nil {
+		t.Fatalf("build registry: %v", err)
+	}
+	long := strings.Repeat("拆包边界处理", 70)
+	browsed, ok := registry.render(browseSegment(t, 1, 1, 30, "拆包边界", []model.SessionSummarySegmentPoint{
+		{Text: long},
+	}), model.SessionWhiteboardDocument{})
+	if !ok {
+		t.Fatal("the segment did not render")
+	}
+	// The recorded names and the board notes are text too, and a long one of
+	// them can push a segment over the bound on its own.
+	browsed.view.NamesAndNumbers = []string{long}
+	browsed.view.WhiteboardStatus = []string{long}
+	trimmed := trimBrowseSegment(browsed, maxBrowseSummaryTokens)
+	if cost := estimateBrowseTokens(trimmed); cost > maxBrowseSummaryTokens {
+		t.Fatalf("the trimmed segment costs %d tokens, the bound is %d", cost, maxBrowseSummaryTokens)
+	}
+	if len(trimmed.view.Points) != 0 {
+		t.Fatalf("the segment still carries %d points", len(trimmed.view.Points))
+	}
+	if len(trimmed.view.NamesAndNumbers) != 0 || len(trimmed.view.WhiteboardStatus) != 0 {
+		t.Fatalf("the trimmed segment still carries %d names and %d notes",
+			len(trimmed.view.NamesAndNumbers), len(trimmed.view.WhiteboardStatus))
+	}
+}
+
+// The budget is the segment's own, not what is left of the call's.
+//
+// A segment that arrives fifth is trimmed by the same rule as the one that
+// arrives first: a budget that subtracted the earlier segments would empty
+// the later ones, and the model would see nothing of the stretch it asked
+// for.
+func TestBrowseSummarySegmentsGivesEverySegmentTheSameBudget(t *testing.T) {
+	registry, err := NewBrowseSummarySegmentsRegistry(&fakeSegmentBrowser{})
+	if err != nil {
+		t.Fatalf("build registry: %v", err)
+	}
+	text := strings.Repeat("拆包", 90)
+	first, ok := registry.render(browseSegment(t, 1, 1, 30, "拆包", []model.SessionSummarySegmentPoint{
+		{Text: text}, {Text: text},
+	}), model.SessionWhiteboardDocument{})
+	if !ok {
+		t.Fatal("the first segment did not render")
+	}
+	second, ok := registry.render(browseSegment(t, 2, 31, 60, "粘包", []model.SessionSummarySegmentPoint{
+		{Text: text}, {Text: text},
+	}), model.SessionWhiteboardDocument{})
+	if !ok {
+		t.Fatal("the second segment did not render")
+	}
+	trimmedFirst := trimBrowseSegment(first, maxBrowseSummaryTokens)
+	trimmedSecond := trimBrowseSegment(second, maxBrowseSummaryTokens)
+	if len(trimmedFirst.view.Points) != len(trimmedSecond.view.Points) {
+		t.Fatalf("the first segment kept %d points and the second %d", len(trimmedFirst.view.Points),
+			len(trimmedSecond.view.Points))
+	}
+	if cost := estimateBrowseTokens(trimmedSecond); cost > maxBrowseSummaryTokens {
+		t.Fatalf("the trimmed segment costs %d tokens, the bound is %d", cost, maxBrowseSummaryTokens)
+	}
+}
+
+// The browse tool grants the ids of the points it showed, and only those.
+//
+// A point the budget cut is a point the model never saw, and an id it never
+// saw is not one it may ask to read back.
+func TestBrowseSummarySegmentsDoesNotGrantTheIdsOfCutPoints(t *testing.T) {
+	// Three points of about a hundred tokens each: two fit inside the
+	// per-segment budget and the third does not.
+	long := strings.Repeat("拆包边界处理", 18)
+	browser := &fakeSegmentBrowser{segments: []model.SessionSummarySegment{
+		browseSegment(t, 1, 1, 30, "拆包", []model.SessionSummarySegmentPoint{
+			{Text: long, EvidenceMessageIDs: []uint{12}},
+			{Text: long, EvidenceMessageIDs: []uint{13}},
+			{Text: long, EvidenceMessageIDs: []uint{14}},
+		}),
+	}}
+	registry, err := NewBrowseSummarySegmentsRegistry(browser)
+	if err != nil {
+		t.Fatalf("build registry: %v", err)
+	}
+	run := browseRun()
+	run.GrantSet = serviceagent.NewHistoryGrantSet(run, nil)
+	tools, err := registry.Tools(context.Background(), run)
+	if err != nil {
+		t.Fatalf("build tools: %v", err)
+	}
+	out, err := callBrowse(t, tools[0], "拆包")
+	if err != nil {
+		t.Fatalf("invoke browse: %v", err)
+	}
+	if len(out.Segments) != 1 {
+		t.Fatalf("the tool returned %d segments, want 1", len(out.Segments))
+	}
+	if !out.Truncated {
+		t.Fatal("the segment was cut but the tool did not say so")
+	}
+	if len(out.Segments[0].Points) >= 3 {
+		t.Fatalf("the segment still carries %d points, the budget did not cut it", len(out.Segments[0].Points))
+	}
+	if len(run.GrantSet.Grants(14)) != 0 {
+		t.Fatal("the id of a cut point was authorised")
+	}
+	if len(run.GrantSet.Grants(12)) == 0 {
+		t.Fatal("the id of a point that was shown was not authorised")
+	}
+}

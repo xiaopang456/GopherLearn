@@ -942,6 +942,16 @@ func main() {
 		log.Printf("initialize episode evidence loader: %v", err)
 		return
 	}
+	// In the applied mode the episode is projected from the raw messages only.
+	//
+	// The old rolling summary is a frozen picture of an earlier part of the
+	// session, taken before the layered summary existed. A value that was
+	// replaced afterwards is still in it, and reading it would let a stale
+	// statement become an assertion about the learner. Reading the summary
+	// segments instead is a later change.
+	if !agentService.EpisodeReadsLegacySummary(conf.AgentConfig.SummarySegmentMode) {
+		episodeLoader.WithoutLegacySummary()
+	}
 	episodeGenerator, err := episodeService.NewModelGenerator(agentModel, conf.AgentConfig.EpisodeMaxInputTokens, conf.AgentConfig.EpisodeMaxOutputTokens)
 	if err != nil {
 		log.Printf("initialize episode generator: %v", err)
