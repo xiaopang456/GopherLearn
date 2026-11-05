@@ -236,7 +236,14 @@ func sessionView(row model.Session) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"id": row.ID, "user_id": strconv.FormatInt(row.UserID, 10), "title": row.Title, "mode": mode, "created_at": row.CreatedAt.UTC().Format(time.RFC3339Nano), "updated_at": row.UpdatedAt.UTC().Format(time.RFC3339Nano)}, nil
+	// The ceiling, stated by the server. A client that had to infer it would
+	// have to guess, and guessing wrong in this direction hands a conversation
+	// capabilities nobody authorised it for - which is also why this says nothing
+	// about the learner's own preference: the switch is per turn, and only the
+	// ceiling says whether a turn may ask for the library at all.
+	return map[string]any{"id": row.ID, "user_id": strconv.FormatInt(row.UserID, 10), "title": row.Title, "mode": mode,
+		"can_use_knowledge": row.Mode == model.SessionModeAgent,
+		"created_at":        row.CreatedAt.UTC().Format(time.RFC3339Nano), "updated_at": row.UpdatedAt.UTC().Format(time.RFC3339Nano)}, nil
 }
 func (s *httpSurface) sessions(w http.ResponseWriter, r *http.Request, uid int64, name string) {
 	if !noQuery(w, r) {
