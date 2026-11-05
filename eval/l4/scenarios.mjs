@@ -5,6 +5,11 @@ export function splitForId(id) {
   const n = crypto.createHash('sha256').update(id, 'utf8').digest().readBigUInt64BE()
   return n * 5n < 3n * (1n << 64n) ? 'dev' : 'sealed'
 }
+// factValueKey is how the answer key compares its own values: the same
+// presentation folding the scorer applies before it looks for a mention.
+function factValueKey(value) {
+  return String(value ?? '').normalize('NFKC').replace(/\s+/gu, '').toLowerCase()
+}
 export function checkScenario(s) {
   const errors = []
   if (!s || typeof s !== 'object') return ['scenario is not an object']
@@ -28,6 +33,15 @@ export function checkScenario(s) {
     const values = s.answer?.[key]
     if (values !== undefined && (!Array.isArray(values) || values.some(v => typeof v !== 'string' || !v.trim()))) errors.push(`invalid ${key}`)
   }
+  // An answer key that names a value both right and wrong cannot be scored: the
+  // scorer would find the same mention acceptable and forbidden, and only the
+  // order in which it inspects them would decide the attempt. Full-width digits
+  // and spacing are the same value to the scorer, so they are the same value
+  // here.
+  const keys = list => (Array.isArray(list) ? list : []).map(factValueKey)
+  const acceptedKeys = keys(s.answer?.accepted), forbiddenKeys = keys(s.answer?.forbidden), aliasKeys = keys(s.answer?.aliases)
+  if (acceptedKeys.some(value => forbiddenKeys.includes(value))) errors.push('accepted value is also forbidden')
+  if (aliasKeys.some(value => forbiddenKeys.includes(value))) errors.push('alias is also forbidden')
   if (s.category === 'irrelevant') {
     for (const name of ['control', 'distractor']) {
       const c = s.conditions?.[name]

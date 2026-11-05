@@ -17,3 +17,31 @@ test('v3 validates each category and recomputes distances', () => {
 test('updates need both evidence turns and old value in correct key',()=>{
  const s=example('R2'); s.evidence_turns=[60]; s.answer.forbidden=['x']; assert.ok(checkScenario(s).length >= 2)
 })
+test('an answer key cannot name one value as both right and wrong',()=>{
+ // example('R2') answers 'b' and forbids 'a'; the mutations below push one value
+ // into both lists, in three spellings the scorer would read as the same value.
+ for (const [name, mutate, want] of [
+  ['forbidden repeats the accepted value', s => { s.forbidden=['b'] }, 'accepted value is also forbidden'],
+  ['forbidden repeats it with spacing', s => { s.forbidden=[' b '] }, 'accepted value is also forbidden'],
+  ['forbidden repeats it in full width', s => { s.forbidden=['Ｂ'] }, 'accepted value is also forbidden'],
+  ['alias equals a forbidden value', s => { s.aliases=['a'] }, 'alias is also forbidden'],
+  ['alias equals a forbidden value in full width', s => { s.aliases=['Ａ'] }, 'alias is also forbidden'],
+ ]) {
+  const s=example('R2'); s.answer.aliases=[]; mutate(s.answer)
+  const errors=checkScenario(s)
+  assert.ok(errors.includes(want), `${name}: ${JSON.stringify(errors)}`)
+ }
+})
+test('a distinct answer key stays valid',()=>{
+ const s=example('R2'); s.answer.aliases=[' ｂ ']
+ assert.deepEqual(checkScenario(s),[])
+})
+test('the overlap rule also guards the earlier categories',()=>{
+ const stale={id:'v1-test',split:splitForId('v1-test'),category:'stale',question:'现在“示例”每次多长？',turns:example('R1').turns,evidence_turns:[11,23],answer:{mode:'fact',accepted:['48分钟'],forbidden:['16分钟','31分钟','93分钟'],aliases:['四十八分钟']}}
+ assert.deepEqual(checkScenario(stale),[])
+ stale.answer.aliases=['31 分钟']
+ assert.deepEqual(checkScenario(stale),['alias is also forbidden'])
+ stale.answer.aliases=[]
+ stale.answer.forbidden=['4８分钟']
+ assert.deepEqual(checkScenario(stale),['accepted value is also forbidden'])
+})
