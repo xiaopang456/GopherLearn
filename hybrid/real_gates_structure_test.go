@@ -85,7 +85,13 @@ func TestI0FrozenModelTableNames(t *testing.T) {
 		i0ModelTable{new(model.LearningQuestion), "learning_questions"},
 		i0ModelTable{new(model.MemoryExtractionJob), "memory_extraction_jobs"},
 		i0ModelTable{new(model.MemoryCandidate), "memory_candidates"},
-		i0ModelTable{new(model.MemoryDreamRun), "memory_dream_runs"})
+		i0ModelTable{new(model.MemoryDreamRun), "memory_dream_runs"},
+		// The board and its segments are additive: a session that has none of
+		// them simply has no compressed state yet, and the session delete
+		// clears them along with the rest of the session.
+		i0ModelTable{new(model.SessionWhiteboard), "session_whiteboards"},
+		i0ModelTable{new(model.SessionSummarySegment), "session_summary_segments"},
+		i0ModelTable{new(model.SessionSummarySegmentJob), "session_summary_segment_jobs"})
 	models := map[string]bool{}
 	for _, row := range all {
 		s, err := schema.Parse(row.value, &sync.Map{}, schema.NamingStrategy{IdentifierMaxLength: 64})
@@ -98,7 +104,7 @@ func TestI0FrozenModelTableNames(t *testing.T) {
 		models[reflect.TypeOf(row.value).Elem().Name()] = true
 		t.Logf("MODEL_TABLE %s %s", s.Name, s.Table)
 	}
-	if len(i0RequiredTables) != 15 || len(models) != 22 {
+	if len(i0RequiredTables) != 15 || len(models) != 25 {
 		t.Fatal("frozen coverage changed")
 	}
 	// Assert the inventory matches the actual original initializer, not a hand-built replacement.
