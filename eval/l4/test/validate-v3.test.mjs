@@ -192,6 +192,12 @@ test('names that look alike are listed', () => {
  assert.deepEqual(report.errors.filter(x => x.message.includes('duplicate name')), [])
 })
 
+test('an update question has to carry the plan name it is asking about', () => {
+ const s = r2()
+ s.question = '现在每次讲多长时间？'
+ assert.ok(validateDataset([s]).errors.some(x => x.message.includes('question missing plan name')), JSON.stringify(validateDataset([s]).errors))
+})
+
 test('a question that states the constraint it is testing is refused', () => {
  const id = 'constraint-example'
  const history = turns(id, 60)
