@@ -1,6 +1,7 @@
 package hybrid
 
 import (
+	"github.com/google/uuid"
 	"GopherAI/common/code"
 	"GopherAI/common/mysql"
 	"GopherAI/common/rag"
@@ -407,20 +408,24 @@ func (s *httpSurface) agentMessage(w http.ResponseWriter, r *http.Request, uid i
 		// turn's choice.
 		EnableThinking *bool                               `json:"enableThinking"`
 		TopicConsent   agentService.TopicConsentSubmission `json:"topicConsent"`
-		// The retired ordinary-chat fields, kept visible on purpose: a client that
-		// still sends them must be refused with the same conditions this endpoint
-		// has always used, not answered as if the request had not said anything.
-		Knowledge struct {
-			Enabled       bool     `json:"enabled"`
-			CollectionIDs []string `json:"collection_ids"`
-		} `json:"knowledge"`
-		StreamSteps bool `json:"stream_steps"`
+		// The retired ordinary-chat fields, kept visible on purpose. They are raw so
+		// that "absent", "inert value" and "actually asking for something" stay three
+		// different answers: this endpoint never declared them for an Agent turn, and
+		// a decoder that disallows unknown fields used to refuse that - a refusal that
+		// simply making the field known would silently drop.
+		Knowledge   json.RawMessage `json:"knowledge"`
+		StreamSteps json.RawMessage `json:"stream_steps"`
 	}
 	if err := conversation.DecodeRequest(w, r, &input); err != nil {
 		apiError(w, 400, "invalid_request", "request body is invalid")
 		return
 	}
-	if message := retiredOrdinaryTurnRefusal(mode, input.StreamSteps, input.Knowledge.Enabled, input.Knowledge.CollectionIDs); message != "" {
+	steps, knowledgeEnabled, collectionIDs, malformed := retiredBodyValues(input.Knowledge, input.StreamSteps)
+	if message := malformed; message != "" {
+		apiError(w, 400, "invalid_request", message)
+		return
+	}
+	if message := retiredOrdinaryBodyRefusal(mode, false, len(input.Knowledge) > 0, len(input.StreamSteps) > 0, steps, knowledgeEnabled, collectionIDs); message != "" {
 		apiError(w, 400, "invalid_request", message)
 		return
 	}
@@ -430,7 +435,7 @@ func (s *httpSurface) agentMessage(w http.ResponseWriter, r *http.Request, uid i
 	}
 	result, err := s.agent.Agent.Run(r.Context(), agentService.RunRequest{
 		UserID: uid, UserName: name, SessionID: sid, Question: input.Content,
-		RequestID: input.RequestID, KnowledgePolicy: input.KnowledgePolicy, EnableThinking: input.EnableThinking, TopicConsent: input.TopicConsent,
+		RequestID: turnRequestKey(mode, input.RequestID), KnowledgePolicy: input.KnowledgePolicy, EnableThinking: input.EnableThinking, TopicConsent: input.TopicConsent,
 	}, agentService.DiscardEvents)
 	if err == nil {
 		if mode != model.SessionModeAgent {
@@ -475,25 +480,87 @@ func (s *httpSurface) agentMessage(w http.ResponseWriter, r *http.Request, uid i
 	_ = json.NewEncoder(w).Encode(map[string]any{"data": result, "error": map[string]any{"code": key, "native_code": native, "message": native.Msg()}})
 }
 
-// retiredOrdinaryTurnRefusal keeps the exact conditions this endpoint has always
-// refused on a conversation turn: a request cannot ask a session for collections it
-// was never granted, and step frames on a turn that has no capabilities would
-// promise steps that cannot exist. Inert values (`stream_steps: false`,
-// `knowledge: {enabled: false}`, no collection ids) stay allowed, because clients
-// send them today - refusing those would be a new rule pretending to be an old one.
-func retiredOrdinaryTurnRefusal(mode model.SessionMode, streamSteps bool, knowledgeEnabled bool, collectionIDs []string) string {
+// retiredBodyValues reads the retired fields' values out of their raw presence. A
+// wrong type is refused rather than read as the zero value: `stream_steps: "yes"`
+// would otherwise become false and be silently accepted.
+func retiredBodyValues(knowledge, streamSteps json.RawMessage) (steps bool, enabled bool, collectionIDs []string, refusal string) {
+	if len(streamSteps) > 0 {
+		if err := json.Unmarshal(streamSteps, &steps); err != nil {
+			return false, false, nil, "request body is invalid"
+		}
+	}
+	if len(knowledge) > 0 {
+		var body struct {
+			Enabled       bool     `json:"enabled"`
+			CollectionIDs []string `json:"collection_ids"`
+		}
+		if err := json.Unmarshal(knowledge, &body); err != nil {
+			return false, false, nil, "request body is invalid"
+		}
+		return steps, body.Enabled, body.CollectionIDs, ""
+	}
+	return steps, false, nil, ""
+}
+
+// retiredOrdinaryBodyRefusal keeps each endpoint's own old rule, because they were
+// never the same rule. An Agent turn never declared these fields and the decoder
+// disallows unknown fields, so their presence was a 400 about the body; that is kept,
+// otherwise a client asking an Agent turn for named collections would be answered as
+// if it had not asked. A conversation turn declared them, so an inert value stays
+// accepted today (`stream_steps: false`, `knowledge: {enabled: false}`, no ids) and
+// only a request that actually asks is refused, with the message it has always used.
+// stepsAllowed is true only where step frames are part of the contract: the stream
+// endpoint on an Agent session.
+func retiredOrdinaryBodyRefusal(mode model.SessionMode, stepsAllowed, knowledgePresent, stepsPresent, steps, knowledgeEnabled bool, collectionIDs []string) string {
 	if mode == model.SessionModeAgent {
+		if knowledgePresent || (stepsPresent && !stepsAllowed) {
+			return "request body is invalid"
+		}
 		return ""
 	}
-	if streamSteps || knowledgeEnabled || len(collectionIDs) > 0 {
+	if steps || knowledgeEnabled || len(collectionIDs) > 0 {
 		return "request is invalid"
 	}
 	return ""
 }
 
-// runPair reads the two rows one turn wrote through the serializer the history read
-// already uses, so what a client sees immediately and what it sees after a reload
-// cannot drift into two shapes.
+// turnRequestKey keeps the idempotency rule where it already applied and keeps it
+// absent where it never did. An Agent turn has required a valid requestId. A
+// conversation turn never had one - the retired path had no idempotency at all - so
+// requiring it now would break every client that only sends content. Synthesising a
+// key per request preserves today's behaviour exactly: the same message sent twice is
+// two turns, and a client that does send a key still gets replay semantics from it.
+func turnRequestKey(mode model.SessionMode, requestID string) string {
+	if mode == model.SessionModeAgent || strings.TrimSpace(requestID) != "" {
+		return requestID
+	}
+	return uuid.NewString()
+}
+
+// messageRowView is the one serialization of a stored message, used by the history
+// read and by the non-streaming turn response alike, so the row a client reads
+// immediately cannot differ in shape from the same row after a reload.
+//
+// The run that produced a message is part of the message's own fact: it is what lets a
+// conversation that is opened again show the steps its turn took. A row with no run has
+// the key absent rather than empty.
+func messageRowView(row model.Message) map[string]any {
+	view := messageView(domainMessage(row)).(map[string]any)
+	if row.AgentRunID != nil && strings.TrimSpace(*row.AgentRunID) != "" {
+		view["run_id"] = *row.AgentRunID
+	}
+	if len(row.Sources) > 0 {
+		sources := make([]any, 0, len(row.Sources))
+		for _, source := range row.Sources {
+			// Citation is a per-message ordinal, not a invented Collection/chunk ID.
+			sources = append(sources, map[string]any{"source_id": strconv.Itoa(source.Citation), "document_id": source.DocID, "title": source.FileName, "section": strings.Join(source.TitlePath, " / "), "snippet": source.Snippet, "original_v2": map[string]any{"citation": strconv.Itoa(source.Citation), "doc_id": source.DocID, "doc_version": source.DocVersion, "file_name": source.FileName, "title_path": source.TitlePath, "start_line": source.StartLine, "end_line": source.EndLine, "chunk_index": source.ChunkIndex, "score": source.Score, "snippet": source.Snippet}})
+		}
+		view["sources"] = sources
+	}
+	return view
+}
+
+// runPair reads the two rows one turn wrote through that same serializer.
 func (s *httpSurface) runPair(ctx context.Context, uid int64, sid, runID string) (map[string]any, error) {
 	repository := messageDAO.NewRepository(s.db)
 	user, err := repository.ReadOwnedRunUser(ctx, uid, sid, runID)
@@ -505,8 +572,8 @@ func (s *httpSurface) runPair(ctx context.Context, uid int64, sid, runID string)
 		return nil, err
 	}
 	return map[string]any{
-		"user_message":      messageView(domainMessage(*user)),
-		"assistant_message": messageView(domainMessage(*assistant)),
+		"user_message":      messageRowView(*user),
+		"assistant_message": messageRowView(*assistant),
 	}, nil
 }
 
@@ -535,23 +602,7 @@ func (s *httpSurface) history(ctx context.Context, uid int64, sid string) ([]any
 		}
 		for i := len(pages) - 1; i >= 0; i-- {
 			for _, row := range pages[i] {
-				view := messageView(domainMessage(row)).(map[string]any)
-				// The run that produced this message is part of the message's
-				// own fact: it is what lets a conversation that is opened again
-				// show the steps its turn took. A message of an ordinary chat
-				// has no run, and then the key is absent rather than empty.
-				if row.AgentRunID != nil && strings.TrimSpace(*row.AgentRunID) != "" {
-					view["run_id"] = *row.AgentRunID
-				}
-				if len(row.Sources) > 0 {
-					sources := make([]any, 0, len(row.Sources))
-					for _, source := range row.Sources {
-						// Citation is a per-message ordinal, not a invented Collection/chunk ID.
-						sources = append(sources, map[string]any{"source_id": strconv.Itoa(source.Citation), "document_id": source.DocID, "title": source.FileName, "section": strings.Join(source.TitlePath, " / "), "snippet": source.Snippet, "original_v2": map[string]any{"citation": strconv.Itoa(source.Citation), "doc_id": source.DocID, "doc_version": source.DocVersion, "file_name": source.FileName, "title_path": source.TitlePath, "start_line": source.StartLine, "end_line": source.EndLine, "chunk_index": source.ChunkIndex, "score": source.Score, "snippet": source.Snippet}})
-					}
-					view["sources"] = sources
-				}
-				items = append(items, view)
+					items = append(items, messageRowView(row))
 			}
 		}
 		return nil

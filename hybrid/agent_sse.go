@@ -154,18 +154,20 @@ func (s *httpSurface) agentStream(w http.ResponseWriter, r *http.Request, uid in
 		EnableThinking *bool                               `json:"enableThinking"`
 		TopicConsent   agentService.TopicConsentSubmission `json:"topicConsent"`
 		StreamSteps    bool                                `json:"stream_steps"`
-		// The retired ordinary-chat field, kept visible so a conversation stream can
-		// refuse it with the condition this endpoint has always used.
-		Knowledge struct {
-			Enabled       bool     `json:"enabled"`
-			CollectionIDs []string `json:"collection_ids"`
-		} `json:"knowledge"`
+		// The retired ordinary-chat field, raw for the same reason as on POST
+		// /messages: presence and value are different facts.
+		Knowledge json.RawMessage `json:"knowledge"`
 	}
 	if err := conversation.DecodeRequest(w, r, &input); err != nil {
 		apiError(w, 400, "invalid_request", "request body is invalid")
 		return
 	}
-	if message := retiredOrdinaryTurnRefusal(mode, input.StreamSteps, input.Knowledge.Enabled, input.Knowledge.CollectionIDs); message != "" {
+	_, knowledgeEnabled, collectionIDs, malformed := retiredBodyValues(input.Knowledge, nil)
+	if message := malformed; message != "" {
+		apiError(w, 400, "invalid_request", message)
+		return
+	}
+	if message := retiredOrdinaryBodyRefusal(mode, true, len(input.Knowledge) > 0, false, input.StreamSteps, knowledgeEnabled, collectionIDs); message != "" {
 		apiError(w, 400, "invalid_request", message)
 		return
 	}
@@ -176,7 +178,7 @@ func (s *httpSurface) agentStream(w http.ResponseWriter, r *http.Request, uid in
 		apiError(w, 400, "invalid_request", "request is invalid")
 		return
 	}
-	request := agentService.RunRequest{UserID: uid, UserName: name, SessionID: sessionID(r), Question: input.Content, RequestID: input.RequestID, KnowledgePolicy: input.KnowledgePolicy, EnableThinking: input.EnableThinking, TopicConsent: input.TopicConsent}
+	request := agentService.RunRequest{UserID: uid, UserName: name, SessionID: sessionID(r), Question: input.Content, RequestID: turnRequestKey(mode, input.RequestID), KnowledgePolicy: input.KnowledgePolicy, EnableThinking: input.EnableThinking, TopicConsent: input.TopicConsent}
 	if err := agentService.ValidateRunRequestForAssembly(request); err != nil {
 		apiError(w, 400, "invalid_request", "Agent request is invalid")
 		return
