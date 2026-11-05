@@ -130,6 +130,16 @@ func TestMemoryRecorderLabelsTheCountersWithTheMode(t *testing.T) {
 	}
 }
 
+// A batch that held no turns is not a failure, so it carries no error code.
+func TestTheEmptyBatchCarriesNoErrorCode(t *testing.T) {
+	recorder := NewMemoryRecorder(nil)
+	recorder.SummarySegmentJob("empty", "", 0)
+	snapshot := recorder.Snapshot()
+	if snapshot.Counters["summary_segment_job_total{mode=off,status=empty,error_code=none}"] != 1 {
+		t.Fatalf("the empty batch was not counted: %#v", snapshot.Counters)
+	}
+}
+
 // An unknown mode is not a free-text label.
 func TestMemoryRecorderBoundsTheModeLabel(t *testing.T) {
 	recorder := NewMemoryRecorder(nil)

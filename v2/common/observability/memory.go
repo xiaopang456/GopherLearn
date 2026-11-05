@@ -256,7 +256,9 @@ func (r *MemoryRecorder) SummarySegmentJob(status, errorCode string, duration ti
 	status = boundedLabel(status, "completed", "failed", "empty")
 	errorCode = boundedLabel(errorCode, "none", "task_timeout", "task_cancelled", "whiteboard_conflict",
 		"source_not_found", "invalid_model_output", "model_error", "generation_failed")
-	if status == "completed" {
+	if status == "completed" || status == "empty" {
+		// An attempt that wrote a segment and an attempt that had no turns to
+		// write both ended without a failure, so there is no error to name.
 		errorCode = "none"
 	}
 	r.add("summary_segment_job_total{mode="+mode+",status="+status+",error_code="+errorCode+"}", 1)
