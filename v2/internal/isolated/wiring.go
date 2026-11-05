@@ -443,6 +443,15 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	if err != nil {
 		return nil, fmt.Errorf("initialize agent model: %w", err)
 	}
+	// The layered summary's write path. It is assembled here rather than next
+	// to the worker because the applied mode's read side needs it: the mode
+	// decides both what is written and what is sent, and a deployment that
+	// wrote the segments without reading them would pay for a model call per
+	// batch and answer nothing.
+	summarySegmentAssembly, err := buildSummarySegmentAssembly(conf, agentModel)
+	if err != nil {
+		return nil, fmt.Errorf("initialize summary segment assembly: %v", err)
+	}
 	var knowledgeTools agentService.ToolRegistry = agentService.StaticToolRegistry{}
 	var knowledgeRegistry *agentTool.Registry
 	if conf.AgentConfig.MaxToolCalls > 0 {
@@ -619,7 +628,21 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 					EvidenceMessageIDs: cited,
 				}, nil
 			}))
+		// A summary segment's citation is honoured only if the segment is
+		// still there and still covers the same turns.
+		historyTools.UseSummarySegmentEvidenceReader(
+			agentTool.NewSummarySegmentEvidenceReader(sessionDAO.DefaultRepository()))
 		registries := []agentService.ToolRegistry{knowledgeTools, memoryDraftTools, historyTools}
+		if summarySegmentAssembly.Applies() {
+			// browse_summary_segments opens the session's older segments. It
+			// is registered only in the applied mode, because there are no
+			// segments to browse in the other two.
+			browseTools, browseErr := agentTool.NewBrowseSummarySegmentsRegistry(sessionDAO.DefaultRepository())
+			if browseErr != nil {
+				return nil, fmt.Errorf("initialize agent summary segment browse tool: %v", browseErr)
+			}
+			registries = append(registries, browseTools)
+		}
 		if memoryReadMode.UsesMemorySearchTool() {
 			// read_history_message stays registered but has nothing to offer
 			// under this mode: its allow-list is filled from the episodes the
@@ -672,6 +695,17 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	summaryProvider, err := agentService.NewRollingSummaryProvider(sessionDAO.DefaultRepository(), message.DefaultRepository(), summaryGenerator, summaryConfig)
 	if err != nil {
 		return nil, fmt.Errorf("initialize agent summary provider: %v", err)
+	}
+	// In the applied mode the segments are the compression, so the rolling
+	// summary is neither read nor written.
+	//
+	// Two compressors over one stream would pay for the same turns twice and
+	// the window would carry both. The old table keeps what it already holds
+	// and stops growing; the downstream switch to the board and the segments
+	// is a later step.
+	summarySource := agentService.SummaryProvider(summaryProvider)
+	if summarySegmentAssembly.Applies() {
+		summarySource = agentService.EmptySummaryProvider{}
 	}
 	// AGENT-017: mastery comes straight from TopicProgress on every turn, so a
 	// newly graded quiz changes the next explanation without any extraction,
@@ -726,9 +760,33 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		}
 
 		return agentService.MemoryRecall{Global: recalled.Global, Topic: recalled.Topic}, nil
-	}), summaryProvider)
+	}), summarySource)
 	if err != nil {
 		return nil, fmt.Errorf("initialize agent context builder: %v", err)
+	}
+	// The layered summary's read side. It is attached only in the applied
+	// mode: the off and the shadow modes send exactly what they sent before.
+	if summarySegmentAssembly.Applies() {
+		// The preselector runs on the lexical channel alone. The vector
+		// channel needs an index of the segment vectors, and nothing writes
+		// that index yet, so a searcher here would find nothing and look
+		// like a search that failed.
+		preselector, preselectErr := agentService.NewSummarySegmentPreselector(nil, nil)
+		if preselectErr != nil {
+			return nil, fmt.Errorf("initialize summary segment preselector: %v", preselectErr)
+		}
+		layeredProvider, layeredErr := agentService.NewDatabaseLayeredSummaryProvider(
+			sessionDAO.DefaultRepository(), preselector, agentService.DefaultResidentSummarySegments)
+		if layeredErr != nil {
+			return nil, fmt.Errorf("initialize layered summary reader: %v", layeredErr)
+		}
+		if attachErr := contextBuilder.UseLayeredSummaryProvider(layeredProvider); attachErr != nil {
+			return nil, fmt.Errorf("attach layered summary reader: %v", attachErr)
+		}
+		// The fallback generates a segment before the answer when the raw
+		// conversation no longer fits. It is the last resort, after the
+		// background has had its turn.
+		contextBuilder.UseSummarySegmentFallback(summarySegmentAssembly)
 	}
 	if memoryReadMode.UsesMemorySearchTool() {
 		// The same GlobalMemories function legacy_v2 uses, called directly.
@@ -1043,10 +1101,6 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	// says it should run, and the enqueue that feeds it is wired either way:
 	// an assembly that nobody asks does nothing, and an assembly that is
 	// asked but not started is a queue that fills up and nobody drains.
-	summarySegmentAssembly, err := buildSummarySegmentAssembly(conf, agentModel)
-	if err != nil {
-		return nil, fmt.Errorf("initialize summary segment assembly: %v", err)
-	}
 	configuredAgentService.SetSummarySegmentEnqueuer(summarySegmentAssembly.Enqueuer())
 	if err := agentService.SetDefaultService(configuredAgentService); err != nil {
 		return nil, fmt.Errorf("configure agent service: %v", err)

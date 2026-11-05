@@ -99,6 +99,7 @@ var promptToolMarkers = []struct {
 	{"memory_search", CapabilityEpisodeSearch},
 	{"search_past_sessions", CapabilityEpisodeSearch},
 	{"topic_memory_read", CapabilityTopicMemoryRead},
+	{"browse_summary_segments", CapabilityBrowseSummarySegments},
 }
 
 // RenderSystemPrompt drops from the base prompt every rule that talks about a

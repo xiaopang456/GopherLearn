@@ -116,6 +116,19 @@ const (
 	refusalEpisodeWatermark = "message_past_episode_watermark"
 	refusalVerifierAbsent   = "episode_verifier_not_wired"
 	refusalUnreadable       = "episode_evidence_unreadable"
+
+	// The summary segments' refusal reasons.
+	//
+	// A segment is written once and never rewritten, so it needs no version
+	// check. What it does need is that the row is still there and that the
+	// sequence number still belongs to the same stretch of turns: a deleted
+	// segment and a later one that took its number are different facts, and
+	// a grant that cannot tell them apart would read back the wrong turn.
+	refusalSegmentMissing        = "summary_segment_not_found"
+	refusalSegmentOwner          = "summary_segment_owner_mismatch"
+	refusalSegmentSession        = "summary_segment_source_session_mismatch"
+	refusalSegmentReordered      = "summary_segment_reordered"
+	refusalSegmentVerifierAbsent = "summary_segment_verifier_not_wired"
 )
 
 // ErrEpisodeEvidenceMissing is what a reader returns when the store has no active
@@ -170,6 +183,13 @@ type HistoryMessageRegistry struct {
 	// earlier in this turn, and "the render still matches the store" is exactly the
 	// claim a read of the learner's raw words has to be able to make.
 	episodeEvidence EpisodeEvidenceReader
+	// segmentEvidence re-establishes a summary segment's facts at the moment
+	// one of its citations is about to be honoured. A segment is written once
+	// and never rewritten, so it needs no version check - but the row can be
+	// deleted, and a later segment can take the same sequence number. The
+	// check is that the segment still exists and still covers the same
+	// messages.
+	segmentEvidence SummarySegmentEvidenceReader
 }
 
 func NewHistoryMessageRegistry(reader HistoryMessageReader) (*HistoryMessageRegistry, error) {
@@ -186,6 +206,30 @@ func NewHistoryMessageRegistry(reader HistoryMessageReader) (*HistoryMessageRegi
 // verified is the failure this closes.
 func (r *HistoryMessageRegistry) UseEpisodeEvidenceReader(reader EpisodeEvidenceReader) {
 	r.episodeEvidence = reader
+}
+
+// SummarySegmentEvidenceFacts is what the store says about one summary
+// segment at the moment a citation is about to be honoured.
+type SummarySegmentEvidenceFacts struct {
+	// Seq is the segment's sequence number inside its session.
+	Seq int
+	// UserID and SessionID are who owns it.
+	UserID    int64
+	SessionID string
+	// EndMessageID is the segment's high-water mark. It is what tells a
+	// reordered segment from the one the grant was drawn from.
+	EndMessageID uint
+}
+
+// SummarySegmentEvidenceReader loads those facts.
+type SummarySegmentEvidenceReader interface {
+	LoadSummarySegmentEvidence(ctx context.Context, userID int64, sessionID string, seq int) (SummarySegmentEvidenceFacts, error)
+}
+
+// UseSummarySegmentEvidenceReader wires the store-side verifier for the
+// summary segments' citations.
+func (r *HistoryMessageRegistry) UseSummarySegmentEvidenceReader(reader SummarySegmentEvidenceReader) {
+	r.segmentEvidence = reader
 }
 
 type ReadHistoryMessageInput struct {
@@ -227,7 +271,10 @@ func (r *HistoryMessageRegistry) Tools(ctx context.Context, run serviceagent.Run
 	// Every grant is re-checked against this run here, so the allow-list the
 	// query obeys is the one the assembled window established - never a value
 	// the request or the model supplied.
-	grants := serviceagent.NewHistoryGrantSet(run, run.HistoryGrants)
+	grants := run.GrantSet
+	if grants == nil {
+		grants = serviceagent.NewHistoryGrantSet(run, run.HistoryGrants)
+	}
 	// Nothing was recalled, so there is nothing this run may read. Offering the
 	// tool anyway would invite calls that can only be refused.
 	if grants.Len() == 0 {
@@ -237,8 +284,8 @@ func (r *HistoryMessageRegistry) Tools(ctx context.Context, run serviceagent.Run
 	// One store read per episode card per run. Every citation on a card depends on
 	// the same facts, and re-reading the row per id would turn two tool calls into a
 	// query per citation.
-	facts := &episodeFactsCache{reader: r.episodeEvidence, userID: userID,
-		loaded: map[string]episodeFactsEntry{}}
+	facts := &episodeFactsCache{reader: r.episodeEvidence, segments: r.segmentEvidence, userID: userID,
+		loaded: map[string]episodeFactsEntry{}, segmentLoaded: map[int]segmentFactsEntry{}}
 	// A message this run reads back is evidence the learner actually said those words,
 	// and the only thing that can make a citation to them legal. The registry comes from
 	// the run, exactly like memory_search's does, so the reference the tool issues is the
@@ -380,7 +427,7 @@ func registerReadBackEvidence(registry *serviceagent.MemoryEvidenceRegistry, own
 	if registry == nil || len(grants) == 0 {
 		return ""
 	}
-	var summary, episode bool
+	var summary, episode, segment bool
 	var version uint64
 	for _, grant := range grants {
 		switch grant.SourceKind {
@@ -394,6 +441,13 @@ func registerReadBackEvidence(registry *serviceagent.MemoryEvidenceRegistry, own
 			if grant.EpisodeVersion > version {
 				version = grant.EpisodeVersion
 			}
+		case serviceagent.HistorySourceSummarySegment:
+			segment = true
+		case serviceagent.HistorySourceWhiteboard:
+			segment = true
+			if grant.WhiteboardVersion > version {
+				version = grant.WhiteboardVersion
+			}
 		}
 	}
 	source := serviceagent.HistorySourceSummary
@@ -402,6 +456,8 @@ func registerReadBackEvidence(registry *serviceagent.MemoryEvidenceRegistry, own
 		source = "summary+episode"
 	case episode:
 		source = serviceagent.HistorySourceEpisode
+	case segment:
+		source = serviceagent.HistorySourceSummarySegment
 	}
 	subject, _ := boundRunes(content, 160)
 	return registry.Register(serviceagent.MemoryEvidenceEntry{
@@ -416,14 +472,25 @@ func registerReadBackEvidence(registry *serviceagent.MemoryEvidenceRegistry, own
 // episodeFactsCache holds one run's store reads, keyed by episode id.
 type episodeFactsCache struct {
 	reader EpisodeEvidenceReader
-	userID int64
+	// segments re-establishes a summary segment's facts. It is a separate
+	// reader because a segment is stored in a different table from an
+	// episode card, and one store's miss is not the other's.
+	segments SummarySegmentEvidenceReader
+	userID   int64
 
 	mu     sync.Mutex
 	loaded map[string]episodeFactsEntry
+	// segmentLoaded is keyed by the sequence number inside one session.
+	segmentLoaded map[int]segmentFactsEntry
 }
 
 type episodeFactsEntry struct {
 	facts EpisodeEvidenceFacts
+	err   error
+}
+
+type segmentFactsEntry struct {
+	facts SummarySegmentEvidenceFacts
 	err   error
 }
 
@@ -433,9 +500,67 @@ type episodeFactsEntry struct {
 // drawn under, both of which the grant set already re-checks, and the summary row is
 // read by the same builder that made the grant in this turn.
 func (c *episodeFactsCache) confirm(ctx context.Context, grant serviceagent.HistoryMessageGrant) (string, bool) {
-	if grant.SourceKind != serviceagent.HistorySourceEpisode {
+	switch grant.SourceKind {
+	case serviceagent.HistorySourceEpisode:
+		return c.confirmEpisode(ctx, grant)
+	case serviceagent.HistorySourceSummarySegment:
+		return c.confirmSegment(ctx, grant)
+	default:
 		return "", true
 	}
+}
+
+// confirmSegment re-establishes that a summary segment is still the segment
+// the grant was drawn from.
+//
+// A segment is written once and never rewritten, so it needs no version
+// check. What it does need is that the row is still there and that the
+// sequence number still belongs to the same stretch of turns: a deleted
+// segment and a later one that took its number are different facts, and a
+// grant that cannot tell them apart would read back the wrong turn.
+func (c *episodeFactsCache) confirmSegment(ctx context.Context, grant serviceagent.HistoryMessageGrant) (string, bool) {
+	if c.segments == nil {
+		// Fail closed, for the same reason the episode path fails closed: a
+		// grant that nothing checked authorises a read of the learner's own
+		// words, and "we could not check it" is not a permission.
+		return refusalSegmentVerifierAbsent, false
+	}
+	entry := c.segmentEntry(ctx, grant.SourceSessionID, grant.SegmentSeq)
+	if entry.err != nil {
+		return refusalSegmentMissing, false
+	}
+	facts := entry.facts
+	if facts.Seq != grant.SegmentSeq {
+		return refusalSegmentMissing, false
+	}
+	if facts.UserID != c.userID {
+		return refusalSegmentOwner, false
+	}
+	if strings.TrimSpace(facts.SessionID) != strings.TrimSpace(grant.SourceSessionID) {
+		return refusalSegmentSession, false
+	}
+	if facts.EndMessageID != grant.SegmentEndMessageID {
+		// The sequence number belongs to a different stretch of turns now.
+		return refusalSegmentReordered, false
+	}
+	return "", true
+}
+
+// segmentEntry reads one segment's facts, once per run.
+func (c *episodeFactsCache) segmentEntry(ctx context.Context, sessionID string, seq int) segmentFactsEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cached, seen := c.segmentLoaded[seq]; seen {
+		return cached
+	}
+	facts, err := c.segments.LoadSummarySegmentEvidence(ctx, c.userID, sessionID, seq)
+	loaded := segmentFactsEntry{facts: facts, err: err}
+	c.segmentLoaded[seq] = loaded
+	return loaded
+}
+
+// confirmEpisode re-establishes an episode card's facts.
+func (c *episodeFactsCache) confirmEpisode(ctx context.Context, grant serviceagent.HistoryMessageGrant) (string, bool) {
 	if c.reader == nil {
 		// Fail closed. An unverified episode citation is exactly the case this
 		// verification exists for, and "we could not check it" is not a permission.

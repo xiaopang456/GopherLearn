@@ -1216,12 +1216,13 @@ func (c AgentConfig) Validate() error {
 		return fmt.Errorf("summaryEvidenceIDLimit must cover summaryGroupItemLimit and be at most 2000")
 	}
 	switch c.SummarySegmentMode {
-	case "off", "shadow":
+	case "off", "shadow", "on":
 	default:
-		// "on" reads the new state back, and the parts that read it back are
-		// not here yet. Accepting it would write segments that nothing reads
-		// and call it the applied mode.
-		return fmt.Errorf("summarySegmentMode must be off or shadow")
+		// The three modes are the plan's: off writes nothing, shadow writes
+		// without being read, and on reads the new state back. The read
+		// side is what makes "on" meaningful, and it is assembled together
+		// with the mode.
+		return fmt.Errorf("summarySegmentMode must be off, shadow or on")
 	}
 	if c.SummarySegmentWorkerCount < 1 || c.SummarySegmentWorkerCount > 16 ||
 		c.SummarySegmentQueueSize < c.SummarySegmentWorkerCount || c.SummarySegmentQueueSize > 1000 {

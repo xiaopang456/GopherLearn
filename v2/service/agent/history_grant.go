@@ -1,6 +1,9 @@
 package agent
 
-import "strings"
+import (
+	"strings"
+	"sync"
+)
 
 const (
 	// HistorySourceSummary marks a grant that came from the session summary
@@ -8,6 +11,17 @@ const (
 	HistorySourceSummary = "summary"
 	// HistorySourceEpisode marks a grant that came from an injected episode.
 	HistorySourceEpisode = "episode"
+	// HistorySourceSummarySegment marks a grant that came from a summary
+	// segment injected into this run's window.
+	HistorySourceSummarySegment = "summary_segment"
+	// HistorySourceWhiteboard marks a grant that came from the session board
+	// injected into this run's window.
+	//
+	// It is a kind of its own rather than another summary-segment grant: the
+	// board is bounded by the message it was last written at, and a segment
+	// by the stretch it covers. The same id therefore has different provenances
+	// under the two, and the run has to be able to say which card granted it.
+	HistorySourceWhiteboard = "whiteboard"
 )
 
 // HistoryMessageGrant authorises reading one stored message in one run, and
@@ -37,6 +51,20 @@ type HistoryMessageGrant struct {
 	// bounds nothing; a positive value is a ceiling, and a grant above it is not a
 	// citation the card ever had.
 	EpisodeWatermark uint
+
+	// SegmentSeq is the sequence number of the summary segment a grant came
+	// from, inside its own session.
+	SegmentSeq int
+	// SegmentEndMessageID is that segment's high-water mark. A grant above it
+	// is not a message the segment covers, and the segment is the only thing
+	// that said so.
+	SegmentEndMessageID uint
+
+	// WhiteboardVersion is the board's version a grant came from, and
+	// WhiteboardCoveredMessageID is the message the board was last written
+	// at. A board entry cannot cite a message the board does not reach.
+	WhiteboardVersion          uint64
+	WhiteboardCoveredMessageID uint
 }
 
 // UsableIn reports whether this grant still means what it claimed when the
@@ -67,6 +95,20 @@ func (g HistoryMessageGrant) UsableIn(run RunContext) bool {
 		// against a different card version, or carried over from an older one, must not
 		// reach the query.
 		return g.EpisodeWatermark == 0 || g.MessageID <= g.EpisodeWatermark
+	case HistorySourceSummarySegment:
+		// A segment is a stretch of this session's own turns. The grant is
+		// good for the messages inside that stretch and nothing else: a
+		// segment cites the messages it was compressed from, and a message
+		// after the segment's end was not one of them.
+		return g.SegmentSeq > 0 && g.SegmentEndMessageID > 0 &&
+			g.MessageID <= g.SegmentEndMessageID &&
+			g.SourceSessionID == strings.TrimSpace(run.SessionID)
+	case HistorySourceWhiteboard:
+		// The board is this session's own current state, and it is bounded by
+		// the message it was last written at.
+		return g.WhiteboardVersion > 0 && g.WhiteboardCoveredMessageID > 0 &&
+			g.MessageID <= g.WhiteboardCoveredMessageID &&
+			g.SourceSessionID == strings.TrimSpace(run.SessionID)
 	default:
 		return false
 	}
@@ -85,6 +127,10 @@ func MergeHistoryMessageGrants(groups ...[]HistoryMessageGrant) []HistoryMessage
 		kind, session, episodeID   string
 		messageID, watermark       uint
 		summaryVersion, episodeVer uint64
+		segmentSeq                 int
+		segmentEnd                 uint
+		whiteboardVer              uint64
+		whiteboardEnd              uint
 	}
 	var merged []HistoryMessageGrant
 	seen := make(map[grantKey]struct{})
@@ -94,6 +140,8 @@ func MergeHistoryMessageGrants(groups ...[]HistoryMessageGrant) []HistoryMessage
 				kind: grant.SourceKind, session: grant.SourceSessionID, episodeID: grant.EpisodeID,
 				messageID: grant.MessageID, watermark: grant.SummaryWatermark,
 				summaryVersion: grant.SummaryVersion, episodeVer: grant.EpisodeVersion,
+				segmentSeq: grant.SegmentSeq, segmentEnd: grant.SegmentEndMessageID,
+				whiteboardVer: grant.WhiteboardVersion, whiteboardEnd: grant.WhiteboardCoveredMessageID,
 			}
 			if _, duplicate := seen[key]; duplicate {
 				continue
@@ -112,6 +160,10 @@ func MergeHistoryMessageGrants(groups ...[]HistoryMessageGrant) []HistoryMessage
 // read?" and "why may it be read?" have different answers for an id the summary
 // and an episode both cite: the read happens once, while the reason stays two.
 type HistoryGrantSet struct {
+	// mu guards byMessage. A tool that finds evidence mid-turn - the browse
+	// tool reading an older segment - extends the set while another tool may
+	// be reading it.
+	mu        sync.Mutex
 	byMessage map[uint][]HistoryMessageGrant
 }
 
@@ -145,6 +197,8 @@ func (s *HistoryGrantSet) Len() int {
 	if s == nil {
 		return 0
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return len(s.byMessage)
 }
 
@@ -154,7 +208,40 @@ func (s *HistoryGrantSet) Grants(messageID uint) []HistoryMessageGrant {
 	if s == nil {
 		return nil
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.byMessage[messageID]
+}
+
+// Extend adds grants that a tool discovered during the turn.
+//
+// A tool that reads something the window did not carry - the browse tool
+// opening an older segment - has to be able to say so, or the read-back tool
+// would refuse the ids the browse tool just showed the model. Only grants
+// that pass the same check as the ones the window handed over are added, so
+// extending the set cannot widen what the run may read.
+func (s *HistoryGrantSet) Extend(run RunContext, grants []HistoryMessageGrant) {
+	if s == nil || len(grants) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, grant := range grants {
+		if !grant.UsableIn(run) {
+			continue
+		}
+		duplicate := false
+		for _, held := range s.byMessage[grant.MessageID] {
+			if held == grant {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		s.byMessage[grant.MessageID] = append(s.byMessage[grant.MessageID], grant)
+	}
 }
 
 // Covers reports whether one id was granted specifically from the session the

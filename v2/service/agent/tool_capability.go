@@ -43,6 +43,14 @@ const (
 	CapabilityDocumentRead MemoryToolCapability = "document_read"
 	// CapabilityHistoryRead reads verbatim messages of an earlier session.
 	CapabilityHistoryRead MemoryToolCapability = "history_read"
+	// CapabilityBrowseSummarySegments browses the session's own summary
+	// segments.
+	//
+	// It is a capability of its own because it is a different reach: the
+	// history read tool answers "what did they say" about ids it was given,
+	// and this one answers "what happened earlier in this session" about
+	// stretches the window did not carry.
+	CapabilityBrowseSummarySegments MemoryToolCapability = "browse_summary_segments"
 )
 
 // ToolSurface selects which names the model sees for the same capabilities.
@@ -97,6 +105,10 @@ const (
 	// SearchUploadedDocumentsToolName cannot be mistaken for personal history:
 	// it reaches only the learner's uploaded RAG documents.
 	SearchUploadedDocumentsToolName = "search_uploaded_documents"
+	// browseSummarySegmentsToolName browses this session's own compressed
+	// segments. The name says what it reaches: the segments of the session
+	// in progress, not another one.
+	browseSummarySegmentsToolName = "browse_summary_segments"
 )
 
 // toolCapabilities is the mapping, written once.
@@ -115,6 +127,7 @@ var toolCapabilities = map[string]MemoryToolCapability{
 	SearchUploadedDocumentsToolName: CapabilityKnowledgeSearch,
 	documentReadToolName:            CapabilityDocumentRead,
 	readHistoryMessageToolName:      CapabilityHistoryRead,
+	browseSummarySegmentsToolName:   CapabilityBrowseSummarySegments,
 }
 
 // surfaceNames is the forward direction, also written once. Every capability
@@ -122,40 +135,44 @@ var toolCapabilities = map[string]MemoryToolCapability{
 // memory actions differ between them.
 var surfaceNames = map[ToolSurface]map[MemoryToolCapability]string{
 	SurfaceLegacy: {
-		CapabilityEpisodeSearch:   memorySearchToolName,
-		CapabilityTopicMemoryRead: topicMemoryReadToolName,
-		CapabilityMemoryDraft:     proposeMemoryToolName,
-		CapabilityKnowledgeSearch: knowledgeSearchToolName,
-		CapabilityDocumentRead:    documentReadToolName,
-		CapabilityHistoryRead:     readHistoryMessageToolName,
+		CapabilityEpisodeSearch:         memorySearchToolName,
+		CapabilityTopicMemoryRead:       topicMemoryReadToolName,
+		CapabilityMemoryDraft:           proposeMemoryToolName,
+		CapabilityKnowledgeSearch:       knowledgeSearchToolName,
+		CapabilityDocumentRead:          documentReadToolName,
+		CapabilityHistoryRead:           readHistoryMessageToolName,
+		CapabilityBrowseSummarySegments: browseSummarySegmentsToolName,
 	},
 	SurfaceExplicitActions: {
-		CapabilityEpisodeSearch:   SearchPastSessionsToolName,
-		CapabilityTopicMemoryRead: topicMemoryReadToolName,
-		CapabilityMemoryDraft:     SaveMemoryDraftToolName,
-		CapabilityKnowledgeSearch: knowledgeSearchToolName,
-		CapabilityDocumentRead:    documentReadToolName,
-		CapabilityHistoryRead:     readHistoryMessageToolName,
+		CapabilityEpisodeSearch:         SearchPastSessionsToolName,
+		CapabilityTopicMemoryRead:       topicMemoryReadToolName,
+		CapabilityMemoryDraft:           SaveMemoryDraftToolName,
+		CapabilityKnowledgeSearch:       knowledgeSearchToolName,
+		CapabilityDocumentRead:          documentReadToolName,
+		CapabilityHistoryRead:           readHistoryMessageToolName,
+		CapabilityBrowseSummarySegments: browseSummarySegmentsToolName,
 	},
 	SurfaceExplicitSources: {
-		CapabilityEpisodeSearch:   SearchPastSessionsToolName,
-		CapabilityTopicMemoryRead: topicMemoryReadToolName,
-		CapabilityMemoryDraft:     SaveMemoryDraftToolName,
-		CapabilityKnowledgeSearch: SearchUploadedDocumentsToolName,
-		CapabilityDocumentRead:    documentReadToolName,
-		CapabilityHistoryRead:     readHistoryMessageToolName,
+		CapabilityEpisodeSearch:         SearchPastSessionsToolName,
+		CapabilityTopicMemoryRead:       topicMemoryReadToolName,
+		CapabilityMemoryDraft:           SaveMemoryDraftToolName,
+		CapabilityKnowledgeSearch:       SearchUploadedDocumentsToolName,
+		CapabilityDocumentRead:          documentReadToolName,
+		CapabilityHistoryRead:           readHistoryMessageToolName,
+		CapabilityBrowseSummarySegments: browseSummarySegmentsToolName,
 	},
 	// The same names as explicit_sources, deliberately: the priority contract
 	// varies the descriptions and the server's first-tool behaviour, not the
 	// labels. A round that renamed and reprioritised at once could not say
 	// which half moved the result.
 	SurfaceSourcePriority: {
-		CapabilityEpisodeSearch:   SearchPastSessionsToolName,
-		CapabilityTopicMemoryRead: topicMemoryReadToolName,
-		CapabilityMemoryDraft:     SaveMemoryDraftToolName,
-		CapabilityKnowledgeSearch: SearchUploadedDocumentsToolName,
-		CapabilityDocumentRead:    documentReadToolName,
-		CapabilityHistoryRead:     readHistoryMessageToolName,
+		CapabilityEpisodeSearch:         SearchPastSessionsToolName,
+		CapabilityTopicMemoryRead:       topicMemoryReadToolName,
+		CapabilityMemoryDraft:           SaveMemoryDraftToolName,
+		CapabilityKnowledgeSearch:       SearchUploadedDocumentsToolName,
+		CapabilityDocumentRead:          documentReadToolName,
+		CapabilityHistoryRead:           readHistoryMessageToolName,
+		CapabilityBrowseSummarySegments: browseSummarySegmentsToolName,
 	},
 }
 

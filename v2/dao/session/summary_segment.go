@@ -95,6 +95,37 @@ func (r *Repository) GetLatestSummarySegment(ctx context.Context, userID int64, 
 	return &segment, nil
 }
 
+// ListLatestSummarySegments returns the session's newest segments, newest
+// first.
+//
+// The list is read backwards because the reader wants the segments that
+// cover the most recent turns: a bounded list read forwards answers with the
+// oldest segments instead.
+func (r *Repository) ListLatestSummarySegments(ctx context.Context, userID int64, sessionID string, limit int) ([]model.SessionSummarySegment, error) {
+	if r == nil || r.db == nil {
+		return nil, fmt.Errorf("session repository is not initialized")
+	}
+	if userID <= 0 || strings.TrimSpace(sessionID) == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 2
+	}
+	if limit > 512 {
+		limit = 512
+	}
+	var segments []model.SessionSummarySegment
+	err := r.db.WithContext(ctx).
+		Where("user_id = ? AND session_id = ?", userID, sessionID).
+		Order("seq DESC").
+		Limit(limit).
+		Find(&segments).Error
+	if err != nil {
+		return nil, err
+	}
+	return segments, nil
+}
+
 // ListSummarySegmentsAfter returns the segments that cover messages after the
 // given watermark, oldest first.
 //
