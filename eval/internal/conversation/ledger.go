@@ -128,6 +128,11 @@ func LoadRolePrompts(repository string, mode memoryrecall.ReadMode) (RolePrompts
 	result := RolePrompts{agent.SystemPromptFor(mode): "answer"}
 	specs := []struct{ path, name, role string }{
 		{"agent/summarizer.go", "summarySystemPrompt", "summary"},
+		// The layered summary compresses a stretch of turns the same way the
+		// rolling summary does, so it carries the same role. The arm decides
+		// which of the two a run used, and the prompt hash tells them apart
+		// inside one ledger.
+		{"agent/segment_generator.go", "segmentSystemPrompt", "summary"},
 		{"agent/runner.go", "generalKnowledgeSystemPrompt", "answer"},
 		{"agent/runner.go", "citationRepairSystemPrompt", "answer"},
 		{"agent/runner.go", "memoryRepairSystemPrompt", "answer"},

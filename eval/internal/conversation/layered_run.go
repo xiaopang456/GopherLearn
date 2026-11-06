@@ -127,6 +127,19 @@ type LayeredRetrieval struct {
 	Hit bool `json:"hit"`
 }
 
+// LayeredCall is one model call the run made.
+//
+// The same call is observed twice: once by the SDK wrapper and once at the
+// HTTP boundary the provider was actually reached at. Only the boundary
+// observation is a provider call, so only that one is counted.
+type LayeredCall struct {
+	Method     string `json:"method"`
+	Status     int    `json:"status,omitempty"`
+	Prompt     int    `json:"prompt_tokens"`
+	Completion int    `json:"completion_tokens"`
+	Error      string `json:"error,omitempty"`
+}
+
 // LayeredRun is what one conversation produced under one mode.
 type LayeredRun struct {
 	Scenario   string           `json:"scenario"`
@@ -147,6 +160,8 @@ type LayeredRun struct {
 	ModelCalls          int              `json:"model_calls"`
 	PromptTokens        int              `json:"prompt_tokens"`
 	CompletionTokens    int              `json:"completion_tokens"`
+	// Calls is the provider boundary of every call the run made.
+	Calls []LayeredCall `json:"calls,omitempty"`
 	// Counters and Totals are the product's own recorder, read as the
 	// difference between the state before the run and the state after it.
 	Counters map[string]uint64 `json:"counters,omitempty"`
@@ -277,12 +292,22 @@ func RunLayeredSummary(ctx context.Context, repository, scenario, condition stri
 	run.Counters = counterDelta(before.Counters, after.Counters)
 	run.Totals = totalDelta(before.Totals, after.Totals)
 
+	// The same call is in the ledger twice: once as the SDK made it and once
+	// at the boundary the provider was reached at. Counting both would
+	// double every call and every token, so only the boundary is counted.
 	for _, call := range ledger.Calls() {
+		if !strings.HasPrefix(call.Method, "http:") {
+			continue
+		}
 		run.ModelCalls++
+		entry := LayeredCall{Method: call.Method, Status: call.HTTPStatus, Error: call.Error}
 		if call.Usage != nil {
+			entry.Prompt = call.Usage.PromptTokens
+			entry.Completion = call.Usage.CompletionTokens
 			run.PromptTokens += call.Usage.PromptTokens
 			run.CompletionTokens += call.Usage.CompletionTokens
 		}
+		run.Calls = append(run.Calls, entry)
 	}
 	run.Failures.Total = run.Failures.Segments + run.Failures.OldSummary
 	run.Retrieval = runRetrieval(ctx, sessionID, question, evidenceTurns, messages, run.Segments)

@@ -109,11 +109,17 @@ func run(args []string, out io.Writer) error {
 		return err
 	}
 	runs := make([]conversation.LayeredRun, 0, len(modes))
+	var runErr error
 	for _, current := range modes {
 		run, err := conversation.RunLayeredSummary(ctx, *repository, *scenario, *condition, turns,
 			*question, evidence, *proxy, *chatModel, current)
 		if err != nil {
-			return err
+			// The run is written even when it failed: the failure is what
+			// the next run has to compare against, and a report that only
+			// exists when everything worked cannot show a failure.
+			runErr = err
+			runs = append(runs, run)
+			break
 		}
 		runs = append(runs, run)
 		fmt.Fprintf(out, "mode=%s covered=%d/%d failures=%d superseded=%d calls=%d\n",
@@ -124,7 +130,10 @@ func run(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(*output, "runs.json"), append(body, '\n'), 0600)
+	if err = os.WriteFile(filepath.Join(*output, "runs.json"), append(body, '\n'), 0600); err != nil {
+		return err
+	}
+	return runErr
 }
 
 // layeredModes reads the mode flag.
