@@ -48,27 +48,6 @@ const (
 	summarySegmentRRFConstant = 60
 )
 
-// SummarySegmentVectorHit is one segment the vector channel found.
-type SummarySegmentVectorHit struct {
-	// Seq is the segment's sequence number inside its session.
-	Seq int
-	// Score is the channel's own similarity score.
-	Score float64
-}
-
-// SummarySegmentVectorSearcher is the vector channel of the preselection.
-//
-// It has no production implementation yet: the index that holds the segment
-// vectors belongs to the layer that follows this one. A deployment without a
-// searcher runs the lexical channel alone, which is a narrower selection and
-// not a broken one - and saying so here is better than shipping a searcher
-// that silently finds nothing.
-type SummarySegmentVectorSearcher interface {
-	// SearchSummarySegmentVectors returns the segments of one session that are
-	// closest to the query vector, best first.
-	SearchSummarySegmentVectors(ctx context.Context, userID int64, sessionID string, vector []float32, limit int) ([]SummarySegmentVectorHit, error)
-}
-
 // SummarySegmentPreselector chooses the segments a question is about.
 type SummarySegmentPreselector struct {
 	// vectors is the vector channel. Nil means the channel is absent.
@@ -77,6 +56,9 @@ type SummarySegmentPreselector struct {
 	// when a vector channel exists, because a lexical preselection costs no
 	// embedding at all.
 	embed memoryrecall.EmbedFunc
+	// recent records the segments this turn reached for, so that the next
+	// turn can keep them in front of the learner.
+	recent SummarySegmentRecentUse
 	// maxSegments is how many segments the preselection may return.
 	maxSegments int
 	// maxSegmentTokens bounds one returned segment.
@@ -114,6 +96,18 @@ func (p *SummarySegmentPreselector) UseLimits(maxSegments, maxSegmentTokens, max
 	if maxTotalTokens > 0 {
 		p.maxTotalTokens = maxTotalTokens
 	}
+}
+
+// UseRecentUse attaches the record of the segments a turn reached for.
+//
+// It is a setter rather than a constructor argument because the record is
+// optional: without it the preselection still works, and the learner simply
+// does not get the segments they were asking about kept in front of them.
+func (p *SummarySegmentPreselector) UseRecentUse(recent SummarySegmentRecentUse) {
+	if p == nil {
+		return
+	}
+	p.recent = recent
 }
 
 // summarySegmentHit is one segment's standing in the two channels.
@@ -206,7 +200,27 @@ func (p *SummarySegmentPreselector) Select(ctx context.Context, input RunContext
 		total += cost
 		selected = append(selected, candidate)
 	}
+	p.recordRecentUse(ctx, input, selected)
 	return selected, nil
+}
+
+// recordRecentUse remembers the segments this turn reached for.
+//
+// The record is what keeps a segment the learner keeps asking about in front
+// of them after the newest segments have moved past it. A record that cannot
+// be written costs the learner that memory and nothing else.
+func (p *SummarySegmentPreselector) recordRecentUse(ctx context.Context, input RunContext,
+	selected []model.SessionSummarySegment) {
+	if p.recent == nil || len(selected) == 0 {
+		return
+	}
+	for _, segment := range selected {
+		if err := p.recent.RecordRecentUse(ctx, input.UserID, input.SessionID, segment.Seq); err != nil {
+			log.Printf("[agent-context] summary segment recent use failed: session=%s seq=%d error_type=%T",
+				input.SessionID, segment.Seq, err)
+			return
+		}
+	}
 }
 
 // summarySegmentFuse ranks the candidates over both channels and applies the
@@ -300,7 +314,7 @@ func (p *SummarySegmentPreselector) vectorChannel(ctx context.Context, input Run
 	if len(vector) == 0 {
 		return nil, nil
 	}
-	hits, err := p.vectors.SearchSummarySegmentVectors(ctx, input.UserID, input.SessionID,
+	hits, err := p.vectors.SearchByVector(ctx, input.UserID, input.SessionID,
 		vector, DefaultPreselectedSummarySegments*4)
 	if err != nil {
 		return nil, err

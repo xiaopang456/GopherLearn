@@ -29,6 +29,10 @@ type SummarySegmentReader interface {
 	// GetWhiteboard returns the session's board, or model.ErrWhiteboardNotFound
 	// when the session has none.
 	GetWhiteboard(ctx context.Context, userID int64, sessionID string) (*model.SessionWhiteboard, error)
+	// GetSummarySegment returns one segment of the session by its sequence
+	// number, or model.ErrSummarySegmentNotFound when the session has no such
+	// segment.
+	GetSummarySegment(ctx context.Context, userID int64, sessionID string, seq int) (*model.SessionSummarySegment, error)
 	// ListLatestSummarySegments returns the newest segments, newest first.
 	ListLatestSummarySegments(ctx context.Context, userID int64, sessionID string, limit int) ([]model.SessionSummarySegment, error)
 	// ListSummarySegments returns the session's segments, oldest first.
@@ -73,6 +77,7 @@ const DefaultResidentSummarySegments = 2
 type DatabaseLayeredSummaryProvider struct {
 	reader    SummarySegmentReader
 	preselect *SummarySegmentPreselector
+	recent    SummarySegmentRecentUse
 	resident  int
 }
 
@@ -86,6 +91,18 @@ func NewDatabaseLayeredSummaryProvider(reader SummarySegmentReader, preselect *S
 		resident = DefaultResidentSummarySegments
 	}
 	return &DatabaseLayeredSummaryProvider{reader: reader, preselect: preselect, resident: resident}, nil
+}
+
+// UseRecentUse attaches the record of the segments the last turns reached for.
+//
+// It is a setter rather than a constructor argument because the record is
+// optional: without it the read side sends the newest segments and nothing
+// else.
+func (p *DatabaseLayeredSummaryProvider) UseRecentUse(recent SummarySegmentRecentUse) {
+	if p == nil {
+		return
+	}
+	p.recent = recent
 }
 
 // LayeredSummary reads the board, the resident segments and the segments this
@@ -126,6 +143,13 @@ func (p *DatabaseLayeredSummaryProvider) LayeredSummary(ctx context.Context, inp
 		return snapshot, fmt.Errorf("load resident summary segments: %w", err)
 	}
 	snapshot.Resident = resident
+	if err := p.addRecentUse(ctx, input, &snapshot); err != nil {
+		// The recent-use record is a memory, not a source of truth: losing it
+		// costs the learner the segments they were asking about, and the
+		// turn still goes on.
+		log.Printf("[agent-context] summary segment recent use unavailable: session=%s error_type=%T",
+			input.SessionID, err)
+	}
 	if p.preselect == nil {
 		return snapshot, nil
 	}
@@ -143,8 +167,49 @@ func (p *DatabaseLayeredSummaryProvider) LayeredSummary(ctx context.Context, inp
 	return snapshot, nil
 }
 
-// EmptyLayeredSummaryProvider is the read side that finds nothing.
+// addRecentUse puts the segments the last turns reached for into the resident
+// set.
 //
+// The newest segments are not always the ones the learner is asking about. A
+// learner who keeps going back to the same stretch of the conversation wants
+// that stretch in front of them again, and by the time the newest segments
+// have moved past it the only thing that brings it back is this record.
+//
+// The resident budget still decides: the segments that do not fit are cut, and
+// the newest ones are kept first.
+func (p *DatabaseLayeredSummaryProvider) addRecentUse(ctx context.Context, input RunContext,
+	snapshot *LayeredSummarySnapshot) error {
+	if p.recent == nil || len(snapshot.Resident) == 0 {
+		return nil
+	}
+	seqs, err := p.recent.ListRecentUse(ctx, input.UserID, input.SessionID, SummarySegmentRecentUseLimit)
+	if err != nil {
+		return err
+	}
+	resident := make(map[int]struct{}, len(snapshot.Resident))
+	for _, segment := range snapshot.Resident {
+		resident[segment.Seq] = struct{}{}
+	}
+	for _, seq := range seqs {
+		if _, already := resident[seq]; already {
+			continue
+		}
+		segment, err := p.reader.GetSummarySegment(ctx, input.UserID, input.SessionID, seq)
+		if err != nil {
+			// A segment that is gone is not a reason to fail the turn: the
+			// record outlived the segment it names.
+			continue
+		}
+		if segment == nil {
+			continue
+		}
+		resident[seq] = struct{}{}
+		snapshot.Resident = append(snapshot.Resident, *segment)
+	}
+	return nil
+}
+
+// EmptyLayeredSummaryProvider is the read side that finds nothing.
 // It is what a deployment without the layered summary gets, and it is a
 // provider rather than a nil check so that the builder has one code path
 // instead of two.

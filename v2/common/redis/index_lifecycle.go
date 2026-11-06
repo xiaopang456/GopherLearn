@@ -73,6 +73,16 @@ func ManagedSearchIndexFamilies() []ManagedSearchIndexFamily {
 			NamePrefix: "gopherai_memory_", Legacy: []string{"gopherai_memory_v1_idx"},
 			RequiredAttributes: []string{MemoryFieldUserID, MemoryFieldMemoryID, MemoryFieldContent, MemoryFieldVector},
 		},
+		{
+			// The summary segments are indexed like the other two: the same
+			// instrument, under its own name. The audit knows it so that a
+			// deployment whose index was never created is reported rather
+			// than passed over.
+			Name: "summary_segment", Current: SummarySegmentIndexName, KeyPrefix: SummarySegmentKeyPrefix,
+			NamePrefix: "gopherai_summary_segment_",
+			RequiredAttributes: []string{SummarySegmentFieldUserID, SummarySegmentFieldSegmentID,
+				SummarySegmentFieldSearchBigrams, SummarySegmentFieldVector},
+		},
 	}
 }
 

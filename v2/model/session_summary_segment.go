@@ -144,6 +144,41 @@ func ensureSegmentJSONEOF(decoder *json.Decoder) error {
 	return fmt.Errorf("summary segment contains trailing JSON")
 }
 
+// SearchText is what the segment is searched and embedded as.
+//
+// It is the segment's own words - the topic, the points and the names and
+// numbers it recorded - and not the stored JSON. A search that matched the
+// JSON would match the field names and the ids, and an embedding of the JSON
+// would be an embedding of the schema rather than of what the learner said.
+//
+// A body this schema cannot read falls back to the topic and the raw body:
+// a segment that cannot be parsed is still worth indexing, because the
+// fallback is only less precise.
+func (s SessionSummarySegment) SearchText() string {
+	parts := make([]string, 0, 8)
+	if topic := strings.TrimSpace(s.Topic); topic != "" {
+		parts = append(parts, topic)
+	}
+	document, err := DecodeSessionSummarySegmentContent(s.Content)
+	if err != nil {
+		if body := strings.TrimSpace(s.Content); body != "" {
+			parts = append(parts, body)
+		}
+		return strings.Join(parts, "\n")
+	}
+	if topic := strings.TrimSpace(document.Topic); topic != "" {
+		parts = append(parts, topic)
+	}
+	for _, point := range document.Points {
+		if text := strings.TrimSpace(point.Text); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	parts = append(parts, document.Names...)
+	parts = append(parts, document.Numbers...)
+	return strings.Join(parts, "\n")
+}
+
 // Validate checks a segment body's shape and bounds.
 func (c SessionSummarySegmentContent) Validate() error {
 	if c.SchemaVersion != SessionSummarySegmentSchemaV1 {
