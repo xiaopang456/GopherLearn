@@ -81,6 +81,24 @@ const (
 	SummarySegmentModeOn = "on"
 )
 
+// EpisodeReadsLegacySummary reports whether the episode projection may read
+// the old rolling summary in this mode.
+//
+// The applied mode may not. The old rolling summary is a frozen picture of an
+// earlier part of the session, taken before the layered summary existed: a
+// value that was replaced afterwards is still in it, and reading it would let
+// a stale statement become an assertion about the learner. The projection
+// then reads the raw messages and nothing else.
+//
+// The other two modes keep reading it. The off mode has no new state at all,
+// and the shadow mode is about watching the write side; neither changes what
+// the projection sees.
+//
+// Reading the summary segments instead of the raw messages is a later change.
+func EpisodeReadsLegacySummary(mode string) bool {
+	return mode != SummarySegmentModeOn
+}
+
 // SummarySegmentAssemblyConfigFromSettings reads the assembly's settings.
 //
 // The mode is the one thing that decides whether the write path exists at

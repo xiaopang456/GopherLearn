@@ -88,7 +88,7 @@ func (r *summaryMemoryRecorder) PublishSummaryCompacted(_ context.Context, userI
 	return nil
 }
 
-func (g *recordingSummaryGenerator) GenerateSummary(ctx context.Context, previous string, messages []model.Message) (string, error) {
+func (g *recordingSummaryGenerator) GenerateSummary(ctx context.Context, previous string, messages []model.Message) (SummaryGeneration, error) {
 	g.mu.Lock()
 	g.calls++
 	g.previous = previous
@@ -100,13 +100,13 @@ func (g *recordingSummaryGenerator) GenerateSummary(ctx context.Context, previou
 		select {
 		case <-barrier:
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return SummaryGeneration{}, ctx.Err()
 		}
 	}
 	if err != nil {
-		return "", err
+		return SummaryGeneration{}, err
 	}
-	return `{"current_goal":"finish Agent","confirmed_decisions":["use optimistic locking"],"completed_items":[],"open_loops":["tests"],"user_corrections":[],"key_errors":[],"references":[]}`, nil
+	return SummaryGeneration{Content: `{"current_goal":"finish Agent","confirmed_decisions":["use optimistic locking"],"completed_items":[],"open_loops":["tests"],"user_corrections":[],"key_errors":[],"references":[]}`}, nil
 }
 
 func summaryMessages(count int) []model.Message {
@@ -260,7 +260,7 @@ func TestModelSummaryGeneratorRejectsUnknownAndEmptyOutput(t *testing.T) {
 	chat := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {
 		return schema.AssistantMessage(responses[call-1], nil), nil
 	}}
-	generator, err := NewModelSummaryGenerator(chat, 2000, 500)
+	generator, err := NewModelSummaryGenerator(chat, 2000, 500, model.DefaultSummaryBudget())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +279,7 @@ func TestSummaryV2BindsNewDurableItemsToCurrentUserMessages(t *testing.T) {
 		{ID: 4, IsUser: false, Content: "助手建议补测试"},
 	}
 	valid := `{"schema_version":2,"current_goal":"new","confirmed_decisions":[{"text":"保留旧决定","evidence_message_ids":[]},{"text":"采用长度前缀","evidence_message_ids":[3]}],"completed_items":[],"open_loops":[],"user_corrections":[],"key_errors":[],"references":[]}`
-	document, err := decodeSummaryDocument(valid, previous, messages)
+	document, _, err := decodeSummaryDocument(valid, previous, messages, model.DefaultSummaryBudget())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +291,7 @@ func TestSummaryV2BindsNewDurableItemsToCurrentUserMessages(t *testing.T) {
 		`{"schema_version":2,"current_goal":"x","confirmed_decisions":[{"text":"臆造","evidence_message_ids":[99]}]}`,
 		`{"schema_version":2,"current_goal":"x","confirmed_decisions":[{"text":"新无证据项","evidence_message_ids":[]}]}`,
 	} {
-		if _, err := decodeSummaryDocument(invalid, previous, messages); err == nil {
+		if _, _, err := decodeSummaryDocument(invalid, previous, messages, model.DefaultSummaryBudget()); err == nil {
 			t.Fatalf("summary should fail: %s", invalid)
 		}
 	}
@@ -300,7 +300,7 @@ func TestSummaryV2BindsNewDurableItemsToCurrentUserMessages(t *testing.T) {
 func TestSummaryV2PreservesPreviouslyValidatedEvidenceExactly(t *testing.T) {
 	previous := `{"schema_version":2,"current_goal":"old","confirmed_decisions":[{"text":"采用 Protobuf","evidence_message_ids":[1]}]}`
 	output := `{"schema_version":2,"current_goal":"continue","confirmed_decisions":[{"text":"采用 Protobuf","evidence_message_ids":[1]}]}`
-	document, err := decodeSummaryDocument(output, previous, []model.Message{{ID: 2, IsUser: false, Content: "tail"}})
+	document, _, err := decodeSummaryDocument(output, previous, []model.Message{{ID: 2, IsUser: false, Content: "tail"}}, model.DefaultSummaryBudget())
 	if err != nil {
 		t.Fatal(err)
 	}

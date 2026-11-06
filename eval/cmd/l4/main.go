@@ -19,9 +19,9 @@ import (
 
 type stubGenerator struct{ Calls int }
 
-func (s *stubGenerator) GenerateSummary(context.Context, string, []model.Message) (string, error) {
+func (s *stubGenerator) GenerateSummary(context.Context, string, []model.Message) (agent.SummaryGeneration, error) {
 	s.Calls++
-	return `{"schema_version":2,"current_goal":"synthetic offline preparation"}`, nil
+	return agent.SummaryGeneration{Content: `{"schema_version":2,"current_goal":"synthetic offline preparation"}`}, nil
 }
 
 func run(args []string, out io.Writer) (resultErr error) {

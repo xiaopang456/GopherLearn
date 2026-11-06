@@ -220,6 +220,31 @@ The Session Summary above is a compressed record of messages that are no longer 
 
 var ErrRequiredContextExceedsBudget = errors.New("required agent context exceeds token budget")
 
+// layeredSummaryPrompt is the contract the board and the summary segments
+// are read under.
+//
+// It is a separate string rather than an edit to the base prompts because
+// those prompts' digests are recorded in run seals: rewriting them in place
+// would move every published number onto bytes nobody measured. It is
+// appended only when the deployment actually reads the layered summary, so
+// every other mode keeps its bytes.
+//
+// The lines that name a tool are the ones the prompt renderer can drop, and
+// it drops them when the turn does not have that tool. The rest describes
+// the two blocks themselves and stays.
+const layeredSummaryPrompt = `
+
+Trust order (when two sources disagree, this order decides which one is right):
+1. Recent Messages - what the learner just said.
+2. Current state - what is true now.
+3. Summary segments - what was true then.
+
+Current state is this session's board. A value under it that carries 〔…已改为…〕 was changed later: the unmarked value is the current one, and the marked one is what it used to be.
+Summary segments are compressed records of earlier turns in this session, not transcripts. When a segment and Current state disagree, Current state wins; when a segment and Recent Messages disagree, Recent Messages wins.
+
+To read the learner's own words behind a board entry or a segment point, call read_history_message with the message_ids it shows. Those ids are the only ones readable.
+browse_summary_segments opens this session's older segments when the ones in front of you do not cover what the learner is asking about. It returns compressed records, not transcripts.`
+
 // SystemPromptFor returns the system prompt one read mode answers under.
 //
 // There is one function rather than a branch at each use site because the
@@ -283,8 +308,23 @@ type ContextConfig struct {
 	MaxSummaryTokens         int
 	MaxMasteryTokens         int
 	MaxEpisodeTokens         int
-	EpisodeRecallMode        EpisodeRecallMode
-	HistoryFetchLimit        int
+	// MaxWhiteboardTokens bounds the board block. The board travels with
+	// every turn, so its ceiling is what keeps the per-turn cost flat no
+	// matter how long the session runs.
+	MaxWhiteboardTokens int
+	// MaxResidentSegmentTokens bounds the summary segments that travel with
+	// every turn. It is half of what the old rolling summary was allowed, so
+	// the space it gives up pays for the segments this turn selected.
+	MaxResidentSegmentTokens int
+	// MaxRetrievedSegmentTokens bounds the summary segments this turn's
+	// question selected.
+	MaxRetrievedSegmentTokens int
+	// MaxSegmentTokens bounds one summary segment inside either block. A
+	// block that is one long segment would spend everything on the oldest
+	// stretch and leave the newest one out of the window.
+	MaxSegmentTokens  int
+	EpisodeRecallMode EpisodeRecallMode
+	HistoryFetchLimit int
 	// MemoryReadMode decides whether this turn has any consumer for a
 	// request-scoped recall cycle. Under legacy_v2 there is none, and the
 	// design requires that the cycle not exist there rather than exist
@@ -293,6 +333,25 @@ type ContextConfig struct {
 }
 
 type EpisodeRecallMode string
+
+// The layered summary's block budgets.
+//
+// The board is 1200 because that is the board's own size limit, the resident
+// segments are 1200 because they took over half of what the old rolling
+// summary was allowed, and the segments a question selects are 1000 because
+// three of them at 300 each is the whole allowance.
+const (
+	// DefaultWhiteboardTokens bounds the board block.
+	DefaultWhiteboardTokens = 1200
+	// DefaultResidentSegmentTokens bounds the segments that travel with
+	// every turn.
+	DefaultResidentSegmentTokens = 1200
+	// DefaultRetrievedSegmentTokens bounds the segments this turn's question
+	// selected.
+	DefaultRetrievedSegmentTokens = 1000
+	// DefaultSegmentTokens bounds one segment inside either block.
+	DefaultSegmentTokens = 300
+)
 
 const (
 	EpisodeRecallDisabled EpisodeRecallMode = "disabled"
@@ -322,7 +381,10 @@ func DefaultContextConfig() ContextConfig {
 		ModelWindowTokens: 32768, InputTargetTokens: 20000, OutputReserveTokens: 4000,
 		EvidenceReserve: 6500, MaxGlobalUserMemoryTokens: 800, MaxTopicUserMemoryTokens: 1500, MaxSummaryTokens: 2000,
 		MaxMasteryTokens: 900, MaxEpisodeTokens: 1000, EpisodeRecallMode: EpisodeRecallShadow, HistoryFetchLimit: 128,
-		MemoryReadMode: memoryrecall.DefaultReadMode(),
+		MaxWhiteboardTokens: DefaultWhiteboardTokens, MaxResidentSegmentTokens: DefaultResidentSegmentTokens,
+		MaxRetrievedSegmentTokens: DefaultRetrievedSegmentTokens,
+		MaxSegmentTokens:          DefaultSegmentTokens,
+		MemoryReadMode:            memoryrecall.DefaultReadMode(),
 	}
 }
 
@@ -349,8 +411,11 @@ func (c ContextConfig) Validate() error {
 		return fmt.Errorf("episode memory budget must be between 800 and 1200 tokens")
 	}
 	if c.MaxGlobalUserMemoryTokens < 0 || c.MaxTopicUserMemoryTokens < 0 || c.MaxSummaryTokens < 0 ||
-		c.MaxGlobalUserMemoryTokens+c.MaxTopicUserMemoryTokens+c.MaxSummaryTokens+c.MaxMasteryTokens+c.MaxEpisodeTokens >= c.InputTargetTokens-c.EvidenceReserve {
-		return fmt.Errorf("profile, topic note, episode, summary and mastery budgets leave no room for required context")
+		c.MaxWhiteboardTokens < 0 || c.MaxResidentSegmentTokens < 0 || c.MaxRetrievedSegmentTokens < 0 ||
+		c.MaxSegmentTokens < 0 ||
+		c.MaxGlobalUserMemoryTokens+c.MaxTopicUserMemoryTokens+c.MaxSummaryTokens+c.MaxMasteryTokens+c.MaxEpisodeTokens+
+			c.MaxWhiteboardTokens+c.MaxResidentSegmentTokens+c.MaxRetrievedSegmentTokens >= c.InputTargetTokens-c.EvidenceReserve {
+		return fmt.Errorf("profile, topic note, episode, summary, board, segment and mastery budgets leave no room for required context")
 	}
 	if c.HistoryFetchLimit < 1 || c.HistoryFetchLimit > 512 {
 		return fmt.Errorf("history fetch limit must be between 1 and 512")
@@ -374,7 +439,15 @@ type BudgetBreakdown struct {
 	EpisodeCount     int `json:"episodeCount"`
 	Summary          int `json:"summary"`
 	RecentMessages   int `json:"recentMessages"`
-	CurrentEvidence  int `json:"currentEvidence"`
+	// Whiteboard is the session's current state, which travels with every
+	// turn.
+	Whiteboard int `json:"whiteboard"`
+	// ResidentSegments are the summary segments that travel with every turn.
+	ResidentSegments int `json:"residentSegments"`
+	// RetrievedSegments are the summary segments this turn's question
+	// selected.
+	RetrievedSegments int `json:"retrievedSegments"`
+	CurrentEvidence   int `json:"currentEvidence"`
 	// PreRetrievalEvidence is what the server-side pre-retrieval put into the
 	// window before the model was asked anything. It is evidence the turn
 	// already holds, so it is paid for out of the evidence reserve and it
@@ -385,6 +458,14 @@ type BudgetBreakdown struct {
 	ProjectedInput       int `json:"projectedInput"`
 	DroppedMessages      int `json:"droppedMessages"`
 	TruncatedMessages    int `json:"truncatedMessages"`
+	// SummarySyncFallback says the turn had to generate a summary segment
+	// before the answer went out, because the raw conversation no longer
+	// fit. It is the cost of the background not keeping up, and the
+	// evaluation reads it to tell how often that happened.
+	SummarySyncFallback bool `json:"summarySyncFallback,omitempty"`
+	// SummarySyncFallbackReason says why the decision went the way it did.
+	// The reason is a fixed set of labels because it is counted.
+	SummarySyncFallbackReason string `json:"summarySyncFallbackReason,omitempty"`
 }
 
 type ContextWindow struct {
@@ -437,6 +518,12 @@ type ContextWindow struct {
 	// blended set could not say which card granted what.
 	EpisodeHistoryGrants []HistoryMessageGrant
 	SummaryHistoryGrants []HistoryMessageGrant
+	// SummarySegmentHistoryGrants are the read-back authorisations the board
+	// and the summary segments created. They are a third list rather than
+	// another kind of summary grant, because a segment is bounded by the
+	// stretch of turns it covers and a board entry by the message that
+	// changed it - the same id has different provenances under each.
+	SummarySegmentHistoryGrants []HistoryMessageGrant
 }
 
 type MessageHistoryReader interface {
@@ -555,6 +642,9 @@ type SummarySnapshot struct {
 	Content          string
 	CoveredMessageID uint
 	Version          uint64
+	// Truncations says what the compression budget cut out of the summary
+	// this snapshot holds. It is empty for a snapshot that was not trimmed.
+	Truncations []model.SummaryTruncation
 }
 
 type EmptyMemoryProvider struct{}
@@ -631,6 +721,53 @@ type DatabaseContextBuilder struct {
 	// separate from topicNow because the two halves have different
 	// authoritative stores and must keep them.
 	confirmedLearning ConfirmedTopicLearningStateProvider
+	// layered is the read side of the layered summary. It is nil when the
+	// deployment does not read the new state, and the window then carries
+	// exactly what it carried before.
+	layered LayeredSummaryProvider
+	// fallback generates a summary segment before the answer when the raw
+	// conversation no longer fits. It is nil when the layered summary is
+	// not read, because there is then nothing for a segment to compress.
+	fallback SummarySegmentFallbackStarter
+}
+
+// SummarySegmentFallbackStarter is the synchronous fallback the window may
+// call before the answer goes out.
+//
+// It is the narrow half of the write path's assembly: the window asks
+// whether a segment has to be generated right now, and it learns whether one
+// was. It never starts the background worker.
+type SummarySegmentFallbackStarter interface {
+	StartSummarySegmentFallback(ctx context.Context, userID int64, sessionID string, latestMessageID uint) (SummarySegmentFallbackRecord, error)
+}
+
+// UseLayeredSummaryProvider attaches the read side of the layered summary.
+//
+// It is a setter rather than a constructor argument because the off and the
+// shadow modes leave it nil, and a constructor parameter would invite a
+// caller to pass one under a mode that must not read the new state.
+//
+// It refuses a provider whose block budgets are zero: a deployment that
+// reads the board and the segments but gave them no room would send a window
+// without them and call it the applied mode.
+func (b *DatabaseContextBuilder) UseLayeredSummaryProvider(provider LayeredSummaryProvider) error {
+	if provider == nil {
+		provider = EmptyLayeredSummaryProvider{}
+	}
+	if b.config.MaxWhiteboardTokens <= 0 && b.config.MaxResidentSegmentTokens <= 0 &&
+		b.config.MaxRetrievedSegmentTokens <= 0 {
+		return fmt.Errorf("the layered summary's block budgets must be positive")
+	}
+	b.layered = provider
+	return nil
+}
+
+// UseSummarySegmentFallback attaches the synchronous fallback.
+//
+// It is only meaningful together with the layered summary's read side: a
+// segment that nothing reads is a model call per batch that answers nothing.
+func (b *DatabaseContextBuilder) UseSummarySegmentFallback(starter SummarySegmentFallbackStarter) {
+	b.fallback = starter
 }
 
 func NewContextBuilder(config ContextConfig, history MessageHistoryReader, tasks TaskStateProvider, mastery MasteryProvider, memory MemoryProvider, summary SummaryProvider) (*DatabaseContextBuilder, error) {
@@ -732,17 +869,24 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	if input.UserID <= 0 || strings.TrimSpace(input.SessionID) == "" || strings.TrimSpace(input.Question) == "" {
 		return ContextWindow{}, fmt.Errorf("agent context identity and question are required")
 	}
-	// One cycle per turn, created here and reachable only from this request.
-	// Both memory readers embed through it, so the turn buys the query vector
-	// once however many of them need it.
+	// One cycle per turn, created by the runner and reachable only from this
+	// request. Both memory readers embed through it, so the turn buys the
+	// query vector once however many of them need it.
 	//
 	// Under legacy_v2 nothing consumes it, so nothing is created: the mode is
 	// supposed to be the pre-030 path, and a cycle sitting there unused is an
 	// invitation for a later branch to start using it.
 	var cycle *memoryrecall.Cycle
 	if b.config.MemoryReadMode.UsesRecallCycle() {
-		cycle = memoryrecall.New(input.Question)
-		input.RecallCycle = cycle
+		if input.RecallCycle == nil {
+			cycle = memoryrecall.New(input.Question)
+			input.RecallCycle = cycle
+		} else {
+			// The runner already made it, because the server-side
+			// pre-retrieval ran before this window was assembled and asked the
+			// same question.
+			cycle = input.RecallCycle
+		}
 	}
 	taskState, err := b.tasks.CurrentTaskState(ctx, input)
 	if err != nil {
@@ -914,10 +1058,42 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	if err != nil {
 		// Summary is an optimization. Its model/timeout/storage failure must not
 		// make the source-of-truth recent messages unavailable to the Agent.
-		log.Printf("[agent-context] session summary degraded: session=%s error_type=%T", input.SessionID, err)
+		// The reason says which of the two happened: a compaction the failure
+		// cooldown held back is not a new failure, and counting it as one
+		// would hide the real failure rate behind the cooldown.
+		reason := SummaryFailureReasonOf(err)
+		log.Printf("[agent-context] session summary degraded: session=%s reason=%s error_type=%T", input.SessionID, reason, err)
 		observability.Memory.ProviderDegraded("session_summary")
+		observability.Memory.SummaryOutcome(string(reason))
 	}
-	history, err := b.history.ListRecentAfter(ctx, input.SessionID, summary.CoveredMessageID, b.config.HistoryFetchLimit)
+	// The layered summary, when this deployment reads it. It is read before the
+	// raw conversation because it decides where the raw conversation starts.
+	layered := LayeredSummarySnapshot{}
+	if b.layered != nil {
+		snapshot, layeredErr := b.layered.LayeredSummary(ctx, input)
+		if layeredErr != nil {
+			// The layered summary is an optimisation over the raw conversation,
+			// and the raw conversation is still there. A read that failed costs
+			// the board and the segments, not the turn.
+			log.Printf("[agent-context] layered summary degraded: session=%s error_type=%T", input.SessionID, layeredErr)
+			observability.Memory.ProviderDegraded("layered_summary")
+		} else {
+			layered = snapshot
+		}
+	}
+	// Where the raw conversation starts.
+	//
+	// The rolling summary and the summary segments are two compressions of the
+	// same stream, and only one of them may say where the raw messages begin:
+	// the messages after that point are the ones neither compression covers.
+	// When the layered summary is read, the segments are the authority - the
+	// rolling summary is not sent in that mode at all, so its watermark would
+	// be a boundary nothing in the window explains.
+	historyStart := summary.CoveredMessageID
+	if b.layered != nil {
+		historyStart = layered.CoveredMessageID
+	}
+	history, err := b.history.ListRecentAfter(ctx, input.SessionID, historyStart, b.config.HistoryFetchLimit)
 	if err != nil {
 		observability.Memory.ProviderDegraded("message_history")
 		return ContextWindow{}, fmt.Errorf("load recent messages: %w", err)
@@ -956,7 +1132,44 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		evidenceReserve -= preRetrievalCost
 	}
 	breakdown := BudgetBreakdown{InputTarget: b.config.InputTargetTokens, OutputReserved: b.config.OutputReserveTokens, EvidenceReserved: evidenceReserve}
+	// The synchronous fallback.
+	//
+	// The background generates the segments; when it cannot keep up, the raw
+	// conversation grows past what the window can carry. The fallback runs
+	// then, before the answer goes out, and the run record says that it
+	// happened - the cost of it is the waiting time the background was
+	// supposed to remove.
+	if b.fallback != nil && b.layered != nil {
+		if latest := latestHistoryMessageID(history); latest > 0 {
+			record, fallbackErr := b.fallback.StartSummarySegmentFallback(ctx, input.UserID, input.SessionID, latest)
+			if fallbackErr != nil {
+				log.Printf("[agent-context] summary segment fallback failed: session=%s error_type=%T", input.SessionID, fallbackErr)
+			} else {
+				breakdown.SummarySyncFallback = record.FellBack
+				breakdown.SummarySyncFallbackReason = record.Reason
+				if record.Succeeded {
+					// The fallback compressed the stretch that was too big, so
+					// the window has to be rebuilt around it: the new segment
+					// is the newest one, and the raw messages it covers are
+					// compressed now.
+					rebuilt, rebuiltHistory, rebuildErr := b.rebuildAfterFallback(ctx, input, layered, history)
+					if rebuildErr != nil {
+						log.Printf("[agent-context] layered summary rebuild failed: session=%s error_type=%T", input.SessionID, rebuildErr)
+					} else {
+						layered = rebuilt
+						history = rebuiltHistory
+					}
+				}
+			}
+		}
+	}
 	systemPrompt := SystemPromptFor(b.config.MemoryReadMode)
+	if b.layered != nil {
+		// The board and the segments are only read under the layered
+		// summary's own contract, and the contract is only true when the
+		// blocks are really there.
+		systemPrompt += layeredSummaryPrompt
+	}
 	breakdown.System = messageTokenCost(systemPrompt)
 	breakdown.CurrentQuestion = messageTokenCost(input.Question)
 	if strings.TrimSpace(taskState) != "" {
@@ -974,10 +1187,10 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	}
 	remaining := baseBudget - required
 	if preRetrievalText != "" {
-		cost := preRetrievalCost
-		messages = append(messages, schema.SystemMessage(preRetrievalText))
-		breakdown.PreRetrievalEvidence = cost
-		remaining -= cost
+		// The block is charged here and placed later. The order in which a
+		// block is measured is not the order in which it is sent.
+		breakdown.PreRetrievalEvidence = preRetrievalCost
+		remaining -= preRetrievalCost
 	}
 
 	// Mastery is injected before long-term memory: it tells the model how to
@@ -1005,10 +1218,8 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		globalText, _ = renderMemoriesWithinBudget("Global user memories", memories.Global, globalBudget)
 	}
 	if globalText != "" {
-		cost := messageTokenCost(globalText)
-		messages = append(messages, schema.SystemMessage(globalText))
-		breakdown.GlobalUserMemory = cost
-		remaining -= cost
+		breakdown.GlobalUserMemory = messageTokenCost(globalText)
+		remaining -= breakdown.GlobalUserMemory
 	}
 	// The topic slot, from the same budget line and with the same ceiling. Only
 	// one of the two branches can produce anything in a given mode: the
@@ -1045,10 +1256,8 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 			b.config.MemoryReadMode)
 	}
 	if topicText != "" {
-		cost := messageTokenCost(topicText)
-		messages = append(messages, schema.SystemMessage(topicText))
-		breakdown.TopicUserMemory = cost
-		remaining -= cost
+		breakdown.TopicUserMemory = messageTokenCost(topicText)
+		remaining -= breakdown.TopicUserMemory
 	}
 	// Build the pre-AGENT-026 tail first. Episode is optional derived context,
 	// so it may use only capacity that would otherwise be unused; it never
@@ -1062,6 +1271,46 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 			summaryMessage = summaryText
 			breakdown.Summary = cost
 			remaining -= cost
+		}
+	}
+
+	// The layered summary's three blocks.
+	//
+	// They are charged here, before the raw conversation is selected, because
+	// the plan gives them fixed budgets and the raw conversation takes what
+	// is left. Where they are sent is a separate question: the board and the
+	// resident segments travel in front of the raw conversation, and the
+	// segments this question selected travel behind it.
+	whiteboardText := ""
+	residentText := ""
+	retrievedText := ""
+	var segmentGrants []HistoryMessageGrant
+	if b.layered != nil {
+		board := renderWhiteboardBlock(layered.BoardDocument, minInt(remaining-4, b.config.MaxWhiteboardTokens))
+		if board.Text != "" {
+			whiteboardText = board.Text
+			breakdown.Whiteboard = messageTokenCost(board.Text)
+			remaining -= breakdown.Whiteboard
+			// The grants come from the statements the board really showed.
+			// A statement the budget cut is one the model never saw, and an
+			// id it never saw is not one it may read back.
+			segmentGrants = append(segmentGrants, whiteboardHistoryGrants(board, layered, input.SessionID)...)
+		}
+		resident := renderSummarySegments(layered.Resident, layered.BoardDocument,
+			minInt(remaining-4, b.config.MaxResidentSegmentTokens), b.config.MaxSegmentTokens)
+		if resident.Text != "" {
+			residentText = resident.Text
+			breakdown.ResidentSegments = messageTokenCost(resident.Text)
+			remaining -= breakdown.ResidentSegments
+			segmentGrants = append(segmentGrants, summarySegmentHistoryGrants(resident.Segments, input.SessionID)...)
+		}
+		retrieved := renderSummarySegments(layered.Retrieved, layered.BoardDocument,
+			minInt(remaining-4, b.config.MaxRetrievedSegmentTokens), b.config.MaxSegmentTokens)
+		if retrieved.Text != "" {
+			retrievedText = retrieved.Text
+			breakdown.RetrievedSegments = messageTokenCost(retrieved.Text)
+			remaining -= breakdown.RetrievedSegments
+			segmentGrants = append(segmentGrants, summarySegmentHistoryGrants(retrieved.Segments, input.SessionID)...)
 		}
 	}
 
@@ -1091,29 +1340,79 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		return ContextWindow{}, fmt.Errorf("assemble episode provenance: %w", err)
 	}
 	if episodeText != "" {
-		cost := messageTokenCost(episodeText)
-		messages = append(messages, schema.SystemMessage(episodeText))
-		breakdown.EpisodeMemory = cost
+		breakdown.EpisodeMemory = messageTokenCost(episodeText)
 		breakdown.EpisodeCount = len(episodeIDs)
-	}
-	if summaryMessage != "" {
-		messages = append(messages, schema.SystemMessage(summaryMessage))
 	}
 	// The current conversation gets its own reference block rather than labels
 	// pasted onto the messages themselves. Rewriting the learner's own text
 	// would corrupt exactly the questions that ask what they actually said.
+	currentText := ""
 	if b.config.MemoryReadMode.UsesMemorySearchTool() {
-		if currentText := renderCurrentConversationEvidence(input.MemoryEvidence, selectedRows,
-			minInt(remaining-4, maxCurrentEvidenceTokens)); currentText != "" {
-			cost := messageTokenCost(currentText)
-			messages = append(messages, schema.SystemMessage(currentText))
-			breakdown.CurrentEvidence = cost
-			remaining -= cost
+		currentText = renderCurrentConversationEvidence(input.MemoryEvidence, selectedRows,
+			minInt(remaining-4, maxCurrentEvidenceTokens))
+		if currentText != "" {
+			breakdown.CurrentEvidence = messageTokenCost(currentText)
+			remaining -= breakdown.CurrentEvidence
 		}
 	}
+
+	// The blocks are sent in a fixed order, and this order is the point of the
+	// change.
+	//
+	// DeepSeek caches on a complete prefix: a block that changes on every turn
+	// and sits in front of the conversation history invalidates that history's
+	// cache on every turn. The blocks that change on every turn - the
+	// pre-retrieval evidence, the global and topic memories, the episodes and
+	// the current-conversation evidence - are therefore placed behind the
+	// history, where the history can still be a cache hit.
+	//
+	// What each block costs did not change. Every block is measured and charged
+	// exactly as before, and the conversation history still gets what it got:
+	// the order a block is measured in is not the order it is sent in. The only
+	// variable here is where a block sits.
+	//
+	// The blocks that stay in front are the ones that rarely change. Mastery
+	// keeps its place ahead of long-term memory for the reason it was given:
+	// it tells the model how to explain, which stays useful even when
+	// everything below it is trimmed away.
+	// The board travels first and the resident segments with it: they say what
+	// is true now and what just happened, and the model should read that
+	// before the history it came from.
+	//
+	// The segments this question selected are the other way round. They
+	// change on every turn, so they sit behind the raw conversation, where a
+	// turn that changes only them still hits the cache for the history in
+	// front of them.
+	if whiteboardText != "" {
+		messages = append(messages, schema.SystemMessage(whiteboardText))
+	}
+	if residentText != "" {
+		messages = append(messages, schema.SystemMessage(residentText))
+	}
+	if summaryMessage != "" {
+		messages = append(messages, schema.SystemMessage(summaryMessage))
+	}
 	messages = append(messages, selected...)
+	if retrievedText != "" {
+		messages = append(messages, schema.SystemMessage(retrievedText))
+	}
+	if preRetrievalText != "" {
+		messages = append(messages, schema.SystemMessage(preRetrievalText))
+	}
+	if globalText != "" {
+		messages = append(messages, schema.SystemMessage(globalText))
+	}
+	if topicText != "" {
+		messages = append(messages, schema.SystemMessage(topicText))
+	}
+	if episodeText != "" {
+		messages = append(messages, schema.SystemMessage(episodeText))
+	}
+	if currentText != "" {
+		messages = append(messages, schema.SystemMessage(currentText))
+	}
 	messages = append(messages, schema.UserMessage(input.Question))
-	breakdown.Assembled = breakdown.System + breakdown.TaskState + breakdown.Mastery + breakdown.GlobalUserMemory + breakdown.TopicUserMemory + breakdown.EpisodeMemory + breakdown.Summary + breakdown.RecentMessages + breakdown.CurrentQuestion + breakdown.CurrentEvidence + breakdown.PreRetrievalEvidence
+	breakdown.Assembled = breakdown.System + breakdown.TaskState + breakdown.Mastery + breakdown.GlobalUserMemory + breakdown.TopicUserMemory + breakdown.EpisodeMemory + breakdown.Summary + breakdown.RecentMessages + breakdown.CurrentQuestion + breakdown.CurrentEvidence + breakdown.PreRetrievalEvidence + breakdown.Whiteboard + breakdown.ResidentSegments + breakdown.RetrievedSegments
 	breakdown.ProjectedInput = breakdown.Assembled + breakdown.EvidenceReserved
 	if breakdown.ProjectedInput > breakdown.InputTarget {
 		return ContextWindow{}, fmt.Errorf("assembled context exceeded target: %d > %d", breakdown.ProjectedInput, breakdown.InputTarget)
@@ -1123,10 +1422,98 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		Messages: messages, Budget: breakdown, EpisodeIDs: episodeIDs,
 		EpisodeSources:       episodeSources,
 		EpisodeHistoryGrants: episodeGrants, SummaryHistoryGrants: summaryGrants,
-		RecallEmbeddingCalls: cycle.EmbeddingCalls(), ResolvedTopicKeys: input.ProposedTopicKeys,
+		SummarySegmentHistoryGrants: segmentGrants,
+		RecallEmbeddingCalls:        cycle.EmbeddingCalls(), ResolvedTopicKeys: input.ProposedTopicKeys,
 		AuthoritativeTopicKeys: input.AuthoritativeTopicKeys, UsedTopicKeys: renderedTopicKeys,
 		PreinjectedMemory: preinjected,
 	}, nil
+}
+
+// rebuildAfterFallback re-reads the layered summary and the raw messages
+// after the fallback produced a segment.
+//
+// The fallback compressed a stretch of the conversation, so the window that
+// was measured before it ran describes a state that no longer exists: the
+// newest segment is one the window did not carry, and the raw messages the
+// fallback covered are compressed now.
+func (b *DatabaseContextBuilder) rebuildAfterFallback(ctx context.Context, input RunContext,
+	layered LayeredSummarySnapshot, history []model.Message) (LayeredSummarySnapshot, []model.Message, error) {
+	if b.layered == nil {
+		return layered, history, nil
+	}
+	snapshot, err := b.layered.LayeredSummary(ctx, input)
+	if err != nil {
+		return layered, history, err
+	}
+	messages, err := b.history.ListRecentAfter(ctx, input.SessionID, snapshot.CoveredMessageID, b.config.HistoryFetchLimit)
+	if err != nil {
+		return layered, history, err
+	}
+	return snapshot, dropPersistedCurrentQuestion(messages, input.Question), nil
+}
+
+// latestHistoryMessageID is the newest message id the loaded history holds.
+//
+// The history is read in chronological order, so the last entry is the
+// newest. Zero means there is nothing new since the last compression, and
+// the fallback has nothing to do.
+func latestHistoryMessageID(history []model.Message) uint {
+	if len(history) == 0 {
+		return 0
+	}
+	return history[len(history)-1].ID
+}
+
+// whiteboardHistoryGrants draws the read-back authorisations from the board.
+//
+// A board entry is a compressed statement too, and the learner may ask what
+// they actually said. The board's own coverage bounds the grant: an entry
+// cannot cite a message the board does not reach.
+//
+// The ids come from the statements the board really showed. A statement the
+// budget cut is one the model never saw, and granting its ids would let the
+// model read back a citation it was not shown.
+func whiteboardHistoryGrants(board renderedWhiteboard, layered LayeredSummarySnapshot, sessionID string) []HistoryMessageGrant {
+	if layered.Board == nil || layered.Board.CoveredMessageID == 0 || layered.Board.Version == 0 {
+		return nil
+	}
+	var grants []HistoryMessageGrant
+	for _, id := range board.EvidenceMessageIDs {
+		if id == 0 || id > layered.Board.CoveredMessageID {
+			continue
+		}
+		grants = append(grants, HistoryMessageGrant{
+			MessageID: id, SourceKind: HistorySourceWhiteboard,
+			SourceSessionID:   sessionID,
+			WhiteboardVersion: layered.Board.Version, WhiteboardCoveredMessageID: layered.Board.CoveredMessageID,
+		})
+	}
+	return grants
+}
+
+// summarySegmentHistoryGrants draws the read-back authorisations from the
+// segments that really reached the window.
+//
+// The grants come from the points that were rendered, not from the ones that
+// were offered: a point the budget trimmed away is one the model never saw,
+// and an id it never saw is not one it may read back.
+func summarySegmentHistoryGrants(segments []renderedSummarySegment, sessionID string) []HistoryMessageGrant {
+	var grants []HistoryMessageGrant
+	for _, rendered := range segments {
+		segment := rendered.Segment
+		for _, id := range rendered.EvidenceMessageIDs {
+			if id == 0 || id > segment.EndMessageID {
+				continue
+			}
+			grants = append(grants, HistoryMessageGrant{
+				MessageID: id, SourceKind: HistorySourceSummarySegment,
+				SourceSessionID: sessionID,
+				SegmentSeq:      segment.Seq, SegmentStartMessageID: segment.StartMessageID,
+				SegmentEndMessageID: segment.EndMessageID,
+			})
+		}
+	}
+	return grants
 }
 
 // historyGrantsFromSummary turns the evidence ids of the summary that actually
@@ -1746,6 +2133,15 @@ func prefixWithinTokens(value string, maxTokens int) string {
 }
 
 func messageTokenCost(content string) int { return rag.EstimateTokens(content) + 4 }
+
+// PrefixWithinTokens shortens a text to a token budget.
+//
+// It is exported because the browse tool has to shorten a segment's topic to
+// the same budget the window uses, and two estimators that disagree would
+// let a segment through the tool that the window would have cut.
+func PrefixWithinTokens(value string, maxTokens int) string {
+	return prefixWithinTokens(value, maxTokens)
+}
 func minInt(left, right int) int {
 	if left < right {
 		return left

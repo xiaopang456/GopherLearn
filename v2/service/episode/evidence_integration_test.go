@@ -112,3 +112,46 @@ func TestDatabaseEvidenceLoaderShortAndSummarizedSessions(t *testing.T) {
 		t.Fatalf("older=%#v", older)
 	}
 }
+
+// The applied mode of the layered summary does not read the old rolling
+// summary.
+//
+// The old summary is a frozen picture of an earlier part of the session,
+// taken before the layered summary existed. A value that was replaced
+// afterwards is still in it, so reading it would let a stale statement become
+// an assertion about the learner. The projection then reads the raw messages
+// and nothing else.
+func TestTheLoaderCanBeToldNotToReadTheLegacySummary(t *testing.T) {
+	db := openEvidenceTestDB(t)
+	user, session := createEvidenceSession(t, db)
+	messages := createEvidenceMessages(t, db, session, 4)
+	summary := model.SessionSummary{UserID: user.ID, SessionID: session.ID,
+		Content: `{"current_goal":"排查 RPC"}`, CoveredMessageID: messages[1].ID, TokenEstimate: 20, Version: 2}
+	if err := db.Create(&summary).Error; err != nil {
+		t.Fatal(err)
+	}
+	loader, err := NewDatabaseEvidenceLoader(db, 128)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loader.WithoutLegacySummary()
+	evidence, err := loader.Load(context.Background(), user.ID, session.ID, messages[3].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence.Summary != nil {
+		t.Fatalf("the loader read the old summary: %#v", evidence.Summary)
+	}
+	if len(evidence.SummaryMessages) != 0 {
+		t.Fatalf("the loader read %d summary messages", len(evidence.SummaryMessages))
+	}
+	if len(evidence.Messages) != 4 {
+		t.Fatalf("the loader read %d messages, want the whole conversation", len(evidence.Messages))
+	}
+	if evidence.Messages[0].ID != messages[0].ID {
+		t.Fatalf("the raw conversation starts at %d, want %d", evidence.Messages[0].ID, messages[0].ID)
+	}
+	if err := evidence.Validate(); err != nil {
+		t.Fatalf("the evidence without a summary is not valid: %v", err)
+	}
+}

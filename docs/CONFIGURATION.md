@@ -207,6 +207,14 @@ shell 死掉，服务还活着，容器在宽限期结束后被强杀——服�
 | `memoryReadMode` | `legacy_v2` | 长期记忆的整条读取路径模式 |
 | `episodeRecallMode` | `shadow_only` | 情景召回模式 |
 | `episodeRelationMode` | `off` | 情景关系抽取模式 |
+| `summaryGroupItemLimit` | `20` | 摘要里**每一组**最多留多少条。超出时按「留最新、丢最早」截断，**整份摘要不会被丢掉** |
+| `summaryOpenLoopsItemLimit` | `20` | 摘要里「待办」这一组最多留多少条。待办涨得最快，单独给一个上限，方便实测发现砍太狠时调大 |
+| `summaryEvidenceIDLimit` | `64` | 整份摘要最多引用多少条**不同的消息编号**。超出时丢最旧的条目 |
+
+三个上限是**预算**，不是"合法/非法"的开关：以前某一组超限会让整份摘要被拒，于是这个会话的摘要从此不再更新，只能退回旧摘要加原始消息。现在超限走截断，被截掉的部分会在日志和指标里如实记一笔（`summary_truncated`），也会在评测报告里单独计数。
+
+- 把 `summaryOpenLoopsItemLimit` 调大时，`summaryEvidenceIDLimit` 通常也要一起调大：每条待办至少引用一条消息，条目多了、编号上限没跟上，结果还是会被引用上限截掉。
+- 上限调小 = 少留历史、省 token；上限调大 = 多留历史，但摘要更长、更占上下文预算。
 
 `maxToolCalls` / `maxModelCalls` / `maxGraphSteps` 三个数必须**互相够得着**，否则启动报错并说明是哪一处不够：
 

@@ -147,7 +147,7 @@ func (r *MemoryRecorder) Context(projected, inputTarget, episode, global, topic 
 }
 
 func (r *MemoryRecorder) ProviderDegraded(provider string) {
-	provider = boundedLabel(provider, "mastery", "episode", "user_memory", "session_summary", "message_history", "redis", "embedding", "projector", "mysql", "topic_bootstrap")
+	provider = boundedLabel(provider, "mastery", "episode", "user_memory", "session_summary", "layered_summary", "message_history", "redis", "embedding", "projector", "mysql", "topic_bootstrap")
 	r.add("memory_provider_degraded_total{provider="+provider+"}", 1)
 	r.logf("memory_metric name=provider_degraded provider=%s", provider)
 }

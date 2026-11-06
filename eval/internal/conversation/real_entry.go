@@ -275,19 +275,12 @@ func PrepareRealProductReport(ctx context.Context, repository string, turns []Tu
 		return report, err
 	}
 	policy := ProductSummaryConfig(settings.Config)
-	generator, err := agent.NewModelSummaryGenerator(chat, policy.MaxInputTokens, policy.MaxOutputTokens)
+	generator, err := agent.NewModelSummaryGenerator(chat, policy.MaxInputTokens, policy.MaxOutputTokens, policy.Budget)
 	if err != nil {
 		return report, err
 	}
 	prepared, err := s.Prepare(ctx, env.UserID, env.SessionID, env.UserName, turns, generator, policy)
-	for _, turn := range prepared {
-		if turn.SummaryDegraded {
-			report.DegradedTurns++
-		}
-		if turn.CooldownWaitMilliseconds > 0 {
-			report.CooldownWaits++
-		}
-	}
+	SummarizeTurns(prepared, &report)
 	report.FailureCooldownSeconds = int(policy.FailureCooldown / time.Second)
 	report.Turns = prepared
 	report.Calls = ledger.Calls()
