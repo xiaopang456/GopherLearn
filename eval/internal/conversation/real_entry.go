@@ -64,6 +64,29 @@ type RealEnvironment struct {
 	UserID    int64
 	UserName  string
 	SessionID string
+	// SummarySegmentMode is which arm the run measures: "off" is the old
+	// rolling summary, "shadow" writes the segments and the board without
+	// the window reading them, and "on" reads the new state back.
+	//
+	// The field is here rather than in a flag of its own because the mode is
+	// a property of the configuration the run boots with: the product reads
+	// it once, at startup, and the run has to be able to say which arm it
+	// was.
+	SummarySegmentMode string
+}
+
+// SummarySegmentModes are the arms a paid run may measure.
+var SummarySegmentModes = []string{"off", "shadow", "on"}
+
+// SummarySegmentModeKnown reports whether the mode is one the product
+// understands.
+func SummarySegmentModeKnown(mode string) bool {
+	for _, candidate := range SummarySegmentModes {
+		if candidate == mode {
+			return true
+		}
+	}
+	return false
 }
 
 // Validate reports an incomplete paid-run wiring before any resource opens.
@@ -82,6 +105,9 @@ func (e RealEnvironment) Validate() error {
 	}
 	if e.UserID <= 0 || strings.TrimSpace(e.UserName) == "" || strings.TrimSpace(e.SessionID) == "" {
 		return fmt.Errorf("evaluation identity is required")
+	}
+	if !SummarySegmentModeKnown(e.SummarySegmentMode) {
+		return fmt.Errorf("the summary segment mode must be off, shadow or on")
 	}
 	return nil
 }
@@ -199,6 +225,10 @@ func realSettings(repository, storage string, env RealEnvironment) (*entry.Setti
 	settings.Config.AgentThinkingEnabled = true
 	settings.Config.AgentConfig.EpisodeQuietWindowSeconds = 86400
 	settings.Config.RedisPassword = env.RedisPassword
+	// The arm is read by the product at startup, so it is set before the
+	// configuration is validated: a run that asked for a mode the product
+	// does not know has to fail before it spends anything.
+	settings.Config.AgentConfig.SummarySegmentMode = env.SummarySegmentMode
 	return settings, settings.Validate()
 }
 

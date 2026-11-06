@@ -60,6 +60,42 @@ A saved diagnosis can be read again without a model call:
 go run ./cmd/l4-summary -reclassify C:\evaluation\diagnosis\diagnosis.json -output-dir C:\evaluation\diagnosis-again
 ```
 
+## The layered summary's own numbers
+
+`cmd/l4-layered` replays one conversation through the layered summary and writes what the summary made of it. The mode is the arm:
+
+| mode | what runs |
+|---|---|
+| `off` | the old rolling summary, which is what the product does today |
+| `shadow` | the segments and the board are written, and the old summary still serves the window |
+| `on` | the segments and the board, and the old summary is neither read nor written |
+
+`-mode all` replays the same conversation once per mode, so the two arms see the same turns and the difference between their numbers is the difference between the two structures.
+
+```powershell
+go run ./cmd/l4-layered -repository C:\checkout -input C:\evaluation\history.json -scenario my-case `
+  -question "我一开始定的是多少" -evidence-turns 30,42 -mode all `
+  -output-dir C:\evaluation\layered -proxy http://127.0.0.1:18200 -chat-model deepseek-flash
+```
+
+The counts come from the product's own recorder rather than from a second implementation of the same rules, and the run reads them as the difference between the state before it and the state after it, so a counter that was already there is not reported as the run's.
+
+`node l4/cli.mjs layered-metrics --runs C:\evaluation\layered\runs.json --outcomes C:\evaluation\score\outcomes.jsonl --dataset C:\evaluation\dataset.jsonl --out C:\evaluation\layered-report.json` reads the runs and writes the comparison.
+
+| metric | what it says |
+|---|---|
+| M1 | how far the summary reached: the covered message id over the number of messages, and whether the coverage grew with every batch or stopped |
+| M2 | how many generations failed, counted by the product's own failure counter |
+| M3 | how many turns fell back to a synchronous generation, counted by the product's own fallback counter |
+| M4 | the success rate of the three question kinds, read from the scored outcomes |
+| M5 | the wait before the answer, read from the product records |
+| M6 | the calls and the tokens the run cost |
+| M7 | what the board had to do to itself: the missed updates, the suspicious deletions and the entries it had to invent |
+
+Two more numbers are read from the same runs: how many values the board kept next to the value that replaced them, and whether the segment that carries the answer is the one the preselector picked. The preselector runs on its lexical channel only, so the number does not depend on how much was spent on embeddings.
+
+The answer path has its own switch: `cmd/l4-product -mode off|shadow|on` boots the product in that arm and records it in the manifest. The mode is read by the product once, at startup, so a run whose label does not match the mode it booted with cannot be compared with anything.
+
 ## Scoring output directories
 
 A run directory may hold more than one scored directory when the scoring rules change between two rounds of the same run. In that case the **later directory is the authoritative one** and the earlier one is kept only as a comparison. For the conversation run that changed the fact scoring, `score-fact2/` is the authoritative directory and `score-fact/` is the superseded first round, kept for comparison only. A report must name the scored directory it used.

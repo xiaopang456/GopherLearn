@@ -36,6 +36,7 @@ func run(args []string, out io.Writer) error {
 	arm := flags.String("arm", "current", "configuration identifier")
 	rep := flags.Int("rep", 0, "repeat number: 0, 1 or 2")
 	condition := flags.String("condition", "main", "main, control or distractor")
+	mode := flags.String("mode", "off", "the arm to measure: off, shadow or on")
 	stopFile := flags.String("stop-file", "", "private stop-file path, watched during execution")
 	timeout := flags.Duration("timeout", 0, "attempt deadline; the default depends on the environment")
 	proxy := flags.String("proxy", "", "counting proxy base URL (real mode)")
@@ -146,7 +147,7 @@ func run(args []string, out io.Writer) error {
 			return err
 		}
 		*userID, *userName = id, name
-		environment, err = realEnvironment(flags, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel, userID, userName, sessionID)
+		environment, err = realEnvironment(flags, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel, userID, userName, sessionID, *mode)
 		if err != nil {
 			return err
 		}
@@ -246,6 +247,7 @@ func run(args []string, out io.Writer) error {
 		manifest["user_name"] = environment.UserName
 		manifest["run_id"] = *runID
 		manifest["session_id"] = environment.SessionID
+		manifest["summary_segment_mode"] = environment.SummarySegmentMode
 	}
 	if inputDigest != "" {
 		manifest["input_sha256"] = inputDigest
@@ -281,13 +283,16 @@ func run(args []string, out io.Writer) error {
 // realEnvironment collects the paid-run wiring. The index password is read
 // from the process environment so that it never reaches a command line, an
 // output file, or an error message.
-func realEnvironment(flags *flag.FlagSet, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel *string, userID *int64, userName, sessionID *string) (conversation.RealEnvironment, error) {
+func realEnvironment(flags *flag.FlagSet, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel *string, userID *int64, userName, sessionID *string, mode string) (conversation.RealEnvironment, error) {
 	var environment conversation.RealEnvironment
 	if *proxy == "" || *redis == "" || *storage == "" || *chatModel == "" || *embeddingModel == "" || *rerankModel == "" || *userID <= 0 || *userName == "" || *sessionID == "" {
 		return environment, fmt.Errorf("the real mode needs the proxy, index, storage, models and evaluation identity")
 	}
 	if *redisPassword == "" {
 		return environment, fmt.Errorf("the real mode needs the index password variable")
+	}
+	if !conversation.SummarySegmentModeKnown(mode) {
+		return environment, fmt.Errorf("the mode must be off, shadow or on")
 	}
 	password, ok := os.LookupEnv(*redisPassword)
 	if !ok || password == "" {
@@ -304,6 +309,11 @@ func realEnvironment(flags *flag.FlagSet, proxy, redis, redisPassword, storage, 
 		UserID:         *userID,
 		UserName:       *userName,
 		SessionID:      *sessionID,
+		// The arm is part of the environment rather than of the run label:
+		// the product reads the mode once, when it starts, and a run whose
+		// label does not match the mode it booted with cannot be compared
+		// with anything.
+		SummarySegmentMode: mode,
 	}
 	return environment, environment.Validate()
 }

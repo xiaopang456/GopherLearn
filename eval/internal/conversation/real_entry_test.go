@@ -111,9 +111,14 @@ func TestRealWireRecordsRoleAndUsage(t *testing.T) {
 
 // A paid run may only reach a loopback proxy and a loopback index.
 func TestRealEnvironmentRefusesRemoteEndpoints(t *testing.T) {
-	base := RealEnvironment{ProxyBaseURL: "http://127.0.0.1:18140", RedisAddress: "127.0.0.1:6379", StorageDir: "storage", ChatModel: "chat", EmbeddingModel: "embed", RerankModel: "rerank", UserID: 7, UserName: "learner", SessionID: "session"}
+	base := RealEnvironment{ProxyBaseURL: "http://127.0.0.1:18140", RedisAddress: "127.0.0.1:6379", StorageDir: "storage", ChatModel: "chat", EmbeddingModel: "embed", RerankModel: "rerank", UserID: 7, UserName: "learner", SessionID: "session", SummarySegmentMode: "off"}
 	if err := base.Validate(); err != nil {
 		t.Fatalf("a complete environment was refused: %v", err)
+	}
+	unknownMode := base
+	unknownMode.SummarySegmentMode = "partial"
+	if err := unknownMode.Validate(); err == nil {
+		t.Fatal("a mode the product does not know was accepted")
 	}
 	remote := base
 	remote.ProxyBaseURL = "http://192.0.2.10:18140"

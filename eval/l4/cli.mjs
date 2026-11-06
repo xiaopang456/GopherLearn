@@ -7,6 +7,7 @@ import { checkScenario } from './scenarios.mjs'
 import { scoreAttempt } from './score.mjs'
 import { pairedReport, singleReport } from './statistics.mjs'
 import { attemptKey, categoryReport, judgeCategories, judgeInput, truncationReport } from './truncation.mjs'
+import { compareModes, renderMarkdown } from './layered_metrics.mjs'
 const hash = data => crypto.createHash('sha256').update(data).digest('hex')
 const lines = file => fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line))
 export function main(args) {
@@ -19,13 +20,22 @@ export function main(args) {
     : command === 'report' ? ['run', 'out', 'left', 'right', 'split']
       : command === 'truncation-report' ? ['dataset', 'prepare', 'out', 'arm']
         : command === 'judge-input' ? ['dataset', 'records', 'out', 'categories', 'outcomes']
-          : command === 'category-report' ? ['run', 'dataset', 'out', 'left', 'right', 'judgments', 'split'] : []
+          : command === 'layered-metrics' ? ['runs', 'records', 'outcomes', 'dataset', 'out']
+            : command === 'category-report' ? ['run', 'dataset', 'out', 'left', 'right', 'judgments', 'split'] : []
   if (!allowed.length || Object.keys(opts).some(k => !allowed.includes(k))) throw new Error('unknown command or option')
   const split = opts.split ?? 'dev'
   if (!['dev', 'sealed'].includes(split)) throw new Error('invalid split')
-  for (const k of command === 'score' ? ['dataset', 'records', 'out'] : command === 'judge-input' ? ['dataset', 'records', 'out', 'outcomes'] : command === 'truncation-report' ? ['dataset', 'prepare', 'out'] : command === 'category-report' ? ['dataset', 'out'] : ['run', 'out']) assertOutsideWorktree(k, opts[k])
+  for (const k of command === 'score' ? ['dataset', 'records', 'out'] : command === 'judge-input' ? ['dataset', 'records', 'out', 'outcomes'] : command === 'truncation-report' ? ['dataset', 'prepare', 'out'] : command === 'layered-metrics' ? ['out'] : command === 'category-report' ? ['dataset', 'out'] : ['run', 'out']) assertOutsideWorktree(k, opts[k])
   if (fs.existsSync(opts.out)) throw new Error('output exists')
-  if (command === 'truncation-report') {
+  if (command === 'layered-metrics') {
+    const runs = JSON.parse(fs.readFileSync(opts.runs, 'utf8'))
+    if (!Array.isArray(runs)) throw new Error('runs file must hold an array of runs')
+    const scenarios = new Map((opts.dataset ? lines(opts.dataset) : []).map(s => [s.id, s]))
+    const records = [...(opts.records ? lines(opts.records) : []), ...(opts.outcomes ? lines(opts.outcomes) : [])]
+    const report = compareModes(runs, records, scenarios)
+    fs.writeFileSync(opts.out, JSON.stringify(report, null, 2), { flag: 'wx' })
+    process.stdout.write(renderMarkdown(report))
+  } else if (command === 'truncation-report') {
     const scenarios = new Map(lines(opts.dataset).map(s => [s.id, s]))
     const warmups = new Map()
     for (const entry of fs.readdirSync(opts.prepare, { withFileTypes: true })) {
