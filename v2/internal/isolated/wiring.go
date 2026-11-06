@@ -509,6 +509,13 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	// batch and answer nothing.
 	summarySegmentAssembly, err := buildSummarySegmentAssembly(appCtx, conf,
 		func(c context.Context) (modelcomponent.ToolCallingChatModel, error) {
+			// The check has to be here, not in the function this closure is
+			// passed to. A closure is never nil, so the assembly's own guard
+			// cannot see a missing dependency: it would build, and the first
+			// segment batch would call a nil function.
+			if deps.JSONChatModel == nil {
+				return nil, fmt.Errorf("segment writer needs a model factory; dependencies.JSONChatModel is nil")
+			}
 			return deps.JSONChatModel(c, settings)
 		})
 	if err != nil {

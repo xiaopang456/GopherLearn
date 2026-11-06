@@ -55,6 +55,37 @@ func TestTheSegmentWriterRefusesToGuessAModel(t *testing.T) {
 	}
 }
 
+// A missing dependency has to fail the assembly, not the first batch.
+//
+// The assembly is handed a closure, and a closure is never nil - so the guard
+// inside it cannot see that the factory behind the closure is missing. Without
+// the check at the call site this test would not fail with an error: it would
+// panic, or worse, start and only come apart the first time a session grew
+// long enough to summarize.
+func TestAssembleRefusesAMissingSegmentFactory(t *testing.T) {
+	s := testSettings(t)
+	s.Config.AgentConfig.SummarySegmentMode = "shadow"
+	db := sqliteDatabase(t)
+	chat := &captureModel{inner: &scriptedChatModel{respond: func(context.Context, int) (*schema.Message, error) {
+		return schema.AssistantMessage("你好", nil), nil
+	}}}
+	chunks := &testChunks{}
+	migrations := 0
+	deps := dependencies(t, db, chat, chunks, &migrations)
+	deps.JSONChatModel = nil
+
+	app, err := Assemble(context.Background(), s, deps)
+	if err == nil {
+		if app != nil {
+			_ = app.Close()
+		}
+		t.Fatal("the entry assembled without a segment model factory")
+	}
+	if !strings.Contains(err.Error(), "JSONChatModel") {
+		t.Fatalf("error = %v, want it to name the missing factory", err)
+	}
+}
+
 // The off mode never asks for the model: it has no writer, so it must not
 // fail startup over a factory it will not use.
 func TestTheOffModeDoesNotAskForTheSegmentModel(t *testing.T) {
