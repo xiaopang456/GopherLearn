@@ -125,10 +125,15 @@ func TestContextBuilderOrdersSectionsAndKeepsCurrentQuestionOnce(t *testing.T) {
 		t.Fatalf("history limit = %d", history.limit)
 	}
 	if len(window.Messages) != 7 {
-		t.Fatalf("messages = %d, want system/task/memory/summary/two history/current", len(window.Messages))
+		t.Fatalf("messages = %d, want system/task/summary/two history/memory/current", len(window.Messages))
 	}
-	if !strings.Contains(window.Messages[1].Content, "active learning") || !strings.Contains(window.Messages[2].Content, "prefers examples") || !strings.Contains(window.Messages[3].Content, "earlier decision") {
+	if !strings.Contains(window.Messages[1].Content, "active learning") || !strings.Contains(window.Messages[2].Content, "earlier decision") {
 		t.Fatalf("section order is wrong: %#v", window.Messages)
+	}
+	// The memory block changes on every turn, so it sits behind the history
+	// rather than in front of it.
+	if !strings.Contains(window.Messages[5].Content, "prefers examples") {
+		t.Fatalf("memory should follow the history: %#v", window.Messages)
 	}
 	currentCount := 0
 	for _, message := range window.Messages {
@@ -147,7 +152,7 @@ func TestContextBuilderOrdersSectionsAndKeepsCurrentQuestionOnce(t *testing.T) {
 	}
 }
 
-func TestContextBuilderInjectsAtMostThreeWholeEpisodesBeforeSummary(t *testing.T) {
+func TestContextBuilderInjectsAtMostThreeWholeEpisodesAfterSummary(t *testing.T) {
 	config := DefaultContextConfig()
 	config.EpisodeRecallMode = EpisodeRecallInject
 	config.MaxEpisodeTokens = 1000
@@ -185,7 +190,9 @@ func TestContextBuilderInjectsAtMostThreeWholeEpisodesBeforeSummary(t *testing.T
 			summaryIndex = index
 		}
 	}
-	if episodeIndex < 0 || summaryIndex <= episodeIndex || strings.Contains(joined, "不得进入") || strings.Contains(joined, "must not be rendered") {
+	// The episode block changes on every turn, so it is placed behind the
+	// summary rather than in front of it.
+	if episodeIndex < 0 || summaryIndex < 0 || episodeIndex <= summaryIndex || strings.Contains(joined, "不得进入") || strings.Contains(joined, "must not be rendered") {
 		t.Fatalf("episode rendering/order is unsafe: %s", joined)
 	}
 	// The cited message ids anchor each entry to something checkable and stay.
@@ -509,8 +516,19 @@ func TestContextBuilderInjectsMasteryBeforeMemory(t *testing.T) {
 	if !strings.Contains(window.Messages[2].Content, "mastery instruction") {
 		t.Fatalf("mastery should follow task state: %q", window.Messages[2].Content)
 	}
-	if !strings.Contains(window.Messages[3].Content, "prefers examples") {
-		t.Fatalf("memory should follow mastery: %q", window.Messages[3].Content)
+	// Mastery stays ahead of the long-term memory: it tells the model how to
+	// explain, which survives even when everything below it is trimmed away.
+	masteryIndex, memoryIndex := -1, -1
+	for index, message := range window.Messages {
+		if strings.Contains(message.Content, "mastery instruction") {
+			masteryIndex = index
+		}
+		if strings.Contains(message.Content, "prefers examples") {
+			memoryIndex = index
+		}
+	}
+	if masteryIndex < 0 || memoryIndex <= masteryIndex {
+		t.Fatalf("memory should follow mastery: mastery=%d memory=%d", masteryIndex, memoryIndex)
 	}
 	if window.Budget.Mastery <= 0 {
 		t.Errorf("mastery budget should be reported, got %d", window.Budget.Mastery)

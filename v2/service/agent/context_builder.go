@@ -982,10 +982,10 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	}
 	remaining := baseBudget - required
 	if preRetrievalText != "" {
-		cost := preRetrievalCost
-		messages = append(messages, schema.SystemMessage(preRetrievalText))
-		breakdown.PreRetrievalEvidence = cost
-		remaining -= cost
+		// The block is charged here and placed later. The order in which a
+		// block is measured is not the order in which it is sent.
+		breakdown.PreRetrievalEvidence = preRetrievalCost
+		remaining -= preRetrievalCost
 	}
 
 	// Mastery is injected before long-term memory: it tells the model how to
@@ -1013,10 +1013,8 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		globalText, _ = renderMemoriesWithinBudget("Global user memories", memories.Global, globalBudget)
 	}
 	if globalText != "" {
-		cost := messageTokenCost(globalText)
-		messages = append(messages, schema.SystemMessage(globalText))
-		breakdown.GlobalUserMemory = cost
-		remaining -= cost
+		breakdown.GlobalUserMemory = messageTokenCost(globalText)
+		remaining -= breakdown.GlobalUserMemory
 	}
 	// The topic slot, from the same budget line and with the same ceiling. Only
 	// one of the two branches can produce anything in a given mode: the
@@ -1053,10 +1051,8 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 			b.config.MemoryReadMode)
 	}
 	if topicText != "" {
-		cost := messageTokenCost(topicText)
-		messages = append(messages, schema.SystemMessage(topicText))
-		breakdown.TopicUserMemory = cost
-		remaining -= cost
+		breakdown.TopicUserMemory = messageTokenCost(topicText)
+		remaining -= breakdown.TopicUserMemory
 	}
 	// Build the pre-AGENT-026 tail first. Episode is optional derived context,
 	// so it may use only capacity that would otherwise be unused; it never
@@ -1099,27 +1095,60 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		return ContextWindow{}, fmt.Errorf("assemble episode provenance: %w", err)
 	}
 	if episodeText != "" {
-		cost := messageTokenCost(episodeText)
-		messages = append(messages, schema.SystemMessage(episodeText))
-		breakdown.EpisodeMemory = cost
+		breakdown.EpisodeMemory = messageTokenCost(episodeText)
 		breakdown.EpisodeCount = len(episodeIDs)
-	}
-	if summaryMessage != "" {
-		messages = append(messages, schema.SystemMessage(summaryMessage))
 	}
 	// The current conversation gets its own reference block rather than labels
 	// pasted onto the messages themselves. Rewriting the learner's own text
 	// would corrupt exactly the questions that ask what they actually said.
+	currentText := ""
 	if b.config.MemoryReadMode.UsesMemorySearchTool() {
-		if currentText := renderCurrentConversationEvidence(input.MemoryEvidence, selectedRows,
-			minInt(remaining-4, maxCurrentEvidenceTokens)); currentText != "" {
-			cost := messageTokenCost(currentText)
-			messages = append(messages, schema.SystemMessage(currentText))
-			breakdown.CurrentEvidence = cost
-			remaining -= cost
+		currentText = renderCurrentConversationEvidence(input.MemoryEvidence, selectedRows,
+			minInt(remaining-4, maxCurrentEvidenceTokens))
+		if currentText != "" {
+			breakdown.CurrentEvidence = messageTokenCost(currentText)
+			remaining -= breakdown.CurrentEvidence
 		}
 	}
+
+	// The blocks are sent in a fixed order, and this order is the point of the
+	// change.
+	//
+	// DeepSeek caches on a complete prefix: a block that changes on every turn
+	// and sits in front of the conversation history invalidates that history's
+	// cache on every turn. The blocks that change on every turn - the
+	// pre-retrieval evidence, the global and topic memories, the episodes and
+	// the current-conversation evidence - are therefore placed behind the
+	// history, where the history can still be a cache hit.
+	//
+	// What each block costs did not change. Every block is measured and charged
+	// exactly as before, and the conversation history still gets what it got:
+	// the order a block is measured in is not the order it is sent in. The only
+	// variable here is where a block sits.
+	//
+	// The blocks that stay in front are the ones that rarely change. Mastery
+	// keeps its place ahead of long-term memory for the reason it was given:
+	// it tells the model how to explain, which stays useful even when
+	// everything below it is trimmed away.
+	if summaryMessage != "" {
+		messages = append(messages, schema.SystemMessage(summaryMessage))
+	}
 	messages = append(messages, selected...)
+	if preRetrievalText != "" {
+		messages = append(messages, schema.SystemMessage(preRetrievalText))
+	}
+	if globalText != "" {
+		messages = append(messages, schema.SystemMessage(globalText))
+	}
+	if topicText != "" {
+		messages = append(messages, schema.SystemMessage(topicText))
+	}
+	if episodeText != "" {
+		messages = append(messages, schema.SystemMessage(episodeText))
+	}
+	if currentText != "" {
+		messages = append(messages, schema.SystemMessage(currentText))
+	}
 	messages = append(messages, schema.UserMessage(input.Question))
 	breakdown.Assembled = breakdown.System + breakdown.TaskState + breakdown.Mastery + breakdown.GlobalUserMemory + breakdown.TopicUserMemory + breakdown.EpisodeMemory + breakdown.Summary + breakdown.RecentMessages + breakdown.CurrentQuestion + breakdown.CurrentEvidence + breakdown.PreRetrievalEvidence
 	breakdown.ProjectedInput = breakdown.Assembled + breakdown.EvidenceReserved
