@@ -93,6 +93,13 @@ func migrate(db *gorm.DB) error {
 		new(model.Session),
 		new(model.Message),
 		new(model.SessionSummary),
+		// The board and its segments are a separate structure from the rolling
+		// summary: the board is the current state and is rewritten, the segments
+		// are written once. Both are additive - a session that has neither
+		// simply has no compressed state yet.
+		new(model.SessionWhiteboard),
+		new(model.SessionSummarySegment),
+		new(model.SessionSummarySegmentJob),
 		new(model.EpisodeMemory),
 		new(model.EpisodeProjectionJob),
 		// Assertion governance is additive: the migration creates an empty

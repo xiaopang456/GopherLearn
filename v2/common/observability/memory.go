@@ -147,6 +147,56 @@ func (r *MemoryRecorder) KnowledgeFallbackDuration(duration time.Duration) {
 	r.logf("memory_metric name=knowledge_fallback duration_ms=%d", duration.Milliseconds())
 }
 
+// Whiteboard records what one batch did to a session board.
+//
+// Every count here is an intervention the server had to make, so a rising
+// number names the part of the generator that is drifting. Nothing in this
+// call carries board text: the label set is fixed and the rest are counts.
+func (r *MemoryRecorder) Whiteboard(applied, changed, fabricated, suspiciousDelete, missedUpdate, truncated, dropped, droppedDone int) {
+	r.addTotal("whiteboard_applied_total", int64(applied))
+	r.addTotal("whiteboard_changed_total", int64(changed))
+	r.addTotal("whiteboard_fabricated_total", int64(fabricated))
+	r.addTotal("whiteboard_suspicious_delete_total", int64(suspiciousDelete))
+	r.addTotal("whiteboard_missed_update_total", int64(missedUpdate))
+	r.addTotal("whiteboard_truncated_total", int64(truncated))
+	r.addTotal("whiteboard_dropped_total", int64(dropped))
+	r.addTotal("whiteboard_dropped_done_total", int64(droppedDone))
+	if fabricated > 0 {
+		r.add("whiteboard_fabricated_batches_total", 1)
+	}
+	if suspiciousDelete > 0 {
+		r.add("whiteboard_suspicious_delete_batches_total", 1)
+	}
+	if missedUpdate > 0 {
+		r.add("whiteboard_missed_update_batches_total", 1)
+	}
+	r.logf("memory_metric name=whiteboard applied=%d changed=%d fabricated=%d suspicious_delete=%d missed_update=%d truncated=%d dropped=%d dropped_done=%d",
+		applied, changed, fabricated, suspiciousDelete, missedUpdate, truncated, dropped, droppedDone)
+}
+
+// SummarySegment records what one segment generation produced or why it did
+// not produce one.
+//
+// The outcome label is bounded, so a new failure reason has to be named here
+// before it can be reported; an unnamed one is counted as "other" rather than
+// stored as free text. The counts alongside it are what the generator had to
+// drop on the way to a storable segment.
+func (r *MemoryRecorder) SummarySegment(outcome, reason string, points, pointsDropped int) {
+	outcome = boundedLabel(outcome, "generated", "failed")
+	reason = boundedLabel(reason, "none", "invalid_output", "unknown_schema_version", "point_without_source",
+		"input_too_large", "output_too_large", "model_error", "empty_output")
+	r.add("summary_segment_total{outcome="+outcome+",reason="+reason+"}", 1)
+	if outcome == "failed" {
+		r.add("summary_segment_failed_total{reason="+reason+"}", 1)
+	}
+	r.addTotal("summary_segment_points_total", int64(points))
+	if pointsDropped > 0 {
+		r.addTotal("summary_segment_points_dropped_total", int64(pointsDropped))
+	}
+	r.logf("memory_metric name=summary_segment outcome=%s reason=%s points=%d points_dropped=%d",
+		outcome, reason, points, pointsDropped)
+}
+
 func (r *MemoryRecorder) Snapshot() MemorySnapshot {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
