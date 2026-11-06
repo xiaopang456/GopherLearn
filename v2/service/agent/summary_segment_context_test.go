@@ -502,7 +502,7 @@ func TestThePreselectorSpendsItsBudgetOnWhatTheWindowSends(t *testing.T) {
 	}
 	segment := testSegment(t, 1, 1, 30, "梧苑读书计划的页数", points, nil)
 	stored := rag.EstimateTokens(segment.Content)
-	if stored <= DefaultPreselectedSegmentTokens {
+	if stored <= DefaultSegmentTokens {
 		t.Fatalf("the stored body costs %d tokens; the fixture does not exceed the budget", stored)
 	}
 	if rendered := RenderedSegmentTokens(segment); rendered > DefaultSegmentTokens+segmentSeparatorTokens {

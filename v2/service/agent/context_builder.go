@@ -423,12 +423,16 @@ func (c ContextConfig) Validate() error {
 	if c.MaxEpisodeTokens < 800 || c.MaxEpisodeTokens > 1200 {
 		return fmt.Errorf("episode memory budget must be between 800 and 1200 tokens")
 	}
+	// The board and the segment blocks are not part of this sum. Whether they
+	// reach the window is decided by the layered mode, which this configuration
+	// does not carry; counting them here would reject every caller that sets
+	// the budgets and turns the mode off. The mode-aware version of this check
+	// lives in config.AgentConfig.Validate.
 	if c.MaxGlobalUserMemoryTokens < 0 || c.MaxTopicUserMemoryTokens < 0 || c.MaxSummaryTokens < 0 ||
 		c.MaxWhiteboardTokens < 0 || c.MaxResidentSegmentTokens < 0 || c.MaxRetrievedSegmentTokens < 0 ||
 		c.MaxSegmentTokens < 0 ||
-		c.MaxGlobalUserMemoryTokens+c.MaxTopicUserMemoryTokens+c.MaxSummaryTokens+c.MaxMasteryTokens+c.MaxEpisodeTokens+
-			c.MaxWhiteboardTokens+c.MaxResidentSegmentTokens+c.MaxRetrievedSegmentTokens >= c.InputTargetTokens-c.EvidenceReserve {
-		return fmt.Errorf("profile, topic note, episode, summary, board, segment and mastery budgets leave no room for required context")
+		c.MaxGlobalUserMemoryTokens+c.MaxTopicUserMemoryTokens+c.MaxSummaryTokens+c.MaxMasteryTokens+c.MaxEpisodeTokens >= c.InputTargetTokens-c.EvidenceReserve {
+		return fmt.Errorf("profile, topic note, episode, summary, mastery, board or segment budgets are invalid")
 	}
 	if c.HistoryFetchLimit < 1 || c.HistoryFetchLimit > 512 {
 		return fmt.Errorf("history fetch limit must be between 1 and 512")

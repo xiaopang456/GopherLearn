@@ -29,13 +29,6 @@ import (
 // away the exact sentence the learner is asking about.
 
 const (
-	// DefaultPreselectedSummarySegments is how many segments one turn may
-	// carry on top of the resident ones.
-	DefaultPreselectedSummarySegments = 3
-	// DefaultPreselectedSegmentTokens bounds one preselected segment.
-	DefaultPreselectedSegmentTokens = 300
-	// DefaultPreselectedTotalTokens bounds the whole preselected set.
-	DefaultPreselectedTotalTokens = 900
 	// SummarySegmentCandidateLimit bounds how many segments the preselector
 	// looks at. A session with more segments than this has a long tail the
 	// preselector does not see; the browse tool is what reaches it.
@@ -67,18 +60,58 @@ type SummarySegmentPreselector struct {
 	maxTotalTokens int
 }
 
+// SummarySegmentPreselectLimits derives the preselector's bounds from the block
+// that will render its answer.
+//
+// The two were separate numbers once: the preselector carried up to three
+// segments within 900 tokens, and the block that rendered them had a budget of
+// its own. A selection larger than the block is not harmless. The renderer walks
+// its input from the newest segment backwards, so when more segments arrive than
+// fit, the ones that survive are the newest - not the ones the preselector
+// ranked highest - and the ranking it paid an embedding call for is thrown away.
+//
+// The count is a division, not a wish: a segment is indivisible here, and one
+// segment is the smallest useful block. A total below one segment's worth still
+// yields one, because selecting nothing is a different failure from selecting
+// too little.
+func SummarySegmentPreselectLimits(totalTokens, segmentTokens int) (segments, perSegment, total int) {
+	if segmentTokens <= 0 {
+		segmentTokens = DefaultSegmentTokens
+	}
+	if totalTokens <= 0 {
+		totalTokens = segmentTokens
+	}
+	segments = totalTokens / segmentTokens
+	if segments < 1 {
+		segments = 1
+	}
+	return segments, segmentTokens, totalTokens
+}
+
 // NewSummarySegmentPreselector builds a preselector.
 //
 // The embedding function may be nil: a preselector without a vector channel
 // never embeds anything, and requiring one would make the lexical channel
 // depend on a provider it does not use.
 func NewSummarySegmentPreselector(embed memoryrecall.EmbedFunc, vectors SummarySegmentVectorSearcher) (*SummarySegmentPreselector, error) {
+	segments, perSegment, total := SummarySegmentPreselectLimits(DefaultRetrievedSegmentTokens, DefaultSegmentTokens)
 	return &SummarySegmentPreselector{
 		vectors: vectors, embed: embed,
-		maxSegments:      DefaultPreselectedSummarySegments,
-		maxSegmentTokens: DefaultPreselectedSegmentTokens,
-		maxTotalTokens:   DefaultPreselectedTotalTokens,
+		maxSegments:      segments,
+		maxSegmentTokens: perSegment,
+		maxTotalTokens:   total,
 	}, nil
+}
+
+// Limits reports the bounds the preselector is running with.
+//
+// It exists so the entry can be checked against the configuration it was given:
+// a preselector silently keeping its own defaults is the defect this replaces.
+func (p *SummarySegmentPreselector) Limits() (segments, segmentTokens, totalTokens int) {
+	if p == nil {
+		return 0, 0, 0
+	}
+	return p.maxSegments, p.maxSegmentTokens, p.maxTotalTokens
 }
 
 // UseLimits overrides the preselector's bounds. It exists for the harnesses
@@ -331,7 +364,7 @@ func (p *SummarySegmentPreselector) vectorChannel(ctx context.Context, input Run
 		return nil, nil
 	}
 	hits, err := p.vectors.SearchByVector(ctx, input.UserID, input.SessionID,
-		vector, DefaultPreselectedSummarySegments*4)
+		vector, p.maxSegments*4)
 	if err != nil {
 		return nil, err
 	}

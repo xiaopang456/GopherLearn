@@ -35,6 +35,69 @@ func TestTheConfiguredBlockBudgetsMatchTheAgentDefaults(t *testing.T) {
 	}
 }
 
+// The preselector has to run on the block's numbers, not its own.
+//
+// Two failures are possible here and only one of them is loud. A preselector
+// that keeps its defaults with a smaller block hands the renderer more segments
+// than fit; the renderer keeps the newest, so what arrives is not what was
+// ranked, and nothing errors. The scaled configuration is exactly where that
+// shows: a 310-token block holds one 300-token segment, so the selection must be
+// one segment wide.
+func TestTheEntrySizesThePreselectorFromTheBlockBudget(t *testing.T) {
+	s := testSettings(t)
+	s.Config.AgentConfig.ContextMaxRetrievedSegmentTokens = 310
+	s.Config.AgentConfig.ContextMaxSegmentTokens = 300
+
+	preselector, err := buildSummarySegmentPreselector(s.Config, nil, nil)
+	if err != nil {
+		t.Fatalf("build the preselector: %v", err)
+	}
+	segments, perSegment, total := preselector.Limits()
+	if segments != 1 || perSegment != 300 || total != 310 {
+		t.Fatalf("the preselector runs with %d x %d within %d, want 1 x 300 within 310",
+			segments, perSegment, total)
+	}
+}
+
+// The shipped configuration derives three segments from the same numbers the
+// block renders with - not a separate pair of constants.
+func TestTheEntryPreselectorUsesTheShippedBudgets(t *testing.T) {
+	s := testSettings(t)
+
+	preselector, err := buildSummarySegmentPreselector(s.Config, nil, nil)
+	if err != nil {
+		t.Fatalf("build the preselector: %v", err)
+	}
+	segments, perSegment, total := preselector.Limits()
+	if perSegment != s.Config.AgentConfig.ContextMaxSegmentTokens {
+		t.Fatalf("one segment is %d in the preselector and %d in the block",
+			perSegment, s.Config.AgentConfig.ContextMaxSegmentTokens)
+	}
+	if total != s.Config.AgentConfig.ContextMaxRetrievedSegmentTokens {
+		t.Fatalf("the set is %d in the preselector and %d in the block",
+			total, s.Config.AgentConfig.ContextMaxRetrievedSegmentTokens)
+	}
+	if segments != total/perSegment {
+		t.Fatalf("%d segments do not divide %d by %d", segments, total, perSegment)
+	}
+}
+
+// A budget below one segment still selects one: selecting nothing is a
+// different failure from selecting too little.
+func TestTheEntryPreselectorNeverSelectsNothing(t *testing.T) {
+	s := testSettings(t)
+	s.Config.AgentConfig.ContextMaxRetrievedSegmentTokens = 40
+	s.Config.AgentConfig.ContextMaxSegmentTokens = 300
+
+	preselector, err := buildSummarySegmentPreselector(s.Config, nil, nil)
+	if err != nil {
+		t.Fatalf("build the preselector: %v", err)
+	}
+	if segments, _, _ := preselector.Limits(); segments != 1 {
+		t.Fatalf("a 40-token budget selects %d segments, want 1", segments)
+	}
+}
+
 // The mode that reads the new state back has to put the board and the segments
 // in the window.
 //

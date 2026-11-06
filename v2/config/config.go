@@ -1261,8 +1261,16 @@ func (c AgentConfig) Validate() error {
 		c.ContextMaxRetrievedSegmentTokens < 0 || c.ContextMaxSegmentTokens < 0 {
 		return fmt.Errorf("context block budgets cannot be negative")
 	}
-	if c.ContextMaxGlobalUserMemoryTokens+c.ContextMaxTopicUserMemoryTokens+c.ContextMaxSummaryTokens+c.ContextMaxMasteryTokens+c.ContextMaxEpisodeTokens+
-		c.ContextMaxWhiteboardTokens+c.ContextMaxResidentSegmentTokens+c.ContextMaxRetrievedSegmentTokens >= c.ContextInputTargetTokens-c.KnowledgeMaxRunTokens {
+	// The board and the segment blocks only reach the window in the mode that
+	// reads them back. Counting their budgets in every other mode would fail a
+	// configuration that never sends them: a deployment with a tight input
+	// target and the layered mode off is valid today and must stay valid.
+	softBudget := c.ContextMaxGlobalUserMemoryTokens + c.ContextMaxTopicUserMemoryTokens +
+		c.ContextMaxSummaryTokens + c.ContextMaxMasteryTokens + c.ContextMaxEpisodeTokens
+	if c.SummarySegmentMode == "on" {
+		softBudget += c.ContextMaxWhiteboardTokens + c.ContextMaxResidentSegmentTokens + c.ContextMaxRetrievedSegmentTokens
+	}
+	if softBudget >= c.ContextInputTargetTokens-c.KnowledgeMaxRunTokens {
 		return fmt.Errorf("context profile, topic note, episode, summary, mastery, board and segment budgets leave no room for required context")
 	}
 	if c.ContextMaxMasteryTokens > 2000 {

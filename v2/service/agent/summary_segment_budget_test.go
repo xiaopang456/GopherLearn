@@ -25,13 +25,21 @@ func TestTheLayeredBudgetsAreAllStatedOnTheRenderedBlock(t *testing.T) {
 		t.Fatalf("the board's write budget is %d and its send budget is %d",
 			model.SessionWhiteboardTokenLimit, DefaultWhiteboardTokens)
 	}
-	if DefaultSegmentTokens != DefaultPreselectedSegmentTokens {
+	// One segment carries the same number whether it is being written, rendered
+	// in a block, or preselected. The preselector no longer has a budget of its
+	// own: it derives from the block that renders it, so the equality to check
+	// is that the derivation starts from the same per-segment number.
+	segments, perSegment, total := SummarySegmentPreselectLimits(DefaultRetrievedSegmentTokens, DefaultSegmentTokens)
+	if perSegment != DefaultSegmentTokens {
 		t.Fatalf("one segment may carry %d tokens in a block and %d when preselected",
-			DefaultSegmentTokens, DefaultPreselectedSegmentTokens)
+			DefaultSegmentTokens, perSegment)
 	}
-	if DefaultPreselectedTotalTokens > DefaultRetrievedSegmentTokens {
+	if total != DefaultRetrievedSegmentTokens {
 		t.Fatalf("the preselection may spend %d on a block that carries %d",
-			DefaultPreselectedTotalTokens, DefaultRetrievedSegmentTokens)
+			total, DefaultRetrievedSegmentTokens)
+	}
+	if segments < 1 || segments*perSegment > total {
+		t.Fatalf("the derivation spends %d x %d on a block of %d", segments, perSegment, total)
 	}
 }
 

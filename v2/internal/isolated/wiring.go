@@ -886,7 +886,7 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 				vectorSearcher = summarySegmentIndex
 			}
 		}
-		preselector, preselectErr := agentService.NewSummarySegmentPreselector(embed, vectorSearcher)
+		preselector, preselectErr := buildSummarySegmentPreselector(conf, embed, vectorSearcher)
 		if preselectErr != nil {
 			return nil, fmt.Errorf("initialize summary segment preselector: %v", preselectErr)
 		}
@@ -1273,6 +1273,24 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	}
 	handler := buildRouter(runtime.documents, conf, registration)
 	return &Application{Lifecycle: l, Handler: handler, Agent: configuredAgentService, Runner: agentRunner, Context: contextBuilder, Documents: runtime.documents, EpisodeIndex: deletionEpisodeIndex}, nil
+}
+
+// buildSummarySegmentPreselector builds the preselector on the budgets the
+// window will actually render with.
+//
+// The preselector keeps its own defaults for the harnesses that construct it
+// directly, but a deployment must not run on them: left alone, it hands the
+// renderer more segments than the block holds, and the renderer - which walks
+// from the newest backwards - keeps the newest rather than the highest ranked.
+func buildSummarySegmentPreselector(conf *config.Config, embed memoryrecall.EmbedFunc,
+	vectors agentService.SummarySegmentVectorSearcher) (*agentService.SummarySegmentPreselector, error) {
+	preselector, err := agentService.NewSummarySegmentPreselector(embed, vectors)
+	if err != nil {
+		return nil, err
+	}
+	preselector.UseLimits(agentService.SummarySegmentPreselectLimits(
+		conf.AgentConfig.ContextMaxRetrievedSegmentTokens, conf.AgentConfig.ContextMaxSegmentTokens))
+	return preselector, nil
 }
 
 // buildSummarySegmentAssembly wires the layered summary's write path.
