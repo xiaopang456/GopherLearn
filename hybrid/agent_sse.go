@@ -199,6 +199,9 @@ func (s *httpSurface) agentStream(w http.ResponseWriter, r *http.Request, uid in
 	}
 	result, err := s.agent.Agent.Run(ctx, request, sink)
 	if err == nil {
+		if mode != model.SessionModeAgent {
+			s.touchConversationSession(ctx, uid, sessionID(r))
+		}
 		var rowErr error
 		row, rowErr := messageDAO.NewRepository(s.db).ReadOwnedRunAssistant(ctx, uid, sessionID(r), result.RunID)
 		if rowErr != nil {

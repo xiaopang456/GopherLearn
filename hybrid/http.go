@@ -23,6 +23,7 @@ import (
 	"github.com/xiaopang456/GopherLearn/conversation"
 	"gorm.io/gorm"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -440,6 +441,7 @@ func (s *httpSurface) agentMessage(w http.ResponseWriter, r *http.Request, uid i
 	}, agentService.DiscardEvents)
 	if err == nil {
 		if mode != model.SessionModeAgent {
+			s.touchConversationSession(r.Context(), uid, sid)
 			// A conversation turn keeps the envelope this endpoint has always
 			// returned - the learner's message and the answer - because moving the
 			// turn onto the shared history is not a reason to change what a client
@@ -595,6 +597,35 @@ func (s *httpSurface) runPair(ctx context.Context, uid int64, sid, runID string)
 		"user_message":      messageRowView(*user),
 		"assistant_message": messageRowView(*assistant),
 	}, nil
+}
+
+// touchConversationSession keeps a conversation turn moving its session to the top of a
+// list ordered by updated_at, which is what the retired ordinary append did in the same
+// transaction as the message insert.
+//
+// The shared path commits the answer before this layer gets control back, so the touch
+// can no longer be part of that transaction and a failure here cannot un-write the turn.
+// Withholding an answer that is already stored over a stale sort key would lose more than
+// it saves, so this logs and returns. It runs detached from the request: a learner who
+// closes the tab the moment the answer lands must not cost the session its recency.
+//
+// Only conversation turns get this. An Agent turn has never bumped the timestamp on this
+// path, and changing that is a separate decision about Agent sessions, not something to
+// slip into moving ordinary chat.
+func (s *httpSurface) touchConversationSession(ctx context.Context, uid int64, sid string) {
+	touchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	// The same clock GORM stamped the row with at creation, not time.Now().UTC(). These
+	// columns are ordered as stored text on SQLite, so a UTC value ("…T06:58:20Z") sorts
+	// below a local one ("…T14:58:20+08:00") even when it is the later instant, and the
+	// session would sink instead of rising. On MySQL the offset is dropped outright and
+	// the two clocks would be eight hours apart.
+	result := s.db.WithContext(touchCtx).Model(&model.Session{}).
+		Where("id = ? AND user_id = ?", sid, uid).
+		UpdateColumn("updated_at", s.db.NowFunc())
+	if result.Error != nil {
+		log.Printf("conversation session touch failed: session=%s error_type=%T", sid, result.Error)
+	}
 }
 
 func (s *httpSurface) history(ctx context.Context, uid int64, sid string) ([]any, error) {
