@@ -89,7 +89,11 @@ func TestRolePromptsLoadCheckout(t *testing.T) {
 	for _, role := range roles {
 		counts[role]++
 	}
-	if counts["answer"] != 4 || counts["summary"] != 1 || counts["background"] != 5 {
+	// Two prompts carry the summary role: the rolling summary and the
+	// layered summary's own segment prompt. A call shape that is not in
+	// this list is refused, so the count is what says a new shape was
+	// classified and reviewed.
+	if counts["answer"] != 4 || counts["summary"] != 2 || counts["background"] != 5 {
 		t.Fatal(counts)
 	}
 }

@@ -162,6 +162,10 @@ type LayeredRun struct {
 	CompletionTokens    int              `json:"completion_tokens"`
 	// Calls is the provider boundary of every call the run made.
 	Calls []LayeredCall `json:"calls,omitempty"`
+	// Holes are the stretches of turns no segment covers, written as the
+	// message range each one spans. A hole is the difference between a
+	// summary that stopped and a summary that is still moving.
+	Holes []string `json:"holes,omitempty"`
 	// Counters and Totals are the product's own recorder, read as the
 	// difference between the state before the run and the state after it.
 	Counters map[string]uint64 `json:"counters,omitempty"`
@@ -430,10 +434,12 @@ func runLayeredSegments(ctx context.Context, sessionID string, messages []model.
 		if err != nil {
 			run.Failures.Segments++
 			run.Errors = append(run.Errors, err.Error())
-			// A failed segment leaves the stretch uncovered, so the next
-			// stretch starts where this one would have started.
-			start = end
-			continue
+			// The stretch stays uncovered. The product retries the same
+			// batch, so the batch after it waits; moving on would leave a
+			// hole between two segments and a watermark that runs past
+			// the turns no segment covers.
+			run.Holes = append(run.Holes, fmt.Sprintf("%d-%d", batch[0].ID, batch[len(batch)-1].ID))
+			break
 		}
 		seq++
 		run.Segments = append(run.Segments, LayeredSegment{
