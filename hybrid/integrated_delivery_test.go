@@ -219,7 +219,7 @@ func TestIntegratedConfigTemplateLoadsAndRefusesCrossings(t *testing.T) {
 	text := string(raw)
 
 	// A template carrying a real value would be a leak by construction.
-	for _, key := range []string{"chatKey", "embeddingKey", "password", "key", "GOPHERLEARN_OPENAI_API_KEY"} {
+	for _, key := range []string{"chatKey", "embeddingApiKey", "password", "key", "GOPHERLEARN_OPENAI_API_KEY"} {
 		for _, line := range strings.Split(text, "\n") {
 			trimmed := strings.TrimSpace(line)
 			if !strings.Contains(trimmed, key) || strings.HasPrefix(trimmed, "#") {
@@ -252,6 +252,36 @@ func TestIntegratedConfigTemplateLoadsAndRefusesCrossings(t *testing.T) {
 	}
 	if _, err := loadEntry(path); err == nil || !strings.Contains(err.Error(), "unsupported ordinaryChat setting") {
 		t.Fatalf("an Agent budget in [ordinaryChat] was not refused: %v", err)
+	}
+
+	// A deployment upgrading over an older file is refused by name rather than
+	// silently started with an ignored address or an unfed embedding key.
+	retiredBaseURL := strings.Replace(text,
+		`embeddingApiKey = "REPLACE_WITH_EMBEDDING_PROVIDER_KEY"`,
+		"embeddingApiKey = \"REPLACE_WITH_EMBEDDING_PROVIDER_KEY\"\nbaseUrl = \"https://provider.invalid/v1\"", 1)
+	if retiredBaseURL == text {
+		t.Fatal("the template no longer carries an embeddingApiKey to insert a retired baseUrl beside")
+	}
+	path = filepath.Join(t.TempDir(), "retired-base-url.toml")
+	if err := os.WriteFile(path, []byte(retiredBaseURL), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadEntry(path); err == nil || !strings.Contains(err.Error(), "retired configuration setting") || !strings.Contains(err.Error(), "isolatedEntry.chatBaseURL") {
+		t.Fatalf("the retired baseUrl was not refused with the replacement named: %v", err)
+	}
+
+	retiredKey := strings.Replace(text,
+		`chatBaseURL = "https://provider.invalid/v1"`,
+		"chatBaseURL = \"https://provider.invalid/v1\"\nembeddingKey = \"REPLACE_WITH_EMBEDDING_PROVIDER_KEY\"", 1)
+	if retiredKey == text {
+		t.Fatal("the template no longer carries an explicit chatBaseURL to insert a retired embeddingKey beside")
+	}
+	path = filepath.Join(t.TempDir(), "retired-embedding-key.toml")
+	if err := os.WriteFile(path, []byte(retiredKey), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadEntry(path); err == nil || !strings.Contains(err.Error(), "retired configuration setting") || !strings.Contains(err.Error(), "ragModelConfig.embeddingApiKey") {
+		t.Fatalf("the retired embedding key was not refused with the new location named: %v", err)
 	}
 
 	// Ordinary Chat may not fall back to the placeholder provider: an echo client answers

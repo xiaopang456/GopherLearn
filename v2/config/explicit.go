@@ -66,13 +66,46 @@ func LoadExplicitForSchema(path string) (*Config, error) {
 // given. It reads nothing else: no default file, no environment.
 func loadExplicitFile(path string) (*Config, error) {
 	if strings.TrimSpace(path) == "" {
-		return nil, fmt.Errorf("isolated V2 requires an explicit configuration path")
+		return nil, Refusef("isolated V2 requires an explicit configuration path")
 	}
 	loaded := defaultConfig()
-	if _, err := toml.DecodeFile(path, loaded); err != nil {
+	metadata, err := toml.DecodeFile(path, loaded)
+	if err != nil {
 		return nil, fmt.Errorf("load explicit V2 configuration: %w", err)
 	}
+	if err := refuseRetiredSettings(metadata); err != nil {
+		return nil, err
+	}
 	return loaded, nil
+}
+
+// retiredSettings names the file keys this build stopped reading, and says what
+// replaces each one. They are refused by name instead of being ignored.
+//
+// The reason is that the TOML decoder is tolerant: a key nothing decodes into
+// starts the process anyway, and the operator is left reading a file that says one
+// thing while the program does another. A base URL nobody builds a client from, or
+// an embedding key sitting in a section the embedder no longer reads, is exactly
+// the failure that would surface as a bill or a silent fallback rather than an
+// error. So a stale line stops startup, and the message names the line to change.
+var retiredSettings = map[string]string{
+	"ragModelConfig.baseUrl": "ragModelConfig.baseUrl was removed: no client is built from it. " +
+		"The learning Agent's chat address comes from isolatedEntry.chatBaseURL. Delete this line.",
+	"isolatedEntry.embeddingKey": "isolatedEntry.embeddingKey moved to ragModelConfig.embeddingApiKey, " +
+		"beside the embedding model name and address it belongs to. Move the key there and delete this line.",
+}
+
+// refuseRetiredSettings checks the keys the document actually contains, not the
+// ones the decoder failed to place: a retired key can sit in a section this struct
+// never reads at all, and an "undecoded" report would hide it inside the section
+// name.
+func refuseRetiredSettings(metadata toml.MetaData) error {
+	for _, key := range metadata.Keys() {
+		if refusal, retired := retiredSettings[key.String()]; retired {
+			return Refusef("retired configuration setting: %s", refusal)
+		}
+	}
+	return nil
 }
 
 // validateRemainder validates the sections that do not depend on the reranker.

@@ -1,6 +1,7 @@
 package hybrid
 
 import (
+	"GopherAI/config"
 	"GopherAI/entry"
 	"context"
 	"errors"
@@ -25,7 +26,7 @@ func loadEntry(path string) (*entrySettings, error) {
 	// This executable is not a migration command. Do not inherit the native
 	// entry's optional migration flag, including when explicitly set to true.
 	if v2.Entry.Migrate {
-		return nil, errors.New("hybrid entry refuses business migration")
+		return nil, config.Refusef("hybrid entry refuses business migration")
 	}
 	var cfg struct {
 		Ordinary map[string]string `toml:"ordinaryChat"`
@@ -39,7 +40,7 @@ func loadEntry(path string) (*entrySettings, error) {
 	}
 	for key := range cfg.Ordinary {
 		if !allowed[key] {
-			return nil, errors.New("unsupported ordinaryChat setting")
+			return nil, config.Refusef("unsupported ordinaryChat setting")
 		}
 	}
 	client, chat, err := conversation.ConfigureClient(func(key string) string { return cfg.Ordinary[key] })

@@ -1,12 +1,12 @@
 package main
 
 import (
- "net/http"
- "time"
- "GopherAI/common/memoryrecall"
- "GopherAI/config"
- agentService "GopherAI/service/agent"
- agentTool "GopherAI/service/agent/tool"
+	"GopherAI/common/memoryrecall"
+	"GopherAI/config"
+	agentService "GopherAI/service/agent"
+	agentTool "GopherAI/service/agent/tool"
+	"net/http"
+	"time"
 )
 
 const (
@@ -29,7 +29,6 @@ func newHTTPServer(addr string, handler http.Handler) *http.Server {
 		// model/tool work already has request-scoped deadlines and cancellation.
 	}
 }
-
 
 func agentRunnerConfig(mode memoryrecall.ReadMode, agentConf config.AgentConfig) agentService.RunnerConfig {
 	runnerConfig := agentService.RunnerConfig{
@@ -97,4 +96,3 @@ func buildTopicMemoryReadRegistry(mode memoryrecall.ReadMode,
 	}
 	return agentTool.NewTopicMemoryReadRegistry(provider, agentTool.DefaultTopicMemoryReadConfig())
 }
-

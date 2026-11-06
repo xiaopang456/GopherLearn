@@ -70,7 +70,7 @@ func offlineSettings(repository, storage string) (*entry.Settings, error) {
 	}
 	text := strings.ReplaceAll(string(data), `key = ""`, `key = "synthetic-offline-key-with-at-least-32-characters"`)
 	text = strings.ReplaceAll(text, `chatKey = ""`, `chatKey = "synthetic-never-sent"`)
-	text = strings.ReplaceAll(text, `embeddingKey = ""`, `embeddingKey = "synthetic-never-sent"`)
+	text = strings.ReplaceAll(text, `embeddingApiKey = ""`, `embeddingApiKey = "synthetic-never-sent"`)
 	dir, err := os.MkdirTemp("", "gl-offline-config-")
 	if err != nil {
 		return nil, err

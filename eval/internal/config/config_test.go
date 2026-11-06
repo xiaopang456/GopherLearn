@@ -250,7 +250,6 @@ key = "a-jwt-secret-of-at-least-thirty-two-bytes"
 embeddingModel = "synthetic-embedding"
 embeddingBaseUrl = "https://embedding.example.invalid/v1"
 chatModelName = "synthetic-chat"
-baseUrl = "https://chat.example.invalid/v1"
 dimension = 64
 ` + entry
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -260,7 +259,7 @@ dimension = 64
 }
 
 func TestLoadProductReusesTheProductLoader(t *testing.T) {
-	path := writeProduct(t, "\n[isolatedEntry]\nembeddingKey = \"synthetic-key-never-sent\"\n")
+	path := writeProduct(t, "\nembeddingApiKey = \"synthetic-key-never-sent\"\n")
 	product, err := LoadProduct(path)
 	if err != nil {
 		t.Fatal(err)
@@ -276,13 +275,13 @@ func TestLoadProductReusesTheProductLoader(t *testing.T) {
 
 func TestLoadProductRequiresTheEmbeddingKeyAndAValidProductFile(t *testing.T) {
 	for name, entry := range map[string]string{
-		"no isolatedEntry":  "",
-		"a blank key":       "\n[isolatedEntry]\nembeddingKey = \"  \"\n",
+		"no key at all":     "",
+		"a blank key":       "\nembeddingApiKey = \"  \"\n",
 		"the key is absent": "\n[isolatedEntry]\nisolated = true\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := LoadProduct(writeProduct(t, entry))
-			if err == nil || !strings.Contains(err.Error(), "embeddingKey is required") {
+			if err == nil || !strings.Contains(err.Error(), "embeddingApiKey is required") {
 				t.Fatalf("err = %v", err)
 			}
 		})
@@ -295,7 +294,7 @@ func TestLoadProductRequiresTheEmbeddingKeyAndAValidProductFile(t *testing.T) {
 	// variable (never a value).
 	t.Setenv("RAG_RERANK_AUTH_TOKEN", "")
 	os.Unsetenv("RAG_RERANK_AUTH_TOKEN")
-	path := writeProduct(t, "rerankEnabled = true\nrerankProvider = \"dashscope\"\nrerankEndpoint = \"https://rerank.example.invalid/v1/rerank\"\nrerankModel = \"synthetic-rerank\"\n\n[isolatedEntry]\nembeddingKey = \"k\"\n")
+	path := writeProduct(t, "rerankEnabled = true\nrerankProvider = \"dashscope\"\nrerankEndpoint = \"https://rerank.example.invalid/v1/rerank\"\nrerankModel = \"synthetic-rerank\"\nembeddingApiKey = \"k\"\n")
 	// rerankEnabled sits in [ragModelConfig]; appending it above is only valid
 	// before the next table header, which writeProduct's layout guarantees.
 	if _, err := LoadProduct(path); err == nil || !strings.Contains(err.Error(), "RAG_RERANK_AUTH_TOKEN") {
