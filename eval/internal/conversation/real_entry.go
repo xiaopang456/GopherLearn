@@ -320,6 +320,11 @@ func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, que
 	if err := env.Validate(); err != nil {
 		return result, err
 	}
+	before, err := requireEmptyUserIndexes(ctx, env)
+	result.MemoryIndexEvidence.BeforeAnswer = before
+	if err != nil {
+		return result, err
+	}
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
@@ -489,14 +494,25 @@ func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, que
 	var stoppedErr error
 	_, result.StoppedCounts, stoppedErr = s.ObserveJobs(collect)
 	result.Events, result.Audit.ExecutedBeforeAnswer, resultErr = journal.Finish(collect)
+	// The product has stopped and the background window has closed, so this is
+	// the state the next repeat of this scenario would inherit. It reads on its
+	// own deadline: a journal window that ran out must not erase the evidence,
+	// and a failed read is recorded and reported, never left blank.
+	evidence, evidenceDone := context.WithTimeout(context.Background(), 20*time.Second)
+	after, indexErr := observeMemoryIndexes(evidence, env)
+	evidenceDone()
+	if indexErr != nil {
+		after.Error = indexErr.Error()
+	}
+	result.MemoryIndexEvidence.AfterAnswer = after
 	result.Calls = AttributeCalls(ledger.Calls(), result.Audit.Answered)
 	var usageErr error
 	result.UsageByRole, usageErr = SummarizeCalls(result.Calls)
 	for _, c := range result.Calls {
 		result.Audit.Calls = append(result.Audit.Calls, BackgroundCall{Role: c.Role, Started: c.Started})
 	}
-	result.Audit.Complete = resultErr == nil && barrierErr == nil && stopErr == nil && stoppedErr == nil && err == nil && usageErr == nil && ledger.Complete()
-	resultErr = errors.Join(resultErr, requestErr, barrierErr, err, stopErr, stoppedErr, usageErr, result.Audit.ValidateBackground())
+	result.Audit.Complete = resultErr == nil && barrierErr == nil && stopErr == nil && stoppedErr == nil && err == nil && indexErr == nil && usageErr == nil && ledger.Complete()
+	resultErr = errors.Join(resultErr, requestErr, barrierErr, err, indexErr, stopErr, stoppedErr, usageErr, result.Audit.ValidateBackground())
 	result.BackgroundAudit.Valid = resultErr == nil
 	return result, resultErr
 }
