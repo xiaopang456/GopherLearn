@@ -246,9 +246,11 @@ const knowledgeIndexFamilyName = "knowledge"
 // audit the manual index tooling uses, so the startup report and that tool can
 // never disagree about whether an index is sound.
 //
-// It reads and nothing more: FT._LIST for whether the index exists, FT.INFO
-// for what it says about itself. It creates no index and changes no key, and
-// it does not requeue a document.
+// It reads and changes nothing: FT._LIST for whether the index exists, FT.INFO
+// for what the index says about itself, and the HASH keys under the family
+// prefix counted twice - the two counts are how it notices that the index and
+// the keys moved apart while the audit was running. It creates no index and
+// requeues no document.
 type KnowledgeIndexChecker struct {
 	Client *redisCli.Client
 }

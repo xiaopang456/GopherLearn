@@ -161,10 +161,11 @@ func buildKnowledgeRuntime(ctx context.Context, conf *config.Config, deps Depend
 
 // startupIndexAuditTimeout bounds the startup comparison.
 //
-// The comparison walks the whole knowledge index, so it can take a while on a
-// large corpus. The bound keeps a slow comparison from turning into a slow
-// start: an audit that did not finish is reported as unfinished, and the
-// service starts anyway.
+// The comparison walks the knowledge prefix three times: once to count the
+// blocks each document holds, and twice more for the number the search index
+// reports for itself, so it can take a while on a large corpus. The bound
+// keeps a slow comparison from turning into a slow start: an audit that did
+// not finish is logged and recorded as failed, and the service starts anyway.
 const startupIndexAuditTimeout = 2 * time.Minute
 
 // runStartupIndexAudit compares the knowledge record with the knowledge index
