@@ -78,7 +78,11 @@ type DatabaseLayeredSummaryProvider struct {
 	reader    SummarySegmentReader
 	preselect *SummarySegmentPreselector
 	recent    SummarySegmentRecentUse
-	resident  int
+	// migrate converts a session the old path summarised into the new
+	// tables. It is optional: without it an old session waits for the
+	// background to write its first segment.
+	migrate  SummarySegmentMigration
+	resident int
 }
 
 // NewDatabaseLayeredSummaryProvider builds the reader.
@@ -105,6 +109,18 @@ func (p *DatabaseLayeredSummaryProvider) UseRecentUse(recent SummarySegmentRecen
 	p.recent = recent
 }
 
+// UseMigrator attaches the conversion of an old summary into the new tables.
+//
+// It is a setter rather than a constructor argument because the conversion
+// is a deployment's business: a deployment that has never run the old path
+// has nothing to convert.
+func (p *DatabaseLayeredSummaryProvider) UseMigrator(migrator SummarySegmentMigration) {
+	if p == nil {
+		return
+	}
+	p.migrate = migrator
+}
+
 // LayeredSummary reads the board, the resident segments and the segments this
 // question is about.
 //
@@ -123,6 +139,30 @@ func (p *DatabaseLayeredSummaryProvider) LayeredSummary(ctx context.Context, inp
 	if err != nil && !errors.Is(err, model.ErrWhiteboardNotFound) {
 		return snapshot, fmt.Errorf("load session whiteboard: %w", err)
 	}
+	resident, err := p.reader.ListLatestSummarySegments(ctx, input.UserID, input.SessionID, p.resident)
+	if err != nil {
+		return snapshot, fmt.Errorf("load resident summary segments: %w", err)
+	}
+	// A session the old path summarised has neither a board nor a segment.
+	// Converting it here gives it the same shape as a new one, and the turn
+	// does not have to wait for the background to catch up.
+	if p.migrate != nil && (board == nil || len(resident) == 0) {
+		converted, migrateErr := p.migrate.Migrate(ctx, input)
+		if migrateErr != nil {
+			// The conversion is an optimisation over a conversation that is
+			// still there. A failure costs the board and the first segment,
+			// and the turn goes on with the raw conversation.
+			log.Printf("[agent-context] summary segment migration failed: session=%s error_type=%T",
+				input.SessionID, migrateErr)
+		} else if converted {
+			if reread, readErr := p.reader.GetWhiteboard(ctx, input.UserID, input.SessionID); readErr == nil {
+				board = reread
+			}
+			if reread, readErr := p.reader.ListLatestSummarySegments(ctx, input.UserID, input.SessionID, p.resident); readErr == nil {
+				resident = reread
+			}
+		}
+	}
 	if board != nil {
 		snapshot.Board = board
 		document, decodeErr := model.DecodeSessionWhiteboardDocument(board.Content)
@@ -138,10 +178,6 @@ func (p *DatabaseLayeredSummaryProvider) LayeredSummary(ctx context.Context, inp
 		return snapshot, fmt.Errorf("load summary segment watermark: %w", err)
 	}
 	snapshot.CoveredMessageID = watermark
-	resident, err := p.reader.ListLatestSummarySegments(ctx, input.UserID, input.SessionID, p.resident)
-	if err != nil {
-		return snapshot, fmt.Errorf("load resident summary segments: %w", err)
-	}
 	snapshot.Resident = resident
 	if err := p.addRecentUse(ctx, input, &snapshot); err != nil {
 		// The recent-use record is a memory, not a source of truth: losing it
