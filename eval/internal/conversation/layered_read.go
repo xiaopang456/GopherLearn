@@ -389,6 +389,11 @@ type batchOutcome struct {
 	FirstFailures int            `json:"first_failures"`
 	FinalFailures int            `json:"final_failures"`
 	Reasons       map[string]int `json:"reasons,omitempty"`
+	// RetryDelaySeconds is the wait the driver used between attempts, taken
+	// from the worker's own setting. It is recorded because a failure rate
+	// measured with immediate retries is a different number from one measured
+	// on the worker's schedule, and a reader cannot tell them apart otherwise.
+	RetryDelaySeconds int `json:"retry_delay_seconds"`
 	// RawFailures keeps what the writer answered on the batches that never
 	// parsed. One batch is enough to tell the failure apart; a list makes the
 	// same failure arriving twice visible instead of averaging it away.
@@ -417,6 +422,24 @@ func segmentFailureLabel(err error) string {
 		return "invalid_output"
 	default:
 		return "other"
+	}
+}
+
+// waitBeforeRetry is the worker's RetryDelay, honoured by the driver.
+//
+// It returns the context's error when the run is being torn down, so a
+// cancelled run does not spend its remaining budget sleeping.
+func waitBeforeRetry(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 
@@ -450,6 +473,13 @@ type recordingChatModel struct {
 
 func (m *recordingChatModel) Generate(ctx context.Context, input []*schema.Message,
 	opts ...modelcomponent.Option) (*schema.Message, error) {
+	// The body is cleared before the call, not after it. A call that fails
+	// without returning a message - a timeout, a refused connection - has no
+	// body, and keeping the previous one would file the last batch's answer as
+	// this batch's evidence.
+	m.mu.Lock()
+	m.last = ""
+	m.mu.Unlock()
 	out, err := m.inner.Generate(ctx, input, opts...)
 	if out != nil {
 		m.mu.Lock()
@@ -514,6 +544,13 @@ func seedLayeredState(ctx context.Context, s *Sandbox, messages []model.Message,
 	whiteboard := ""
 	previous := ""
 	seq := 0
+	// The product's worker does not retry at once: it parks the job until
+	// now + RetryDelay and comes back to it. The wait is part of the policy -
+	// a provider that timed out or dropped the connection is being given room,
+	// not asked the same question twice in a row - so a driver that retried
+	// immediately would be measuring a schedule the product never runs.
+	retryDelay := time.Duration(agentConfig.SummarySegmentRetryDelaySeconds) * time.Second
+	outcome.RetryDelaySeconds = agentConfig.SummarySegmentRetryDelaySeconds
 	for start := 0; start < len(messages); {
 		end := start + agentConfig.SummarySegmentMaxMessages
 		if end > len(messages) {
@@ -529,6 +566,9 @@ func seedLayeredState(ctx context.Context, s *Sandbox, messages []model.Message,
 		for attempt := 0; attempt < retryBudget; attempt++ {
 			if attempt > 0 {
 				outcome.Retries++
+				if err := waitBeforeRetry(ctx, retryDelay); err != nil {
+					break
+				}
 			}
 			result, batchErr = generator.GenerateSegment(ctx, agent.SegmentGenerationInput{
 				Whiteboard: whiteboard, PreviousSegment: previous, Messages: batch,
