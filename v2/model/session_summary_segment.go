@@ -31,6 +31,9 @@ const (
 	// SessionSummarySegmentTermLimit is how many names or numbers one segment
 	// may list for exact retrieval.
 	SessionSummarySegmentTermLimit = 32
+
+	// SessionSummarySegmentTermMaxRunes bounds one name or number.
+	SessionSummarySegmentTermMaxRunes = 100
 )
 
 // Index states of a segment's derived search vector.
@@ -60,6 +63,14 @@ type SessionSummarySegmentContent struct {
 	Points        []SessionSummarySegmentPoint `json:"points"`
 	Names         []string                     `json:"names,omitempty"`
 	Numbers       []string                     `json:"numbers,omitempty"`
+	// MigratedFromVersion is the version of the old rolling summary this
+	// segment was built from, and it is zero for a segment the new path
+	// generated.
+	//
+	// The first segment of a converted session is the old summary's content
+	// as text, and the version is what says which revision of that summary
+	// it was.
+	MigratedFromVersion uint64 `json:"migrated_from_version,omitempty"`
 }
 
 // SessionSummarySegmentChange records that a segment changed one board entry.
@@ -202,7 +213,7 @@ func (c SessionSummarySegmentContent) Validate() error {
 		return fmt.Errorf("summary segment has too many numbers")
 	}
 	for _, term := range append(append([]string{}, c.Names...), c.Numbers...) {
-		if len([]rune(strings.TrimSpace(term))) > 100 {
+		if len([]rune(strings.TrimSpace(term))) > SessionSummarySegmentTermMaxRunes {
 			return fmt.Errorf("summary segment term is too long")
 		}
 	}

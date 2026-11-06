@@ -21,6 +21,13 @@ type fakeSegmentReader struct {
 	segments  []model.SessionSummarySegment
 	watermark uint
 	boardErr  error
+	// segmentErr fails the read of the segment list.
+	segmentErr error
+	// onSegmentRead runs before each read of the segment list, so a test can
+	// make the store change under the reader.
+	onSegmentRead func(read int)
+	// segmentReads counts the reads of the segment list.
+	segmentReads int
 }
 
 func (f *fakeSegmentReader) GetWhiteboard(_ context.Context, _ int64, _ string) (*model.SessionWhiteboard, error) {
@@ -31,6 +38,13 @@ func (f *fakeSegmentReader) GetWhiteboard(_ context.Context, _ int64, _ string) 
 }
 
 func (f *fakeSegmentReader) ListLatestSummarySegments(_ context.Context, _ int64, _ string, limit int) ([]model.SessionSummarySegment, error) {
+	f.segmentReads++
+	if f.onSegmentRead != nil {
+		f.onSegmentRead(f.segmentReads)
+	}
+	if f.segmentErr != nil {
+		return nil, f.segmentErr
+	}
 	if limit <= 0 || limit > len(f.segments) {
 		limit = len(f.segments)
 	}
@@ -267,11 +281,33 @@ func TestASupersededValueIsMarkedAndTheOldValueStays(t *testing.T) {
 // The segments are the compression in this mode, so the messages they cover
 // must not be sent again as raw text.
 func TestTheRawConversationStartsWhereTheSegmentsStop(t *testing.T) {
-	reader := &fakeSegmentReader{watermark: 60}
+	// The segment that reaches the watermark is what carries the coverage,
+	// so the store has to hold it: a watermark with no segment behind it is
+	// a state the store cannot be in.
+	reader := &fakeSegmentReader{
+		segments:  []model.SessionSummarySegment{testSegment(t, 1, 0, 60, "话题", nil, nil)},
+		watermark: 60,
+	}
 	history := &fakeHistoryReader{messages: []model.Message{{ID: 61, IsUser: true, Content: "还在的原文"}}}
 	buildLayeredWindow(t, reader, history, nil, nil)
 	if history.afterID != 60 {
 		t.Fatalf("the raw conversation starts after %d, want 60", history.afterID)
+	}
+}
+
+// A watermark the segments do not carry is not believed.
+//
+// The watermark says how far the summary reaches, and the raw messages below
+// it are dropped from the window. A watermark without the segment that
+// reaches it would drop a stretch of the conversation without putting
+// anything in its place, so nothing is claimed as covered and the raw
+// conversation is kept.
+func TestAWatermarkTheSegmentsDoNotCarryIsNotBelieved(t *testing.T) {
+	reader := &fakeSegmentReader{watermark: 60}
+	history := &fakeHistoryReader{messages: []model.Message{{ID: 61, IsUser: true, Content: "还在的原文"}}}
+	buildLayeredWindow(t, reader, history, nil, nil)
+	if history.afterID != 0 {
+		t.Fatalf("the raw conversation starts after %d, want nothing covered", history.afterID)
 	}
 }
 

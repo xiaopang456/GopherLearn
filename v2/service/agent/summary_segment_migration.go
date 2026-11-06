@@ -55,7 +55,13 @@ type LegacySummaryReader interface {
 // it unset.
 type SummarySegmentMigration interface {
 	// Migrate converts the session's old summary if it has one and the new
-	// tables are empty. It reports whether it converted anything.
+	// tables are empty.
+	//
+	// It reports whether the session's new state may have changed, so the
+	// caller knows whether it has to read the state again. A conversion that
+	// wrote changed it, and so did a conversion that lost the race to a
+	// writer that wrote. A session that had nothing to convert leaves the
+	// state where it was.
 	Migrate(ctx context.Context, input RunContext) (bool, error)
 }
 
@@ -79,7 +85,8 @@ func NewSummarySegmentMigrator(reader SummarySegmentReader, legacy LegacySummary
 // Migrate converts the session's old summary if it has one and the new
 // tables are empty.
 //
-// It reports whether it converted anything. A session that already has a
+// It reports whether the session's new state may have changed, so the caller
+// knows whether it has to read the state again. A session that already has a
 // board or a segment is left alone: the new path owns it now.
 func (m *SummarySegmentMigrator) Migrate(ctx context.Context, input RunContext) (bool, error) {
 	if m == nil || m.reader == nil || m.legacy == nil || m.writer == nil {
@@ -124,7 +131,7 @@ func (m *SummarySegmentMigrator) Migrate(ctx context.Context, input RunContext) 
 			input.SessionID, err)
 		return false, nil
 	}
-	boardDocument, segmentContent, ok := ConvertLegacySummary(document, summary.CoveredMessageID)
+	boardDocument, segmentContent, ok := ConvertLegacySummary(document, summary.CoveredMessageID, summary.Version)
 	if !ok {
 		return false, nil
 	}
@@ -158,10 +165,10 @@ func (m *SummarySegmentMigrator) Migrate(ctx context.Context, input RunContext) 
 	}
 	// The board has no version yet, so the write expects version zero. A
 	// writer that won the race is not an error: its board is the one that
-	// counts.
+	// counts, and the state has changed, so the caller reads it again.
 	if err := m.writer.SaveSummarySegmentAndWhiteboard(ctx, segment, board, 0); err != nil {
 		if errors.Is(err, ErrSummarySegmentWhiteboardConflict) {
-			return false, nil
+			return true, nil
 		}
 		return false, fmt.Errorf("write migrated summary segment: %w", err)
 	}
@@ -189,17 +196,20 @@ func (m *SummarySegmentMigrator) Migrate(ctx context.Context, input RunContext) 
 // The groups are trimmed to what the new tables allow. A group that reaches
 // its limit keeps its newest entries, because the newest is what the learner
 // is most likely to ask about.
-func ConvertLegacySummary(document model.SessionSummaryDocument, coveredMessageID uint) (model.SessionWhiteboardDocument, model.SessionSummarySegmentContent, bool) {
-	board := model.SessionWhiteboardDocument{SchemaVersion: model.SessionWhiteboardSchemaV1}
+func ConvertLegacySummary(document model.SessionSummaryDocument, coveredMessageID uint, migratedFromVersion uint64) (model.SessionWhiteboardDocument, model.SessionSummarySegmentContent, bool) {
+	board := model.SessionWhiteboardDocument{
+		SchemaVersion: model.SessionWhiteboardSchemaV1, MigratedFromVersion: migratedFromVersion,
+	}
 	segment := model.SessionSummarySegmentContent{
 		SchemaVersion: model.SessionSummarySegmentSchemaV1, Topic: "历史摘要",
+		MigratedFromVersion: migratedFromVersion,
 	}
 	if goal := strings.TrimSpace(document.CurrentGoal); goal != "" {
 		board.Goal = &model.SessionWhiteboardGoal{
 			Text:               boundLegacyText(goal),
 			UpdatedAtMessageID: coveredMessageID,
 		}
-		segment.Points = append(segment.Points, model.SessionSummarySegmentPoint{Text: boundLegacyText(goal)})
+		segment.Points = append(segment.Points, model.SessionSummarySegmentPoint{Text: boundLegacyPointText(goal)})
 	}
 	for index, decision := range document.ConfirmedDecisions {
 		text := strings.TrimSpace(decision.Text)
@@ -209,11 +219,12 @@ func ConvertLegacySummary(document model.SessionSummaryDocument, coveredMessageI
 		board.Constraints = append(board.Constraints, model.SessionWhiteboardEntry{
 			Key:                fmt.Sprintf("decision.%d", index+1),
 			Text:               boundLegacyText(text),
-			SourceMessageIDs:   decision.EvidenceMessageIDs,
+			SourceMessageIDs:   boundLegacyEvidence(decision.EvidenceMessageIDs, model.SessionWhiteboardEvidenceLimit),
 			UpdatedAtMessageID: maxLegacyMessageID(decision.EvidenceMessageIDs),
 		})
 		segment.Points = append(segment.Points, model.SessionSummarySegmentPoint{
-			Text: boundLegacyText(text), EvidenceMessageIDs: decision.EvidenceMessageIDs,
+			Text:               boundLegacyPointText(text),
+			EvidenceMessageIDs: boundLegacyEvidence(decision.EvidenceMessageIDs, model.SessionSummaryEvidenceLimit),
 		})
 	}
 	for index, correction := range document.UserCorrections {
@@ -224,11 +235,12 @@ func ConvertLegacySummary(document model.SessionSummaryDocument, coveredMessageI
 		board.Constraints = append(board.Constraints, model.SessionWhiteboardEntry{
 			Key:                fmt.Sprintf("correction.%d", index+1),
 			Text:               boundLegacyText(text),
-			SourceMessageIDs:   correction.EvidenceMessageIDs,
+			SourceMessageIDs:   boundLegacyEvidence(correction.EvidenceMessageIDs, model.SessionWhiteboardEvidenceLimit),
 			UpdatedAtMessageID: maxLegacyMessageID(correction.EvidenceMessageIDs),
 		})
 		segment.Points = append(segment.Points, model.SessionSummarySegmentPoint{
-			Text: boundLegacyText(text), EvidenceMessageIDs: correction.EvidenceMessageIDs,
+			Text:               boundLegacyPointText(text),
+			EvidenceMessageIDs: boundLegacyEvidence(correction.EvidenceMessageIDs, model.SessionSummaryEvidenceLimit),
 		})
 	}
 	for _, item := range document.CompletedItems {
@@ -239,7 +251,7 @@ func ConvertLegacySummary(document model.SessionSummaryDocument, coveredMessageI
 		board.Plan = append(board.Plan, model.SessionWhiteboardEntry{
 			Text: boundLegacyText(text), State: "done",
 		})
-		segment.Points = append(segment.Points, model.SessionSummarySegmentPoint{Text: boundLegacyText(text)})
+		segment.Points = append(segment.Points, model.SessionSummarySegmentPoint{Text: boundLegacyPointText(text)})
 	}
 	for _, loop := range document.OpenLoops {
 		text := strings.TrimSpace(loop.Text)
@@ -248,11 +260,12 @@ func ConvertLegacySummary(document model.SessionSummaryDocument, coveredMessageI
 		}
 		board.OpenItems = append(board.OpenItems, model.SessionWhiteboardEntry{
 			Text:               boundLegacyText(text),
-			SourceMessageIDs:   loop.EvidenceMessageIDs,
+			SourceMessageIDs:   boundLegacyEvidence(loop.EvidenceMessageIDs, model.SessionWhiteboardEvidenceLimit),
 			UpdatedAtMessageID: maxLegacyMessageID(loop.EvidenceMessageIDs),
 		})
 		segment.Points = append(segment.Points, model.SessionSummarySegmentPoint{
-			Text: boundLegacyText(text), EvidenceMessageIDs: loop.EvidenceMessageIDs,
+			Text:               boundLegacyPointText(text),
+			EvidenceMessageIDs: boundLegacyEvidence(loop.EvidenceMessageIDs, model.SessionSummaryEvidenceLimit),
 		})
 	}
 	for index, item := range document.KeyErrors {
@@ -263,10 +276,10 @@ func ConvertLegacySummary(document model.SessionSummaryDocument, coveredMessageI
 		board.OpenItems = append(board.OpenItems, model.SessionWhiteboardEntry{
 			Key: fmt.Sprintf("error.%d", index+1), Text: boundLegacyText(text),
 		})
-		segment.Points = append(segment.Points, model.SessionSummarySegmentPoint{Text: boundLegacyText(text)})
+		segment.Points = append(segment.Points, model.SessionSummarySegmentPoint{Text: boundLegacyPointText(text)})
 	}
 	for _, reference := range document.References {
-		if text := strings.TrimSpace(reference); text != "" {
+		if text := boundLegacyTerm(reference); text != "" {
 			segment.Names = append(segment.Names, text)
 		}
 	}
@@ -291,12 +304,69 @@ func ConvertLegacySummary(document model.SessionSummaryDocument, coveredMessageI
 	return board, segment, true
 }
 
-// boundLegacyText shortens one text to what a table accepts.
+// boundLegacyText shortens one text to what a board entry accepts.
 func boundLegacyText(text string) string {
-	text = strings.TrimSpace(text)
+	return boundRunes(strings.TrimSpace(text), model.SessionWhiteboardTextMaxRunes)
+}
+
+// boundLegacyPointText shortens one text to what a segment point accepts.
+//
+// A point is allowed to be longer than a board entry: the board holds what
+// is true now and the point holds the text of it, so the point is where the
+// longer wording still fits.
+func boundLegacyPointText(text string) string {
+	return boundRunes(strings.TrimSpace(text), model.SessionSummarySegmentPointMaxRunes)
+}
+
+// boundLegacyTerm shortens one name to what a segment accepts.
+//
+// The old summary let a reference be a thousand characters and a segment
+// term is a hundred, so a long reference has to be cut rather than dropped:
+// the document it names is still worth having in the segment.
+func boundLegacyTerm(text string) string {
+	return boundRunes(strings.TrimSpace(text), model.SessionSummarySegmentTermMaxRunes)
+}
+
+// boundLegacyEvidence keeps the evidence a new table accepts.
+//
+// The old summary let one item cite thirty two messages and a board entry
+// cites eight, so the citation has to be cut. The newest are kept: they are
+// the ones closest to what the session had reached. A zero is dropped and a
+// duplicate is dropped, because the new tables refuse both and a refused
+// board is a board that was never written.
+func boundLegacyEvidence(ids []uint, limit int) []uint {
+	if len(ids) == 0 || limit <= 0 {
+		return nil
+	}
+	kept := make([]uint, 0, len(ids))
+	seen := make(map[uint]struct{}, len(ids))
+	for index := len(ids) - 1; index >= 0 && len(kept) < limit; index-- {
+		id := ids[index]
+		if id == 0 {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		kept = append(kept, id)
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	// The ids were collected newest first, and they read better in the order
+	// the session produced them.
+	for left, right := 0, len(kept)-1; left < right; left, right = left+1, right-1 {
+		kept[left], kept[right] = kept[right], kept[left]
+	}
+	return kept
+}
+
+// boundRunes shortens a text to a rune count.
+func boundRunes(text string, limit int) string {
 	runes := []rune(text)
-	if len(runes) > model.SessionWhiteboardTextMaxRunes {
-		return string(runes[:model.SessionWhiteboardTextMaxRunes])
+	if len(runes) > limit {
+		return string(runes[:limit])
 	}
 	return text
 }
