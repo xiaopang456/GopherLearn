@@ -639,7 +639,8 @@ func main() {
 		// archived. With no reader wired the tool refuses every episode grant rather
 		// than trusting the render.
 		historyTools.UseEpisodeEvidenceReader(agentTool.EpisodeEvidenceReaderFunc(
-			func(ctx context.Context, userID int64, episodeID string) (agentTool.EpisodeEvidenceFacts, error) {				episode, err := episodeDAO.DefaultRepository().GetByID(ctx, userID, episodeID)
+			func(ctx context.Context, userID int64, episodeID string) (agentTool.EpisodeEvidenceFacts, error) {
+				episode, err := episodeDAO.DefaultRepository().GetByID(ctx, userID, episodeID)
 				if err != nil {
 					if errors.Is(err, episodeDAO.ErrEpisodeNotFound) {
 						return agentTool.EpisodeEvidenceFacts{},
@@ -784,16 +785,16 @@ func main() {
 		ModelWindowTokens: conf.AgentConfig.ContextModelWindowTokens, InputTargetTokens: conf.AgentConfig.ContextInputTargetTokens,
 		OutputReserveTokens: conf.AgentConfig.ContextOutputReserveTokens, EvidenceReserve: conf.AgentConfig.KnowledgeMaxRunTokens,
 		MaxGlobalUserMemoryTokens: conf.AgentConfig.ContextMaxGlobalUserMemoryTokens, MaxTopicUserMemoryTokens: conf.AgentConfig.ContextMaxTopicUserMemoryTokens,
-		MaxSummaryTokens:  conf.AgentConfig.ContextMaxSummaryTokens,
-		MaxMasteryTokens:  conf.AgentConfig.ContextMaxMasteryTokens,
-		MaxEpisodeTokens:  conf.AgentConfig.ContextMaxEpisodeTokens,
-		MaxWhiteboardTokens: agentService.DefaultWhiteboardTokens,
-		MaxResidentSegmentTokens: agentService.DefaultResidentSegmentTokens,
+		MaxSummaryTokens:          conf.AgentConfig.ContextMaxSummaryTokens,
+		MaxMasteryTokens:          conf.AgentConfig.ContextMaxMasteryTokens,
+		MaxEpisodeTokens:          conf.AgentConfig.ContextMaxEpisodeTokens,
+		MaxWhiteboardTokens:       agentService.DefaultWhiteboardTokens,
+		MaxResidentSegmentTokens:  agentService.DefaultResidentSegmentTokens,
 		MaxRetrievedSegmentTokens: agentService.DefaultRetrievedSegmentTokens,
-		MaxSegmentTokens: agentService.DefaultSegmentTokens,
-		EpisodeRecallMode: agentService.EpisodeRecallMode(conf.AgentConfig.EpisodeRecallMode),
-		HistoryFetchLimit: conf.AgentConfig.ContextHistoryFetchLimit,
-		MemoryReadMode:    memoryReadMode,
+		MaxSegmentTokens:          agentService.DefaultSegmentTokens,
+		EpisodeRecallMode:         agentService.EpisodeRecallMode(conf.AgentConfig.EpisodeRecallMode),
+		HistoryFetchLimit:         conf.AgentConfig.ContextHistoryFetchLimit,
+		MemoryReadMode:            memoryReadMode,
 	}, message.DefaultRepository(), learningTaskState, masteryProvider, agentService.MemoryProviderFunc(func(ctx context.Context, input agentService.RunContext) (agentService.MemoryRecall, error) {
 		recalled, err := memoryRetriever.RelevantMemories(ctx, memoryService.RecallRequest{
 			UserID: input.UserID, SessionID: input.SessionID, Question: input.Question,
