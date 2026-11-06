@@ -73,7 +73,7 @@ describe('optimistic transcript', () => {
   it('appends the question and a placeholder before the response arrives', async () => {
     streamScript = scriptedStream([
       sseFrame('message.started', { message_id: 'a-1' }),
-      sseFrame('message.delta', { message_id: 'a-1', delta: '你好' }),
+      sseFrame('message.delta', { message_id: 'a-1', content: '你好' }),
       sseFrame('message.completed', { message_id: 'a-1' }),
     ])
 
@@ -120,13 +120,16 @@ describe('optimistic transcript', () => {
   })
 })
 
-describe('SSE delta assembly', () => {
-  it('concatenates every delta into the current placeholder only', async () => {
+describe('SSE snapshot assembly', () => {
+  it('puts the newest snapshot on the current placeholder only', async () => {
     const pieces = ['Gopher', 'Learn ', '是一个', '学习助手', '\n第二行']
+    // What the server actually sends: each frame is the answer so far, not the piece
+    // that just arrived, so the last one is the whole text.
+    const snapshots = pieces.map((_, index) => pieces.slice(0, index + 1).join(''))
     streamScript = scriptedStream([
       sseFrame('message.started', { message_id: 'a-9' }),
-      ...pieces.map((delta) =>
-        sseFrame('message.delta', { message_id: 'a-9', delta }),
+      ...snapshots.map((content) =>
+        sseFrame('message.delta', { message_id: 'a-9', content }),
       ),
       sseFrame('message.completed', { message_id: 'a-9' }),
     ])
@@ -150,7 +153,7 @@ describe('SSE delta assembly', () => {
   })
 
   it('reassembles a multi-byte character split across network chunks', async () => {
-    const frame = sseFrame('message.delta', { delta: '数据流' })
+    const frame = sseFrame('message.delta', { content: '数据流' })
     const encoded = new TextEncoder().encode(frame)
     // Cut in the middle of a 3-byte sequence.
     const split = encoded.indexOf(0xe6) + 1
@@ -169,7 +172,7 @@ describe('SSE failure keeps the question', () => {
   it('marks only the assistant turn as failed and shows the server reason', async () => {
     streamScript = scriptedStream([
       sseFrame('message.started', { message_id: 'a-1' }),
-      sseFrame('message.delta', { message_id: 'a-1', delta: '写了一半' }),
+      sseFrame('message.delta', { message_id: 'a-1', content: '写了一半' }),
       sseFrame('message.failed', {
         message_id: 'a-1',
         code: 'invalid_request',
@@ -213,7 +216,7 @@ describe('SSE failure keeps the question', () => {
 
   it('fails the turn when the socket closes without a terminal event', async () => {
     streamScript = scriptedStream([
-      sseFrame('message.delta', { delta: '半句话' }),
+      sseFrame('message.delta', { content: '半句话' }),
     ])
 
     const chat = useChat()
@@ -246,14 +249,14 @@ describe('SSE failure keeps the question', () => {
 describe('a completed answer is final', () => {
   it('ignores a failure that arrives after message.completed', async () => {
     streamScript = scriptedStream([
-      sseFrame('message.delta', { message_id: 'a-1', delta: '完整答案' }),
+      sseFrame('message.delta', { message_id: 'a-1', content: '完整答案' }),
       sseFrame('message.completed', { message_id: 'a-1' }),
       sseFrame('message.failed', {
         message_id: 'a-1',
         code: 'internal_error',
         message: 'late failure',
       }),
-      sseFrame('message.delta', { message_id: 'a-1', delta: 'TRAILING' }),
+      sseFrame('message.delta', { message_id: 'a-1', content: 'TRAILING' }),
     ])
 
     const chat = useChat()
@@ -283,8 +286,8 @@ describe('a completed answer is final', () => {
   it('drops events that name a different assistant message', async () => {
     streamScript = scriptedStream([
       sseFrame('message.started', { message_id: 'mine' }),
-      sseFrame('message.delta', { message_id: 'mine', delta: '我的答案' }),
-      sseFrame('message.delta', { message_id: 'someone-elses-run', delta: '污染' }),
+      sseFrame('message.delta', { message_id: 'mine', content: '我的答案' }),
+      sseFrame('message.delta', { message_id: 'someone-elses-run', content: '污染' }),
       sseFrame('message.completed', { message_id: 'mine' }),
     ])
 
@@ -300,7 +303,7 @@ describe('a completed answer is final', () => {
 describe('cancellation', () => {
   it('aborts the request and keeps the partial answer visible', async () => {
     streamScript = (_body, signal) =>
-      abortableSSEResponse([sseFrame('message.delta', { delta: '正在写' })], signal)
+      abortableSSEResponse([sseFrame('message.delta', { content: '正在写' })], signal)
 
     const chat = useChat()
     chat.activeId.value = 's-1'
@@ -433,7 +436,7 @@ describe('session and history loading', () => {
 
   it('aborts an in-flight answer before switching sessions', async () => {
     streamScript = (_body, signal) =>
-      abortableSSEResponse([sseFrame('message.delta', { delta: '旧会话' })], signal)
+      abortableSSEResponse([sseFrame('message.delta', { content: '旧会话' })], signal)
     const chat = useChat()
     chat.activeId.value = 's-1'
     const pending = chat.send('问题')

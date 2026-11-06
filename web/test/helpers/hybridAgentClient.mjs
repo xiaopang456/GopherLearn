@@ -4,7 +4,6 @@ import process from 'node:process'
 import { useChat } from '../../src/composables/useChat.js'
 import { setTokenProvider } from '../../src/api/http.js'
 import { createSession } from '../../src/api/sessions.js'
-import { streamMessage } from '../../src/api/stream.js'
 
 const base = process.env.HYBRID_TEST_URL
 const nativeFetch = globalThis.fetch
@@ -36,7 +35,26 @@ assert.equal(history[0].content, reply.content)
 // Reuse the original creation operation through the actual API, without minting
 // a new operation key on the caller's behalf; send replay is tested server-side.
 const ordinary = await createSession({ mode: 'chat', title: '普通回归' })
-const events = []
-await streamMessage({ sessionId: ordinary.id, content: '普通问题', onEvent: (event) => events.push(event) })
-assert.ok(events.some((event) => event.kind === 'completed'))
-console.log(JSON.stringify({ agent, runId: reply.runId, messageId: responseId, content: reply.content, historyCount: history.length, ordinaryCompleted: true }))
+// A conversation turn now arrives on the same frames an Agent turn does, and its answer
+// is one validated snapshot that message.completed then restates. Rendered through the
+// real composable rather than a hand-rolled listener, so what this proves is the text a
+// learner would see: once. Under the old append rule the restatement doubled it.
+chat.closeSession()
+await chat.openSession(ordinary.id)
+await chat.send('普通问题')
+const ordinaryReply = chat.messages.value.at(-1)
+assert.equal(ordinaryReply.status, 'done')
+assert.equal(ordinaryReply.content, '你好，公开片段')
+assert.equal(typeof ordinaryReply.serverId, 'string')
+assert.ok(ordinaryReply.runId, 'a conversation turn published no run identity')
+console.log(JSON.stringify({
+  agent,
+  runId: reply.runId,
+  messageId: responseId,
+  content: reply.content,
+  historyCount: history.length,
+  ordinary: ordinary.id,
+  ordinaryRunId: ordinaryReply.runId,
+  ordinaryContent: ordinaryReply.content,
+  ordinaryCompleted: true,
+}))

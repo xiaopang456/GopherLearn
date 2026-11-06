@@ -62,8 +62,8 @@ describe('server run identity end to end', () => {
     pushStream(
       frames([
         sseFrame('message.started', { run_id: RUN, message_id: MSG }),
-        sseFrame('message.delta', { run_id: RUN, message_id: MSG, delta: '服务端 ' }),
-        sseFrame('message.delta', { run_id: RUN, message_id: MSG, delta: '带身份' }),
+        sseFrame('message.delta', { run_id: RUN, message_id: MSG, content: '服务端 ' }),
+        sseFrame('message.delta', { run_id: RUN, message_id: MSG, content: '服务端 带身份' }),
         sseFrame('message.completed', { run_id: RUN, message_id: MSG }),
       ]),
     )
@@ -87,8 +87,8 @@ describe('server run identity end to end', () => {
     pushStream(
       frames([
         sseFrame('message.started', { run_id: 'run-A' }),
-        sseFrame('message.delta', { run_id: 'run-A', delta: '甲' }),
-        sseFrame('message.delta', { run_id: 'run-B', delta: '污染' }),
+        sseFrame('message.delta', { run_id: 'run-A', content: '甲' }),
+        sseFrame('message.delta', { run_id: 'run-B', content: '污染' }),
         sseFrame('message.completed', { run_id: 'run-A' }),
       ]),
     )
@@ -106,7 +106,7 @@ describe('server run identity end to end', () => {
     pushStream(
       frames([
         sseFrame('message.started', {}),
-        sseFrame('message.delta', { delta: '无 id' }),
+        sseFrame('message.delta', { content: '无 id' }),
         sseFrame('message.completed', {}),
       ]),
     )
@@ -145,7 +145,7 @@ describe('server run identity end to end', () => {
     await settle()
 
     // Frames already in flight when the user pressed stop.
-    orphan.push(sseFrame('message.delta', { run_id: 'srv-1', delta: '迟到的污染' }))
+    orphan.push(sseFrame('message.delta', { run_id: 'srv-1', content: '迟到的污染' }))
     orphan.push(
       sseFrame('message.completed', { run_id: 'srv-1', content: '迟到的完成' }),
     )

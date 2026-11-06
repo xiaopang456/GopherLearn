@@ -75,8 +75,8 @@ function run(phase) {
   return abortRun(state)
 }
 
-function streaming(delta) {
-  return { kind: 'delta', delta, runId: '', messageId: 'a-1' }
+function streaming(content) {
+  return { kind: 'delta', content, runId: '', messageId: 'a-1' }
 }
 
 describe('deriveAgentStage maps the existing state machine', () => {
@@ -260,7 +260,7 @@ describe('the agent stage follows the four SSE events through useChat', () => {
   it('walks none -> waiting -> generating -> completed', async () => {
     serve([
       sseFrame('message.started', { message_id: 'a-1' }),
-      sseFrame('message.delta', { message_id: 'a-1', delta: '先讲一半' }),
+      sseFrame('message.delta', { message_id: 'a-1', content: '先讲一半' }),
       sseFrame('message.completed', { message_id: 'a-1', content: '先讲一半，后讲一半' }),
     ])
     const chat = useChat()
@@ -277,7 +277,7 @@ describe('the agent stage follows the four SSE events through useChat', () => {
   it('reads a failed stream as the failed stage', async () => {
     serve([
       sseFrame('message.started', { message_id: 'a-1' }),
-      sseFrame('message.delta', { message_id: 'a-1', delta: '写到这' }),
+      sseFrame('message.delta', { message_id: 'a-1', content: '写到这' }),
       sseFrame('message.failed', { message_id: 'a-1', code: 'invalid_request', message: '上下文过长' }),
     ])
     const chat = useChat()
@@ -308,7 +308,7 @@ describe('the agent stage follows the four SSE events through useChat', () => {
     // Request out, nothing back yet: waiting, not "generating".
     expect(chat.agentStage.value).toBe(AgentStage.Waiting)
 
-    orphan.push(sseFrame('message.delta', { message_id: 'a-1', delta: '正在写' }))
+    orphan.push(sseFrame('message.delta', { message_id: 'a-1', content: '正在写' }))
     await settle()
     expect(chat.agentStage.value).toBe(AgentStage.Generating)
 
@@ -454,7 +454,7 @@ describe('the agent region on the real screen', () => {
 
   const DONE = [
     sseFrame('message.started', { message_id: 'a-1' }),
-    sseFrame('message.delta', { message_id: 'a-1', delta: '回答正文' }),
+    sseFrame('message.delta', { message_id: 'a-1', content: '回答正文' }),
     sseFrame('message.completed', { message_id: 'a-1', content: '回答正文' }),
   ]
 
