@@ -144,7 +144,7 @@ chatBaseURL = "https://provider.invalid/v1"          # Agent 与普通对话共�
 | 帧 | 改之前 | 现在 |
 |---|---|---|
 | `started` | `data: {}` | `data: {"run_id":"…"}` |
-| `delta` | `data: {"delta":"新增的一段"}` | `data: {"run_id":"…","content":"本轮核对过的完整回答","publication":"validated_snapshot"}` |
+| `delta` | `data: {"delta":"新增的一段"}` | `data: {"run_id":"…","content":"截至此刻的整段回答","publication":"model_stream"｜"validated_snapshot"}` |
 | `completed` | `data: {"content":"…","message_id":"2"}` | 额外带 `run_id`、`publication`，以及本轮结果 `original_v2`（含上下文用量）；引用非空时带 `sources` |
 | `failed` | 只有 `code` / `message` | 额外带 `run_id`、`native_code`、`message`；本轮有终止原因时还带 `termination_reason` |
 
@@ -152,10 +152,12 @@ chatBaseURL = "https://provider.invalid/v1"          # Agent 与普通对话共�
 所以客户端要用它**替换**已经显示的内容，不能再往后**追加**——追加会把回答显示两遍。同一帧
 重复送达、或 `completed` 再把同一份回答重述一遍，替换写法都只显示一次。
 
-还有一处是等待时间的变化，请如实告知使用者：回答要先核对引用才能发出，所以**正文首帧会等到
-本轮生成结束**才出现，不再逐段吐出；`message.started` 仍然在开始时就发出并刷新，界面照常能
-显示"正在生成"。直接对接 `/stream` 的第三方客户端需要按上面的字段改名调整；仓库里的界面客户端
-已同步改好。
+正文什么时候开始出，按这一轮有没有开启知识库分两种：**关**的一轮没有检索、没有证据，也就没有
+需要核对的引用，所以正文**边生成边发**，第一段在模型写完之前就已经送到；**开**的一轮要先核对回答
+里的引用才允许发出，所以正文首帧会等到本轮生成结束，`message.started` 仍然在开始时就发出并刷新，
+界面照常能显示"正在生成"。两种情况下每一帧都是快照，所以中途看到的文字最后被
+`message.completed` 替换一次是正常行为，不是重复输出。直接对接 `/stream` 的第三方客户端需要按
+上面的字段改名调整；仓库里的界面客户端已同步改好。
 
 ### 不需要数据库迁移
 
