@@ -50,6 +50,21 @@ func (c fakeCounter) Counts(context.Context) (map[Identity]int, []string, error)
 	return result, c.blockers, nil
 }
 
+// fakeIndexChecker is an index the test writes by hand. Its zero value is a
+// sound index: it exists and agrees with the keys under it, which is what
+// every test that is not about the index itself assumes.
+type fakeIndexChecker struct {
+	problems []string
+	err      error
+}
+
+func (c fakeIndexChecker) CheckIndexes(context.Context) ([]string, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
+	return append([]string(nil), c.problems...), nil
+}
+
 // fakeRepository records the documents that were sent back to the indexer.
 type fakeRepository struct {
 	rebuilt []string
@@ -144,6 +159,7 @@ func TestAuditReportsTheShortDocumentsAndTheRebuildCommand(t *testing.T) {
 	auditor := NewAuditor(
 		fakeSource{counts: map[Identity]int{short: 3, exact: 2}},
 		fakeCounter{counts: map[Identity]int{short: 1, exact: 2}},
+		fakeIndexChecker{},
 		nil,
 		func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) },
 	)
@@ -169,6 +185,7 @@ func TestAuditOfAnEmptyIndexReportsEveryDocument(t *testing.T) {
 			{UserID: 2, DocumentID: "second", Version: 1}: 1,
 		}},
 		fakeCounter{counts: map[Identity]int{}},
+		fakeIndexChecker{},
 		nil,
 		func(string, ...any) {},
 	)
@@ -186,6 +203,7 @@ func TestAuditKeepsTheBlockersOfAnUnreadableIndex(t *testing.T) {
 	auditor := NewAuditor(
 		fakeSource{counts: map[Identity]int{{UserID: 1, DocumentID: "doc", Version: 1}: 1}},
 		fakeCounter{counts: map[Identity]int{}, blockers: []string{"managed prefix contains a non-HASH key"}},
+		fakeIndexChecker{},
 		nil,
 		func(string, ...any) {},
 	)
@@ -207,12 +225,164 @@ func slicesContains(values []string, wanted string) bool {
 	return false
 }
 
+// The point of the index check: a dropped index deletes nothing, so the block
+// counts say every document is exactly where the record says it is, and
+// retrieval returns nothing because there is no index to search. An audit that
+// only counted keys would call that consistent.
+func TestAuditReportsAMissingIndexEvenWhenEveryBlockIsCounted(t *testing.T) {
+	t.Parallel()
+	const absent = "the search index is absent"
+	identity := Identity{UserID: 1, DocumentID: "doc", Version: 1}
+	var lines []string
+	auditor := NewAuditor(
+		fakeSource{counts: map[Identity]int{identity: 4}},
+		fakeCounter{counts: map[Identity]int{identity: 4}},
+		fakeIndexChecker{problems: []string{absent}},
+		nil,
+		func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) },
+	)
+	result, err := auditor.Run(t.Context(), ModeAudit, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.IndexProblems) != 1 || result.IndexProblems[0] != absent {
+		t.Fatalf("the missing index was not reported: %#v", result.IndexProblems)
+	}
+	if len(result.Missing) != 0 || len(result.Extra) != 0 || result.Compared != 1 {
+		t.Fatalf("a whole index changed the per-document verdict: %#v", result.Report)
+	}
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "index_problem=\"the search index is absent\"") {
+		t.Fatalf("the index problem was not written to the report: %q", joined)
+	}
+	if !strings.Contains(joined, "index_problems=1") {
+		t.Fatalf("the summary line does not count the index problems: %q", joined)
+	}
+}
+
+// An index problem and a short document are different findings and the audit
+// has to report both: neither may hide the other.
+func TestAuditReportsIndexProblemsAndShortDocumentsTogether(t *testing.T) {
+	t.Parallel()
+	auditor := NewAuditor(
+		fakeSource{counts: map[Identity]int{
+			{UserID: 1, DocumentID: "short", Version: 1}: 3,
+			{UserID: 1, DocumentID: "whole", Version: 1}: 3,
+		}},
+		fakeCounter{counts: map[Identity]int{
+			{UserID: 1, DocumentID: "short", Version: 1}: 1,
+			{UserID: 1, DocumentID: "whole", Version: 1}: 3,
+		}},
+		fakeIndexChecker{problems: []string{"num_docs=2 hash_keys=4"}},
+		nil,
+		func(string, ...any) {},
+	)
+	report, err := auditor.Audit(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Missing) != 1 || report.Missing[0].DocumentID != "short" {
+		t.Fatalf("the short document was lost: %#v", report.Missing)
+	}
+	if len(report.IndexProblems) != 1 || report.IndexProblems[0] != "num_docs=2 hash_keys=4" {
+		t.Fatalf("the index problem was lost: %#v", report.IndexProblems)
+	}
+}
+
+// Rebuilding costs embeddings. A document whose blocks are all present is not
+// short, so an index problem alone must not put documents back on the queue:
+// what a missing index needs is creating, not re-embedding the corpus.
+func TestRebuildModeRequeuesNothingForAnIndexProblemAlone(t *testing.T) {
+	t.Parallel()
+	repository := &fakeRepository{}
+	identity := Identity{UserID: 1, DocumentID: "doc", Version: 1}
+	auditor := NewAuditor(
+		fakeSource{counts: map[Identity]int{identity: 4}},
+		fakeCounter{counts: map[Identity]int{identity: 4}},
+		fakeIndexChecker{problems: []string{"indexing=1 percent_indexed=0.5"}},
+		repository,
+		func(string, ...any) {},
+	)
+	result, err := auditor.Run(t.Context(), ModeRebuild, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Rebuilt != 0 || result.Skipped != 0 || result.Failed != 0 || len(repository.rebuilt) != 0 {
+		t.Fatalf("an index problem requeued documents: %#v %#v", result, repository.rebuilt)
+	}
+	if len(result.IndexProblems) != 1 {
+		t.Fatalf("the index problem was not reported: %#v", result.IndexProblems)
+	}
+}
+
+func TestAuditFailsWhenTheIndexCannotBeRead(t *testing.T) {
+	t.Parallel()
+	auditor := NewAuditor(
+		fakeSource{counts: map[Identity]int{{UserID: 1, DocumentID: "doc", Version: 1}: 1}},
+		fakeCounter{counts: map[Identity]int{{UserID: 1, DocumentID: "doc", Version: 1}: 1}},
+		fakeIndexChecker{err: errors.New("redis is not reachable")},
+		nil,
+		func(string, ...any) {},
+	)
+	if _, err := auditor.Audit(t.Context()); err == nil {
+		t.Fatal("an unreadable index produced a report")
+	}
+}
+
+// The index check is not optional. An auditor built without one is the audit
+// that reports a dropped index as consistent, so building it has to fail.
+func TestAuditRefusesToRunWithoutAnIndexChecker(t *testing.T) {
+	t.Parallel()
+	identity := Identity{UserID: 1, DocumentID: "doc", Version: 1}
+	auditor := &Auditor{
+		Source:  fakeSource{counts: map[Identity]int{identity: 1}},
+		Counter: fakeCounter{counts: map[Identity]int{identity: 1}},
+		Logf:    func(string, ...any) {},
+	}
+	report, err := auditor.Audit(t.Context())
+	if err == nil {
+		t.Fatalf("an audit without an index checker produced a report: %#v", report)
+	}
+}
+
+func TestKnowledgeIndexCheckerWithoutRedisRefusesToCheck(t *testing.T) {
+	t.Parallel()
+	if _, err := (KnowledgeIndexChecker{}).CheckIndexes(t.Context()); err == nil {
+		t.Fatal("the knowledge index checker accepted a missing redis client")
+	}
+}
+
+// The status word is what an operator watches without reading the log, so the
+// finding the block counts cannot see has to reach it too.
+func TestResultStatusNamesWhatTheAuditFound(t *testing.T) {
+	t.Parallel()
+	short := Document{Identity: Identity{UserID: 1, DocumentID: "short", Version: 1}, Expected: 4, Actual: 2}
+	cases := []struct {
+		name   string
+		result Result
+		want   string
+	}{
+		{"nothing to report", Result{Report: Report{Compared: 1}}, "consistent"},
+		{"a document that is short", Result{Report: Report{Compared: 1, Missing: []Document{short}}}, "inconsistent"},
+		{"a key that could not be counted", Result{Report: Report{Blockers: []string{"managed prefix contains a non-HASH key"}}}, "incomplete"},
+		{"an absent index over whole blocks", Result{Report: Report{Compared: 1, IndexProblems: []string{"the search index is absent"}}}, "incomplete"},
+		{"a rebuild that stopped at the limit", Result{Report: Report{Compared: 2, Missing: []Document{short}}, Skipped: 1}, "partial"},
+		{"a document that could not be requeued", Result{Report: Report{Compared: 1, Missing: []Document{short}}, Failed: 1}, "partial"},
+	}
+	for _, testCase := range cases {
+		if got := testCase.result.Status(); got != testCase.want {
+			t.Errorf("%s: status = %q, want %q", testCase.name, got, testCase.want)
+		}
+	}
+}
+
 func TestRunInOffModeChangesNothing(t *testing.T) {
 	t.Parallel()
 	repository := &fakeRepository{}
 	auditor := NewAuditor(
 		fakeSource{counts: map[Identity]int{{UserID: 1, DocumentID: "doc", Version: 1}: 2}},
 		fakeCounter{counts: map[Identity]int{}},
+		fakeIndexChecker{},
 		repository,
 		func(string, ...any) {},
 	)
@@ -231,6 +401,7 @@ func TestRunInAuditModeRequeuesNothing(t *testing.T) {
 	auditor := NewAuditor(
 		fakeSource{counts: map[Identity]int{{UserID: 1, DocumentID: "doc", Version: 1}: 2}},
 		fakeCounter{counts: map[Identity]int{}},
+		fakeIndexChecker{},
 		repository,
 		func(string, ...any) {},
 	)
@@ -255,6 +426,7 @@ func TestRunInRebuildModeRequeuesTheShortDocuments(t *testing.T) {
 			{UserID: 1, DocumentID: "short", Version: 1}: 1,
 			{UserID: 1, DocumentID: "exact", Version: 1}: 2,
 		}},
+		fakeIndexChecker{},
 		repository,
 		func(string, ...any) {},
 	)
@@ -279,6 +451,7 @@ func TestRunInRebuildModeStopsAtTheLimitAndReportsTheRest(t *testing.T) {
 	auditor := NewAuditor(
 		fakeSource{counts: recorded},
 		fakeCounter{counts: observed},
+		fakeIndexChecker{},
 		repository,
 		func(string, ...any) {},
 	)
@@ -305,6 +478,7 @@ func TestRunInRebuildModeKeepsGoingWhenOneDocumentIsBusy(t *testing.T) {
 			{UserID: 1, DocumentID: "busy", Version: 1}: 1,
 			{UserID: 1, DocumentID: "free", Version: 1}: 1,
 		}},
+		fakeIndexChecker{},
 		repository,
 		func(string, ...any) {},
 	)
@@ -322,6 +496,7 @@ func TestRunInRebuildModeWithoutARepositoryRefusesToRebuild(t *testing.T) {
 	auditor := NewAuditor(
 		fakeSource{counts: map[Identity]int{{UserID: 1, DocumentID: "doc", Version: 1}: 2}},
 		fakeCounter{counts: map[Identity]int{}},
+		fakeIndexChecker{},
 		nil,
 		func(string, ...any) {},
 	)

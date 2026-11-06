@@ -1,9 +1,14 @@
 // Command indexaudit compares what the knowledge record says with what the
 // knowledge index holds, and reports the difference.
 //
-// The command only reports. It never deletes a key, never re-indexes a
-// document and never refuses to run: an operator who wants to see whether the
-// index is short gets the answer without the tool touching anything.
+// It answers two questions, because they can have different answers: whether
+// each document holds the blocks the record counts, and whether the search
+// index over those blocks exists and agrees with them.
+//
+// The command only reports. It never deletes a key, never creates an index,
+// never re-indexes a document and never refuses to run: an operator who wants
+// to see whether the index is short gets the answer without the tool touching
+// anything.
 //
 // The startup audit runs the same comparison with the same judgement; this
 // command is the manual way to ask the question between two starts.
@@ -48,6 +53,7 @@ func main() {
 	auditor := indexaudit.NewAuditor(
 		indexaudit.MySQLSource{DB: db, ExcludeInFlight: true},
 		indexaudit.RedisCounter{Client: redisCommon.Rdb},
+		indexaudit.KnowledgeIndexChecker{Client: redisCommon.Rdb},
 		nil,
 		func(format string, args ...any) { fmt.Printf(format+"\n", args...) },
 	)
@@ -59,9 +65,13 @@ func main() {
 }
 
 func printReport(report indexaudit.Report) {
-	fmt.Printf("compared=%d blocks=%d missing=%d extra=%d\n", report.Compared, report.Blocks, len(report.Missing), len(report.Extra))
+	fmt.Printf("compared=%d blocks=%d missing=%d extra=%d index_problems=%d\n",
+		report.Compared, report.Blocks, len(report.Missing), len(report.Extra), len(report.IndexProblems))
 	for _, blocker := range report.Blockers {
 		fmt.Printf("blocker=%q\n", blocker)
+	}
+	for _, problem := range report.IndexProblems {
+		fmt.Printf("index_problem=%q\n", problem)
 	}
 	for _, document := range report.Missing {
 		fmt.Printf("document=%s user=%d version=%d expected=%d actual=%d rebuild_command=%q\n",

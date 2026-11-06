@@ -67,6 +67,17 @@ type Report struct {
 	// Blockers are the reasons the comparison could not be completed. They
 	// are categories, never document text.
 	Blockers []string
+	// IndexProblems are the reasons the search index does not agree with the
+	// keys it is supposed to index: an index that is absent, one that reports
+	// a different number of documents than the keys under its own prefix, one
+	// that is still working, or one that failed to index documents.
+	//
+	// They are kept apart from Blockers because they answer a different
+	// question. A blocker says the count could not be trusted; an index
+	// problem says the count was trustworthy and the index over those counted
+	// blocks is not usable. Both are reported, and neither is a reason to
+	// refuse a start or to send a document back to the indexer.
+	IndexProblems []string
 }
 
 // Result is what one audit found and did.
@@ -90,23 +101,27 @@ type Result struct {
 type Auditor struct {
 	Source  Source
 	Counter Counter
+	// Index is the part that looks at the search index instead of at the keys
+	// under it. It is not optional: a comparison of block counts alone calls
+	// a dropped index consistent, because a dropped index removes nothing.
+	Index   IndexChecker
 	Reindex ReindexRepository
 	// Logf writes the report. It is never nil after New.
 	Logf func(string, ...any)
 }
 
 // NewAuditor builds an auditor over the given parts.
-func NewAuditor(source Source, counter Counter, reindex ReindexRepository, logf func(string, ...any)) *Auditor {
+func NewAuditor(source Source, counter Counter, index IndexChecker, reindex ReindexRepository, logf func(string, ...any)) *Auditor {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	return &Auditor{Source: source, Counter: counter, Reindex: reindex, Logf: logf}
+	return &Auditor{Source: source, Counter: counter, Index: index, Reindex: reindex, Logf: logf}
 }
 
 // Audit performs the comparison and reports it. It changes nothing.
 func (a *Auditor) Audit(ctx context.Context) (Report, error) {
-	if a.Source == nil || a.Counter == nil {
-		return Report{}, fmt.Errorf("index audit requires a source and a counter")
+	if a.Source == nil || a.Counter == nil || a.Index == nil {
+		return Report{}, fmt.Errorf("index audit requires a source, a counter and an index checker")
 	}
 	expected, err := a.Source.Source(ctx)
 	if err != nil {
@@ -116,13 +131,18 @@ func (a *Auditor) Audit(ctx context.Context) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
+	indexProblems, err := a.Index.CheckIndexes(ctx)
+	if err != nil {
+		return Report{}, err
+	}
 	comparison := Reconcile(expected, actual)
 	report := Report{
-		Compared: comparison.Recorded,
-		Blocks:   comparison.Kept,
-		Missing:  comparison.Missing,
-		Extra:    comparison.Extra,
-		Blockers: append(append([]string(nil), blockers...), comparison.Blockers...),
+		Compared:      comparison.Recorded,
+		Blocks:        comparison.Kept,
+		Missing:       comparison.Missing,
+		Extra:         comparison.Extra,
+		Blockers:      append(append([]string(nil), blockers...), comparison.Blockers...),
+		IndexProblems: append([]string(nil), indexProblems...),
 	}
 	return report, nil
 }
@@ -133,6 +153,12 @@ func (a *Auditor) Audit(ctx context.Context) (Report, error) {
 // The rebuild is bounded by limit: at most that many documents are sent back,
 // and the rest are only reported. A document that goes back is reindexed by
 // the ordinary worker - the audit only returns it to the queue.
+//
+// An index problem does not send anything back. A document whose blocks are
+// all present is not short, and a dropped index is repaired by creating the
+// index, which the indexing path and the retrieval service each do on their
+// own; requeuing documents to fix index metadata would re-embed blocks that
+// are already in Redis for nothing.
 func (a *Auditor) Run(ctx context.Context, mode Mode, limit int) (Result, error) {
 	if mode == ModeOff {
 		return Result{Mode: ModeOff}, nil
@@ -181,14 +207,38 @@ func (a *Auditor) Run(ctx context.Context, mode Mode, limit int) (Result, error)
 	return result, nil
 }
 
+// Status is the one word an audit result is recorded under.
+//
+// "incomplete" covers both ways this start could not vouch for the index: a
+// count it could not trust, and an index that does not agree with the keys
+// under it. The log tells those apart; the metric does not, because for an
+// operator they are the same finding - the audit finished without proving the
+// index sound.
+func (r Result) Status() string {
+	switch {
+	case len(r.Blockers) > 0 || len(r.IndexProblems) > 0:
+		return "incomplete"
+	case r.Skipped > 0 || r.Failed > 0:
+		return "partial"
+	case len(r.Missing) > 0 || len(r.Extra) > 0:
+		return "inconsistent"
+	default:
+		return "consistent"
+	}
+}
+
 // report writes what the audit found: one summary line, one line per
-// document that is short - with the command that rebuilds it - and one line
-// per reason the comparison could not be completed.
+// document that is short - with the command that rebuilds it -, one line per
+// reason the comparison could not be completed, and one line per reason the
+// index itself does not agree with the keys under it.
 func (a *Auditor) report(report Report, mode Mode) {
-	a.Logf("index_audit status=%s compared=%d blocks=%d missing=%d extra=%d",
-		mode, report.Compared, report.Blocks, len(report.Missing), len(report.Extra))
+	a.Logf("index_audit status=%s compared=%d blocks=%d missing=%d extra=%d index_problems=%d",
+		mode, report.Compared, report.Blocks, len(report.Missing), len(report.Extra), len(report.IndexProblems))
 	for _, blocker := range report.Blockers {
 		a.Logf("index_audit status=incomplete blocker=%q", blocker)
+	}
+	for _, problem := range report.IndexProblems {
+		a.Logf("index_audit index_problem=%q", problem)
 	}
 	for _, document := range report.Missing {
 		a.Logf("index_audit document=%s user=%d version=%d expected=%d actual=%d status=short rebuild_command=%q",

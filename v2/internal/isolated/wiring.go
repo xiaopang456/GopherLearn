@@ -178,6 +178,14 @@ const startupIndexAuditTimeout = 2 * time.Minute
 //
 // In rebuild mode the documents that are short go back to the indexer, at most
 // rebuildLimit of them; the rest are reported and wait for the next start.
+//
+// Two questions are asked, because they can have different answers: whether
+// each document holds the blocks the record counts, and whether the search
+// index over those blocks exists and agrees with them. A dropped index keeps
+// every block, so the first question alone would call it consistent while
+// retrieval returns nothing. The second is reported and not requeued: creating
+// the index is what repairs it, and the retrieval service does that while it
+// is being assembled, without re-embedding anything.
 func runStartupIndexAudit(ctx context.Context, conf *config.Config, documentRepository *knowledgeDAO.Repository) {
 	mode, err := indexaudit.ParseMode(conf.KnowledgeConfig.StartupIndexAudit.Mode)
 	if err != nil {
@@ -193,6 +201,7 @@ func runStartupIndexAudit(ctx context.Context, conf *config.Config, documentRepo
 	auditor := indexaudit.NewAuditor(
 		indexaudit.MySQLSource{DB: mysql.DB, ExcludeInFlight: true},
 		indexaudit.RedisCounter{Client: redis.Rdb},
+		indexaudit.KnowledgeIndexChecker{Client: redis.Rdb},
 		documentRepository,
 		log.Printf,
 	)
@@ -202,16 +211,7 @@ func runStartupIndexAudit(ctx context.Context, conf *config.Config, documentRepo
 		observability.Memory.KnowledgeIndexAudit(string(mode), "failed", 0, 0, 0, 0, 0, 0)
 		return
 	}
-	status := "consistent"
-	switch {
-	case len(result.Blockers) > 0:
-		status = "incomplete"
-	case result.Skipped > 0 || result.Failed > 0:
-		status = "partial"
-	case len(result.Missing) > 0 || len(result.Extra) > 0:
-		status = "inconsistent"
-	}
-	observability.Memory.KnowledgeIndexAudit(string(mode), status, result.Compared, len(result.Missing), len(result.Extra), result.Rebuilt, result.Skipped, result.Failed)
+	observability.Memory.KnowledgeIndexAudit(string(mode), result.Status(), result.Compared, len(result.Missing), len(result.Extra), result.Rebuilt, result.Skipped, result.Failed)
 }
 
 // buildMemoryIndex keeps the old re-buildable topic index synchronized for

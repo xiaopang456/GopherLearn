@@ -3,9 +3,10 @@
 //
 // The comparison is read-only. It never deletes a key and never writes to
 // Redis; what it produces is the list of documents whose index is thinner than
-// the record says. The derived-view collector (v2/internal/derivedgc) reads
-// the same source, counts the same keys and uses the same judgement, so the
-// two never disagree about which document is short.
+// the record says, together with the reasons the index itself does not agree
+// with the keys under it. The derived-view collector (v2/internal/derivedgc)
+// reads the same source, counts the same keys and uses the same judgement, so
+// the two never disagree about which document is short.
 //
 // The comparison lives here so that the collector and the startup audit share
 // one implementation. A second implementation would eventually answer a
@@ -221,6 +222,50 @@ func (c RedisCounter) Counts(ctx context.Context) (map[Identity]int, []string, e
 		}
 	}
 	return counts, blockers, nil
+}
+
+// IndexChecker looks at the index rather than at the keys under it.
+//
+// The block counts cannot answer this question. An index that was dropped
+// leaves every block in place, so every document counts exactly as the record
+// says - and retrieval still returns nothing, because there is nothing to
+// search. A comparison that only counted keys would report that index as
+// consistent.
+type IndexChecker interface {
+	// CheckIndexes returns the reasons the search index does not agree with
+	// the keys it is supposed to index. They are categories, never document
+	// text; an empty result means the index is sound.
+	CheckIndexes(ctx context.Context) ([]string, error)
+}
+
+// knowledgeIndexFamilyName is the managed index family whose keys the
+// knowledge record accounts for.
+const knowledgeIndexFamilyName = "knowledge"
+
+// KnowledgeIndexChecker reads the knowledge search index through the same
+// audit the manual index tooling uses, so the startup report and that tool can
+// never disagree about whether an index is sound.
+//
+// It reads and nothing more: FT._LIST for whether the index exists, FT.INFO
+// for what it says about itself. It creates no index and changes no key, and
+// it does not requeue a document.
+type KnowledgeIndexChecker struct {
+	Client *redisCli.Client
+}
+
+func (c KnowledgeIndexChecker) CheckIndexes(ctx context.Context) ([]string, error) {
+	if c.Client == nil {
+		return nil, fmt.Errorf("index audit requires redis")
+	}
+	family, ok := redisCommon.ManagedSearchIndexFamilyByName(knowledgeIndexFamilyName)
+	if !ok {
+		return nil, fmt.Errorf("no managed search index family named %q", knowledgeIndexFamilyName)
+	}
+	audit, err := redisCommon.AuditManagedSearchIndex(ctx, c.Client, family)
+	if err != nil {
+		return nil, err
+	}
+	return audit.CurrentProblems, nil
 }
 
 // ParseKnowledgeKey reads the document identity out of a managed knowledge
