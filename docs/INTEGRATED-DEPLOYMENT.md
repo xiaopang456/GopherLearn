@@ -24,8 +24,8 @@ cd ..
 ```
 
 入口**只接受显式 `-config`**。缺文件、缺强制字段、`isolated` 非真、`migrate = true`、
-`[ordinaryChat]` 出现白名单外的键、普通客户端类型不是 `openai_compatible`、JWT 密钥短于
-32 字节——这些都在**任何资源被创建之前**被拒绝。
+已经废弃的 `[ordinaryChat]` 整段、JWT 密钥短于 32 字节——这些都在**任何资源被创建之前**被
+拒绝，并说明改哪里，而不是被宽容地忽略掉。
 
 ### 容器直跑
 
@@ -86,8 +86,8 @@ Docker 侧读数是**静态**的：`Dockerfile.backend-integrated` 的 COPY 行�
 |---|---|---|
 | 缺 `-config` / 非法 TOML / 缺强制字段 → 拒绝启动 | **代码确实拒绝** | `hybrid/entry.go`、`v2/internal/isolated/settings.go`；`TestIntegratedConfigTemplateLoadsAndRefusesCrossings` 的 dropped-field 负例 |
 | `isolatedEntry.migrate = true` → 拒绝启动 | **代码确实拒绝** | `hybrid/entry.go`；同上测试的 migrate 负例 |
-| `[ordinaryChat]` 出现白名单外键 → 拒绝 | **代码确实拒绝** | `hybrid/entry.go`、`conversation/client.go` |
-| 普通客户端退回 `echo` → 拒绝 | **代码确实拒绝** | `conversation/client.go` |
+| `[ordinaryChat]` 整段已废弃 → 拒绝并说明改哪里 | **代码确实拒绝** | `hybrid/entry.go`；`TestHybridEntryRefusesTheRetiredOrdinaryChatSectionByName` |
+| 已废弃的 `ragModelConfig.baseUrl`、`isolatedEntry.embeddingKey` → 拒绝 | **代码确实拒绝** | `v2/config/explicit.go`；`TestIntegratedConfigTemplateLoadsAndRefusesCrossings` |
 | JWT key < 32 字节或等于被撤换的默认值 → 拒绝 | **代码确实拒绝** | `v2/config/config.go` |
 | schema 名 / Redis host+port+db / storageDir **必须显式写出来** | **代码确实拒绝**（只拒绝"没写"） | `v2/internal/isolated/settings.go` |
 | 模板把 `gopherlearn_v2_integration` / `gopherlearn-integrated-redis` / `data/gopherlearn-integrated/knowledge` / `db = 0` 作为取值 | **模板默认值** | `config.integrated.example.toml`；**入口不会识别"这属于别的栈"**，因此"不共用旧库"不是代码保证 |
