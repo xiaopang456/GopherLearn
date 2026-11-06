@@ -122,21 +122,39 @@ func (w *noFlushWriter) Header() http.Header         { return w.recorder.Header(
 func (w *noFlushWriter) WriteHeader(s int)           { w.recorder.WriteHeader(s) }
 func (w *noFlushWriter) Write(p []byte) (int, error) { return w.recorder.Write(p) }
 
+// Each case injects one failure into the path a conversation turn now runs and asks three
+// questions of it: what survived in the store, how many times the model was called, and
+// what the client was told. They are answered per case rather than by one shared
+// expectation, because the shared path commits the answer before this layer gets control
+// back - a late failure can no longer un-write an earlier success, and pretending
+// otherwise would be asserting a contract the code does not have.
+//
+// The retired ordinary model is asserted unused in every case: a turn that reached it
+// would mean the move back to two engines had happened without anyone noticing.
 func TestHTTPFailureEventsAndPersistenceUseOriginalStreamContract(t *testing.T) {
 	for _, name := range []string{"model-send", "model-stream", "user-store", "assistant-store", "touch-store", "cancel-model", "cancel-delta", "write-started", "write-delta", "write-completed", "no-real-flusher"} {
 		t.Run(name, func(t *testing.T) {
-			app, db, m, _, token, _ := httpFixture(t)
+			app, db, ordinary, agent, token, _ := httpFixture(t)
 			sid := createHTTP(t, app.Handler, token, name)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			wantRows, wantCalls := 1, 1
-			if strings.HasPrefix(name, "model-") {
-				m.fail = true
-			}
-			if name == "cancel-model" {
-				m.cancel = cancel
-			}
+			wantRows, wantGenerations := 1, 1
+			wantTerminal := "failed"
 			switch name {
+			case "model-send", "model-stream":
+				agent.setRespond(func(context.Context, int) (*schema.Message, error) {
+					return nil, errors.New("synthetic model failure")
+				})
+				if name == "model-send" {
+					// Not a stream: this endpoint answers with an error envelope.
+					wantTerminal = ""
+				}
+			case "cancel-model":
+				agent.setRespond(func(ctx context.Context, _ int) (*schema.Message, error) {
+					cancel()
+					return nil, ctx.Err()
+				})
+				wantTerminal = ""
 			case "user-store", "assistant-store":
 				if err := db.Callback().Create().Before("gorm:create").Register("test:http-store-error", func(tx *gorm.DB) {
 					if row, ok := tx.Statement.Dest.(*model.Message); ok && (name == "user-store" && row.IsUser || name == "assistant-store" && !row.IsUser) {
@@ -146,8 +164,9 @@ func TestHTTPFailureEventsAndPersistenceUseOriginalStreamContract(t *testing.T) 
 					t.Fatal(err)
 				}
 				if name == "user-store" {
-					wantRows = 0
-					wantCalls = 0
+					// The learner's own message could not be stored, so there is no turn
+					// to generate for and nothing to roll back.
+					wantRows, wantGenerations = 0, 0
 				}
 			case "touch-store":
 				if err := db.Callback().Update().Before("gorm:update").Register("test:http-touch-error", func(tx *gorm.DB) {
@@ -157,15 +176,27 @@ func TestHTTPFailureEventsAndPersistenceUseOriginalStreamContract(t *testing.T) 
 				}); err != nil {
 					t.Fatal(err)
 				}
-				wantRows = 0
-				wantCalls = 0
+				// The recency touch runs after the answer is committed, so it can no
+				// longer abort the turn the way the retired append's single transaction
+				// did. It is logged and the turn completes: withholding an answer that
+				// is already stored over a stale sort key would lose more than it saves.
+				wantRows, wantTerminal = 2, "completed"
+			case "cancel-delta":
+				// The snapshot is published before the assistant row is written, so a
+				// cancellation here leaves the learner's message and no answer.
+				wantRows, wantTerminal = 1, ""
 			case "write-started":
-				wantCalls = 0
+				// The first frame could not be written, so there is no wire left to carry
+				// a failure frame either, and the run is cancelled before it generates.
+				wantGenerations, wantTerminal = 0, ""
+			case "write-delta":
+				wantRows, wantTerminal = 1, ""
 			case "write-completed":
-				wantRows = 2
+				// Both rows are committed before the completion frame is written, so a
+				// broken wire costs the client the frame and not the answer.
+				wantRows, wantTerminal = 2, ""
 			case "no-real-flusher":
-				wantRows = 0
-				wantCalls = 0
+				wantRows, wantGenerations, wantTerminal = 0, 0, ""
 			}
 			path := "/api/v1/sessions/" + sid + "/stream"
 			if name == "model-send" {
@@ -186,18 +217,29 @@ func TestHTTPFailureEventsAndPersistenceUseOriginalStreamContract(t *testing.T) 
 			}
 			app.Handler.ServeHTTP(writer, req)
 			history := dataHTTP(t, app.Handler, "GET", "/api/v1/sessions/"+sid+"/messages", "", token)["items"].([]any)
-			if len(history) != wantRows || len(m.all()) != wantCalls {
-				t.Fatalf("HTTP facts rows=%d calls=%d want %d/%d: %s", len(history), len(m.all()), wantRows, wantCalls, recorder.Body.String())
+			if len(history) != wantRows || agent.CallCount() != wantGenerations {
+				t.Fatalf("HTTP facts rows=%d generations=%d want %d/%d: %s", len(history), agent.CallCount(), wantRows, wantGenerations, recorder.Body.String())
+			}
+			if calls := len(ordinary.all()); calls != 0 {
+				t.Fatalf("a conversation turn reached the retired ordinary model %d times", calls)
 			}
 			body := recorder.Body.String()
-			if strings.HasPrefix(name, "cancel-") {
+			switch wantTerminal {
+			case "":
 				if strings.Contains(body, "message.completed") || strings.Contains(body, "message.failed") {
-					t.Fatalf("cancel fabricated terminal: %s", body)
+					t.Fatalf("a terminal frame was fabricated for a turn that could not finish: %s", body)
 				}
-			} else if name != "model-send" && name != "no-real-flusher" {
+			case "failed":
 				if !strings.Contains(body, "event: message.failed") {
-					t.Fatalf("original failure terminal missing: %s", body)
+					t.Fatalf("failure terminal missing: %s", body)
 				}
+			case "completed":
+				if !strings.Contains(body, "event: message.completed") || strings.Contains(body, "event: message.failed") {
+					t.Fatalf("a committed answer was not reported as completed: %s", body)
+				}
+			}
+			if name == "model-send" && recorder.Code == 200 {
+				t.Fatalf("a failed turn was reported as a success: %s", body)
 			}
 			if name == "no-real-flusher" && (recorder.Code != 500 || recorder.Flushed) {
 				t.Fatal("Gin wrapper pretended to support Flush")

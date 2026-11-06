@@ -271,22 +271,43 @@ func TestHistoryItemsCarryTheRunThatProducedThem(t *testing.T) {
 	}
 }
 
-// TestHistoryItemsOfAnOrdinaryChatCarryNoRun pins the other half of the
-// contract: the run id is the run's own fact, so a message that no run
-// produced has none, and the key is absent rather than empty.
-func TestHistoryItemsOfAnOrdinaryChatCarryNoRun(t *testing.T) {
-	app, _, _, _, token, _ := httpFixture(t)
+// A conversation turn is a run now, so both of its messages name it, and they name the
+// same one. The other half of the old contract still holds and is the half a migration
+// depends on: a row no run produced carries no run_id key at all, not an empty one.
+// Sessions written before the change are full of those rows and have to stay readable.
+func TestHistoryOfAConversationTurnNamesOneRunAndALegacyRowNamesNone(t *testing.T) {
+	app, db, _, _, token, _ := httpFixture(t)
 	session := createHTTP(t, app.Handler, token, "普通对话")
-	dataHTTP(t, app.Handler, "POST", "/api/v1/sessions/"+session+"/messages", `{"content":"你好"}`, token)
-
-	items := dataHTTP(t, app.Handler, "GET", "/api/v1/sessions/"+session+"/messages", "", token)["items"].([]any)
-	if len(items) == 0 {
-		t.Fatal("no history items")
+	if err := db.Create(&model.Message{SessionID: session, UserName: "learner", Content: "改线之前留下的", IsUser: true}).Error; err != nil {
+		t.Fatal(err)
 	}
-	for _, item := range items {
-		row := item.(map[string]any)
-		if _, present := row["run_id"]; present {
-			t.Fatalf("a message of an ordinary chat named a run: %v", row)
+	sent := dataHTTP(t, app.Handler, "POST", "/api/v1/sessions/"+session+"/messages", `{"content":"你好"}`, token)
+	runID, _ := sent["assistant_message"].(map[string]any)["run_id"].(string)
+	if runID == "" {
+		t.Fatalf("a conversation turn published no run: %v", sent)
+	}
+	if sent["user_message"].(map[string]any)["run_id"] != runID {
+		t.Fatalf("the two rows of one turn name different runs: %v", sent)
+	}
+	// The id has to be a run that exists and belongs to this session and this user,
+	// not a string the serializer made up.
+	var run model.AgentRun
+	if err := db.Where("id = ?", runID).First(&run).Error; err != nil {
+		t.Fatalf("history names a run that is not stored: %v", err)
+	}
+	if run.SessionID != session || run.UserID != 1 {
+		t.Fatalf("history names another session's or user's run: %+v", run)
+	}
+	items := dataHTTP(t, app.Handler, "GET", "/api/v1/sessions/"+session+"/messages", "", token)["items"].([]any)
+	if len(items) != 3 {
+		t.Fatalf("history items %v", items)
+	}
+	if _, present := items[0].(map[string]any)["run_id"]; present {
+		t.Fatalf("a row no run produced named a run: %v", items[0])
+	}
+	for _, item := range items[1:] {
+		if row := item.(map[string]any); row["run_id"] != runID {
+			t.Fatalf("a message of this turn does not name its run: %v", row)
 		}
 	}
 }

@@ -179,11 +179,34 @@ func TestHTTPAgentRunRejectsIdentityModeRequestAndKnowledgePolicy(t *testing.T) 
 	}
 	status, e, _ := requestHTTP(t, app.Handler, "POST", "/api/v1/sessions/agent-unknown-mode/messages", agentBody("request-mode-002", "你好"), token)
 	assertAgentError(t, status, e, 400, "invalid_request", 0)
-	chat := createHTTP(t, app.Handler, token, "Chat")
-	status, e, _ = requestHTTP(t, app.Handler, "POST", "/api/v1/sessions/"+chat+"/messages", agentBody("request-agent-in-chat", "你好"), token)
-	assertAgentError(t, status, e, 400, "invalid_request", 0)
 	if agent.CallCount() != 0 || len(ordinary.all()) != 0 || len(agentRows(t, db, sid)) != 0 {
 		t.Fatal("rejected request effects")
+	}
+	// A chat session is no longer barred from this path: it runs a turn that carries no
+	// capability. What it may not do is ask for the library. The session's mode is the
+	// ceiling, and a request body is not how a client raises it.
+	chat := createHTTP(t, app.Handler, token, "Chat")
+	for _, policy := range []string{"knowledge_preferred", "knowledge_only"} {
+		status, e, _ = requestHTTP(t, app.Handler, "POST", "/api/v1/sessions/"+chat+"/messages", `{"content":"你好","knowledgePolicy":"`+policy+`"}`, token)
+		assertAgentError(t, status, e, 400, "invalid_request", 0)
+	}
+	if agent.CallCount() != 0 || len(ordinary.all()) != 0 || len(agentRows(t, db, chat)) != 0 {
+		t.Fatal("a chat session asking for the library reached a model or stored a message")
+	}
+	pair := dataHTTP(t, app.Handler, "POST", "/api/v1/sessions/"+chat+"/messages", agentBody("request-agent-in-chat", "你好"), token)
+	if agent.CallCount() != 1 || len(ordinary.all()) != 0 {
+		t.Fatalf("a conversation turn generated agent=%d ordinary=%d, want one generation on the shared path", agent.CallCount(), len(ordinary.all()))
+	}
+	runID, _ := pair["assistant_message"].(map[string]any)["run_id"].(string)
+	if runID == "" || pair["user_message"].(map[string]any)["run_id"] != runID {
+		t.Fatalf("a conversation turn did not publish one run for both rows: %v", pair)
+	}
+	var toolSteps int64
+	if err := db.Model(&model.AgentStep{}).Where("run_id = ? AND tool_name <> ''", runID).Count(&toolSteps).Error; err != nil {
+		t.Fatal(err)
+	}
+	if toolSteps != 0 {
+		t.Fatalf("a capability-free turn recorded %d tool steps", toolSteps)
 	}
 	// Original optional invalid consent degrades to no personalization, not a new error.
 	result := dataHTTP(t, app.Handler, "POST", path, `{"content":"你好","requestId":"request-consent-001","knowledgePolicy":"knowledge_preferred","topicConsent":{"ticket":"invalid-ticket","selectedTopicKeys":["foreign"]}}`, token)

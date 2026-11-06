@@ -14,9 +14,29 @@ type scriptedChatModel struct {
 	forcedToolChoices    int
 	forbiddenToolChoices int
 	boundToolCalls       [][]string
+	requests             [][]*schema.Message
 	respond              func(context.Context, int) (*schema.Message, error)
 	forbiddenAnswer      string
 	omitFinishReason     bool
+}
+
+// recordMessages keeps what actually reached the model, so a test can assert about the
+// prompt it was given rather than about what the server meant to send. The slice is
+// copied because the caller owns it and may reuse it for the next generation.
+func (m *scriptedChatModel) recordMessages(messages []*schema.Message) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.requests = append(m.requests, append([]*schema.Message(nil), messages...))
+}
+
+func (m *scriptedChatModel) Requests() [][]*schema.Message {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([][]*schema.Message, len(m.requests))
+	for index := range m.requests {
+		out[index] = append([]*schema.Message(nil), m.requests[index]...)
+	}
+	return out
 }
 
 func (m *scriptedChatModel) next(ctx context.Context, opts ...modelcomponent.Option) (*schema.Message, error) {
@@ -42,12 +62,14 @@ func (m *scriptedChatModel) setRespond(respond func(context.Context, int) (*sche
 	m.respond = respond
 }
 
-func (m *scriptedChatModel) Generate(ctx context.Context, _ []*schema.Message, opts ...modelcomponent.Option) (*schema.Message, error) {
+func (m *scriptedChatModel) Generate(ctx context.Context, messages []*schema.Message, opts ...modelcomponent.Option) (*schema.Message, error) {
+	m.recordMessages(messages)
 	m.recordOptions(opts...)
 	return m.next(ctx, opts...)
 }
 
-func (m *scriptedChatModel) Stream(ctx context.Context, _ []*schema.Message, opts ...modelcomponent.Option) (*schema.StreamReader[*schema.Message], error) {
+func (m *scriptedChatModel) Stream(ctx context.Context, messages []*schema.Message, opts ...modelcomponent.Option) (*schema.StreamReader[*schema.Message], error) {
+	m.recordMessages(messages)
 	m.recordOptions(opts...)
 	message, err := m.next(ctx, opts...)
 	if err != nil {

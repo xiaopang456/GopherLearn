@@ -117,7 +117,27 @@ func TestHTTPLoginMeOrdinarySendStreamAndOriginalRecords(t *testing.T) {
 	if status != 200 || !strings.Contains(stream, "event: message.completed\n") || strings.Contains(stream, "final_block_id") {
 		t.Fatalf("ordinary SSE %d %s", status, stream)
 	}
-	checkHistory(t, m.all()[1], "第一问", "第二问")
+	// Both turns ran on the shared path, so what the model was given is read back from
+	// the V2 model, and the retired ordinary model is asserted to have been used not at
+	// all. That is the half of "ordinary chat moved" a reader can check from here.
+	requests := agent.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("two conversation turns generated %d times", len(requests))
+	}
+	checkAgentHistory(t, requests[1], "第一问", "第二问")
+	if calls := len(m.all()); calls != 0 {
+		t.Fatalf("a conversation turn reached the retired ordinary model %d times", calls)
+	}
+	if bound := agent.BoundToolCalls(); len(bound) != 0 {
+		t.Fatalf("a conversation turn was offered tools: %v", bound)
+	}
+	for _, messages := range requests {
+		for _, msg := range messages {
+			if strings.Contains(msg.Content, "跨会话经历") || strings.Contains(msg.Content, "已确认记忆") {
+				t.Fatal("Agent memory injected into a conversation turn")
+			}
+		}
+	}
 	page, err := messageDAO.NewRepository(db).ListOwnedHistoryPage(context.Background(), 1, sid, 0, 100)
 	if err != nil || len(page.Messages) != 4 {
 		t.Fatalf("original messages %v %v", page, err)
@@ -130,19 +150,6 @@ func TestHTTPLoginMeOrdinarySendStreamAndOriginalRecords(t *testing.T) {
 		row := item.(map[string]any)
 		if row["id"] != fmt.Sprint(page.Messages[i].ID) || row["content"] != page.Messages[i].Content {
 			t.Fatalf("HTTP history differs %v", row)
-		}
-	}
-	if agent.CallCount() != 0 {
-		t.Fatal("ordinary HTTP reached Runner")
-	}
-	for _, r := range m.all() {
-		if len(r.Tools) != 0 {
-			t.Fatal("ordinary HTTP tools")
-		}
-		for _, msg := range r.Messages {
-			if strings.Contains(msg.Content, "跨会话经历") || strings.Contains(msg.Content, "已确认记忆") {
-				t.Fatal("Agent memory injected")
-			}
 		}
 	}
 	listed := dataHTTP(t, app.Handler, "GET", "/api/v1/sessions", "", token)["items"].([]any)
@@ -269,7 +276,10 @@ func TestHTTPFullNumericHistoryReferencesAndLargeIdentity(t *testing.T) {
 		row := item.(map[string]any)
 		want := fmt.Sprintf("q%d", i/2)
 		if i%2 == 1 {
-			want = "回答：" + want
+			// The shared path's model answers every turn with the same text. What this
+			// case is about is that all 102 rows come back, in order, each with its own
+			// id - not what the answer says.
+			want = "agent response"
 		}
 		if row["content"] != want {
 			t.Fatalf("numeric history %d: %v", i, row)
