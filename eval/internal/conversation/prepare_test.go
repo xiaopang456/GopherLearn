@@ -51,7 +51,14 @@ func (s *storage) SaveSummary(_ context.Context, su *model.SessionSummary, versi
 }
 func (s *storage) GenerateSummary(_ context.Context, prev string, msgs []model.Message) (agent.SummaryGeneration, error) {
 	s.calls++
-	return agent.SummaryGeneration{Content: fmt.Sprintf("summary-%d", msgs[len(msgs)-1].ID)}, nil
+	// A document, not bare prose. The real generator parses and normalises before it
+	// returns, so a stored summary can never be a sentence like "summary-71"; returning
+	// one here was modelling a state the product cannot produce. Compaction now reads the
+	// stored row before spending a call, so a prose fake would silently stop every later
+	// compaction and this harness would be measuring the skip instead of the policy.
+	return agent.SummaryGeneration{Content: fmt.Sprintf(
+		`{"schema_version":2,"current_goal":"summary-%d","confirmed_decisions":[],"completed_items":[],"open_loops":[],"user_corrections":[],"key_errors":[],"references":[]}`,
+		msgs[len(msgs)-1].ID)}, nil
 }
 func TestPreparationUsesProductPolicyAfterUserMessage(t *testing.T) {
 	s := &storage{}
