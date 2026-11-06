@@ -27,6 +27,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -61,6 +62,12 @@ type LayeredToolCheck struct {
 	// is asked whether the id is readable. It is still not the same thing as
 	// asking the tool, and Exercised says which question was answered.
 	Authorised bool `json:"authorised"`
+	// Pending says no product-side decision exists for this row at all, so it
+	// must not be counted with the ones that do. The browse tool has no grant
+	// set of its own: whether a segment is reachable is decided inside the
+	// tool, and a row that filled in true here would be this harness's
+	// opinion wearing the product's name.
+	Pending bool `json:"pending"`
 	// Exercised says the tool itself ran. It is false everywhere in this
 	// driver: the read-back and browse tools are built inside the product's
 	// internal wiring, which a harness in another module cannot import. A
@@ -83,7 +90,14 @@ type LayeredRead struct {
 	RetrievedSegments  []int    `json:"retrieved_segments"`
 	SegmentsInWindow   []int    `json:"segments_in_window"`
 	SupersessionMarks  []string `json:"supersession_marks"`
-	WindowMessages     int      `json:"window_messages"`
+	// Tools is the tool table this turn was rendered against, and
+	// PromptRendered says the product's renderer changed the prompt because of
+	// it. A run that claims to measure the read side has to say which turn it
+	// simulated: a window that advertises a search tool the model cannot call
+	// measures neither the contract nor the board.
+	Tools          []string `json:"capabilities"`
+	PromptRendered bool     `json:"prompt_rendered"`
+	WindowMessages int      `json:"window_messages"`
 
 	// Where the answer lives and whether the window carried it.
 	EvidenceTurns  []int  `json:"evidence_turns"`
@@ -126,16 +140,20 @@ type LayeredRead struct {
 	// SeededSegments is what the writer produced for this conversation. It is
 	// reported because a read that found nothing is only readable next to the
 	// state it was reading.
-	SeededSegments int      `json:"seeded_segments"`
-	SeededBoard    int      `json:"seeded_board_entries"`
-	Errors         []string `json:"errors,omitempty"`
+	SeededSegments int `json:"seeded_segments"`
+	SeededBoard    int `json:"seeded_board_entries"`
+	// Batches is what the writer did: how many batches, how many attempts,
+	// how many retries, and how many batches still failed. The last number is
+	// the one the product's own failure rate is measured on.
+	Batches batchOutcome `json:"batches"`
+	Errors  []string     `json:"errors,omitempty"`
 }
 
 // RunLayeredRead writes one conversation's layered state and then measures
 // what the read side makes of it.
 func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	turns []Turn, evidenceTurns []int, accepted, forbidden []string,
-	proxyBase, chatModel string) (read LayeredRead, resultErr error) {
+	tools []string, stage, proxyBase, chatModel string) (read LayeredRead, resultErr error) {
 	if len(turns) == 0 {
 		return read, fmt.Errorf("turns are required")
 	}
@@ -192,6 +210,26 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	if err != nil {
 		return read, err
 	}
+	// The segment writer is a second model on the same endpoint, asked for a
+	// JSON object. The prompt already says "Output JSON only", and saying it
+	// is not the same as the provider enforcing it: a parse failure is the
+	// one batch failure that throws a whole stretch of turns away. The
+	// question is answered in prose, so the two models must stay separate -
+	// one response format for both would put every answer in JSON.
+	segmentChat, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
+		BaseURL:        wire.URL + "/v1",
+		Model:          chatModel,
+		APIKey:         "placeholder-proxy-injected",
+		ExtraFields:    aihelper.ThinkingExtraFields(dialect, false),
+		ResponseFormat: jsonObjectResponseFormat(),
+	})
+	if err != nil {
+		return read, err
+	}
+	segmentModel, err := WrapModel(segmentChat, ledger, roles)
+	if err != nil {
+		return read, err
+	}
 	s, err := NewSandbox(ctx)
 	if err != nil {
 		return read, err
@@ -225,12 +263,22 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	}
 
 	// The state the background would have written before this turn.
-	seeded, err := seedLayeredState(ctx, s, messages, settings, wrapped, sessionID)
+	seeded, batches, err := seedLayeredState(ctx, s, messages, settings, segmentModel, sessionID,
+		settings.Config.AgentConfig.SummarySegmentMaxAttempts)
+	read.Batches = batches
 	if err != nil {
 		return read, err
 	}
 	read.SeededSegments = len(seeded.segments)
 	read.SeededBoard = boardEntryCount(seeded.board)
+	// The batch stage stops here. It exists to measure the writer's failure
+	// rate on its own: running the read side too would add one call per
+	// conversation that says nothing about the writer, and paying for answers
+	// to answer a question about parsing is how a measurement gets expensive
+	// enough that nobody repeats it.
+	if stage == LayeredStageBatches {
+		return read, nil
+	}
 
 	// The read side, built the way the product builds it.
 	window, windowErr := buildLayeredReadWindow(ctx, s, repository, settings, sessionID, question)
@@ -238,6 +286,19 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 		read.Errors = append(read.Errors, "build window: "+windowErr.Error())
 		return read, windowErr
 	}
+	// The window's system prompt is not what the builder assembled: the
+	// product renders it against this turn's tool table, and a rule that names
+	// a tool the model cannot see is removed. Rendering it here is not a
+	// nicety - a measurement that skipped it sent the model a knowledge-search
+	// contract for a turn with no search tool, and the model obeyed the
+	// contract and refused a question the board could answer.
+	window, rendered, renderErr := renderWindowPromptFor(window, tools, question)
+	if renderErr != nil {
+		read.Errors = append(read.Errors, "render prompt: "+renderErr.Error())
+		return read, renderErr
+	}
+	read.PromptRendered = rendered
+	read.Tools = tools
 	read.WindowMessages = len(window.Messages)
 	inspectWindow(&read, window, seeded, messages)
 
@@ -310,16 +371,144 @@ type seededLayered struct {
 	board    model.SessionWhiteboardDocument
 }
 
+// batchOutcome counts what the writer did, attempt by attempt.
+//
+// A single failure used to end the conversation: the first batch that came
+// back unparseable returned seeded=0 and the whole scenario was lost. The
+// product does not behave that way - its worker retries the same batch up to
+// summarySegmentMaxAttempts - so a driver that gave up on the first error was
+// measuring a policy the product does not have.
+type batchOutcome struct {
+	Batches  int `json:"batches"`
+	Attempts int `json:"attempts"`
+	Retries  int `json:"retries"`
+	// FirstFailures is what the failure rate would have been without a retry:
+	// the batches whose first attempt failed. Without it the retry looks
+	// either useless or magical, depending on which number a reader happens to
+	// remember.
+	FirstFailures int            `json:"first_failures"`
+	FinalFailures int            `json:"final_failures"`
+	Reasons       map[string]int `json:"reasons,omitempty"`
+	// RawFailures keeps what the writer answered on the batches that never
+	// parsed. One batch is enough to tell the failure apart; a list makes the
+	// same failure arriving twice visible instead of averaging it away.
+	RawFailures []rawFailure `json:"raw_failures,omitempty"`
+}
+
+func (o *batchOutcome) failed(err error) {
+	o.Attempts++
+	if o.Reasons == nil {
+		o.Reasons = map[string]int{}
+	}
+	o.Reasons[segmentFailureLabel(err)]++
+}
+
+// segmentFailureLabel names a failure the way the product's counters do.
+func segmentFailureLabel(err error) string {
+	if err == nil {
+		return "none"
+	}
+	text := err.Error()
+	switch {
+	case strings.Contains(text, "http") || strings.Contains(text, "status code"):
+		return "model_error"
+	case strings.Contains(text, "decode") || strings.Contains(text, "invalid character") ||
+		strings.Contains(text, "unexpected end of JSON"):
+		return "invalid_output"
+	default:
+		return "other"
+	}
+}
+
+// rawFailure is what the writer answered on an attempt that never parsed.
+//
+// The product discards the body with the error, and rightly so: it is the
+// learner's own text. A measurement cannot tell a truncated answer from a
+// mis-shaped one without it, and the difference decides the fix, so the driver
+// keeps a bounded excerpt of every failed attempt. A failure a retry rescued
+// matters as much as one it did not - it is the only evidence that the retry
+// was spent on the failure it claims to fix. It stays in the private run
+// directory and never reaches a commit.
+type rawFailure struct {
+	Batch   int    `json:"batch"`
+	Attempt int    `json:"attempt"`
+	Reason  string `json:"reason"`
+	Excerpt string `json:"excerpt"`
+}
+
+// recordingChatModel keeps the last answer the segment writer produced.
+//
+// It wraps the model instead of the generator because the generator is the
+// product's: the body is decided inside it and thrown away with the error, and
+// a driver that reached into it would be testing its own copy.
+type recordingChatModel struct {
+	inner modelcomponent.ToolCallingChatModel
+
+	mu   sync.Mutex
+	last string
+}
+
+func (m *recordingChatModel) Generate(ctx context.Context, input []*schema.Message,
+	opts ...modelcomponent.Option) (*schema.Message, error) {
+	out, err := m.inner.Generate(ctx, input, opts...)
+	if out != nil {
+		m.mu.Lock()
+		m.last = out.Content
+		m.mu.Unlock()
+	}
+	return out, err
+}
+
+func (m *recordingChatModel) Stream(ctx context.Context, input []*schema.Message,
+	opts ...modelcomponent.Option) (*schema.StreamReader[*schema.Message], error) {
+	return m.inner.Stream(ctx, input, opts...)
+}
+
+func (m *recordingChatModel) WithTools(tools []*schema.ToolInfo) (modelcomponent.ToolCallingChatModel, error) {
+	bound, err := m.inner.WithTools(tools)
+	if err != nil {
+		return nil, err
+	}
+	return &recordingChatModel{inner: bound}, nil
+}
+
+// excerptForReport bounds what is kept. A body that cannot be parsed is
+// usually short; the head is what tells a truncated answer from a wrong shape.
+const excerptForReport = 400
+
+func (m *recordingChatModel) excerpt() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	runes := []rune(m.last)
+	if len(runes) > excerptForReport {
+		return string(runes[:excerptForReport]) + " ..."
+	}
+	return string(runes)
+}
+
 // seedLayeredState writes the segments and the board the background would
-// have written.
+// have written, retrying a failed batch the way the product's worker does.
+//
+// The attempt budget is the product's own (summarySegmentMaxAttempts). A batch
+// that still fails is skipped and recorded, not turned into an empty run: the
+// worker leaves a gap in a session it could not summarize, and a measurement
+// that aborted instead would report a coverage of zero where the product
+// reports a hole.
 func seedLayeredState(ctx context.Context, s *Sandbox, messages []model.Message,
 	settings *entry.Settings, chat modelcomponent.ToolCallingChatModel,
-	sessionID string) (seededLayered, error) {
+	sessionID string, retryBudget int) (seededLayered, batchOutcome, error) {
+	outcome := batchOutcome{}
 	agentConfig := settings.Config.AgentConfig
-	generator, err := agent.NewModelSegmentGenerator(chat, agentConfig.SummarySegmentMaxInputTokens,
+	if retryBudget < 1 {
+		retryBudget = 1
+	}
+	// The model is wrapped before the generator sees it: the body is decided
+	// inside the product's generator and dropped with the error there.
+	recorder := &recordingChatModel{inner: chat}
+	generator, err := agent.NewModelSegmentGenerator(recorder, agentConfig.SummarySegmentMaxInputTokens,
 		agentConfig.SummarySegmentMaxOutputTokens)
 	if err != nil {
-		return seededLayered{}, err
+		return seededLayered{}, outcome, err
 	}
 	seeded := seededLayered{}
 	whiteboard := ""
@@ -334,12 +523,40 @@ func seedLayeredState(ctx context.Context, s *Sandbox, messages []model.Message,
 			break
 		}
 		batch := messages[start:end]
-		result, err := generator.GenerateSegment(ctx, agent.SegmentGenerationInput{
-			Whiteboard: whiteboard, PreviousSegment: previous, Messages: batch,
-			FirstMessageID: batch[0].ID, LastMessageID: batch[len(batch)-1].ID,
-		})
-		if err != nil {
-			return seeded, err
+		outcome.Batches++
+		var result agent.SegmentGenerationResult
+		var batchErr error
+		for attempt := 0; attempt < retryBudget; attempt++ {
+			if attempt > 0 {
+				outcome.Retries++
+			}
+			result, batchErr = generator.GenerateSegment(ctx, agent.SegmentGenerationInput{
+				Whiteboard: whiteboard, PreviousSegment: previous, Messages: batch,
+				FirstMessageID: batch[0].ID, LastMessageID: batch[len(batch)-1].ID,
+			})
+			if batchErr == nil {
+				outcome.Attempts++
+				break
+			}
+			outcome.failed(batchErr)
+			outcome.RawFailures = append(outcome.RawFailures, rawFailure{
+				Batch:   outcome.Batches,
+				Attempt: attempt + 1,
+				Reason:  segmentFailureLabel(batchErr),
+				Excerpt: recorder.excerpt(),
+			})
+			if attempt == 0 {
+				outcome.FirstFailures++
+			}
+			if ctx.Err() != nil {
+				break
+			}
+		}
+		if batchErr != nil {
+			// The product's worker moves on and leaves the stretch uncovered.
+			outcome.FinalFailures++
+			start = end
+			continue
 		}
 		seq++
 		row := model.SessionSummarySegment{
@@ -353,7 +570,7 @@ func seedLayeredState(ctx context.Context, s *Sandbox, messages []model.Message,
 			IndexStatus:       model.SessionSummarySegmentIndexPending,
 		}
 		if err := (guardedStore{s}).with(ctx, func(tx *gorm.DB) error { return tx.Create(&row).Error }); err != nil {
-			return seeded, err
+			return seeded, outcome, err
 		}
 		seeded.segments = append(seeded.segments, row)
 		whiteboard = result.WhiteboardContent
@@ -368,10 +585,50 @@ func seedLayeredState(ctx context.Context, s *Sandbox, messages []model.Message,
 			TokenEstimate:    agent.RenderedWhiteboardTokens(seeded.board),
 		}
 		if err := (guardedStore{s}).with(ctx, func(tx *gorm.DB) error { return tx.Create(&board).Error }); err != nil {
-			return seeded, err
+			return seeded, outcome, err
 		}
 	}
-	return seeded, nil
+	return seeded, outcome, nil
+}
+
+// jsonObjectResponseFormat asks the provider for a JSON object.
+//
+// It is a provider-enforced constraint, not a hint: the prompt has said "Output
+// JSON only" for a while, and the parse failures that throw a batch away
+// happened anyway. The two are not substitutes - a provider that refuses the
+// field returns an error on the first attempt, which is a failure this driver
+// would see immediately rather than mistaking for a model that wrote prose.
+func jsonObjectResponseFormat() *openai.ChatCompletionResponseFormat {
+	return &openai.ChatCompletionResponseFormat{Type: openai.ChatCompletionResponseFormatTypeJSONObject}
+}
+
+// renderWindowPromptFor replaces the window's system prompt with the one this
+// turn's tool table supports, the way the product's runner does.
+//
+// The product renders after the tool table is known, because the table decides
+// the prompt: a rule that names a tool the model cannot see is a rule it cannot
+// obey. A measurement that took the builder's prompt as it stood skipped that
+// step and sent a knowledge-search contract to a turn with no search tool, so
+// the model followed the contract and refused a question the board answered.
+//
+// The names are the ones the model would see, spelled out rather than derived
+// from a registry, because this driver hands the model no tools at all: the
+// honest table is the one the harness actually gives it, and a run that wants
+// the knowledge-on case has to say so.
+func renderWindowPromptFor(window agent.ContextWindow,
+	toolNames []string, question string) (agent.ContextWindow, bool, error) {
+	if len(window.Messages) == 0 || window.Messages[0] == nil || window.Messages[0].Role != schema.System {
+		return window, false, nil
+	}
+	caps := agent.CapabilitiesFromToolNames(toolNames)
+	caps.MemoryIntent = agent.ExplicitMemoryIntent(question)
+	base := window.Messages[0].Content
+	rendered := agent.RenderSystemPrompt(base, caps)
+	if rendered == base {
+		return window, false, nil
+	}
+	window.Messages[0] = schema.SystemMessage(rendered)
+	return window, true, nil
 }
 
 // buildLayeredReadWindow assembles the window the way the product does.
@@ -608,15 +865,15 @@ func checkToolAuthority(s *Sandbox, sessionID string, window agent.ContextWindow
 			Detail: "not granted: the window never showed this message",
 		})
 	}
-	// The browse tool is authorised by the segments the window carried: a
-	// segment the window did not carry is one the model has to browse for.
-	// There is no grant set to ask for this one, so the row records what the
-	// window carried and says the tool was not run.
+	// The browse tool is authorised inside the tool: whether a segment may be
+	// opened depends on the segment store, not on a grant set this harness can
+	// ask. The row records only what the window carried and says the question
+	// is unanswered here.
 	for _, segment := range seeded.segments {
 		inWindow := containsInt(read.SegmentsInWindow, segment.Seq)
 		read.ToolChecks = append(read.ToolChecks, LayeredToolCheck{
 			Tool: "browse_summary_segments", SegmentSeq: segment.Seq,
-			Granted: inWindow, Authorised: true, Exercised: false,
+			Granted: inWindow, Authorised: false, Pending: true, Exercised: false,
 			Detail: browseNote(inWindow),
 		})
 	}
@@ -948,3 +1205,13 @@ func WriteLayeredRead(path string, read LayeredRead) error {
 
 // LayeredReadTimeout is the deadline one read-side run is given.
 const LayeredReadTimeout = 30 * time.Minute
+
+// The two things this driver can measure.
+const (
+	// LayeredStageFull seeds the state, reads it back and answers.
+	LayeredStageFull = "full"
+	// LayeredStageBatches stops after the writer ran, so the failure rate a
+	// batch costs can be measured without paying for an answer per
+	// conversation.
+	LayeredStageBatches = "batches"
+)

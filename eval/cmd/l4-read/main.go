@@ -63,6 +63,10 @@ func run(args []string, out io.Writer) error {
 	proxy := flags.String("proxy", "", "counting proxy base URL")
 	chatModel := flags.String("chat-model", "", "chat model name")
 	output := flags.String("output-dir", "", "new private output directory")
+	capabilities := flags.String("tools", "read_history_message,browse_summary_segments",
+		"comma separated tool names this turn is rendered against")
+	stage := flags.String("stage", conversation.LayeredStageFull,
+		"full (seed, read, answer) or batches (seed only)")
 	timeout := flags.Duration("timeout", 0, "read deadline")
 	var accepted, forbidden listFlag
 	flags.Var(&accepted, "accepted", "an answer the run passes on (repeatable)")
@@ -108,6 +112,7 @@ func run(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	toolNames := parseToolNames(*capabilities)
 	interrupted, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	deadline := conversation.LayeredReadTimeout
@@ -120,16 +125,22 @@ func run(args []string, out io.Writer) error {
 		return err
 	}
 	read, runErr := conversation.RunLayeredRead(ctx, *repository, *scenario, *question,
-		turns, evidence, accepted, forbidden, *proxy, *chatModel)
+		turns, evidence, accepted, forbidden, toolNames, *stage, *proxy, *chatModel)
 	fmt.Fprintf(out, "scenario=%s seeded=%d/%d board_in_window=%t segments=%v evidence=%v verdict=%s\n",
 		read.Scenario, read.SeededSegments, read.SeededBoard, read.WhiteboardInWindow,
 		read.SegmentsInWindow, read.EvidenceSeqs, read.Verdict)
 	if len(read.ToolChecks) > 0 {
 		// Authorised is the product's grant set answering, not the tool
-		// running: the row says so with Exercised. The names here are the
-		// honest ones so a reader of this line cannot mistake the two.
-		authorised, exercised := 0, 0
+		// running: the row says so with Exercised. Pending rows are left out
+		// of the tally entirely - the browse tool decides reachability inside
+		// itself, and counting this harness's guess would put an opinion in a
+		// column of product decisions.
+		authorised, exercised, pending := 0, 0, 0
 		for _, check := range read.ToolChecks {
+			if check.Pending {
+				pending++
+				continue
+			}
 			if check.Authorised {
 				authorised++
 			}
@@ -137,8 +148,8 @@ func run(args []string, out io.Writer) error {
 				exercised++
 			}
 		}
-		fmt.Fprintf(out, "authority_checks=%d authorised=%d tools_exercised=%d grants=%d\n",
-			len(read.ToolChecks), authorised, exercised, read.Grants)
+		fmt.Fprintf(out, "authority_checks=%d authorised=%d pending=%d tools_exercised=%d grants=%d\n",
+			len(read.ToolChecks), authorised, pending, exercised, read.Grants)
 	}
 	body, err := json.MarshalIndent(read, "", "  ")
 	if err != nil {
@@ -148,6 +159,23 @@ func run(args []string, out io.Writer) error {
 		return err
 	}
 	return runErr
+}
+
+// parseToolNames reads the tool table a run is rendered against.
+//
+// The names are what the model would see in its tool list, because that is
+// what the product's renderer reads. A name nothing recognises contributes no
+// capability and changes nothing, which is the same rule the product applies
+// to a tool it has never heard of.
+func parseToolNames(value string) []string {
+	names := make([]string, 0, 4)
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			names = append(names, part)
+		}
+	}
+	return names
 }
 
 // parseTurns reads the turn numbers the answer comes from.
