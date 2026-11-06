@@ -76,6 +76,18 @@ func ManagedSearchIndexFamilies() []ManagedSearchIndexFamily {
 	}
 }
 
+// ManagedSearchIndexFamilyByName returns the registered family with this name
+// ("knowledge", "episode" or "memory"), so a caller that has to audit one
+// family does not have to pick it out of the list by position.
+func ManagedSearchIndexFamilyByName(name string) (ManagedSearchIndexFamily, bool) {
+	for _, family := range ManagedSearchIndexFamilies() {
+		if family.Name == name {
+			return family, true
+		}
+	}
+	return ManagedSearchIndexFamily{}, false
+}
+
 type SearchIndexInventory struct {
 	LegacyPresent  []string
 	UnknownManaged []string
@@ -104,18 +116,62 @@ func AuditManagedSearchIndexes(ctx context.Context, client *redisCli.Client) (Se
 	if err != nil {
 		return SearchIndexAuditReport{}, err
 	}
-	legacyPresent, unknown := classifyManagedIndexes(listed, families)
+	_, unknown := classifyManagedIndexes(listed, families)
+	present := searchIndexNameSet(listed)
+	report := SearchIndexAuditReport{Families: make([]SearchIndexFamilyAudit, 0, len(families)), UnknownManaged: unknown}
+	for _, family := range families {
+		audit, err := auditSearchIndexFamily(ctx, client, family, present)
+		if err != nil {
+			return SearchIndexAuditReport{}, err
+		}
+		report.Families = append(report.Families, audit)
+	}
+	return report, nil
+}
+
+// AuditManagedSearchIndex reads one registered family with the same judgement
+// AuditManagedSearchIndexes applies to it. It exists so a caller that cares
+// about one family - the startup knowledge index audit, for example - does not
+// have to keep its own idea of what a sound index is, and so the two readings
+// cannot drift apart.
+//
+// It is read-only: it creates no index, drops nothing and changes no key.
+func AuditManagedSearchIndex(ctx context.Context, client *redisCli.Client, family ManagedSearchIndexFamily) (SearchIndexFamilyAudit, error) {
+	if client == nil {
+		return SearchIndexFamilyAudit{}, fmt.Errorf("search index audit: redis client is nil")
+	}
+	listed, err := listSearchIndexes(ctx, client)
+	if err != nil {
+		return SearchIndexFamilyAudit{}, err
+	}
+	return auditSearchIndexFamily(ctx, client, family, searchIndexNameSet(listed))
+}
+
+func searchIndexNameSet(listed []string) map[string]struct{} {
 	present := make(map[string]struct{}, len(listed))
 	for _, index := range listed {
 		present[index] = struct{}{}
 	}
-	report := SearchIndexAuditReport{Families: make([]SearchIndexFamilyAudit, 0, len(families)), UnknownManaged: unknown}
-	for _, family := range families {
-		audit := SearchIndexFamilyAudit{Name: family.Name, Current: family.Current}
-		before, err := countHashKeys(ctx, client, family.KeyPrefix)
-		if err != nil {
-			return SearchIndexAuditReport{}, fmt.Errorf("count %s hashes: %w", family.Name, err)
-		}
+	return present
+}
+
+// auditSearchIndexFamily is the whole per-family reading: whether the current
+// index exists at all, whether it is a well-formed view over the family's key
+// prefix, whether the document count it reports is the number of HASH keys
+// under that prefix, and which legacy indexes of the family are still present.
+func auditSearchIndexFamily(ctx context.Context, client *redisCli.Client, family ManagedSearchIndexFamily, present map[string]struct{}) (SearchIndexFamilyAudit, error) {
+	audit := SearchIndexFamilyAudit{Name: family.Name, Current: family.Current}
+	before, err := countHashKeys(ctx, client, family.KeyPrefix)
+	if err != nil {
+		return audit, fmt.Errorf("count %s hashes: %w", family.Name, err)
+	}
+	if _, listed := present[family.Current]; !listed {
+		// FT._LIST decides existence. A failed FT.INFO also covers a server
+		// that is merely busy, and an operator needs to know which of the two
+		// they are looking at: a missing index means retrieval finds nothing
+		// even while every block of every document is still in Redis.
+		audit.CurrentProblems = append(audit.CurrentProblems, fmt.Sprintf("current index %q does not exist", family.Current))
+	} else {
 		info, infoErr := client.FTInfo(ctx, family.Current).Result()
 		if infoErr != nil {
 			audit.CurrentProblems = append(audit.CurrentProblems, fmt.Sprintf("current index unavailable: %v", infoErr))
@@ -123,33 +179,31 @@ func AuditManagedSearchIndexes(ctx context.Context, client *redisCli.Client) (Se
 			audit.CurrentDocs = info.NumDocs
 			audit.CurrentProblems = append(audit.CurrentProblems, validateCurrentIndex(family, info, before)...)
 		}
-		after, err := countHashKeys(ctx, client, family.KeyPrefix)
-		if err != nil {
-			return SearchIndexAuditReport{}, fmt.Errorf("recount %s hashes: %w", family.Name, err)
-		}
-		audit.HashKeys = after
-		if before != after {
-			audit.CurrentProblems = append(audit.CurrentProblems, fmt.Sprintf("hash count changed during audit: %d -> %d", before, after))
-		}
-		for _, legacy := range family.Legacy {
-			if _, ok := present[legacy]; !ok {
-				continue
-			}
-			audit.LegacyPresent = append(audit.LegacyPresent, legacy)
-			legacyInfo, err := client.FTInfo(ctx, legacy).Result()
-			if err != nil {
-				audit.LegacyProblems = append(audit.LegacyProblems, fmt.Sprintf("%s unavailable: %v", legacy, err))
-				continue
-			}
-			if !sameSinglePrefix(legacyInfo.IndexDefinition.Prefixes, family.KeyPrefix) {
-				audit.LegacyProblems = append(audit.LegacyProblems, fmt.Sprintf("%s has unexpected prefixes %v", legacy, legacyInfo.IndexDefinition.Prefixes))
-			}
-		}
-		sort.Strings(audit.LegacyPresent)
-		report.Families = append(report.Families, audit)
 	}
-	_ = legacyPresent // Presence is represented per family in the detailed report.
-	return report, nil
+	after, err := countHashKeys(ctx, client, family.KeyPrefix)
+	if err != nil {
+		return audit, fmt.Errorf("recount %s hashes: %w", family.Name, err)
+	}
+	audit.HashKeys = after
+	if before != after {
+		audit.CurrentProblems = append(audit.CurrentProblems, fmt.Sprintf("hash count changed during audit: %d -> %d", before, after))
+	}
+	for _, legacy := range family.Legacy {
+		if _, ok := present[legacy]; !ok {
+			continue
+		}
+		audit.LegacyPresent = append(audit.LegacyPresent, legacy)
+		legacyInfo, err := client.FTInfo(ctx, legacy).Result()
+		if err != nil {
+			audit.LegacyProblems = append(audit.LegacyProblems, fmt.Sprintf("%s unavailable: %v", legacy, err))
+			continue
+		}
+		if !sameSinglePrefix(legacyInfo.IndexDefinition.Prefixes, family.KeyPrefix) {
+			audit.LegacyProblems = append(audit.LegacyProblems, fmt.Sprintf("%s has unexpected prefixes %v", legacy, legacyInfo.IndexDefinition.Prefixes))
+		}
+	}
+	sort.Strings(audit.LegacyPresent)
+	return audit, nil
 }
 
 // DropAuditedLegacySearchIndexes re-audits immediately before mutation and

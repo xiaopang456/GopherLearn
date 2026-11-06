@@ -11,6 +11,7 @@ import (
 	"time"
 
 	redisCommon "GopherAI/common/redis"
+	"GopherAI/internal/indexaudit"
 	"GopherAI/model"
 
 	redisCli "github.com/redis/go-redis/v9"
@@ -113,11 +114,11 @@ func (c *Cleaner) Apply(ctx context.Context, now time.Time, writersStopped bool,
 	return post.report, nil
 }
 
-type knowledgeIdentity struct {
-	UserID     int64
-	DocumentID string
-	Version    int
-}
+// knowledgeIdentity is the identity of one indexed document version. It is
+// the identity the index audit compares with, so the two share one type: the
+// collector and the audit must never disagree about which document is short.
+type knowledgeIdentity = indexaudit.Identity
+
 type exactIdentity struct {
 	UserID int64
 	ID     string
@@ -159,22 +160,7 @@ func (c *Cleaner) audit(ctx context.Context, now time.Time) (audit, error) {
 }
 
 func (c *Cleaner) knowledgeSource(ctx context.Context) (map[knowledgeIdentity]int, error) {
-	type row struct {
-		UserID                    int64
-		ID                        string
-		ActiveVersion, ChunkCount int
-	}
-	var rows []row
-	err := c.db.WithContext(ctx).Model(&model.KnowledgeDocument{}).Select("user_id, id, active_version, chunk_count").
-		Where("active_name IS NOT NULL AND active_version > 0 AND chunk_count > 0").Find(&rows).Error
-	if err != nil {
-		return nil, fmt.Errorf("load knowledge gc source: %w", err)
-	}
-	result := make(map[knowledgeIdentity]int, len(rows))
-	for _, row := range rows {
-		result[knowledgeIdentity{row.UserID, row.ID, row.ActiveVersion}] = row.ChunkCount
-	}
-	return result, nil
+	return indexaudit.MySQLSource{DB: c.db}.Source(ctx)
 }
 
 func (c *Cleaner) episodeSource(ctx context.Context) (map[exactIdentity]struct{}, error) {
@@ -275,7 +261,6 @@ func reconcileKnowledge(scanned scannedFamily, source map[knowledgeIdentity]int)
 		}
 		identity := key.identity.(knowledgeIdentity)
 		if _, ok := source[identity]; ok {
-			r.Kept++
 			kept[identity]++
 			continue
 		}
@@ -283,12 +268,12 @@ func reconcileKnowledge(scanned scannedFamily, source map[knowledgeIdentity]int)
 		r.OrphansByUser[key.UserID]++
 		candidates = append(candidates, key.Key)
 	}
-	for identity, expected := range source {
-		r.Expected += expected
-		if kept[identity] != expected {
-			r.Blockers = append(r.Blockers, fmt.Sprintf("active knowledge tuple has %d hashes, expected %d", kept[identity], expected))
-		}
-	}
+	// The count comparison is the shared one: the collector and the startup
+	// audit must reach the same verdict about which document is short.
+	comparison := indexaudit.Reconcile(source, kept)
+	r.Kept = comparison.Kept
+	r.Expected = comparison.Expected
+	r.Blockers = append(r.Blockers, comparison.Blockers...)
 	sort.Strings(r.Blockers)
 	return r, candidates
 }
@@ -341,16 +326,11 @@ func blockKey(r *FamilyReport, key scannedKey) bool {
 }
 
 func parseKnowledgeKey(prefix, key string) (int64, any, string) {
-	parts := strings.SplitN(strings.TrimPrefix(key, prefix), ":", 4)
-	if len(parts) != 4 || parts[1] == "" || parts[3] == "" {
-		return 0, nil, "invalid knowledge key"
+	userID, identity, problem := indexaudit.ParseKnowledgeKey(prefix, key)
+	if problem != "" {
+		return 0, nil, problem
 	}
-	userID, err1 := strconv.ParseInt(parts[0], 10, 64)
-	version, err2 := strconv.Atoi(parts[2])
-	if err1 != nil || err2 != nil || userID <= 0 || version <= 0 {
-		return 0, nil, "invalid knowledge key"
-	}
-	return userID, knowledgeIdentity{userID, parts[1], version}, ""
+	return userID, identity, ""
 }
 
 func parseExactKey(prefix, key string) (int64, any, string) {
