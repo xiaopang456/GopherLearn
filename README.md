@@ -249,6 +249,17 @@ docker run -d --name gopherlearn-redis -p 127.0.0.1:16360:6379 \
 >
 > `redis.integrated.conf.local` 里的 `requirepass` 必须是**一个未加引号的词**、长度 ≥ 32 字节。
 
+Redis 里存的是**可重建的检索索引**，不是业务数据。索引比记录少块时，检索只会少给证据，不会报错——所以后端启动时会自己比一次（`[knowledgeConfig].startupIndexAudit.mode`，默认 `audit`，只把结果写进日志和指标）。比的是两件事，因为它们会各自出问题：**每个文档**在 Redis 里的块数对不对得上记录，以及**搜索索引本身**还在不在、它自报的文档数和这些键的个数是否一致。搜索索引被删掉时每个块都还在，只比块数会把它报成"一致"，而此时检索一条证据也返回不了。
+
+搜索索引本身不一致时**不会**批量退回文档：块都在的文档不算缺块。其中只有"索引没了"会被自动补回——装配检索服务时、以及下一次索引任何文档时都会自己把索引创建出来；而 `num_docs` 与键数不符、schema 不符、仍在索引中、有索引失败这几类**不会自动修复**，要运维按报出来的内容处理。随时也可以手工查一次，**只读，不删键、不建索引、不重建文档**：
+
+```bash
+# 在仓库根目录执行；go -C 会把程序的工作目录切到 v2/，所以配置写成 ../config.integrated.toml.local
+go -C v2 run ./cmd/indexaudit -config ../config.integrated.toml.local
+```
+
+输出里每个缺块的文档都带一条重建命令：`POST /api/v1/knowledge/documents/<id>/reindex`；索引本身的问题逐条写成 `index_problem="……"`，其中 `current index "gopherai_knowledge_chunks_v3_idx" does not exist` 就是"块都在、索引没了"。
+
 #### Redis 持久化
 
 检索索引在 Redis 里，MySQL 里只记着「这个文档已经就绪」。所以 Redis 重启后如果索引是旧的或
