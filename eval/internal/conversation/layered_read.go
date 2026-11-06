@@ -219,7 +219,17 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	if err != nil {
 		return read, err
 	}
-	settings.Config.AgentConfig.SummarySegmentMode = "on"
+	// This harness builds one arm: the layered state read back into the window.
+	// The two baseline arms - the old rolling summary, and a window that simply
+	// drops what does not fit - are different assembly paths, and a driver that
+	// pasted their budgets onto this one would spend model calls generating
+	// segments and then render empty blocks from budgets meant for another arm.
+	// Refusing is the honest answer until those paths exist here.
+	mode := settings.Config.AgentConfig.SummarySegmentMode
+	if err := requireLayeredArm(mode); err != nil {
+		return read, err
+	}
+	read.Mode = mode
 	// The diagnostics carry the mode in their labels, and the recorder's
 	// default is off. The product sets this at startup; a harness that did
 	// not would label an applied run's counters "off" and a reader would
@@ -713,7 +723,30 @@ func renderWindowPromptFor(window agent.ContextWindow,
 		return window, false, nil
 	}
 	window.Messages[0] = schema.SystemMessage(rendered)
+	// The budget describes the prompt that will be sent, not the one the
+	// builder assembled. The product recomputes these three fields for the same
+	// reason (runner.go, renderWindowPrompt); a report that kept the assembled
+	// numbers would publish a system cost nobody paid.
+	window.Budget.System = agent.MessageTokenCost(rendered)
+	window.Budget.Assembled = window.Budget.Assembled - agent.MessageTokenCost(base) + window.Budget.System
+	window.Budget.ProjectedInput = window.Budget.Assembled + window.Budget.EvidenceReserved
 	return window, true, nil
+}
+
+// requireLayeredArm refuses a configuration this harness cannot run.
+//
+// The driver builds one arm: the layered state read back into the window. The
+// two baseline arms - the old rolling summary, and a window that simply drops
+// what does not fit - are different assembly paths. A driver that pasted their
+// budgets onto this one would spend model calls generating segments and then
+// render empty blocks from budgets meant for another arm, and the result would
+// look like a measurement rather than a mistake.
+func requireLayeredArm(mode string) error {
+	if mode == agent.SummarySegmentModeOn {
+		return nil
+	}
+	return fmt.Errorf("this harness measures the layered read-back arm only; "+
+		"the configuration asks for summarySegmentMode=%q, whose assembly path is not built here", mode)
 }
 
 // buildLayeredReadWindow assembles the window the way the product does.
@@ -746,6 +779,12 @@ func buildLayeredReadWindow(ctx context.Context, s *Sandbox, repository string,
 	if err != nil {
 		return agent.ContextWindow{}, err
 	}
+	// The preselector runs on the same numbers as the block that renders its
+	// answer, exactly as the product entry does. Left at its own defaults it
+	// would hand the renderer more segments than fit, and the renderer keeps the
+	// newest rather than the highest ranked.
+	preselector.UseLimits(agent.SummarySegmentPreselectLimits(
+		config.ContextMaxRetrievedSegmentTokens, config.ContextMaxSegmentTokens))
 	provider, err := agent.NewDatabaseLayeredSummaryProvider(
 		sessiondao.NewRepository(s.db), preselector, agent.DefaultResidentSummarySegments)
 	if err != nil {

@@ -99,3 +99,25 @@ func TestAScaledConfigIsOptional(t *testing.T) {
 		t.Fatalf("an absent configuration failed: %v", err)
 	}
 }
+
+// The harness runs one arm, and says so instead of pretending.
+//
+// A baseline configuration is a valid product configuration and an invalid
+// input here: its window is assembled by a path this driver does not build. It
+// used to be overwritten to the layered mode, which spent the segment-writing
+// calls first and then rendered empty blocks from budgets that belonged to
+// another arm - a wrong answer that looked like a result.
+func TestTheHarnessRefusesAnArmItCannotBuild(t *testing.T) {
+	if err := requireLayeredArm("on"); err != nil {
+		t.Fatalf("the layered arm was refused: %v", err)
+	}
+	for _, mode := range []string{"off", "shadow", ""} {
+		err := requireLayeredArm(mode)
+		if err == nil {
+			t.Fatalf("mode %q was accepted", mode)
+		}
+		if !strings.Contains(err.Error(), "read-back arm only") {
+			t.Fatalf("mode %q produced %v, want an error naming the arm", mode, err)
+		}
+	}
+}
