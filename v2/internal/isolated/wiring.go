@@ -24,6 +24,7 @@ import (
 	memoryDAO "GopherAI/dao/memory"
 	"GopherAI/dao/message"
 	sessionDAO "GopherAI/dao/session"
+	summarysegmentdao "GopherAI/dao/summarysegment"
 	"GopherAI/model"
 	agentService "GopherAI/service/agent"
 	agentTool "GopherAI/service/agent/tool"
@@ -452,6 +453,27 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	if err != nil {
 		return nil, fmt.Errorf("initialize summary segment assembly: %v", err)
 	}
+	// The segments' derived search vector.
+	//
+	// The index is created in every mode, like the episode index: it is the
+	// instrument the segments are found with, and a deployment that has not
+	// turned the mode on has no segments to put in it. Its writer is attached
+	// only when the write path exists.
+	summarySegmentIndex, indexErr := summarysegmentdao.NewRedisSummarySegmentIndex(redis.Rdb, redis.SummarySegmentVectorDimension)
+	if indexErr != nil {
+		log.Printf("summary segment index disabled: %v", indexErr)
+	} else if indexErr = summarySegmentIndex.EnsureIndex(appCtx); indexErr != nil {
+		log.Printf("summary segment index disabled: ensure index: %v", indexErr)
+	} else if summarySegmentAssembly.Enabled() {
+		indexer, buildErr := agentService.NewSummarySegmentIndexer(summarySegmentIndex,
+			sessionDAO.DefaultRepository(), runtime.embedder, redis.SummarySegmentVectorDimension)
+		if buildErr != nil {
+			log.Printf("summary segment index writer disabled: %v", buildErr)
+		} else {
+			summarySegmentAssembly.UseIndexPublisher(indexer)
+			summarySegmentAssembly.UseIndexRepairer(indexer)
+		}
+	}
 	var knowledgeTools agentService.ToolRegistry = agentService.StaticToolRegistry{}
 	var knowledgeRegistry *agentTool.Registry
 	if conf.AgentConfig.MaxToolCalls > 0 {
@@ -641,6 +663,12 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 			if browseErr != nil {
 				return nil, fmt.Errorf("initialize agent summary segment browse tool: %v", browseErr)
 			}
+			if summarySegmentIndex != nil {
+				// A segment the model opened is a segment the learner is
+				// asking about, and the next turn should find it in front of
+				// them without being asked again.
+				browseTools.UseRecentUse(summarySegmentIndex)
+			}
 			registries = append(registries, browseTools)
 		}
 		if memoryReadMode.UsesMemorySearchTool() {
@@ -767,13 +795,27 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	// The layered summary's read side. It is attached only in the applied
 	// mode: the off and the shadow modes send exactly what they sent before.
 	if summarySegmentAssembly.Applies() {
-		// The preselector runs on the lexical channel alone. The vector
-		// channel needs an index of the segment vectors, and nothing writes
-		// that index yet, so a searcher here would find nothing and look
-		// like a search that failed.
-		preselector, preselectErr := agentService.NewSummarySegmentPreselector(nil, nil)
+		// The preselection runs on two channels: the words of the question
+		// and the meaning of it. The vector channel needs the index the
+		// segments are written to, and without it the preselection runs on
+		// the words alone - a narrower selection, not a broken one.
+		var embed func(context.Context, string) ([]float32, error)
+		var vectorSearcher agentService.SummarySegmentVectorSearcher
+		if summarySegmentIndex != nil {
+			queryEmbedder, embedErr := memoryService.NewEinoQueryEmbedder(runtime.embedder, redis.SummarySegmentVectorDimension)
+			if embedErr != nil {
+				log.Printf("summary segment query embedder disabled: %v", embedErr)
+			} else {
+				embed = queryEmbedder.EmbedQuery
+				vectorSearcher = summarySegmentIndex
+			}
+		}
+		preselector, preselectErr := agentService.NewSummarySegmentPreselector(embed, vectorSearcher)
 		if preselectErr != nil {
 			return nil, fmt.Errorf("initialize summary segment preselector: %v", preselectErr)
+		}
+		if summarySegmentIndex != nil {
+			preselector.UseRecentUse(summarySegmentIndex)
 		}
 		layeredProvider, layeredErr := agentService.NewDatabaseLayeredSummaryProvider(
 			sessionDAO.DefaultRepository(), preselector, agentService.DefaultResidentSummarySegments)

@@ -45,6 +45,15 @@ func (f *fakeSegmentReader) ListSummarySegments(_ context.Context, _ int64, _ st
 	return f.segments, nil
 }
 
+func (f *fakeSegmentReader) GetSummarySegment(_ context.Context, _ int64, _ string, seq int) (*model.SessionSummarySegment, error) {
+	for index := range f.segments {
+		if f.segments[index].Seq == seq {
+			return &f.segments[index], nil
+		}
+	}
+	return nil, model.ErrSummarySegmentNotFound
+}
+
 func (f *fakeSegmentReader) GetSummarySegmentWatermark(_ context.Context, _ int64, _ string) (uint, int, error) {
 	return f.watermark, len(f.segments), nil
 }

@@ -226,3 +226,101 @@ func (r *Repository) DeleteSummarySegments(ctx context.Context, userID int64, se
 		Where("user_id = ? AND session_id = ?", userID, sessionID).
 		Delete(&model.SessionSummarySegment{}).Error
 }
+
+// UpdateSummarySegmentIndexStatus records whether the segment's derived
+// search vector is in place.
+//
+// The status is the segment's own record of the derived view, and it is what
+// the repair sweep reads: a segment whose status is not "indexed" is one the
+// index does not hold, whatever the index says about itself.
+func (r *Repository) UpdateSummarySegmentIndexStatus(ctx context.Context, userID int64, sessionID string,
+	seq int, status string) error {
+	if r == nil || r.db == nil {
+		return fmt.Errorf("session repository is not initialized")
+	}
+	switch status {
+	case model.SessionSummarySegmentIndexPending, model.SessionSummarySegmentIndexIndexed,
+		model.SessionSummarySegmentIndexFailed:
+	default:
+		return fmt.Errorf("unknown summary segment index status %q", status)
+	}
+	return r.db.WithContext(ctx).
+		Model(&model.SessionSummarySegment{}).
+		Where("user_id = ? AND session_id = ? AND seq = ?", userID, sessionID, seq).
+		Update("index_status", status).Error
+}
+
+// ListSummarySegmentsForUser returns one user's segments, oldest first.
+//
+// It is the rebuild's source: the index is derived from these rows, so a lost
+// index is repaired by reading them again.
+func (r *Repository) ListSummarySegmentsForUser(ctx context.Context, userID int64, limit int) ([]model.SessionSummarySegment, error) {
+	if r == nil || r.db == nil {
+		return nil, fmt.Errorf("session repository is not initialized")
+	}
+	if limit <= 0 {
+		limit = 1000
+	}
+	var segments []model.SessionSummarySegment
+	if err := r.db.WithContext(ctx).
+		Where("user_id = ?", userID).
+		Order("session_id ASC, seq ASC").Limit(limit).
+		Find(&segments).Error; err != nil {
+		return nil, err
+	}
+	return segments, nil
+}
+
+// CountSummarySegmentsForUser counts one user's segments.
+func (r *Repository) CountSummarySegmentsForUser(ctx context.Context, userID int64) (int, error) {
+	if r == nil || r.db == nil {
+		return 0, fmt.Errorf("session repository is not initialized")
+	}
+	var total int64
+	if err := r.db.WithContext(ctx).
+		Model(&model.SessionSummarySegment{}).
+		Where("user_id = ?", userID).Count(&total).Error; err != nil {
+		return 0, err
+	}
+	return int(total), nil
+}
+
+// CountSummarySegments counts every segment.
+//
+// It is the cheap half of the repair's check: the whole table against the
+// whole index. The two agree in the normal case, and the per-user walk only
+// runs when they do not.
+func (r *Repository) CountSummarySegments(ctx context.Context) (int, error) {
+	if r == nil || r.db == nil {
+		return 0, fmt.Errorf("session repository is not initialized")
+	}
+	var total int64
+	if err := r.db.WithContext(ctx).
+		Model(&model.SessionSummarySegment{}).
+		Count(&total).Error; err != nil {
+		return 0, err
+	}
+	return int(total), nil
+}
+
+// ListSummarySegmentOwners returns the users who have segments.
+//
+// It is the repair sweep's starting point: the sweep compares each user's
+// rows in the index with the rows MySQL holds, and a user with no segments
+// has nothing to compare.
+func (r *Repository) ListSummarySegmentOwners(ctx context.Context, limit int) ([]int64, error) {
+	if r == nil || r.db == nil {
+		return nil, fmt.Errorf("session repository is not initialized")
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	var owners []int64
+	if err := r.db.WithContext(ctx).
+		Model(&model.SessionSummarySegment{}).
+		Distinct("user_id").Order("user_id ASC").Limit(limit).
+		Pluck("user_id", &owners).Error; err != nil {
+		return nil, err
+	}
+	return owners, nil
+}
