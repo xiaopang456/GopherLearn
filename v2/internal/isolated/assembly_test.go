@@ -183,7 +183,7 @@ func dependencies(t *testing.T, db *gorm.DB, chat *captureModel, chunks *testChu
 		client := redisclient.NewClient(&redisclient.Options{Addr: "offline.invalid:6379", MaxRetries: -1})
 		client.AddHook(redisTransport{})
 		return client, nil
-	}}, ChatModel: func(context.Context, *Settings) (modelcomponent.ToolCallingChatModel, error) { return chat, nil }, Embedder: func(context.Context, *config.Config) (embedding.Embedder, error) {
+	}}, ChatModel: func(context.Context, *Settings) (modelcomponent.ToolCallingChatModel, error) { return chat, nil }, JSONChatModel: func(context.Context, *Settings) (modelcomponent.ToolCallingChatModel, error) { return chat, nil }, Embedder: func(context.Context, *config.Config) (embedding.Embedder, error) {
 		return &retrievalFakeEmbedder{dimension: 1024}, nil
 	}, Chunks: func(*redisclient.Client, int) (ChunkStore, error) { return chunks, nil }}
 }

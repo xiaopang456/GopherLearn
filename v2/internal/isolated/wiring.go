@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"GopherAI/common/aihelper"
 	myemail "GopherAI/common/email"
 	"GopherAI/common/memoryrecall"
 	"GopherAI/common/mysql"
@@ -42,6 +41,7 @@ import (
 	userService "GopherAI/service/user"
 
 	"github.com/cloudwego/eino/components/embedding"
+	modelcomponent "github.com/cloudwego/eino/components/model"
 )
 
 // knowledgeRetriever is the one method the agent's knowledge tool and the learning evidence
@@ -507,7 +507,10 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	// decides both what is written and what is sent, and a deployment that
 	// wrote the segments without reading them would pay for a model call per
 	// batch and answer nothing.
-	summarySegmentAssembly, err := buildSummarySegmentAssembly(appCtx, conf)
+	summarySegmentAssembly, err := buildSummarySegmentAssembly(appCtx, conf,
+		func(c context.Context) (modelcomponent.ToolCallingChatModel, error) {
+			return deps.JSONChatModel(c, settings)
+		})
 	if err != nil {
 		return nil, fmt.Errorf("initialize summary segment assembly: %v", err)
 	}
@@ -1266,7 +1269,8 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 // The mode is recorded on the counters before anything is assembled, so the
 // metrics carry it from the first attempt. A shadow run and an applied run
 // answer different questions, and their numbers have to be told apart.
-func buildSummarySegmentAssembly(ctx context.Context, conf *config.Config) (*agentService.SummarySegmentAssembly, error) {
+func buildSummarySegmentAssembly(ctx context.Context, conf *config.Config,
+	jsonChatModel func(context.Context) (modelcomponent.ToolCallingChatModel, error)) (*agentService.SummarySegmentAssembly, error) {
 	settings, err := agentService.SummarySegmentAssemblyConfigFromSettings(conf.AgentConfig)
 	if err != nil {
 		return nil, err
@@ -1280,7 +1284,14 @@ func buildSummarySegmentAssembly(ctx context.Context, conf *config.Config) (*age
 	// back unparseable cost the whole stretch of turns. The answer path keeps
 	// the model it had: one response format for both would put every answer
 	// in JSON.
-	segmentModel, err := aihelper.NewJSONToolCallingChatModel(ctx)
+	//
+	// The model comes from this entry's own factory, not from the environment:
+	// the key, the model name and the endpoint are the operator's, and this
+	// entry refuses environment credentials everywhere else.
+	if jsonChatModel == nil {
+		return nil, fmt.Errorf("segment json model factory must be explicit")
+	}
+	segmentModel, err := jsonChatModel(ctx)
 	if err != nil {
 		return nil, err
 	}

@@ -28,24 +28,50 @@ type Dependencies struct {
 	Clock          func() time.Time
 	Infrastructure Infrastructure
 	ChatModel      func(context.Context, *Settings) (modelcomponent.ToolCallingChatModel, error)
-	Embedder       func(context.Context, *config.Config) (embedding.Embedder, error)
-	Chunks         func(*redisclient.Client, int) (ChunkStore, error)
+	// JSONChatModel is the same model, asked for a JSON object by the
+	// provider. It is a second factory rather than a flag because the shape is
+	// fixed when the client is built, not when a call is made.
+	//
+	// It has to come from the same place as ChatModel. This entry refuses
+	// environment credentials on purpose (settings.go), so a segment writer
+	// that built itself from OPENAI_* would either refuse to start or spend a
+	// different key and endpoint than the one the operator configured.
+	JSONChatModel func(context.Context, *Settings) (modelcomponent.ToolCallingChatModel, error)
+	Embedder      func(context.Context, *config.Config) (embedding.Embedder, error)
+	Chunks        func(*redisclient.Client, int) (ChunkStore, error)
+}
+
+// entryChatModel builds the configured model, optionally asking for JSON.
+func entryChatModel(ctx context.Context, s *Settings,
+	responseFormat *openai.ChatCompletionResponseFormat) (modelcomponent.ToolCallingChatModel, error) {
+	// The model's own thinking switch is the one every call inherits unless it
+	// carries its own. Calls that carry one replace this table, and calls that
+	// carry none - the summary, the episode projection, the support verifier,
+	// the relation classifier - keep it, so it has to name the provider's
+	// dialect.
+	dialect, err := config.NormalizeChatThinkingDialect(s.Config.RagModelConfig.RagChatThinkingDialect)
+	if err != nil {
+		return nil, err
+	}
+	return openai.NewChatModel(ctx, &openai.ChatModelConfig{
+		BaseURL:        s.Entry.ChatBaseURL,
+		Model:          s.Entry.ChatModel,
+		APIKey:         s.Entry.ChatKey,
+		ExtraFields:    aihelper.ThinkingExtraFields(dialect, false),
+		ResponseFormat: responseFormat,
+	})
 }
 
 func ProductionDependencies(settings *Settings) Dependencies {
 	return Dependencies{
 		Infrastructure: ProductionInfrastructure(),
 		ChatModel: func(ctx context.Context, s *Settings) (modelcomponent.ToolCallingChatModel, error) {
-			// The model's own thinking switch is the one every call inherits
-			// unless it carries its own. Calls that carry one replace this
-			// table, and calls that carry none - the summary, the episode
-			// projection, the support verifier, the relation classifier - keep
-			// it, so it has to name the provider's dialect.
-			dialect, err := config.NormalizeChatThinkingDialect(s.Config.RagModelConfig.RagChatThinkingDialect)
-			if err != nil {
-				return nil, err
-			}
-			return openai.NewChatModel(ctx, &openai.ChatModelConfig{BaseURL: s.Entry.ChatBaseURL, Model: s.Entry.ChatModel, APIKey: s.Entry.ChatKey, ExtraFields: aihelper.ThinkingExtraFields(dialect, false)})
+			return entryChatModel(ctx, s, nil)
+		},
+		JSONChatModel: func(ctx context.Context, s *Settings) (modelcomponent.ToolCallingChatModel, error) {
+			return entryChatModel(ctx, s, &openai.ChatCompletionResponseFormat{
+				Type: openai.ChatCompletionResponseFormatTypeJSONObject,
+			})
 		},
 		Embedder: func(ctx context.Context, c *config.Config) (embedding.Embedder, error) {
 			return embeddingArk.NewEmbedder(ctx, &embeddingArk.EmbeddingConfig{BaseURL: c.RagEmbeddingBaseURL, Model: c.RagEmbeddingModel, APIKey: c.RagEmbeddingAPIKey})
