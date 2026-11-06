@@ -121,3 +121,26 @@ func TestTheHarnessRefusesAnArmItCannotBuild(t *testing.T) {
 		}
 	}
 }
+
+// A run that names no configuration is this harness measuring its own arm.
+//
+// Without this, every existing invocation would break: the product's default
+// mode is off, and refusing it would make the tool unusable unless the caller
+// also wrote a file that restates the harness's own purpose.
+func TestARunWithoutAConfigurationRunsTheHarnessArm(t *testing.T) {
+	mode, err := resolveArm("off", false)
+	if err != nil {
+		t.Fatalf("a run with no file was refused: %v", err)
+	}
+	if mode != "on" {
+		t.Fatalf("the run uses mode %q, want the harness arm", mode)
+	}
+	// A file that names the arm is honoured as written.
+	if mode, err := resolveArm("on", true); err != nil || mode != "on" {
+		t.Fatalf("a file naming the arm produced %q, %v", mode, err)
+	}
+	// A file that names another arm is refused, not overridden.
+	if _, err := resolveArm("off", true); err == nil {
+		t.Fatal("a file naming another arm was overridden instead of refused")
+	}
+}

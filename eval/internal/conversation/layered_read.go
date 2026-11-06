@@ -225,9 +225,9 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	// pasted their budgets onto this one would spend model calls generating
 	// segments and then render empty blocks from budgets meant for another arm.
 	// Refusing is the honest answer until those paths exist here.
-	mode := settings.Config.AgentConfig.SummarySegmentMode
-	if err := requireLayeredArm(mode); err != nil {
-		return read, err
+	mode, armErr := resolveArm(settings.Config.AgentConfig.SummarySegmentMode, scaledConfig != "")
+	if armErr != nil {
+		return read, armErr
 	}
 	read.Mode = mode
 	// The diagnostics carry the mode in their labels, and the recorder's
@@ -747,6 +747,23 @@ func requireLayeredArm(mode string) error {
 	}
 	return fmt.Errorf("this harness measures the layered read-back arm only; "+
 		"the configuration asks for summarySegmentMode=%q, whose assembly path is not built here", mode)
+}
+
+// resolveArm is which mode the run will use.
+//
+// A run with no configuration file is this harness measuring its own arm, so the
+// arm's mode is the default. A run that names a file has said what it wants, and
+// a mode this harness cannot build is refused rather than overridden: silently
+// switching a baseline configuration to the layered mode is what produced model
+// calls nobody asked for and blocks rendered from another arm's budgets.
+func resolveArm(configuredMode string, hasConfiguration bool) (string, error) {
+	if !hasConfiguration {
+		return agent.SummarySegmentModeOn, nil
+	}
+	if err := requireLayeredArm(configuredMode); err != nil {
+		return "", err
+	}
+	return configuredMode, nil
 }
 
 // buildLayeredReadWindow assembles the window the way the product does.
