@@ -427,9 +427,11 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 	if runErr != nil {
 		reason, status := classifyRunError(runCtx, runErr)
 		terminalErr := s.finishFailedRun(runCtx, run, sink, status, reason, runErr)
-		publishCtx, cancelPublish := context.WithTimeout(context.WithoutCancel(runCtx), 2*time.Second)
-		_ = s.memory.PublishAgentRun(publishCtx, run.UserID, run.SessionID, run.ID, request.Question, runnerResult.ToolCalls, runnerResult.MemoryDraft != nil)
-		cancelPublish()
+		if policy.CarriesAnyCapability() {
+			publishCtx, cancelPublish := context.WithTimeout(context.WithoutCancel(runCtx), 2*time.Second)
+			_ = s.memory.PublishAgentRun(publishCtx, run.UserID, run.SessionID, run.ID, request.Question, runnerResult.ToolCalls, runnerResult.MemoryDraft != nil)
+			cancelPublish()
+		}
 		return result, terminalErr
 	}
 	assistantMessage := &model.Message{
@@ -448,14 +450,24 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 	}
 	run.Version = completed.Version
 	keeper.Stop()
-	episodeCtx, cancelEpisode := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-	if err := s.episodes.PublishConversationCompleted(episodeCtx, run.UserID, run.SessionID, persistedAssistant.ID); err != nil {
-		log.Printf("episode projection enqueue failed: session=%s error_type=%T", run.SessionID, err)
+	// A turn that carries no capability does not start the memory pipeline either.
+	//
+	// Both publishes below only write a debounced queue row, so they look free at the
+	// moment they run. They are not: the episode worker later generates a projection of
+	// this session with the chat model and embeds it, and the memory worker extracts
+	// from the run the same way. Leaving them in would make "this turn used no
+	// capability" true of the answer and false of the bill, which is the read-side
+	// bypass this run already closes, appearing again on the write side.
+	if policy.CarriesAnyCapability() {
+		episodeCtx, cancelEpisode := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		if err := s.episodes.PublishConversationCompleted(episodeCtx, run.UserID, run.SessionID, persistedAssistant.ID); err != nil {
+			log.Printf("episode projection enqueue failed: session=%s error_type=%T", run.SessionID, err)
+		}
+		cancelEpisode()
+		publishCtx, cancelPublish := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		_ = s.memory.PublishAgentRun(publishCtx, run.UserID, run.SessionID, run.ID, request.Question, runnerResult.ToolCalls, runnerResult.MemoryDraft != nil)
+		cancelPublish()
 	}
-	cancelEpisode()
-	publishCtx, cancelPublish := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-	_ = s.memory.PublishAgentRun(publishCtx, run.UserID, run.SessionID, run.ID, request.Question, runnerResult.ToolCalls, runnerResult.MemoryDraft != nil)
-	cancelPublish()
 	if err := sendEvent(ctx, sink, Event{
 		Type: EventRunCompleted, RunID: run.ID, TerminationReason: result.TerminationReason, UsedTopicKeys: append([]string{}, runnerResult.UsedTopicKeys...),
 		Content:     runnerResult.Answer,
