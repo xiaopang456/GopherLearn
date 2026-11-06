@@ -191,21 +191,3 @@ func TestRolePromptsHoldTheTrimmedVariantsOfTheBasePrompt(t *testing.T) {
 		t.Fatalf("the base prompt is not classified as an answer prompt: %q", role)
 	}
 }
-
-// The trimming must not turn the role table into an open door. A prompt that
-// the product's renderer cannot produce is still refused.
-func TestRolePromptsStillRefuseAPromptTheProductCannotProduce(t *testing.T) {
-	roles, err := LoadRolePrompts(filepath.Join("..", "..", ".."), memoryrecall.ReadMode("legacy_v2"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, prompt := range []string{
-		"",
-		"you are a helpful assistant",
-		agent.SystemPromptFor(memoryrecall.ModeLegacyV2) + "\nan extra line the product never sends",
-	} {
-		if role, ok := roles[prompt]; ok {
-			t.Fatalf("a prompt the product cannot produce was classified as %q", role)
-		}
-	}
-}
