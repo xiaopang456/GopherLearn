@@ -24,12 +24,22 @@ func (m *scriptedChatModel) next(ctx context.Context, opts ...modelcomponent.Opt
 	m.calls++
 	call := m.calls
 	forbiddenAnswer := m.forbiddenAnswer
+	respond := m.respond
 	m.mu.Unlock()
 	options := modelcomponent.GetCommonOptions(nil, opts...)
 	if forbiddenAnswer != "" && options.ToolChoice != nil && *options.ToolChoice == schema.ToolChoiceForbidden {
 		return schema.AssistantMessage(forbiddenAnswer, nil), nil
 	}
-	return m.respond(ctx, call)
+	return respond(ctx, call)
+}
+
+// setRespond replaces the script on a model the fixture has already assembled. The
+// field is read under the same mutex as the call count, so a test that arms a blocking
+// script and then sends a request is not racing the generation that reads it.
+func (m *scriptedChatModel) setRespond(respond func(context.Context, int) (*schema.Message, error)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.respond = respond
 }
 
 func (m *scriptedChatModel) Generate(ctx context.Context, _ []*schema.Message, opts ...modelcomponent.Option) (*schema.Message, error) {

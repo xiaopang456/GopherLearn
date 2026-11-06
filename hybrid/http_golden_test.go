@@ -49,11 +49,15 @@ func TestHTTPCompatibilityGoldenDoesNotReplaceOriginalGolden(t *testing.T) {
 	} else if runID == "" {
 		t.Fatalf("ordinary stream carried no run identity\n%s", sse)
 	}
-	// original_v2 is compared as structure rather than as numbers. It carries the
-	// whole RunResult, contextBudget included, and the assembly those numbers come
-	// from is still being changed by other work; what this golden owes a reader is
-	// that a conversation turn publishes the same fields an Agent turn does. The
-	// values belong to the budget tests, which can say what a number should be.
+	// The published result is compared as the values it carries: which basis this
+	// answer was given on, how the run ended, what it cost in calls, whether it cited
+	// anything. Those are the transport contract of a completed turn, and a golden
+	// that reduced them to their types could not fail when one of them changed.
+	//
+	// contextBudget is the exception, and the only one. Its numbers are this run's own
+	// arithmetic and the assembly producing them is still being changed by other work,
+	// so the golden pins their names and nesting and leaves the values to the budget
+	// tests, which can say what a number should be.
 	if normalized := normalizeSSE(t, sse); normalized != golden.SSE {
 		t.Fatalf("new ordinary SSE golden: %d\nnormalized actual: %q", status, normalized)
 	}

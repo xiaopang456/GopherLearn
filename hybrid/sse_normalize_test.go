@@ -11,11 +11,46 @@ import (
 // completed frame, and the persisted row id beside them. Those are identities, not
 // contract, so a byte-for-byte golden would be decided by a random uuid.
 //
-// The normalizer replaces exactly those fields and nothing else. It is deliberately
-// not a uuid sweep: an id-shaped string inside an answer, a title or a citation is
-// content, and replacing it would let a change to the content pass unnoticed. The
-// tests below pin that distinction, because a normalizer that over-replaces turns a
-// golden into a shape check that cannot fail.
+// The normalizer replaces exactly the fields named below and nothing else. It is
+// deliberately not a uuid sweep, and not a "reduce the result to its shape" sweep
+// either: an answer, an answer basis or a termination reason is what the completed
+// frame is for, and erasing it would turn the golden into a shape check that cannot
+// fail. The tests below pin both distinctions.
+
+// dynamicWireFields are the values a stream carries that are decided when this turn
+// runs rather than by the contract: the run's own identity, the persisted row id, the
+// block and draft ids derived from them, and wall-clock times. Both spellings are
+// listed because the wire uses snake_case while the published V2 result uses the Go
+// field's camelCase, and a normalizer that only knew one would leak the other into the
+// golden as a random uuid.
+var dynamicWireFields = map[string]string{
+	"run_id":         "<run_id>",
+	"runId":          "<run_id>",
+	"message_id":     "<message_id>",
+	"messageId":      "<message_id>",
+	"block_id":       "<block_id>",
+	"blockId":        "<block_id>",
+	"final_block_id": "<block_id>",
+	"finalBlockId":   "<block_id>",
+	"draft_id":       "<draft_id>",
+	"draftId":        "<draft_id>",
+	"created_at":     "<timestamp>",
+	"createdAt":      "<timestamp>",
+	"updated_at":     "<timestamp>",
+	"updatedAt":      "<timestamp>",
+	"valid_until":    "<timestamp>",
+	"validUntil":     "<timestamp>",
+}
+
+// structuralFields hold values no transport contract fixes. contextBudget is this run's
+// own arithmetic, and the assembly producing it is still being changed by other work,
+// so the golden compares its field names and nesting and leaves the numbers to the
+// budget tests, which can say what a number should be. It is the only such field, and
+// it is named here rather than inferred from "this value is a number".
+var structuralFields = map[string]bool{
+	"contextBudget":  true,
+	"context_budget": true,
+}
 
 func normalizeSSE(t *testing.T, body string) string {
 	t.Helper()
@@ -51,27 +86,16 @@ func normalizeSSE(t *testing.T, body string) string {
 	return out.String()
 }
 
-// normalizeFrameIdentities replaces this turn's identities with placeholders and
-// reduces original_v2 to its structure.
-//
-// original_v2 carries the whole RunResult, contextBudget included. Its numbers are
-// what the budget tests are for, and the assembly those numbers come from is still
-// being changed by other work, so the golden compares the field names and the nesting
-// and leaves the values to the tests that can say what a value should be.
 func normalizeFrameIdentities(value any) any {
 	switch typed := value.(type) {
 	case map[string]any:
 		normalized := make(map[string]any, len(typed))
 		for key, item := range typed {
-			switch key {
-			case "run_id", "runId":
-				normalized[key] = "<run_id>"
-			case "message_id", "messageId":
-				normalized[key] = "<message_id>"
-			case "created_at", "createdAt", "updated_at", "updatedAt":
-				normalized[key] = "<timestamp>"
-			case "original_v2":
-				normalized[key] = structureOf(key, item)
+			switch {
+			case dynamicWireFields[key] != "":
+				normalized[key] = dynamicWireFields[key]
+			case structuralFields[key]:
+				normalized[key] = structureOf(item)
 			default:
 				normalized[key] = normalizeFrameIdentities(item)
 			}
@@ -88,34 +112,24 @@ func normalizeFrameIdentities(value any) any {
 	}
 }
 
-// structureOf keeps the names and the nesting of a value and drops what it holds. An
-// empty array and a non-empty one stay different, because "this turn cited nothing"
-// is a fact about the turn and not about a number.
-//
-// An identity inside the structure stays a named placeholder rather than becoming
-// "<string>": the golden has to be able to say that original_v2 names the same run as
-// the frame around it, which is one of the checks this normalizer exists for.
-func structureOf(key string, value any) any {
-	switch key {
-	case "run_id", "runId":
-		return "<run_id>"
-	case "message_id", "messageId":
-		return "<message_id>"
-	case "created_at", "createdAt", "updated_at", "updatedAt":
-		return "<timestamp>"
-	}
+// structureOf keeps the names and the nesting of a value and drops what it holds. It
+// recurses into array elements rather than collapsing them, because "this turn cited
+// two sources, each with these fields" is part of what the budget's shape says; only the
+// values are left to the tests that can judge them.
+func structureOf(value any) any {
 	switch typed := value.(type) {
 	case map[string]any:
 		structure := make(map[string]any, len(typed))
-		for inner, item := range typed {
-			structure[inner] = structureOf(inner, item)
+		for key, item := range typed {
+			structure[key] = structureOf(item)
 		}
 		return structure
 	case []any:
-		if len(typed) == 0 {
-			return []any{}
+		items := make([]any, 0, len(typed))
+		for _, item := range typed {
+			items = append(items, structureOf(item))
 		}
-		return []any{"<array>"}
+		return items
 	case float64:
 		return "<number>"
 	case string:
@@ -129,7 +143,7 @@ func structureOf(key string, value any) any {
 
 func TestNormalizerReplacesIdentitiesAndNothingElse(t *testing.T) {
 	frame := `event: message.completed
-data: {"run_id":"1ee0e562-0b9c-4d83-b50e-647a2db0857f","message_id":"2","content":"回答里也有一个 1ee0e562-0b9c-4d83-b50e-647a2db0857f","publication":"validated_snapshot","original_v2":{"runId":"1ee0e562-0b9c-4d83-b50e-647a2db0857f","answer":"a","modelCalls":1,"sources":[],"contextBudget":{"system":325,"assembled":331},"usedTopicKeys":null}}
+data: {"run_id":"1ee0e562-0b9c-4d83-b50e-647a2db0857f","message_id":"2","content":"回答里也有一个 1ee0e562-0b9c-4d83-b50e-647a2db0857f","publication":"validated_snapshot","original_v2":{"runId":"1ee0e562-0b9c-4d83-b50e-647a2db0857f","answer":"a","modelCalls":1,"sources":[],"contextBudget":{"system":325,"assembled":331}}}
 
 `
 	got := normalizeSSE(t, frame)
@@ -139,35 +153,81 @@ data: {"run_id":"1ee0e562-0b9c-4d83-b50e-647a2db0857f","message_id":"2","content
 		// The id inside the answer text is content, and must survive.
 		`"content":"回答里也有一个 1ee0e562-0b9c-4d83-b50e-647a2db0857f"`,
 		`"publication":"validated_snapshot"`,
-		// original_v2 is reduced to names and nesting, so its numbers are gone...
-		`"modelCalls":"<number>"`,
+		// The budget is the one field reduced to names and nesting...
 		`"contextBudget":{"assembled":"<number>","system":"<number>"}`,
+		// ...while everything else the result publishes is compared as its value.
+		`"answer":"a"`,
+		`"modelCalls":1`,
 		`"sources":[]`,
-		// ...while its own run id is named rather than compared.
+		// The result's own run id is named rather than compared, so the golden can
+		// still say that it names the same run as the frame around it.
 		`"runId":"<run_id>"`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("normalized frame lost %s\ngot: %s", want, got)
 		}
 	}
-	for _, unwanted := range []string{`"modelCalls":1`, `"system":325`, `"assembled":331`} {
+	for _, unwanted := range []string{`"system":325`, `"assembled":331`} {
 		if strings.Contains(got, unwanted) {
-			t.Fatalf("a number inside original_v2 is still being compared: %s", unwanted)
+			t.Fatalf("a budget number the golden should not decide is still being compared: %s", unwanted)
 		}
+	}
+	// The uuid survives once, in the answer text where it is content. Had runId not been
+	// normalized it would survive twice, and the golden would be decided by a random id.
+	if count := strings.Count(got, "1ee0e562-0b9c-4d83-b50e-647a2db0857f"); count != 1 {
+		t.Fatalf("the run id appears %d times in the normalized frame, want 1: %s", count, got)
 	}
 	if strings.Count(got, "<run_id>") != 2 {
 		t.Fatalf("expected the frame's run_id and original_v2's runId, got %s", got)
 	}
 }
 
+// The completed frame is the transport contract for a finished turn: which basis the
+// answer was given on, how the run ended, whether it was a replay, what it cost in
+// calls. None of that is decided per run, so none of it may be normalized away - a
+// golden that could not fail on a changed termination reason would not be pinning the
+// contract it exists to pin.
+func TestNormalizerKeepsTheResultFieldsThatAreContract(t *testing.T) {
+	frame := `event: message.completed
+data: {"run_id":"run-a","original_v2":{"runId":"run-a","answer":"答案","answerBasis":"knowledge_fallback","knowledgeStatus":"not_required","knowledgeReason":"","terminationReason":"answered","replayed":true,"modelCalls":2,"toolCalls":1,"usedTopicKeys":["go"]}}
+
+`
+	got := normalizeSSE(t, frame)
+	for _, want := range []string{
+		`"answer":"答案"`,
+		`"answerBasis":"knowledge_fallback"`,
+		`"knowledgeStatus":"not_required"`,
+		`"terminationReason":"answered"`,
+		`"replayed":true`,
+		`"modelCalls":2`,
+		`"toolCalls":1`,
+		`"usedTopicKeys":["go"]`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("a contract value was normalized away, lost %s\ngot: %s", want, got)
+		}
+	}
+	// The point of keeping them: two turns that differ only in how they ended must not
+	// normalize to the same bytes.
+	other := strings.Replace(frame, `"terminationReason":"answered"`, `"terminationReason":"model_budget_closed"`, 1)
+	if normalizeSSE(t, other) == got {
+		t.Fatal("a changed termination reason normalizes to the same bytes")
+	}
+	if normalizeSSE(t, strings.Replace(frame, `"replayed":true`, `"replayed":false`, 1)) == got {
+		t.Fatal("a changed replay flag normalizes to the same bytes")
+	}
+}
+
 func TestNormalizerKeepsEmptyAndNonEmptyCollectionsApart(t *testing.T) {
 	empty := normalizeSSE(t, "event: message.completed\ndata: {\"original_v2\":{\"sources\":[]}}\n\n")
-	filled := normalizeSSE(t, "event: message.completed\ndata: {\"original_v2\":{\"sources\":[{\"citation\":1}]}}\n\n")
+	filled := normalizeSSE(t, "event: message.completed\ndata: {\"original_v2\":{\"sources\":[{\"citation\":1,\"docId\":\"原文.md\"}]}}\n\n")
 	if !strings.Contains(empty, `"sources":[]`) {
 		t.Fatalf("an empty collection was flattened: %s", empty)
 	}
-	if !strings.Contains(filled, `"sources":["<array>"]`) {
-		t.Fatalf("a non-empty collection was not marked: %s", filled)
+	// A cited source keeps its fields and their values: which document a turn cited is
+	// contract, and only the budget's numbers are left to their own tests.
+	if !strings.Contains(filled, `"sources":[{"citation":1,"docId":"原文.md"}]`) {
+		t.Fatalf("a non-empty collection lost its element structure: %s", filled)
 	}
 	if empty == filled {
 		t.Fatal("a turn that cited nothing and a turn that cited something normalize to the same bytes")

@@ -1,8 +1,6 @@
 package hybrid
 
 import (
-	"io"
-	"github.com/google/uuid"
 	"GopherAI/common/code"
 	"GopherAI/common/mysql"
 	"GopherAI/common/rag"
@@ -21,8 +19,10 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/xiaopang456/GopherLearn/conversation"
 	"gorm.io/gorm"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -622,7 +622,7 @@ func (s *httpSurface) history(ctx context.Context, uid int64, sid string) ([]any
 		}
 		for i := len(pages) - 1; i >= 0; i-- {
 			for _, row := range pages[i] {
-					items = append(items, messageRowView(row))
+				items = append(items, messageRowView(row))
 			}
 		}
 		return nil
