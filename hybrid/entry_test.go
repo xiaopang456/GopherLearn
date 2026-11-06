@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"github.com/cloudwego/eino/schema"
 	redisclient "github.com/redis/go-redis/v9"
-	"github.com/xiaopang456/GopherLearn/conversation"
 	"gorm.io/gorm"
 	"io"
 	"net"
@@ -19,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -33,13 +33,6 @@ func entryConfigFile(t *testing.T, modify func(string) string) string {
 	text = strings.ReplaceAll(text, `chatKey = ""`, `chatKey = "synthetic-provider-never-sent"`)
 	text = strings.ReplaceAll(text, `embeddingApiKey = ""`, `embeddingApiKey = "synthetic-embedding-never-sent"`)
 	text = strings.ReplaceAll(text, `storageDir = "data/v2-isolated/knowledge"`, fmt.Sprintf("storageDir = %q", filepath.ToSlash(t.TempDir())))
-	text += `
-[ordinaryChat]
-GOPHERLEARN_AI_PROVIDER = "openai_compatible"
-GOPHERLEARN_OPENAI_BASE_URL = "https://ordinary.invalid/v1"
-GOPHERLEARN_OPENAI_API_KEY = "synthetic-ordinary-never-sent"
-GOPHERLEARN_OPENAI_MODEL = "ordinary-model"
-`
 	if modify != nil {
 		text = modify(text)
 	}
@@ -51,7 +44,7 @@ GOPHERLEARN_OPENAI_MODEL = "ordinary-model"
 }
 
 func TestHybridEntryInvalidConfigurationPrecedesFactories(t *testing.T) {
-	for _, kind := range []string{"missing", "syntax", "migration", "ordinary-missing", "ordinary-invalid", "ordinary-agent-key"} {
+	for _, kind := range []string{"missing", "syntax", "migration"} {
 		t.Run(kind, func(t *testing.T) {
 			path := ""
 			if kind != "missing" {
@@ -61,21 +54,12 @@ func TestHybridEntryInvalidConfigurationPrecedesFactories(t *testing.T) {
 						return text + "\n[broken"
 					case "migration":
 						return strings.Replace(text, "migrate = false", "migrate = true", 1)
-					case "ordinary-missing":
-						return strings.Split(text, "[ordinaryChat]")[0]
-					case "ordinary-invalid":
-						return text + "\nGOPHERLEARN_OPENAI_TIMEOUT = \"invalid\""
-					case "ordinary-agent-key":
-						return text + "\nGOPHERLEARN_AGENT_MAX_STEPS = \"1\""
 					}
 					return text
 				})
 			}
 			called := false
-			r := entryRuntime{dependencies: func(*entry.Settings) entry.Dependencies { called = true; return entry.Dependencies{} }, client: func(conversation.ClientConfig) (conversation.Model, error) {
-				called = true
-				return &ordinaryModel{}, nil
-			}, listen: func(string, string) (net.Listener, error) { called = true; return nil, nil }, server: entry.NewHTTPServer, shutdownTimeout: time.Second}
+			r := entryRuntime{dependencies: func(*entry.Settings) entry.Dependencies { called = true; return entry.Dependencies{} }, listen: func(string, string) (net.Listener, error) { called = true; return nil, nil }, server: entry.NewHTTPServer, shutdownTimeout: time.Second}
 			if err := runEntry(context.Background(), path, r); err == nil || called {
 				t.Fatalf("invalid config reached factory: %v called=%v", err, called)
 			}
@@ -83,7 +67,48 @@ func TestHybridEntryInvalidConfigurationPrecedesFactories(t *testing.T) {
 	}
 }
 
-func entryRuntimeFixture(t *testing.T, chat conversation.Model) (entryRuntime, *gorm.DB, *scriptedChatModel, *int, *int) {
+// [ordinaryChat] is refused by name, not skipped: a file that still carries a section
+// nothing builds a client from reads as though it still configured one, and the operator
+// would be changing a section with no effect. The refusal has to reach the log, because
+// the entry otherwise reports only that it refused to start.
+func TestHybridEntryRefusesTheRetiredOrdinaryChatSectionByName(t *testing.T) {
+	for _, shape := range []string{"populated", "empty"} {
+		t.Run(shape, func(t *testing.T) {
+			section := "[ordinaryChat]\nGOPHERLEARN_OPENAI_MODEL = \"ordinary-model\"\n"
+			if shape == "empty" {
+				// A section written and left blank is still a section the operator
+				// believes is in force.
+				section = "[ordinaryChat]\n"
+			}
+			path := entryConfigFile(t, func(text string) string { return text + "\n" + section })
+			called := false
+			r := entryRuntime{dependencies: func(*entry.Settings) entry.Dependencies { called = true; return entry.Dependencies{} }, listen: func(string, string) (net.Listener, error) { called = true; return nil, nil }, server: entry.NewHTTPServer, shutdownTimeout: time.Second}
+			err := runEntry(context.Background(), path, r)
+			if err == nil || called {
+				t.Fatalf("a retired section was accepted, or a factory still ran: %v called=%v", err, called)
+			}
+			if !strings.Contains(err.Error(), "ordinaryChat") {
+				t.Fatalf("the refusal does not name the section: %v", err)
+			}
+			// Printable: this is a key-naming refusal with no value in it.
+			printed := config.SafeRefusalMessage(err)
+			if printed == "" || !strings.Contains(printed, "[ordinaryChat]") || strings.Contains(printed, "ordinary-model") {
+				t.Fatalf("refusal is not printable as written: %q", printed)
+			}
+		})
+	}
+	// Positive control, so the case above is not "everything is refused": the same file
+	// without the section loads, and nothing in it mentions an ordinary client.
+	settings, err := loadEntry(entryConfigFile(t, nil))
+	if err != nil {
+		t.Fatalf("a configuration with no [ordinaryChat] was refused: %v", err)
+	}
+	if settings == nil || settings.v2 == nil {
+		t.Fatal("the settings the entry assembles from are missing")
+	}
+}
+
+func entryRuntimeFixture(t *testing.T) (entryRuntime, *gorm.DB, *scriptedChatModel, *int, *int) {
 	t.Helper()
 	db := sqliteDatabase(t)
 	t.Cleanup(func() { sqlDB, _ := db.DB(); _ = sqlDB.Close() })
@@ -95,23 +120,16 @@ func entryRuntimeFixture(t *testing.T, chat conversation.Model) (entryRuntime, *
 	openDB, openRedis := deps.Infrastructure.OpenDatabase, deps.Infrastructure.OpenRedis
 	deps.Infrastructure.OpenDatabase = func(ctx context.Context, c *config.Config) (*gorm.DB, error) { opens++; return openDB(ctx, c) }
 	deps.Infrastructure.OpenRedis = func(c *config.Config) (*redisclient.Client, error) { redisOpens++; return openRedis(c) }
-	r := entryRuntime{dependencies: func(*entry.Settings) entry.Dependencies { return deps }, client: func(c conversation.ClientConfig) (conversation.Model, error) {
-		if c.Model != "ordinary-model" || c.Timeout != 30*time.Second || c.MaxOutputTokens != 1024 || c.EnableThinking != nil {
-			t.Errorf("ordinary client defaults drifted")
-		}
-		return chat, nil
-	}, listen: net.Listen, server: entry.NewHTTPServer, shutdownTimeout: time.Second}
+	r := entryRuntime{dependencies: func(*entry.Settings) entry.Dependencies { return deps }, listen: net.Listen, server: entry.NewHTTPServer, shutdownTimeout: time.Second}
 	return r, db, agent, &opens, &redisOpens
 }
 
 func TestHybridEntryFailuresReleaseOriginalResources(t *testing.T) {
-	for _, stage := range []string{"model", "assembly", "listen"} {
+	for _, stage := range []string{"assembly", "listen"} {
 		t.Run(stage, func(t *testing.T) {
-			r, db, _, opens, _ := entryRuntimeFixture(t, &ordinaryModel{})
+			r, db, _, opens, _ := entryRuntimeFixture(t)
 			failure := errors.New("synthetic entry failure")
 			switch stage {
-			case "model":
-				r.client = func(conversation.ClientConfig) (conversation.Model, error) { return nil, failure }
 			case "assembly":
 				previous := r.dependencies
 				r.dependencies = func(s *entry.Settings) entry.Dependencies {
@@ -124,12 +142,6 @@ func TestHybridEntryFailuresReleaseOriginalResources(t *testing.T) {
 			}
 			if err := runEntry(context.Background(), entryConfigFile(t, nil), r); !errors.Is(err, failure) {
 				t.Fatalf("failure lost: %v", err)
-			}
-			if stage == "model" {
-				if *opens != 0 {
-					t.Fatal("model failure opened database")
-				}
-				return
 			}
 			if *opens != 1 {
 				t.Fatal("duplicate database open")
@@ -155,7 +167,7 @@ func (l failingCloseListener) Close() error {
 }
 
 func TestHybridEntryShutdownPreservesCloseError(t *testing.T) {
-	r, db, _, _, _ := entryRuntimeFixture(t, &ordinaryModel{})
+	r, db, _, _, _ := entryRuntimeFixture(t)
 	failure := errors.New("synthetic listener close failure")
 	listening := make(chan string, 1)
 	r.listen = func(network, address string) (net.Listener, error) {
@@ -230,8 +242,28 @@ func socketJSON(t *testing.T, base, method, path, body, token string) (int, map[
 func TestHybridEntrySocketUsesSameHandlerAndBoundedShutdown(t *testing.T) {
 	for _, timeout := range []bool{false, true} {
 		t.Run(fmt.Sprint("timeout=", timeout), func(t *testing.T) {
-			blocked := &blockedHTTPModel{base: &ordinaryModel{}, entered: make(chan struct{}), release: make(chan struct{})}
-			r, db, agent, opens, redisOpens := entryRuntimeFixture(t, blocked)
+			r, db, agent, opens, redisOpens := entryRuntimeFixture(t)
+			// The in-flight request that shutdown has to drain is a conversation turn,
+			// and a conversation turn is generated by the V2 model. The gate keeps the
+			// earlier turns in this test fast and blocks only the last one.
+			gate := make(chan struct{})
+			release := make(chan struct{})
+			var releaseOnce sync.Once
+			releaseNow := func() { releaseOnce.Do(func() { close(release) }) }
+			defer releaseNow()
+			agent.setRespond(func(ctx context.Context, _ int) (*schema.Message, error) {
+				select {
+				case <-gate:
+					select {
+					case <-release:
+						return schema.AssistantMessage("回答：before-complete", nil), nil
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					}
+				default:
+					return schema.AssistantMessage("agent response", nil), nil
+				}
+			})
 			r.shutdownTimeout = 100 * time.Millisecond
 			listening := make(chan string, 1)
 			ctx, cancel := context.WithCancel(context.Background())
@@ -280,14 +312,19 @@ func TestHybridEntrySocketUsesSameHandlerAndBoundedShutdown(t *testing.T) {
 			if status != 200 || sent["error"] != nil {
 				t.Fatalf("ordinary Send %d %v", status, sent)
 			}
+			// A conversation turn is one generation on the shared path and nothing on the
+			// retired ordinary model, which is what makes the counts below what they are.
+			if agent.CallCount() != 1 {
+				t.Fatalf("ordinary Send generated %d times, want 1", agent.CallCount())
+			}
 			_, created, _ = socketJSON(t, base, "POST", "/api/v1/sessions", `{"mode":"learning_agent","title":"Agent","requestId":"entry-agent-create"}`, token)
 			asid := created["data"].(map[string]any)["id"].(string)
 			status, run, _ := socketJSON(t, base, "POST", "/api/v1/sessions/"+asid+"/messages", agentBody("entry-agent-run", "hello"), token)
-			if status != 200 || run["error"] != nil || agent.CallCount() != 1 {
+			if status != 200 || run["error"] != nil || agent.CallCount() != 2 {
 				t.Fatalf("Agent Run %d %v", status, run)
 			}
 			status, _, stream := socketJSON(t, base, "POST", "/api/v1/sessions/"+asid+"/stream", publicStreamBody("entry-agent-stream", "hello"), token)
-			if status != 200 || !strings.Contains(stream, "event: message.completed") || !strings.Contains(stream, "agent response") || agent.CallCount() != 2 {
+			if status != 200 || !strings.Contains(stream, "event: message.completed") || !strings.Contains(stream, "agent response") || agent.CallCount() != 3 {
 				t.Fatalf("Agent SSE %d %s", status, stream)
 			}
 			for _, path := range []string{nativeMemoryPath, "/api/v1/knowledge/documents"} {
@@ -297,7 +334,7 @@ func TestHybridEntrySocketUsesSameHandlerAndBoundedShutdown(t *testing.T) {
 				}
 			}
 			status, _, raw := socketJSON(t, base, "POST", learningPath+"start-stream", learningJSON(map[string]string{"sessionId": asid, "topic": "Redis"}), token)
-			if status != 404 || raw != "" || agent.CallCount() != 2 {
+			if status != 404 || raw != "" || agent.CallCount() != 3 {
 				t.Fatal("learning SSE exclusion lost")
 			}
 			var tasks int64
@@ -313,19 +350,26 @@ func TestHybridEntrySocketUsesSameHandlerAndBoundedShutdown(t *testing.T) {
 				t.Fatal(err)
 			}
 			request.Header.Set("Authorization", "Bearer "+token)
+			close(gate)
 			response, err := http.DefaultClient.Do(request)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer response.Body.Close()
-			if first := readUntilDelta(t, response); !strings.Contains(first, "回答：before-complete") {
-				t.Fatal("ordinary SSE did not flush")
+			frames := collectSSEFrames(response.Body)
+			// The frame saying the turn has started is flushed while generation is still
+			// blocked, which is what leaves this request in flight for shutdown to drain.
+			// The answer is one validated snapshot and cannot arrive before the model
+			// returns, so it is not what this test waits for.
+			if first := frames.next(t, 10*time.Second); !strings.Contains(first, "event: message.started") {
+				t.Fatalf("ordinary SSE did not flush the run starting: %s", first)
 			}
-			<-blocked.entered
-			if !timeout {
-				close(blocked.release)
-				if _, err := io.ReadAll(response.Body); err != nil {
-					t.Fatal(err)
+			if timeout {
+				go frames.drain()
+			} else {
+				releaseNow()
+				if rest := frames.rest(); !strings.Contains(rest, `"content":"回答：before-complete"`) || !strings.Contains(rest, "event: message.completed") {
+					t.Fatalf("ordinary SSE did not finish: %s", rest)
 				}
 			}
 			start := time.Now()

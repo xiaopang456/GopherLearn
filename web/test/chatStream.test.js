@@ -16,7 +16,10 @@ function started(extra = {}) {
   return { kind: 'started', runId: '', messageId: '', ...extra }
 }
 function delta(text, extra = {}) {
-  return { kind: 'delta', delta: text, runId: '', messageId: '', ...extra }
+  // `message.delta` carries `content`: the whole answer as it currently stands after the
+  // server has validated it, not the fragment that just arrived. So `text` here is a
+  // snapshot, and a test that wants growing text passes growing snapshots.
+  return { kind: 'delta', content: text, runId: '', messageId: '', ...extra }
 }
 function completed(content = '', extra = {}) {
   return { kind: 'completed', content, runId: '', messageId: '', ...extra }
@@ -43,10 +46,10 @@ describe('reduceRun transitions', () => {
     expect(isTerminalPhase(state.phase)).toBe(true)
   })
 
-  it('concatenates deltas in arrival order, including multi-byte text', () => {
-    const steps = ['你', '好', '，', 'world 🦫\n']
+  it('shows the newest snapshot, including multi-byte text, and never the older one', () => {
+    const steps = ['你', '你好', '你好，', '你好，world 🦫\n']
     const state = steps.reduce(
-      (acc, piece) => reduceRun(acc, delta(piece)),
+      (acc, snapshot) => reduceRun(acc, delta(snapshot)),
       createRunState(BASE),
     )
     expect(state.text).toBe('你好，world 🦫\n')
@@ -82,7 +85,7 @@ describe('terminal states are final', () => {
   })
 
   it('a failed run keeps whatever text already arrived', () => {
-    const state = finish([delta('第一段 '), delta('第二段'), failure()])
+    const state = finish([delta('第一段 '), delta('第一段 第二段'), failure()])
     expect(state.phase).toBe(RunPhase.Failed)
     expect(state.text).toBe('第一段 第二段')
     expect(state.error).toEqual({ code: 'model_timeout', message: 'boom' })
@@ -125,7 +128,7 @@ describe('run ownership', () => {
     expect(state.serverRunId).toBe('')
 
     state = reduceRun(state, delta('a', { runId: 'srv-run-77' }))
-    state = reduceRun(state, delta('b', { runId: 'srv-run-77' }))
+    state = reduceRun(state, delta('ab', { runId: 'srv-run-77' }))
     state = reduceRun(state, completed('ab', { runId: 'srv-run-77' }))
 
     expect(state.text).toBe('ab')
@@ -181,7 +184,7 @@ describe('run ownership', () => {
     // An absent id is "not stated", which is different from "another run".
     let state = reduceRun(createRunState(BASE), started({ runId: 'srv-A' }))
     state = reduceRun(state, delta('one'))
-    state = reduceRun(state, delta(' two', { runId: '' }))
+    state = reduceRun(state, delta('one two', { runId: '' }))
     state = reduceRun(state, completed())
     expect(state.text).toBe('one two')
     expect(state.phase).toBe(RunPhase.Completed)
@@ -256,7 +259,7 @@ describe('toMessageStatus', () => {
  */
 describe('unrecognised events are counted, never interpreted', () => {
   function unknown(extra = {}) {
-    return { kind: 'unknown', runId: '', messageId: '', delta: '', content: '', sources: [], ...extra }
+    return { kind: 'unknown', runId: '', messageId: '', content: '', sources: [], ...extra }
   }
 
   it('leaves text, phase and error exactly where they were mid-stream', () => {
@@ -287,7 +290,7 @@ describe('unrecognised events are counted, never interpreted', () => {
       reduceRun(reduceRun(createRunState(BASE), started()), delta('完整回答')),
       completed(),
     )
-    const after = reduceRun(done, unknown({ content: '别的什么', delta: '拼接' }))
+    const after = reduceRun(done, unknown({ content: '别的什么' }))
 
     expect(after.phase).toBe(RunPhase.Completed)
     expect(after.text).toBe('完整回答')
@@ -307,5 +310,58 @@ describe('unrecognised events are counted, never interpreted', () => {
     expect(state.serverRunId).toBe('step-run')
     expect(state.text).toBe('')
     expect(state.ignoredEvents).toBe(2)
+  })
+})
+
+/**
+ * A turn publishes its answer as snapshots, not fragments: the server holds the whole
+ * answer until citations have been checked, and then restates it in `message.completed`.
+ * So every one of the shapes below has to leave the answer exactly once. Under the old
+ * append rule each of these doubled the text, and the learner would have read the answer
+ * twice over.
+ *
+ * `publication` (validated_snapshot / replay) is not part of what the reducer reads: it
+ * names where the text came from, and the text is the same either way.
+ */
+describe('a snapshot answer is never published twice', () => {
+  const answer = '先给结论：粘包出在缓冲区边界，不在协议。'
+
+  it('repeats the same snapshot without repeating the text', () => {
+    let state = reduceRun(createRunState(BASE), started())
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      state = reduceRun(state, delta(answer))
+    }
+    expect(state.text).toBe(answer)
+    expect(state.ignoredEvents).toBe(0)
+  })
+
+  it('does not double the answer when completed restates what already arrived', () => {
+    let state = reduceRun(createRunState(BASE), started())
+    state = reduceRun(state, delta(answer))
+    state = reduceRun(state, completed(answer))
+    expect(state.text).toBe(answer)
+    expect(state.phase).toBe(RunPhase.Completed)
+  })
+
+  it('carries a replayed answer exactly once', () => {
+    // The shape a replay actually has: nothing new is generated, so no delta arrives and
+    // the completed frame restates the stored answer.
+    let state = reduceRun(createRunState(BASE), started())
+    state = reduceRun(state, completed(answer))
+    expect(state.text).toBe(answer)
+    expect(state.ignoredEvents).toBe(0)
+
+    // And a client that resubscribes gets the same answer again, not twice of it.
+    const repeated = reduceRun(state, completed(answer))
+    expect(repeated.text).toBe(answer)
+    expect(repeated.ignoredEvents).toBe(state.ignoredEvents + 1)
+  })
+
+  it('leaves the shown text alone for a snapshot that carries none', () => {
+    // An empty `content` is "nothing is being restated", not "the answer is now empty".
+    // Clearing here would blank an answer the learner is already reading.
+    let state = reduceRun(createRunState(BASE), delta(answer))
+    state = reduceRun(state, delta(''))
+    expect(state.text).toBe(answer)
   })
 })

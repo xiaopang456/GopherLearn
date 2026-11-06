@@ -111,10 +111,16 @@ export function reduceRun(state, event) {
 
     case 'delta':
       if (isTerminalPhase(owned.phase)) return drop(owned)
+      // Not a fragment: the server publishes `content` as the whole validated answer as
+      // it currently stands, because an answer is checked (citations and all) before any
+      // of it is shown. So a delta *replaces* the text, and a snapshot that repeats -
+      // or repeats into the completed frame - cannot double it. A delta carrying no
+      // text leaves the transcript alone rather than emptying it; the server never
+      // publishes an empty answer, it substitutes a fallback sentence.
       return {
         ...owned,
         phase: RunPhase.Streaming,
-        text: owned.text + (typeof event.delta === 'string' ? event.delta : ''),
+        text: event.content ? event.content : owned.text,
       }
 
     case 'completed':

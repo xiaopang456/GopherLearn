@@ -38,7 +38,27 @@ func TestHTTPCompatibilityGoldenDoesNotReplaceOriginalGolden(t *testing.T) {
 	}
 	sid := createHTTP(t, app.Handler, token, "golden")
 	status, _, sse := requestHTTP(t, app.Handler, "POST", "/api/v1/sessions/"+sid+"/stream", `{"content":"golden"}`, token)
-	if status != 200 || sse != golden.SSE {
-		t.Fatalf("new ordinary SSE golden: %d %q", status, sse)
+	if status != 200 {
+		t.Fatalf("ordinary stream status: %d %q", status, sse)
+	}
+	// The identity is checked before it is normalized away, because normalizing a
+	// stream whose frames disagreed about which run they belong to would hide the
+	// one thing this turn has to get right.
+	if runID, problem := sseRunIdentity(sse); problem != "" {
+		t.Fatalf("ordinary stream identity: %s\n%s", problem, sse)
+	} else if runID == "" {
+		t.Fatalf("ordinary stream carried no run identity\n%s", sse)
+	}
+	// The published result is compared as the values it carries: which basis this
+	// answer was given on, how the run ended, what it cost in calls, whether it cited
+	// anything. Those are the transport contract of a completed turn, and a golden
+	// that reduced them to their types could not fail when one of them changed.
+	//
+	// contextBudget is the exception, and the only one. Its numbers are this run's own
+	// arithmetic and the assembly producing them is still being changed by other work,
+	// so the golden pins their names and nesting and leaves the values to the budget
+	// tests, which can say what a number should be.
+	if normalized := normalizeSSE(t, sse); normalized != golden.SSE {
+		t.Fatalf("new ordinary SSE golden: %d\nnormalized actual: %q", status, normalized)
 	}
 }

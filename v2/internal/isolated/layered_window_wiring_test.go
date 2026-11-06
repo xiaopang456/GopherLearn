@@ -3,6 +3,8 @@ package isolated
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	"GopherAI/model"
@@ -181,6 +183,58 @@ func TestTheOffModeSendsNeitherBlock(t *testing.T) {
 		if len(message.Content) >= len("Current state") && message.Content[:len("Current state")] == "Current state" {
 			t.Fatal("the board reached the window with the mode off")
 		}
+	}
+}
+
+// A switched-off turn is not an edge case any more: the ordinary conversation
+// - a legacy chat session - resolves to knowledge_disabled, so this is the
+// shape most turns have. The board and the segments still have to be in what
+// the model is given, because they are the conversation's own record and the
+// ceiling was about the learner's notes.
+//
+// The assertion is taken from the request the model received, not from the
+// builder's output: those are the same thing only while the runner renders the
+// window it built, and that is exactly the seam a mode can slip through.
+func TestATurnThatSwitchedOffTheLibraryStillSendsTheBoardAndTheSegments(t *testing.T) {
+	s := testSettings(t)
+	s.Config.AgentConfig.SummarySegmentMode = "on"
+	app, db, chat, token := newFixture(t, s, func(context.Context, int) (*schema.Message, error) {
+		return schema.AssistantMessage("你好", nil), nil
+	})
+	session := createSession(t, app, token, "create-off-turn")
+
+	var row model.Session
+	if err := db.Where("id = ?", session).First(&row).Error; err != nil {
+		t.Fatalf("read the session: %v", err)
+	}
+	mustSeedLayeredState(t, db, row.UserID, session)
+
+	body := fmt.Sprintf(`{"sessionId":%q,"requestId":%q,"question":%q,"knowledgePolicy":%q}`,
+		session, "run-off-turn", "我最初每天读多少页", "knowledge_disabled")
+	var result map[string]any
+	postJSON(t, app.Handler, "/api/v1/AI/agent/run", body, token, &result)
+	if result["runId"] == nil {
+		t.Fatalf("the switched-off turn did not produce a run: %v", result)
+	}
+
+	requests := chat.all()
+	if len(requests) == 0 {
+		t.Fatal("the switched-off turn never reached the model")
+	}
+	var board, segments bool
+	for _, message := range requests[len(requests)-1].Messages {
+		if message == nil {
+			continue
+		}
+		if strings.HasPrefix(message.Content, "Current state") {
+			board = true
+		}
+		if strings.HasPrefix(message.Content, "Summary segments") {
+			segments = true
+		}
+	}
+	if !board || !segments {
+		t.Fatalf("the switched-off turn was sent board=%t segments=%t", board, segments)
 	}
 }
 

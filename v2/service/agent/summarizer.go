@@ -30,9 +30,24 @@ var (
 	// rather than swallowed so the skip is visible in logs and metrics instead
 	// of looking like a session that never qualified.
 	ErrSummaryStageSkipped = errors.New("summary stage budget exhausted for this request")
+
+	// ErrSummaryPreviousUnusable means the stored summary cannot be read as a document
+	// of this schema, so compaction has nothing to build on. It is skipped rather than
+	// failed, and deliberately does not open a cooldown: the stored text is not going to
+	// become readable between two turns, so a cooldown would report the same standing
+	// cause as a transient one on every turn afterwards. The last good summary and the
+	// raw messages after its watermark are still handed to the turn, so the learner gets
+	// an answer - just one built without compaction.
+	ErrSummaryPreviousUnusable = errors.New("stored summary is not readable as this schema")
 )
 
 // SummaryFailureReason names why a compaction did not produce a summary.
+//
+// A new reason has to be added to the label list in
+// `v2/common/observability/summary.go` `SummaryOutcome` as well: that list is closed, and
+// a reason it does not know is counted as "other", which is how a new cause becomes
+// invisible in exactly the place a reader would look for it. The two lists cannot be
+// shared, because observability sits below this package.
 //
 // The vocabulary is small on purpose: the reason is counted, so every one of
 // them has to be something a deployment can act on.
@@ -60,6 +75,9 @@ const (
 	SummaryFailureStorage SummaryFailureReason = "storage"
 	// SummaryFailureEmpty is a summary that carried nothing worth keeping.
 	SummaryFailureEmpty SummaryFailureReason = "empty_output"
+	// SummaryFailurePreviousUnreadable is not a failure either: the stored summary
+	// could not be read as this schema, so compaction was skipped before any call.
+	SummaryFailurePreviousUnreadable SummaryFailureReason = "previous_unreadable"
 )
 
 // SummaryFailureReasonOf names the step a compaction failed at.
@@ -74,6 +92,8 @@ func SummaryFailureReasonOf(err error) SummaryFailureReason {
 	switch {
 	case errors.Is(err, ErrSummaryCoolingDown):
 		return SummaryFailureCooldown
+	case errors.Is(err, ErrSummaryPreviousUnusable):
+		return SummaryFailurePreviousUnreadable
 	case errors.Is(err, ErrSummaryStageSkipped):
 		return SummaryFailureSkipped
 	case errors.Is(err, ErrEmptySessionSummary):
@@ -528,6 +548,17 @@ func (p *RollingSummaryProvider) SessionSummary(ctx context.Context, input RunCo
 	}
 	if !p.shouldCompact(messages) || len(messages) <= p.config.RetainMessages {
 		return snapshot, nil
+	}
+	// Read the stored summary before spending a call on it, not after. The generator
+	// merges the previous document with the increment, and `decodeSummaryDocument`
+	// refuses a previous it cannot parse - so a row written as plain prose, or a damaged
+	// document, would cost one model call and then fail at the parse step, and record a
+	// failure that opens a cooldown on top. Skipping here spends neither.
+	if strings.TrimSpace(snapshot.Content) != "" {
+		if _, err := model.DecodeSessionSummaryDocument(snapshot.Content); err != nil {
+			p.reportOutcome(input.SessionID, ErrSummaryPreviousUnusable, SummaryFailurePreviousUnreadable)
+			return snapshot, ErrSummaryPreviousUnusable
+		}
 	}
 	failureKey := fmt.Sprintf("%d:%s", input.UserID, input.SessionID)
 	if p.coolingDown(failureKey) {

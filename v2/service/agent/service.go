@@ -271,6 +271,39 @@ func (s *Service) resolveThinking(requested *bool) bool {
 	return s.thinkingEnabled
 }
 
+// ResolveSessionPolicy turns what the request said into the one policy this run
+// will use, given what the session is allowed to reach.
+//
+// A value that is not one of the three known policies is refused instead of being
+// folded. The folding this replaces read a misspelt or stale "off" as "use the
+// library", which is a silent permission grab in the one direction that must not
+// be silent.
+//
+// The HTTP boundary calls it too, so an over-reach is answered 400 before a stream
+// starts rather than arriving as a failure frame inside one.
+//
+// A legacy chat session has no library to turn on: an absent value means the
+// conversation shape, and any value that asks for documents is refused rather than
+// quietly downgraded. Refusing it as invalid input is also what keeps the answer
+// honest - a client that believes it asked for the library and got a plain answer
+// would have no way to learn that this session was never granted one.
+func ResolveSessionPolicy(mode model.SessionMode, requested rag.KnowledgePolicy) (rag.KnowledgePolicy, error) {
+	resolved, err := rag.ResolveKnowledgePolicy(requested)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrInvalidRunRequest, err)
+	}
+	if mode != model.SessionModeAgent {
+		if resolved != "" && resolved != rag.KnowledgeDisabled {
+			return "", fmt.Errorf("%w: this session was never granted its knowledge base, so knowledgePolicy=%s cannot be honoured", ErrInvalidRunRequest, resolved)
+		}
+		return rag.KnowledgeDisabled, nil
+	}
+	if resolved == "" {
+		return rag.KnowledgePreferred, nil
+	}
+	return resolved, nil
+}
+
 func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (RunResult, error) {
 	if err := validateRunRequest(request); err != nil {
 		return RunResult{}, err
@@ -282,15 +315,25 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 	if err != nil {
 		return RunResult{}, err
 	}
-	if owned.Mode != model.SessionModeAgent {
-		return RunResult{}, ErrAgentSessionRequired
+	// A session's mode is its capability ceiling, not the type of turn it may
+	// contain: an Agent session can hold turns that use the library and turns that
+	// do not, while a legacy chat session may only hold the second kind. Nothing
+	// here changes a session's mode - widening what a stored conversation may read
+	// is an authorisation the user has to give, not something a request earns by
+	// asking.
+	policy, err := ResolveSessionPolicy(owned.Mode, request.KnowledgePolicy)
+	if err != nil {
+		return RunResult{}, err
 	}
 	requestKey := strings.TrimSpace(request.RequestID)
 	enableThinking := s.resolveThinking(request.EnableThinking)
+	// The effective policy is always in the identity, including when it is the
+	// switch being off. Identifying a turn by a field the request might have left
+	// out would give a turn that read the learner's documents and a turn that was
+	// told not to the same hash, and the replay path would answer the second
+	// question with the first one's answer.
 	digestInput := request.Question
-	if request.KnowledgePolicy != "" {
-		digestInput += "\x00knowledge_policy=" + string(request.KnowledgePolicy)
-	}
+	digestInput += "\x00knowledge_policy=" + string(policy)
 	digestInput += fmt.Sprintf("\x00enable_thinking=%t", enableThinking)
 	inputDigest := sha256.Sum256([]byte(digestInput))
 	now := time.Now()
@@ -336,11 +379,18 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 			episodeRecallReady = true
 		}
 	}
-	shadowCtx, cancelShadow := context.WithTimeout(context.WithoutCancel(runCtx), 2*time.Second)
-	if err := s.shadow.Observe(shadowCtx, owned.UserID, owned.ID, request.Question); err != nil {
-		log.Printf("episode shadow recall failed: session=%s error_type=%T", owned.ID, err)
+	// Shadow recall reaches the same retriever the injected path uses, so it pays
+	// for the same embedding, and it does that from outside the context builder -
+	// the builder's ceiling would not have stopped it. A capability-free turn is
+	// therefore not observed at all: an off turn that quietly indexed itself would
+	// be a turn that did the thing it was switched off for.
+	if policy.CarriesAnyCapability() {
+		shadowCtx, cancelShadow := context.WithTimeout(context.WithoutCancel(runCtx), 2*time.Second)
+		if err := s.shadow.Observe(shadowCtx, owned.UserID, owned.ID, request.Question); err != nil {
+			log.Printf("episode shadow recall failed: session=%s error_type=%T", owned.ID, err)
+		}
+		cancelShadow()
 	}
-	cancelShadow()
 
 	runID, userRole := run.ID, model.MessageAgentRunRoleUser
 	if err := s.messages.Create(runCtx, &model.Message{
@@ -357,7 +407,7 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 	runnerResult, runErr := s.runner.Run(runCtx, RunContext{
 		RunID: run.ID, LeaseToken: run.LeaseToken, InitialStepSequence: acquisition.NextStepSequence,
 		UserID: owned.UserID, UserName: owned.UserName,
-		SessionID: owned.ID, Question: request.Question, KnowledgePolicy: request.KnowledgePolicy,
+		SessionID: owned.ID, Question: request.Question, KnowledgePolicy: policy,
 		EnableThinking:           enableThinking,
 		CurrentSessionHasHistory: currentSessionHasHistory, EpisodeRecallReady: episodeRecallReady,
 		RequestID: request.RequestID, TopicConsent: request.TopicConsent,
@@ -391,9 +441,11 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 	if runErr != nil {
 		reason, status := classifyRunError(runCtx, runErr)
 		terminalErr := s.finishFailedRun(runCtx, run, sink, status, reason, runErr)
-		publishCtx, cancelPublish := context.WithTimeout(context.WithoutCancel(runCtx), 2*time.Second)
-		_ = s.memory.PublishAgentRun(publishCtx, run.UserID, run.SessionID, run.ID, request.Question, runnerResult.ToolCalls, runnerResult.MemoryDraft != nil)
-		cancelPublish()
+		if policy.CarriesAnyCapability() {
+			publishCtx, cancelPublish := context.WithTimeout(context.WithoutCancel(runCtx), 2*time.Second)
+			_ = s.memory.PublishAgentRun(publishCtx, run.UserID, run.SessionID, run.ID, request.Question, runnerResult.ToolCalls, runnerResult.MemoryDraft != nil)
+			cancelPublish()
+		}
 		return result, terminalErr
 	}
 	assistantMessage := &model.Message{
@@ -412,22 +464,42 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 	}
 	run.Version = completed.Version
 	keeper.Stop()
-	episodeCtx, cancelEpisode := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-	if err := s.episodes.PublishConversationCompleted(episodeCtx, run.UserID, run.SessionID, persistedAssistant.ID); err != nil {
-		log.Printf("episode projection enqueue failed: session=%s error_type=%T", run.SessionID, err)
+	// A turn that carries no capability does not start the memory pipeline either.
+	//
+	// Both publishes below only write a debounced queue row, so they look free at the
+	// moment they run. They are not: the episode worker later generates a projection of
+	// this session with the chat model and embeds it, and the memory worker extracts
+	// from the run the same way. Leaving them in would make "this turn used no
+	// capability" true of the answer and false of the bill, which is the read-side
+	// bypass this run already closes, appearing again on the write side.
+	if policy.CarriesAnyCapability() {
+		episodeCtx, cancelEpisode := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		if err := s.episodes.PublishConversationCompleted(episodeCtx, run.UserID, run.SessionID, persistedAssistant.ID); err != nil {
+			log.Printf("episode projection enqueue failed: session=%s error_type=%T", run.SessionID, err)
+		}
+		cancelEpisode()
+		// The layered summary's enqueue. It runs after the answer was stored, so
+		// the turn never waits for it, and it only decides whether a background
+		// job is wanted: no model call happens here.
+		//
+		// It sits inside the same gate as the two publishes around it because the
+		// job it may start does buy model calls, and a switched-off turn that
+		// still queued one would be "this turn used no capability" being true of
+		// the answer and false of the bill - the same mismatch the two publishes
+		// were moved in here to close.
+		//
+		// Nothing is lost for the summary by skipping a turn: the trigger counts
+		// from the stored watermark, so the next turn that does enqueue covers
+		// every message left behind, switched off or not.
+		summaryCtx, cancelSummary := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		if _, err := s.summarySegment.Consider(summaryCtx, run.UserID, run.SessionID, persistedAssistant.ID); err != nil {
+			log.Printf("summary segment enqueue failed: session=%s error_type=%T", run.SessionID, err)
+		}
+		cancelSummary()
+		publishCtx, cancelPublish := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		_ = s.memory.PublishAgentRun(publishCtx, run.UserID, run.SessionID, run.ID, request.Question, runnerResult.ToolCalls, runnerResult.MemoryDraft != nil)
+		cancelPublish()
 	}
-	cancelEpisode()
-	// The layered summary's enqueue. It runs after the answer was stored, so
-	// the turn never waits for it, and it only decides whether a background
-	// job is wanted: no model call happens here.
-	summaryCtx, cancelSummary := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-	if _, err := s.summarySegment.Consider(summaryCtx, run.UserID, run.SessionID, persistedAssistant.ID); err != nil {
-		log.Printf("summary segment enqueue failed: session=%s error_type=%T", run.SessionID, err)
-	}
-	cancelSummary()
-	publishCtx, cancelPublish := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-	_ = s.memory.PublishAgentRun(publishCtx, run.UserID, run.SessionID, run.ID, request.Question, runnerResult.ToolCalls, runnerResult.MemoryDraft != nil)
-	cancelPublish()
 	if err := sendEvent(ctx, sink, Event{
 		Type: EventRunCompleted, RunID: run.ID, TerminationReason: result.TerminationReason, UsedTopicKeys: append([]string{}, runnerResult.UsedTopicKeys...),
 		Content:     runnerResult.Answer,

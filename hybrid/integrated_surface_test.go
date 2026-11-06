@@ -148,11 +148,16 @@ func TestBaselineOnlySurfacesStayOutOfTheIntegratedApp(t *testing.T) {
 	}
 }
 
-// TestChatAndAgentTurnsUseDifferentModels proves the two routes do not bleed into
-// each other: a chat turn calls the retained ordinary model and never touches the
-// Agent's tool-calling model, and an Agent turn is the reverse. The Agent turn
-// binding tools is what only the original Eino Runner does.
-func TestChatAndAgentTurnsUseDifferentModels(t *testing.T) {
+// TestChatAndAgentTurnsShareOneModelAndOnlyTheAgentTurnCarriesCapability proves the two
+// routes do not bleed into each other.
+//
+// They no longer run on two engines: a conversation turn uses the Agent's tool-calling
+// model, because that is the one configuration the deployment actually carries. What has
+// to stay apart is the capability. A conversation turn binds no tools, generates exactly
+// once, and reaches the retained ordinary model not at all - and if it ever did, the two
+// engines would be back without anyone having decided it. An Agent turn is the reverse:
+// the original ReAct graph, with the original tool surface bound.
+func TestChatAndAgentTurnsShareOneModelAndOnlyTheAgentTurnCarriesCapability(t *testing.T) {
 	app, _, ordinary, agentModel, token, _ := httpFixture(t)
 
 	chatSession := createHTTP(t, app.Handler, token, "普通对话")
@@ -160,12 +165,16 @@ func TestChatAndAgentTurnsUseDifferentModels(t *testing.T) {
 	if status, envelope, _ := requestHTTP(t, app.Handler, "POST", "/api/v1/sessions/"+chatSession+"/messages", string(chatBody), token); status != 200 || envelope["error"] != nil {
 		t.Fatalf("chat turn answered %d %v", status, envelope)
 	}
-	if len(ordinary.requests) == 0 {
-		t.Fatal("a chat turn reached no ordinary model")
+	if calls := agentModel.CallCount(); calls != 1 {
+		t.Fatalf("a conversation turn generated %d times, want exactly one", calls)
 	}
-	if agentModel.CallCount() != 0 {
-		t.Fatalf("a chat turn called the Agent's tool-calling model %d times", agentModel.CallCount())
+	if bindings := agentModel.BoundToolCalls(); len(bindings) != 0 {
+		t.Fatalf("a conversation turn was offered tools: %v", bindings)
 	}
+	if calls := len(ordinary.requests); calls != 0 {
+		t.Fatalf("a conversation turn reached the retired ordinary model %d times", calls)
+	}
+	conversationGenerations := agentModel.CallCount()
 
 	agentSession := dataHTTP(t, app.Handler, "POST", "/api/v1/sessions", `{"mode":"learning_agent","title":"学习 Agent","requestId":"surface-agent-1"}`, token)["id"].(string)
 	agentBody, _ := json.Marshal(map[string]any{"content": "查一下资料", "requestId": "surface-agent-turn-1"})
@@ -173,8 +182,11 @@ func TestChatAndAgentTurnsUseDifferentModels(t *testing.T) {
 	if status != 200 || envelope["error"] != nil {
 		t.Fatalf("agent turn answered %d %v", status, envelope)
 	}
-	if agentModel.CallCount() == 0 {
-		t.Fatal("an Agent turn reached no tool-calling model: the original Runner was bypassed")
+	if agentModel.CallCount() <= conversationGenerations {
+		t.Fatalf("an Agent turn reached no tool-calling model: the original Runner was bypassed (total %d, conversation %d)", agentModel.CallCount(), conversationGenerations)
+	}
+	if calls := len(ordinary.requests); calls != 0 {
+		t.Fatalf("an Agent turn reached the retired ordinary model %d times", calls)
 	}
 	if bindings := agentModel.BoundToolCalls(); len(bindings) == 0 {
 		t.Fatal("the Agent turn bound no tools, so it was not the Eino ReAct graph")
@@ -213,7 +225,7 @@ func TestChatAndAgentTurnsUseDifferentModels(t *testing.T) {
 			t.Fatalf("the draft tool was not bound; bindings were %v", bound)
 		}
 	}
-	if len(ordinary.requests) != 1 {
-		t.Fatalf("an Agent turn also invoked the ordinary model: %d requests", len(ordinary.requests))
-	}
+	// The ordinary model is asserted unused after each route above. It is not written a
+	// third time here: the same condition stated twice is two guards that cover for each
+	// other, and deleting either one would still leave the test green.
 }

@@ -44,6 +44,11 @@ export const KnowledgeReason = Object.freeze({
 export const KnowledgePolicy = Object.freeze({
   Preferred: 'knowledge_preferred',
   Only: 'knowledge_only',
+  // The per-turn switch in its off position: this turn may not reach the
+  // learner's material. It is a value rather than an absent field, because a
+  // turn that forbade the library and a turn that said nothing must not share
+  // one run identity (`answer_policy.go`: KnowledgeDisabled).
+  Disabled: 'knowledge_disabled',
 })
 
 /** `/agent/run` success code (v2/common/code: CodeSuccess). */

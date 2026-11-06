@@ -704,9 +704,9 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	// window builder and the runner must agree about it: one decides whether
 	// the notes can be reached at all, the other decides what happens when
 	// they were not.
-	policy := rag.NormalizeKnowledgePolicy(input.KnowledgePolicy, rag.KnowledgePreferred)
-	if requiresKnowledgeOnly(input.Question) {
-		policy = rag.KnowledgeOnly
+	policy, err := resolveKnowledgePolicy(input.KnowledgePolicy, input.Question)
+	if err != nil {
+		return RunnerResult{}, err
 	}
 	input.KnowledgePolicy = policy
 	// One cycle per turn, created here rather than in the window builder.
@@ -753,7 +753,15 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	if err != nil {
 		return RunnerResult{}, fmt.Errorf("load agent tools: %w", err)
 	}
-	if !documentKnowledgeReachable(input.Question, input.KnowledgePolicy) {
+	if input.KnowledgePolicy == rag.KnowledgeDisabled {
+		// The switch off selects the ordinary conversation shape: one generation
+		// over the history and nothing else. With an empty tool table the run
+		// takes the single-call path the assembly already uses, so this is not a
+		// second engine - it is the same engine with its capabilities taken away,
+		// which is why no prompt text, evidence reserve or finalisation rule has
+		// to be duplicated for it.
+		registered = nil
+	} else if !documentKnowledgeReachable(input.Question, input.KnowledgePolicy) {
 		registered, err = withoutDocumentKnowledgeTools(ctx, registered)
 		if err != nil {
 			return RunnerResult{}, err
@@ -887,6 +895,20 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	}
 	if !knowledgeTerminal {
 		finalAnswer = strings.TrimSpace(answer.String())
+		if finalAnswer == "" && !policy.CarriesAnyCapability() {
+			// The learner switched this turn's capabilities off; they did not
+			// cancel their question. A model that answers with a tool call under a
+			// request that carries no tool definitions has said nothing usable, and
+			// the call is dropped rather than ending the turn: one more generation
+			// asked for the answer plainly - still with no tools bound and
+			// tool_choice forbidding them - and if that cannot be spent or still
+			// brings nothing, the turn answers honestly that there was nothing to
+			// give instead of failing.
+			finalAnswer = state.answerPlainlyAfterToolCall(ctx, bounded, messages, input.Question)
+			if finalAnswer == "" {
+				finalAnswer = CapabilityFreeEmptyAnswer
+			}
+		}
 		if finalAnswer == "" {
 			return state.result(), ErrEmptyAgentAnswer
 		}
@@ -1800,7 +1822,14 @@ func (m *boundedModel) plan(opts []modelcomponent.Option) (generation, error) {
 	callModel := m.inner
 	forcedTool := ""
 	answers := false
-	if m.state.toolBudgetExhausted() || m.state.isLastModelCall() {
+	if !m.state.knowledgePolicy.CarriesAnyCapability() {
+		// A capability-free turn asks for no tool definitions at all - the model
+		// it calls is the unbound one - and tool_choice says so as well, because a
+		// provider that reads the switch may otherwise still answer with a call to
+		// a tool it was never shown.
+		callOpts = append(callOpts, modelcomponent.WithToolChoice(schema.ToolChoiceForbidden))
+		answers = true
+	} else if m.state.toolBudgetExhausted() || m.state.isLastModelCall() {
 		// MaxToolCalls bounds executions, not the Agent's ability to synthesize
 		// a final answer from evidence already collected. The finalizer still
 		// enforces citations, while a provider that violates tool_choice=none
@@ -2002,6 +2031,41 @@ func (m *boundedModel) WithTools(tools []*schema.ToolInfo) (modelcomponent.ToolC
 		return nil, err
 	}
 	return &boundedModel{inner: bound, state: m.state, tools: append([]*schema.ToolInfo(nil), tools...), thinkingDialect: m.thinkingDialect}, nil
+}
+
+// CapabilityFreeEmptyAnswer is what a turn with no capabilities falls back to when
+// the model answered with a tool call and no plain answer could be obtained for it.
+// It is text the learner can read rather than a failed run.
+//
+// It names what actually happened - there was no usable content - and nothing more.
+// It deliberately does not suggest turning capabilities back on: the fault is that
+// the provider returned no text, and switching the library back on neither fixes
+// that nor is something this message should be nudging the learner toward.
+const CapabilityFreeEmptyAnswer = "这一轮我没能拿到可用的回答内容；请再说一次你的问题。"
+
+// answerPlainlyAfterToolCall is the recovery a capability-free turn makes when the
+// model reaches for a tool it was never given: one more generation, asked for the
+// answer plainly, still with no tool definitions bound and tool_choice forbidding
+// them. It returns "" when the turn has no generation left to spend or the second
+// generation brings no text either; the caller then uses the honest fallback text.
+func (s *runState) answerPlainlyAfterToolCall(ctx context.Context, bounded *boundedModel, messages []*schema.Message, question string) string {
+	if !s.canSpendModelCall() {
+		log.Printf("[agent-turn] capability-free turn had no generation left for the plain retry: session=%s", s.input.SessionID)
+		return ""
+	}
+	requested := append([]*schema.Message(nil), messages...)
+	requested = append(requested, schema.UserMessage("这一轮不使用任何工具、不查阅任何资料，请就上面的问题直接回答。"))
+	stream, err := bounded.Stream(ctx, requested)
+	if err != nil {
+		log.Printf("[agent-turn] capability-free plain retry failed: session=%s error_type=%T", s.input.SessionID, err)
+		return ""
+	}
+	answer, err := readAnswerStream(stream)
+	if err != nil {
+		log.Printf("[agent-turn] capability-free plain retry stream failed: session=%s error_type=%T", s.input.SessionID, err)
+		return ""
+	}
+	return strings.TrimSpace(answer)
 }
 
 func bindOnlyTool(chatModel modelcomponent.ToolCallingChatModel, tools []*schema.ToolInfo, name string) (modelcomponent.ToolCallingChatModel, error) {
@@ -2653,6 +2717,36 @@ var directConversationQuestions = map[string]struct{}{
 	"help": {}, "帮助": {},
 }
 
+// resolveKnowledgePolicy turns what the request said into the one value this run
+// uses, and refuses to guess.
+//
+// Nothing said falls back to knowledge preferred, which is what every client that
+// predates the per-turn switch expects. A value that is neither empty nor known is
+// an error rather than a folded default: folding turned a turn that meant to switch
+// the library off into a turn that read the learner's documents anyway, and the
+// direction of that mistake is the one that costs someone their privacy.
+//
+// An explicit switch-off outranks the question-text tightening. The phrases that
+// force knowledge-only are a reading of how something was worded, while the switch
+// is a decision the learner made with their hand on this turn; one sentence must
+// not overrule the other, and a turn cannot both forbid the library and require it.
+func resolveKnowledgePolicy(value rag.KnowledgePolicy, question string) (rag.KnowledgePolicy, error) {
+	resolved, err := rag.ResolveKnowledgePolicy(value)
+	if err != nil {
+		return "", err
+	}
+	if resolved == "" {
+		return rag.KnowledgePreferred, nil
+	}
+	if resolved == rag.KnowledgeDisabled {
+		return rag.KnowledgeDisabled, nil
+	}
+	if requiresKnowledgeOnly(question) {
+		return rag.KnowledgeOnly, nil
+	}
+	return resolved, nil
+}
+
 // requiresKnowledgeOnly can only tighten a server/request policy. The narrow
 // phrases avoid treating ordinary mentions of notes as a refusal to use a
 // clearly labelled general-knowledge fallback; the UI enum remains primary.
@@ -2741,8 +2835,13 @@ func isSessionContextQuestion(question string) bool {
 //
 // The knowledge-only policy wins over a question that says "do not look in my
 // notes": the request asked for answers from the notes and nothing else, and
-// a turn that cannot reach the notes could not honour it.
+// a turn that cannot reach the notes could not honour it. A turn that switched
+// the library off wins over everything else, because that value is not a reading
+// of the wording - it is the learner's decision about this turn, made by hand.
 func documentKnowledgeReachable(question string, policy rag.KnowledgePolicy) bool {
+	if policy == rag.KnowledgeDisabled {
+		return false
+	}
 	if isSessionContextQuestion(question) {
 		return false
 	}

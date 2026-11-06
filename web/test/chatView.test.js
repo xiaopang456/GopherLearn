@@ -87,11 +87,11 @@ describe('chat view wiring', () => {
     app.unmount()
   })
 
-  it('streams deltas into the assistant bubble and settles as done', async () => {
+  it('streams snapshots into the assistant bubble and settles as done', async () => {
     streamFrames = [
       sseFrame('message.started', { message_id: 'a-1' }),
-      sseFrame('message.delta', { message_id: 'a-1', delta: '第一段 ' }),
-      sseFrame('message.delta', { message_id: 'a-1', delta: '第二段' }),
+      sseFrame('message.delta', { message_id: 'a-1', content: '第一段 ' }),
+      sseFrame('message.delta', { message_id: 'a-1', content: '第一段 第二段' }),
       sseFrame('message.completed', { message_id: 'a-1' }),
     ]
     const app = mountView()
@@ -110,7 +110,7 @@ describe('chat view wiring', () => {
 
   it('keeps the question visible with an error card when the run fails', async () => {
     streamFrames = [
-      sseFrame('message.delta', { delta: '只写了一半' }),
+      sseFrame('message.delta', { content: '只写了一半' }),
       sseFrame('message.failed', { code: 'invalid_request', message: '上下文过长' }),
     ]
     const app = mountView()
@@ -137,7 +137,7 @@ describe('chat view wiring', () => {
     // `closeAfterChunks: false` leaves the run open, the way a slow model does.
     routeRequests((path, init) => {
       if (path.endsWith('/stream')) {
-        return sseResponse([sseFrame('message.delta', { delta: '正在输出' })], {
+        return sseResponse([sseFrame('message.delta', { content: '正在输出' })], {
           closeAfterChunks: false,
         })
       }

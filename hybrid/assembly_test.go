@@ -177,6 +177,30 @@ func checkHistory(t *testing.T, r conversation.Request, prior, current string) {
 		t.Fatalf("actual model history: %+v", r.Messages)
 	}
 }
+
+// checkAgentHistory is the same claim about the shared path: the earlier question is
+// still in the prompt, and the current one appears exactly once. A turn that answered
+// from a prompt without its history would pass every persistence check and still be
+// wrong, so this reads the messages the model was actually given.
+func checkAgentHistory(t *testing.T, messages []*schema.Message, prior, current string) {
+	t.Helper()
+	count := 0
+	found := false
+	for _, m := range messages {
+		if m.Role != schema.User {
+			continue
+		}
+		if m.Content == current {
+			count++
+		}
+		if m.Content == prior {
+			found = true
+		}
+	}
+	if !found || count != 1 {
+		t.Fatalf("actual shared-path history: prior found=%v current count=%d messages=%+v", found, count, messages)
+	}
+}
 func TestAssembleSummaryStoredAndRecoveredVerbatim(t *testing.T) {
 	opts := conversation.Options{SummaryEnabled: true, SummaryPolicy: conversation.SummaryPolicy{TriggerMessages: 4, KeepRecentMessages: 2, MaxInputMessages: 16, MaxInputRunes: 10000, MaxOutputTokens: 300}}
 	app, db, m, _ := fixture(t, opts)

@@ -121,7 +121,13 @@ func dependencies(t *testing.T, db *gorm.DB, chat *scriptedChatModel, chunks *te
 		client := redisclient.NewClient(&redisclient.Options{Addr: "offline.invalid:6379", MaxRetries: -1})
 		client.AddHook(redisTransport{})
 		return client, nil
-	}}, ChatModel: func(context.Context, *entry.Settings) (modelcomponent.ToolCallingChatModel, error) { return chat, nil }, Embedder: func(context.Context, *config.Config) (embedding.Embedder, error) {
-		return &retrievalFakeEmbedder{dimension: 1024}, nil
-	}, Chunks: func(*redisclient.Client, int) (entry.ChunkStore, error) { return chunks, nil }}
+	}}, ChatModel: func(context.Context, *entry.Settings) (modelcomponent.ToolCallingChatModel, error) { return chat, nil },
+		// The segment writer's model. It is the same fake: a test that turns
+		// the layered summary's mode on has to be able to build the write
+		// path, and a second fake would make it unclear which of the two an
+		// assertion was reading.
+		JSONChatModel: func(context.Context, *entry.Settings) (modelcomponent.ToolCallingChatModel, error) { return chat, nil },
+		Embedder: func(context.Context, *config.Config) (embedding.Embedder, error) {
+			return &retrievalFakeEmbedder{dimension: 1024}, nil
+		}, Chunks: func(*redisclient.Client, int) (entry.ChunkStore, error) { return chunks, nil }}
 }

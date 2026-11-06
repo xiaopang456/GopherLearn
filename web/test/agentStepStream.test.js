@@ -73,7 +73,7 @@ describe('the two channels', () => {
   const WATCHED = [
     sseFrame('message.started', { message_id: 'a-1', run_id: 'run-4' }),
     sseFrame('step_started', { run_id: 'run-4', sequence: 1, step_type: 'plan', message: 'model generation 1' }),
-    sseFrame('message.delta', { run_id: 'run-4', message_id: 'a-1', delta: '一半' }),
+    sseFrame('message.delta', { run_id: 'run-4', message_id: 'a-1', content: '一半' }),
     sseFrame('step_started', { run_id: 'run-4', sequence: 2, step_type: 'tool', message: 'tool call 1' }),
     sseFrame('tool_started', { run_id: 'run-4', sequence: 2, tool_name: 'knowledge_search' }),
     sseFrame('tool_result', {

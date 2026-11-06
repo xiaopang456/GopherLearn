@@ -894,7 +894,20 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	// supposed to be the pre-030 path, and a cycle sitting there unused is an
 	// invitation for a later branch to start using it.
 	var cycle *memoryrecall.Cycle
-	if b.config.MemoryReadMode.UsesRecallCycle() {
+	// capabilityFree is the whole turn's answer to "what may this turn look at",
+	// decided once here and read by every block below. Listing the reads it
+	// closes: the recall cycle (whose only purpose is to embed a query), the
+	// active learning task, the mastery text and topic keys, the topic resolver
+	// (which under a semantic mode embeds the question before it proposes
+	// anything), and the episode and long-term memory readers.
+	//
+	// The empty providers are the same ones an unconfigured assembly gets, so no
+	// block has to learn a new shape and no ordering or budget rule changes.
+	//
+	// This is the ceiling the learner set with the switch, not a degradation:
+	// nothing here is logged as a provider failure, because nothing failed.
+	capabilityFree := !input.KnowledgePolicy.CarriesAnyCapability()
+	if !capabilityFree && b.config.MemoryReadMode.UsesRecallCycle() {
 		if input.RecallCycle == nil {
 			cycle = memoryrecall.New(input.Question)
 			input.RecallCycle = cycle
@@ -905,13 +918,23 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 			cycle = input.RecallCycle
 		}
 	}
-	taskState, err := b.tasks.CurrentTaskState(ctx, input)
+	taskProvider := b.tasks
+	if capabilityFree {
+		taskProvider = EmptyTaskStateProvider{}
+	}
+	taskState, err := taskProvider.CurrentTaskState(ctx, input)
 	if err != nil {
 		return ContextWindow{}, err
 	}
 	var masteryText string
 	var masteryTopics MasteryTopics
-	if !b.config.MemoryReadMode.UsesUserConfirmedTopicContext() {
+	if capabilityFree {
+		// Mastery is learning state, and it reaches the wording of an answer.
+		// A turn that switched its capabilities off does not get to be told how
+		// far along it is in a topic it did not ask about.
+		masteryText = ""
+		masteryTopics = MasteryTopics{}
+	} else if !b.config.MemoryReadMode.UsesUserConfirmedTopicContext() {
 		// One call, whichever interface the provider satisfies. The sourced form
 		// is preferred because it costs nothing extra: it is the same read,
 		// returning both halves of what it already computed instead of the
@@ -952,7 +975,7 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	// authoritative half is new and reaches nothing but the v2 bootstrap.
 	input.StrongTopicKeys = appendTopicKeys(input.StrongTopicKeys, masteryTopics.Matched)
 	input.AuthoritativeTopicKeys = appendTopicKeys(input.AuthoritativeTopicKeys, masteryTopics.Authoritative)
-	if b.topics != nil && b.config.MemoryReadMode.UsesTopicResolver() {
+	if !capabilityFree && b.topics != nil && b.config.MemoryReadMode.UsesTopicResolver() {
 		proposed, topicErr := b.topics.ProposeTopicKeys(ctx, input)
 		if topicErr != nil {
 			// Topic resolution is an enhancement to recall, never the answer.
@@ -969,7 +992,18 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	var confirmedKeys []string
 	var confirmedStates []ConfirmedTopicLearningState
 	var confirmedRecords []TopicMemoryRecord
-	if !b.config.MemoryReadMode.AutoInjectsTopicAndEpisodeMemory() {
+	if capabilityFree {
+		// The episode and long-term memory readers stay shut. This is the shape
+		// the ceiling decides, not a degraded read: nothing is logged as a
+		// provider failure and no budget is spent, and every block downstream
+		// already knows how to render an empty result.
+		//
+		// Reading them anyway was the mistake this branch closes: the episode
+		// retriever issues an embedding before fusion can reject the candidate,
+		// so a turn that was told to touch nothing could still pay for a query
+		// vector and pull in a long-term memory line. An empty tool ledger would
+		// not have shown any of it.
+	} else if !b.config.MemoryReadMode.AutoInjectsTopicAndEpisodeMemory() {
 		// Global only. Topic notes and Episodes are not read here at all: under
 		// this mode they exist for the Agent to ask for, and a builder that
 		// fetched them anyway would pay for a retrieval it then discards while
