@@ -2,6 +2,7 @@ package conversation
 
 import (
 	"GopherAI/common/memoryrecall"
+	agent "GopherAI/service/agent"
 	"context"
 	"errors"
 	modelcomponent "github.com/cloudwego/eino/components/model"
@@ -89,11 +90,74 @@ func TestRolePromptsLoadCheckout(t *testing.T) {
 	for _, role := range roles {
 		counts[role]++
 	}
-	// Two prompts carry the summary role: the rolling summary and the
-	// layered summary's own segment prompt. A call shape that is not in
-	// this list is refused, so the count is what says a new shape was
-	// classified and reviewed.
-	if counts["answer"] != 4 || counts["summary"] != 2 || counts["background"] != 5 {
+	// The answer role holds one entry per prompt the product can send, and
+	// that count grows with the modes and the capability sets, so it is a
+	// lower bound. The two fixed roles are the ones with one prompt each
+	// besides the summary.
+	//
+	// Three prompts carry the summary role: the rolling summary, the layered
+	// summary's own segment prompt, and the changes-only prompt that same
+	// batch is asked for when the board no longer fits. A call shape that is
+	// not in this list is refused, so these counts are what say a new shape
+	// was classified and reviewed.
+	if counts["background"] != 5 {
 		t.Fatal(counts)
+	}
+	if counts["summary"] < 3 {
+		t.Fatalf("the summary role holds %d prompts, want at least 3: %v", counts["summary"], counts)
+	}
+	if counts["answer"] < 4 {
+		t.Fatalf("the answer role holds %d prompts, want at least 4: %v", counts["answer"], counts)
+	}
+}
+
+// The trimming must not turn the role table into an open door. A prompt that
+// the product's renderer cannot produce is still refused.
+func TestRolePromptsStillRefuseAPromptTheProductCannotProduce(t *testing.T) {
+	roles, err := LoadRolePrompts(filepath.Join("..", "..", ".."), memoryrecall.ReadMode("legacy_v2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := agent.SystemPromptFor(memoryrecall.ModeLegacyV2)
+	for _, prompt := range []string{
+		"",
+		"you are a helpful assistant",
+		base + "\nan extra line the product never sends",
+		agent.LayeredSummaryPrompt(),
+	} {
+		if role, ok := roles[prompt]; ok {
+			t.Fatalf("a prompt the product cannot produce was classified as %q: %q", role, prompt)
+		}
+	}
+}
+
+// The prompt a layered deployment actually sends is base + the layered
+// summary's contract. A table that held only the base prompt would refuse it
+// as unclassified, and the turn would end before the answer existed.
+func TestRolePromptsHoldTheLayeredFormOfTheAnswerPrompt(t *testing.T) {
+	roles, err := LoadRolePrompts(filepath.Join("..", "..", ".."), memoryrecall.ReadMode("legacy_v2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := agent.SystemPromptFor(memoryrecall.ModeLegacyV2)
+	layered := base + agent.LayeredSummaryPrompt()
+	if layered == base {
+		t.Fatal("the fixture did not append the layered contract, so it proves nothing")
+	}
+	if role, ok := roles[layered]; !ok || role != "answer" {
+		t.Fatalf("the layered answer prompt is not classified as an answer prompt: %q", role)
+	}
+	// The same prompt under a trimmed tool table is also what the model sees.
+	trimmed := agent.RenderSystemPrompt(layered, agent.PromptCapabilities{
+		Available: map[agent.MemoryToolCapability]bool{
+			agent.CapabilityKnowledgeSearch:       true,
+			agent.CapabilityDocumentRead:          true,
+			agent.CapabilityBrowseSummarySegments: true,
+			agent.CapabilityHistoryRead:           true,
+			agent.CapabilityTopicMemoryRead:       true,
+		},
+	})
+	if role, ok := roles[trimmed]; !ok || role != "answer" {
+		t.Fatalf("the trimmed layered prompt is not classified as an answer prompt: %q", role)
 	}
 }

@@ -245,6 +245,19 @@ Summary segments are compressed records of earlier turns in this session, not tr
 To read the learner's own words behind a board entry or a segment point, call read_history_message with the message_ids it shows. Those ids are the only ones readable.
 browse_summary_segments opens this session's older segments when the ones in front of you do not cover what the learner is asking about. It returns compressed records, not transcripts.`
 
+// LayeredSummaryPrompt is the contract the board and the summary segments are
+// read under, appended to the mode's base prompt.
+//
+// It is exported for the surfaces that have to recognise the prompt rather
+// than write it: the evaluation harness classifies a model call by its first
+// system message, and a deployment that reads the layered summary sends
+// base + this rather than the base prompt alone. A harness that held only the
+// base prompt would refuse the product's own request as unclassified, and the
+// turn would end before the answer existed.
+func LayeredSummaryPrompt() string {
+	return layeredSummaryPrompt
+}
+
 // SystemPromptFor returns the system prompt one read mode answers under.
 //
 // There is one function rather than a branch at each use site because the
