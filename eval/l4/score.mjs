@@ -79,6 +79,31 @@ const SOFT_MARKER = [
 ]
 // "而是" introduces the affirmed term, "而不是" denies the one that follows.
 const AFFIRM_INTRODUCER = '而是'
+// The product prepends a fixed banner when its knowledge retrieval found
+// nothing (or was unavailable) and the answer fell back to general knowledge.
+// The banner is retrieval status, not a statement about any answer value, but
+// its "不是你上传笔记中的结论" reads as a hard negation to the clause
+// analysis, so it is removed before the answer is judged.
+const STANDARD_FALLBACK_BANNERS = [
+  '你的个人知识库中没有找到足以回答该问题的笔记证据。\n以下内容来自模型的通用知识，不是你上传笔记中的结论，可能与你的笔记表述不一致。',
+  '当前个人知识库检索暂时不可用，本次没有使用你上传的笔记。\n以下内容来自模型的通用知识，请在知识库恢复后再核对。',
+]
+function stripStandardFallbackBanners(text) {
+  let out = text
+  for (const banner of STANDARD_FALLBACK_BANNERS) {
+    out = out.split(banner.normalize('NFKC')).join('\n')
+  }
+  return out
+}
+// hasSoftPast reports whether a clause really reads as "this value belongs to
+// the past". "你之前定的/说的/叫的…" attributes the value to an earlier turn:
+// it says where the value came from, not that it has been superseded, so that
+// phrasing does not count as a soft past marker.
+const ATTRIBUTIONAL_PAST = /[你您]之前(?:说|定|叫|选|起|取|约定|规定|要求|讲)/u
+function hasSoftPast(clause) {
+  if (!hasMarker(clause, SOFT_MARKER)) return false
+  return !ATTRIBUTIONAL_PAST.test(clause)
+}
 // A weak break separates clauses inside one sentence; a strong break ends the
 // sentence or the thought. A denial or a withdrawal binds only inside the
 // strong segment it stands in.
@@ -205,11 +230,11 @@ function mentionState(text, span, spans) {
   }
   if (before) {
     const clause = text.slice(before[0], before[1])
-    if (!holdsAnotherValue(before, span, spans) && hasMarker(clause, SOFT_MARKER)) return 'uncertain'
+    if (!holdsAnotherValue(before, span, spans) && hasSoftPast(clause)) return 'uncertain'
   }
   for (const range of forward) {
     if (holdsAnotherValue(range, span, spans)) continue
-    if (hasMarker(text.slice(range[0], range[1]), SOFT_MARKER)) return 'uncertain'
+    if (hasSoftPast(text.slice(range[0], range[1]))) return 'uncertain'
   }
   return 'present'
 }
@@ -226,7 +251,7 @@ function factReading(spans, values) {
 // judgeFact decides a scenario whose answer key names the values it expects
 // and the values it forbids.
 export function judgeFact(answer, scenario) {
-  const text = answer.normalize('NFKC')
+  const text = stripStandardFallbackBanners(String(answer).normalize('NFKC'))
   const accepted = [...scenario.answer.accepted, ...(scenario.answer.aliases ?? [])]
   const forbidden = [...(scenario.answer.forbidden ?? [])]
   const spans = []
