@@ -153,14 +153,31 @@ type SummarySegmentWorker struct {
 	repository SummarySegmentJobRepository
 	producer   SummarySegmentProducer
 	reconciler *SummarySegmentReconciler
-	config     SummarySegmentWorkerConfig
-	queue      chan model.SessionSummarySegmentJob
-	now        func() time.Time
-	logf       func(string, ...any)
-	mu         sync.Mutex
-	started    bool
-	cancel     context.CancelFunc
-	done       chan struct{}
+	// indexRepair puts the derived search index back in step with MySQL.
+	// It is optional: a deployment without a vector index has nothing to
+	// repair.
+	indexRepair SummarySegmentIndexRepairer
+	config      SummarySegmentWorkerConfig
+	queue       chan model.SessionSummarySegmentJob
+	now         func() time.Time
+	logf        func(string, ...any)
+	mu          sync.Mutex
+	started     bool
+	cancel      context.CancelFunc
+	done        chan struct{}
+}
+
+// UseIndexRepairer attaches the repair of the derived search index.
+//
+// The repair runs once when the worker starts, because the index is written
+// as the segments are generated and the only thing that can make it wrong is
+// a loss: Redis was flushed, or a write failed. That is a startup's
+// business, not a tick's.
+func (w *SummarySegmentWorker) UseIndexRepairer(repairer SummarySegmentIndexRepairer) {
+	if w == nil {
+		return
+	}
+	w.indexRepair = repairer
 }
 
 // NewSummarySegmentWorker builds a worker.
@@ -203,6 +220,14 @@ func (w *SummarySegmentWorker) Start(parent context.Context) error {
 	}
 	if _, err := w.reconciler.RunOnce(parent); err != nil {
 		return fmt.Errorf("reconcile summary segment jobs: %w", err)
+	}
+	if w.indexRepair != nil {
+		// The repair is not allowed to stop the worker: the segments are
+		// written and read whatever the index holds, and a failed repair
+		// costs the search, not the conversation.
+		if _, err := w.indexRepair.RunRepairOnce(parent, w.config.QueueSize); err != nil {
+			w.logf("summary segment index repair failed: error_type=%T", err)
+		}
 	}
 	ctx, cancel := context.WithCancel(parent)
 	w.cancel, w.done, w.started = cancel, make(chan struct{}), true

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 
 	"GopherAI/common/rag"
@@ -149,6 +150,11 @@ func (a summarySegmentEvidenceAdapter) LoadSummarySegmentEvidence(ctx context.Co
 type BrowseSummarySegmentsRegistry struct {
 	browser SummarySegmentBrowser
 	surface serviceagent.ToolSurface
+	// recent records the segments the model reached for, so that the next
+	// turn can keep them in front of the learner. It is optional: without it
+	// the tool still works, and the learner simply does not get the segment
+	// they opened kept in front of them.
+	recent serviceagent.SummarySegmentRecentUse
 }
 
 // NewBrowseSummarySegmentsRegistry builds the registry.
@@ -162,6 +168,17 @@ func NewBrowseSummarySegmentsRegistry(browser SummarySegmentBrowser) (*BrowseSum
 // UseToolSurface changes only the name and description shown to the model.
 func (r *BrowseSummarySegmentsRegistry) UseToolSurface(surface serviceagent.ToolSurface) {
 	r.surface = surface
+}
+
+// UseRecentUse attaches the record of the segments a turn reached for.
+//
+// It is a setter rather than a constructor argument because the record is
+// optional and its storage is a deployment's business.
+func (r *BrowseSummarySegmentsRegistry) UseRecentUse(recent serviceagent.SummarySegmentRecentUse) {
+	if r == nil {
+		return
+	}
+	r.recent = recent
 }
 
 // Tools returns the browse tool for one run.
@@ -256,6 +273,7 @@ func (r *BrowseSummarySegmentsRegistry) browse(ctx context.Context, run servicea
 		// The grants follow the trimming: an id of a point that was cut
 		// is an id the model never saw.
 		grants = append(grants, r.grantsForView(run, segment, browsed)...)
+		r.recordRecentUse(ctx, run, segment.Seq)
 	}
 	out.ObservationTokens = tokens
 	// The ids the browse tool just showed the model are now readable, and the
@@ -269,6 +287,20 @@ func (r *BrowseSummarySegmentsRegistry) browse(ctx context.Context, run servicea
 		return out, nil
 	}
 	return out, nil
+}
+
+// recordRecentUse remembers that the model reached for this segment.
+//
+// A segment the model opened is a segment the learner is asking about, and
+// the next turn should find it in front of them without being asked again.
+func (r *BrowseSummarySegmentsRegistry) recordRecentUse(ctx context.Context, run serviceagent.RunContext, seq int) {
+	if r.recent == nil || seq <= 0 {
+		return
+	}
+	if err := r.recent.RecordRecentUse(ctx, run.UserID, run.SessionID, seq); err != nil {
+		log.Printf("[agent-context] summary segment recent use failed: session=%s seq=%d error_type=%T",
+			run.SessionID, seq, err)
+	}
 }
 
 // resolve finds the segments the call asked for.

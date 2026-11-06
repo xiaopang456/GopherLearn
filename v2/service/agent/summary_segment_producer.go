@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"GopherAI/common/rag"
@@ -64,6 +65,15 @@ type SummarySegmentSink interface {
 	NextSummarySegmentSeq(ctx context.Context, userID int64, sessionID string) (int, error)
 }
 
+// SummarySegmentIndexPublisher publishes a written segment's derived vector.
+//
+// It is optional: a deployment without a vector index still writes its
+// segments, and the preselection falls back to the words.
+type SummarySegmentIndexPublisher interface {
+	// Index publishes one segment's search vector.
+	Index(ctx context.Context, segment *model.SessionSummarySegment) error
+}
+
 // SummarySegmentProducerConfig bounds one attempt.
 type SummarySegmentProducerConfig struct {
 	// MaxMessages is how many turns one segment may cover.
@@ -104,6 +114,10 @@ type ModelSummarySegmentProducer struct {
 	sink      SummarySegmentSink
 	generator SegmentGenerator
 	config    SummarySegmentProducerConfig
+	// publisher writes the segment's derived search vector. It is nil when
+	// the deployment has no vector index, and the segment is written either
+	// way: the vector is a way of finding the segment, not the segment.
+	publisher SummarySegmentIndexPublisher
 }
 
 // NewModelSummarySegmentProducer builds a producer.
@@ -120,6 +134,18 @@ func NewModelSummarySegmentProducer(
 		return nil, err
 	}
 	return &ModelSummarySegmentProducer{source: source, sink: sink, generator: generator, config: config}, nil
+}
+
+// UseIndexPublisher attaches the writer of the derived search vector.
+//
+// It is a setter rather than a constructor argument because the index is
+// optional and its wiring is a deployment's business: a deployment without
+// Redis still writes its segments.
+func (p *ModelSummarySegmentProducer) UseIndexPublisher(publisher SummarySegmentIndexPublisher) {
+	if p == nil {
+		return
+	}
+	p.publisher = publisher
 }
 
 // ProduceSegment generates one segment and writes it with the board.
@@ -291,6 +317,7 @@ func (p *ModelSummarySegmentProducer) persist(
 		}
 		return SummarySegmentOutcome{}, fmt.Errorf("save summary segment: %w", err)
 	}
+	p.publish(ctx, segment)
 	return SummarySegmentOutcome{
 		SegmentSeq:        seq,
 		StartMessageID:    start,
@@ -298,4 +325,22 @@ func (p *ModelSummarySegmentProducer) persist(
 		WhiteboardVersion: whiteboardVersion + 1,
 		WhiteboardChanges: len(result.Changes),
 	}, nil
+}
+
+// publish writes the segment's derived search vector.
+//
+// It runs after the row is committed and its failure does not fail the
+// attempt: the segment is in MySQL and is readable there, and only the way
+// of finding it is missing. The repair sweep puts the vector back.
+//
+// The order matters. A vector written before the row would let a search find
+// a segment that does not exist yet.
+func (p *ModelSummarySegmentProducer) publish(ctx context.Context, segment *model.SessionSummarySegment) {
+	if p.publisher == nil {
+		return
+	}
+	if err := p.publisher.Index(ctx, segment); err != nil {
+		log.Printf("[summary-segment] index write failed: session=%s seq=%d error_type=%T",
+			segment.SessionID, segment.Seq, err)
+	}
 }

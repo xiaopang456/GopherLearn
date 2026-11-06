@@ -229,6 +229,28 @@ func NewSummarySegmentAssembly(
 	return assembly, nil
 }
 
+// UseIndexPublisher attaches the writer of the segments' derived vectors.
+//
+// It is optional: a deployment without a vector index still writes its
+// segments, and the preselection falls back to the words.
+func (a *SummarySegmentAssembly) UseIndexPublisher(publisher SummarySegmentIndexPublisher) {
+	if a == nil || a.Producer == nil {
+		return
+	}
+	a.Producer.UseIndexPublisher(publisher)
+}
+
+// UseIndexRepairer attaches the repair of the derived index.
+//
+// It runs once when the worker starts, because a lost index is a startup's
+// business and not a tick's.
+func (a *SummarySegmentAssembly) UseIndexRepairer(repairer SummarySegmentIndexRepairer) {
+	if a == nil || a.Worker == nil {
+		return
+	}
+	a.Worker.UseIndexRepairer(repairer)
+}
+
 // Enqueuer returns the part of the write path the service calls after an
 // answer, or nil when the write path is off.
 //
