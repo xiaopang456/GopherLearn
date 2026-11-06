@@ -2151,6 +2151,14 @@ func prefixWithinTokens(value string, maxTokens int) string {
 
 func messageTokenCost(content string) int { return rag.EstimateTokens(content) + 4 }
 
+// MessageTokenCost is what one message costs the window.
+//
+// It is exported for the same reason PrefixWithinTokens is: a harness that
+// renders the prompt and then reports the window's budget has to charge the
+// message the way the builder does, or the number it publishes describes a
+// prompt nobody sent.
+func MessageTokenCost(content string) int { return messageTokenCost(content) }
+
 // PrefixWithinTokens shortens a text to a token budget.
 //
 // It is exported because the browse tool has to shorten a segment's topic to

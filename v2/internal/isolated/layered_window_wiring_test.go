@@ -82,9 +82,14 @@ func TestTheEntryPreselectorUsesTheShippedBudgets(t *testing.T) {
 	}
 }
 
-// A budget below one segment still selects one: selecting nothing is a
-// different failure from selecting too little.
-func TestTheEntryPreselectorNeverSelectsNothing(t *testing.T) {
+// A budget below one segment still asks the preselector for one.
+//
+// What this proves is the derived count, and only that: whether anything is
+// actually selected also depends on the candidate's own cost, and a segment
+// that does not fit the total is skipped - see
+// TestThePreselectionBudgetCanRejectEveryCandidate. Asking for zero would make
+// "nothing came back" ambiguous with "nothing was allowed".
+func TestTheEntryPreselectorAsksForAtLeastOneSegment(t *testing.T) {
 	s := testSettings(t)
 	s.Config.AgentConfig.ContextMaxRetrievedSegmentTokens = 40
 	s.Config.AgentConfig.ContextMaxSegmentTokens = 300
