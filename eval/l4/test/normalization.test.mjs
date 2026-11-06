@@ -30,3 +30,31 @@ test('R3 routes answers naming both historical and current values to the semanti
   assert.equal(judgeFact('76分钟', scenario).verdict, 'fail')
   assert.equal(judgeFact('二十四分钟', scenario).verdict, 'pass')
 })
+
+test('ambiguous ordinary expressions never establish a fact', () => {
+  const rows = [
+    ['01:00', '这一点很重要'],
+    ['03:00', '有三点建议'],
+    ['3次', '三次元内容'],
+    ['3次', 'v3次格式'],
+    ['3天', '三天线设备'],
+    ['3天', '三天气温变化'],
+    ['3h', '3hourslater'],
+    ['06:30', '六点半'],
+  ]
+  for (const [key, answer] of rows) {
+    assert.equal(judgeFact(answer, {answer:{accepted:[key], aliases:[]}}).verdict, 'needs_judge', answer)
+  }
+  const r3 = {category:'R3', answer:{accepted:['01:00'],forbidden:['22:10'],aliases:[]}}
+  assert.equal(judgeFact('这一点很重要，后来是晚上十点十分', r3).verdict, 'needs_judge')
+})
+
+test('punctuated clock keys normalize before R3 historical-value routing', () => {
+  for (const field of ['accepted', 'aliases']) {
+    const answer = {accepted: field === 'accepted' ? ['06:30。'] : ['06:30'], aliases: field === 'aliases' ? ['06:30。'] : [], forbidden:['22:10！']}
+    const scenario = {category:'R3', answer}
+    assert.equal(judgeFact('早上六点半', scenario).verdict, 'pass')
+    assert.equal(judgeFact('最初六点半，后来晚上十点十分', scenario).verdict, 'needs_judge')
+    assert.equal(judgeFact('晚上十点十分', scenario).verdict, 'fail')
+  }
+})

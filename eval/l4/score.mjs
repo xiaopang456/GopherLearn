@@ -136,13 +136,26 @@ function clauseRanges(text, from, to) {
 function mentionsOf(text, value) {
   const found = []
   const normalized = normalizeFact(value)
-  const canonical = canonicalExpression(value) ?? (normalized.startsWith('seconds:') ? normalized : null)
+  const canonical = canonicalExpression(normalized) ?? (normalized.startsWith('seconds:') ? normalized : null)
   const haystack = compact(text)
   if (canonical) {
     FACT_EXPR.lastIndex = 0
     for (let match = FACT_EXPR.exec(haystack.text); match; match = FACT_EXPR.exec(haystack.text)) {
       if (canonicalExpression(match[0]) !== canonical) continue
-      found.push({ start: haystack.map[match.index], end: haystack.map[match.index + match[0].length - 1] + 1, value })
+      const start = match.index, end = start + match[0].length
+      const expression = match[0].toLowerCase()
+      const before = haystack.text.slice(Math.max(0, start - 2), start)
+      const after = haystack.text.slice(end)
+      // A bare 点 may mean a point, not a clock time; even a precise
+      // unqualified twelve-hour expression may mean AM or PM. Compound
+      // words such as 次元 and 天气 are not count/duration mentions.
+      const spokenClock = expression.includes('点')
+      const hasPeriod = /^(?:凌晨|早上|上午|中午|下午|晚上|傍晚)/u.test(expression)
+      const hour = spokenClock ? chineseNumber(expression.replace(/^(?:凌晨|早上|上午|中午|下午|晚上|傍晚)/u, '').split('点')[0]) : 0
+      const ambiguousClock = spokenClock && ((!hasPeriod && hour <= 12) || /[这那哪每]/u.test(before.slice(-1)) || /^(?:建议|意见|原因|问题|内容|要求|理由|好处|区别|方面|注意|重要)/u.test(after))
+      const ambiguousCompound = /次$/u.test(expression) && /^(?:元|方|数|數)/u.test(after) || /天$/u.test(expression) && /^(?:气|氣|然|赋|賦|线|線)/u.test(after) || /[a-z]$/iu.test(expression) && /^[a-z]/iu.test(after)
+      const embedded = /[a-z0-9零〇一二两兩三四五六七八九十百.]/iu.test(text[haystack.map[start] - 1] ?? '')
+      found.push({ start: haystack.map[start], end: haystack.map[end - 1] + 1, value, ambiguous: ambiguousClock || ambiguousCompound || embedded })
     }
     return found
   }
@@ -219,7 +232,7 @@ export function judgeFact(answer, scenario) {
   const spans = []
   for (const value of accepted) spans.push(...mentionsOf(text, value))
   for (const value of forbidden) spans.push(...mentionsOf(text, value))
-  for (const span of spans) span.state = mentionState(text, span, spans)
+  for (const span of spans) span.state = span.ambiguous ? 'uncertain' : mentionState(text, span, spans)
   // R3 asks about history: saying the original value was cancelled does not
   // make the historical claim false. Send any answer naming both values to
   // the R3 semantic checkpoint, including explicit withdrawals or denials.
