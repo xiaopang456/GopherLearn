@@ -103,6 +103,25 @@ func needsDeepSeekReasoningPatch(dialect string, enabled bool) bool {
 }
 
 func NewToolCallingChatModel(ctx context.Context) (model.ToolCallingChatModel, error) {
+	return newToolCallingChatModel(ctx, nil)
+}
+
+// NewJSONToolCallingChatModel is the same model, asked for a JSON object.
+//
+// It exists for the one caller that writes structured output: the segment
+// writer. Its prompt has said "Output JSON only" for a while, and a batch
+// whose body cannot be parsed is the one failure that throws a stretch of
+// turns away, so the shape is asked for instead of hoped for. It is a
+// separate model rather than a setting because the answer path must stay in
+// prose: one response format for both would put every answer in JSON.
+func NewJSONToolCallingChatModel(ctx context.Context) (model.ToolCallingChatModel, error) {
+	return newToolCallingChatModel(ctx, &openai.ChatCompletionResponseFormat{
+		Type: openai.ChatCompletionResponseFormatTypeJSONObject,
+	})
+}
+
+func newToolCallingChatModel(ctx context.Context,
+	responseFormat *openai.ChatCompletionResponseFormat) (model.ToolCallingChatModel, error) {
 	key := os.Getenv("OPENAI_API_KEY")
 	modelName := os.Getenv("OPENAI_MODEL_NAME")
 	baseURL := os.Getenv("OPENAI_BASE_URL")
@@ -112,10 +131,11 @@ func NewToolCallingChatModel(ctx context.Context) (model.ToolCallingChatModel, e
 	}
 
 	llm, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
-		BaseURL:     baseURL,
-		Model:       modelName,
-		APIKey:      key,
-		ExtraFields: ThinkingExtraFields(dialect, false),
+		BaseURL:        baseURL,
+		Model:          modelName,
+		APIKey:         key,
+		ExtraFields:    ThinkingExtraFields(dialect, false),
+		ResponseFormat: responseFormat,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create openai model failed: %v", err)
