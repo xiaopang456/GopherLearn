@@ -178,13 +178,50 @@ func (s *RAGService) AttachReranker(reranker Reranker) error {
 	return nil
 }
 
+// QueryVectorSource supplies the query vector for one retrieval.
+//
+// It is a per-request hook rather than a field on the service: the service is
+// shared by every request, and a per-request vector on a shared service would
+// be one request's vector answering another's question. The point of the hook
+// is that a request which already embedded this question - the memory
+// readers share one cycle - does not embed it again.
+type QueryVectorSource interface {
+	QueryVector(ctx context.Context, text string, embed func(context.Context, string) ([]float64, error)) ([]float64, error)
+}
+
+// embedQuery embeds one query string.
+//
+// It is the provider call the recall cycle memoises, so the shape of it
+// matters: one text in, one vector out.
+func (s *RAGService) embedQuery(ctx context.Context, text string) ([]float64, error) {
+	vectors, err := s.embedder.EmbedStrings(ctx, []string{text})
+	if err != nil {
+		return nil, err
+	}
+	if len(vectors) != 1 {
+		return nil, fmt.Errorf("%w: query embedder returned %d vectors", ErrRetrievalFailed, len(vectors))
+	}
+	return vectors[0], nil
+}
+
 // Retrieve returns the top-K chunks for a query with the production defaults:
 // hybrid retrieval, and a rerank when a reranker is attached and topK is at most
 // DefaultRerankMaxTopK. It is RetrieveWithOptions with every option left at its
 // zero value; its behaviour is pinned by retrieval_golden_test.go and
 // retrieval_differential_test.go.
 func (s *RAGService) Retrieve(ctx context.Context, userID int64, query string, topK int) ([]RetrievalResult, error) {
-	return s.retrieve(ctx, userID, query, RetrieveOptions{TopK: topK}, nil)
+	return s.retrieve(ctx, userID, query, RetrieveOptions{TopK: topK}, nil, nil)
+}
+
+// RetrieveWithQueryVector is Retrieve with the query vector taken from the
+// caller rather than from the provider.
+//
+// A source of nil behaves exactly like Retrieve: the service embeds the
+// question itself. A source that is present is asked for the vector, and the
+// service embeds only when the source cannot supply one.
+func (s *RAGService) RetrieveWithQueryVector(ctx context.Context, userID int64, query string, topK int,
+	source QueryVectorSource) ([]RetrievalResult, error) {
+	return s.retrieve(ctx, userID, query, RetrieveOptions{TopK: topK}, nil, source)
 }
 
 // RetrieveWithOptions is Retrieve with the knobs a measurement needs: which
@@ -197,7 +234,7 @@ func (s *RAGService) RetrieveWithOptions(ctx context.Context, userID int64, quer
 	if s != nil && s.reranker != nil {
 		diagnostics.rerankStatus = RerankBypassed
 	}
-	results, err := s.retrieve(ctx, userID, query, opts, &diagnostics)
+	results, err := s.retrieve(ctx, userID, query, opts, &diagnostics, nil)
 	if err != nil {
 		return RetrieveOutcome{}, err
 	}
@@ -214,7 +251,7 @@ func (s *RAGService) RetrieveWithOptions(ctx context.Context, userID int64, quer
 // retrieve is the one implementation behind Retrieve and RetrieveWithOptions.
 // Every option at its zero value reproduces the original Retrieve exactly.
 // diagnostics may be nil; the production path passes nil.
-func (s *RAGService) retrieve(ctx context.Context, userID int64, query string, opts RetrieveOptions, diagnostics *retrievalDiagnostics) (results []RetrievalResult, resultErr error) {
+func (s *RAGService) retrieve(ctx context.Context, userID int64, query string, opts RetrieveOptions, diagnostics *retrievalDiagnostics, source QueryVectorSource) (results []RetrievalResult, resultErr error) {
 	topK := opts.TopK
 	started := time.Now()
 	defer func() {
@@ -263,17 +300,32 @@ func (s *RAGService) retrieve(ctx context.Context, userID int64, query string, o
 	}
 	var vector []float32
 	if opts.Mode != RetrievalModeKeyword { // keyword-only retrieval never embeds the query
-		vectors, err := s.embedder.EmbedStrings(ctx, []string{query})
-		if err != nil {
-			if errors.Is(err, context.Canceled) && errors.Is(ctx.Err(), context.Canceled) {
-				return nil, fmt.Errorf("%w: embed query: %w", ErrRetrievalFailed, err)
+		var raw []float64
+		if source != nil {
+			// The request already embedded this question, or it shares the
+			// embedding with the readers that do. Asking the source is one
+			// provider call fewer on the path the learner waits for.
+			raw, err = source.QueryVector(ctx, query, s.embedQuery)
+			if err != nil {
+				if errors.Is(err, context.Canceled) && errors.Is(ctx.Err(), context.Canceled) {
+					return nil, fmt.Errorf("%w: embed query: %w", ErrRetrievalFailed, err)
+				}
+				return nil, retrievalUnavailable(RetrievalReasonEmbedding, err)
 			}
-			return nil, retrievalUnavailable(RetrievalReasonEmbedding, err)
+		} else {
+			vectors, embedErr := s.embedder.EmbedStrings(ctx, []string{query})
+			if embedErr != nil {
+				if errors.Is(embedErr, context.Canceled) && errors.Is(ctx.Err(), context.Canceled) {
+					return nil, fmt.Errorf("%w: embed query: %w", ErrRetrievalFailed, embedErr)
+				}
+				return nil, retrievalUnavailable(RetrievalReasonEmbedding, embedErr)
+			}
+			if len(vectors) != 1 {
+				return nil, fmt.Errorf("%w: query embedder returned %d vectors", ErrRetrievalFailed, len(vectors))
+			}
+			raw = vectors[0]
 		}
-		if len(vectors) != 1 {
-			return nil, fmt.Errorf("%w: query embedder returned %d vectors", ErrRetrievalFailed, len(vectors))
-		}
-		vector, err = retrievalVector(vectors[0], s.dimension)
+		vector, err = retrievalVector(raw, s.dimension)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrRetrievalFailed, err)
 		}

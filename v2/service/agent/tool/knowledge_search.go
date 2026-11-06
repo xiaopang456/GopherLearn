@@ -1,6 +1,7 @@
 package agenttool
 
 import (
+	"GopherAI/common/memoryrecall"
 	"GopherAI/common/rag"
 	serviceagent "GopherAI/service/agent"
 	"context"
@@ -40,6 +41,56 @@ var (
 // per-user retrieval isolation.
 type Retriever interface {
 	Retrieve(context.Context, int64, string, int) ([]rag.RetrievalResult, error)
+}
+
+// QueryVectorRetriever is a Retriever that can take the query vector from
+// the request's shared recall cycle.
+//
+// It is a separate interface because the cycle is a per-request thing and
+// the retriever is a shared one: a retriever that does not implement this
+// keeps embedding the question itself, which is what it always did.
+type QueryVectorRetriever interface {
+	RetrieveWithQueryVector(context.Context, int64, string, int, rag.QueryVectorSource) ([]rag.RetrievalResult, error)
+}
+
+// cycleVectorSource adapts the recall cycle to the retrieval service's hook.
+//
+// The cycle is what makes the query embedding a per-request cost rather than
+// a per-reader one: a turn that pre-retrieves the learner's material and
+// recalls their episodes asks the same embedding provider the same question
+// twice, and this is what turns those two calls into one.
+type cycleVectorSource struct {
+	cycle *memoryrecall.Cycle
+}
+
+// QueryVector takes the vector from the request's recall cycle.
+//
+// The cycle memoises a float32 vector, which is what the memory index
+// stores; the retrieval service works in float64. The round trip through
+// float32 is exactly the narrowing the memory query embedder does, so the
+// two readers end up with the same vector rather than two slightly
+// different ones.
+func (s cycleVectorSource) QueryVector(ctx context.Context, text string,
+	embed func(context.Context, string) ([]float64, error)) ([]float64, error) {
+	vector, err := s.cycle.QueryVector(ctx, text, func(ctx context.Context, query string) ([]float32, error) {
+		raw, embedErr := embed(ctx, query)
+		if embedErr != nil {
+			return nil, embedErr
+		}
+		narrowed := make([]float32, len(raw))
+		for index, value := range raw {
+			narrowed[index] = float32(value)
+		}
+		return narrowed, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	widened := make([]float64, len(vector))
+	for index, value := range vector {
+		widened[index] = float64(value)
+	}
+	return widened, nil
 }
 
 type KnowledgeSearchConfig struct {
@@ -209,6 +260,20 @@ func (r *Registry) resolvedSurface() serviceagent.ToolSurface {
 	return r.surface
 }
 
+// retrieve runs the retrieval, through the request's recall cycle when the
+// retriever can take a vector from it.
+//
+// The pre-retrieval asks about the learner's own question, which is exactly
+// the question the memory readers embed. Going through the cycle means the
+// turn embeds it once instead of once per reader.
+func (r *Registry) retrieve(ctx context.Context, run serviceagent.RunContext, query string, topK int) ([]rag.RetrievalResult, error) {
+	if source, ok := r.retriever.(QueryVectorRetriever); ok && run.RecallCycle != nil {
+		return source.RetrieveWithQueryVector(ctx, run.UserID, query, topK,
+			cycleVectorSource{cycle: run.RecallCycle})
+	}
+	return r.retriever.Retrieve(ctx, run.UserID, query, topK)
+}
+
 // ProbeRelevance runs one server-side retrieval for the question and reports
 // whether the learner's uploaded material covers it.
 //
@@ -241,7 +306,7 @@ func (r *Registry) ProbeRelevance(ctx context.Context, run serviceagent.RunConte
 	if topK <= 0 {
 		topK = 5
 	}
-	results, err := r.retriever.Retrieve(ctx, run.UserID, query, topK)
+	results, err := r.retrieve(ctx, run, query, topK)
 	if err != nil {
 		if ctxErr := contextError(ctx); ctxErr != nil {
 			return outcome, ctxErr

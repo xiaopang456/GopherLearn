@@ -2,14 +2,18 @@ package config
 
 import "testing"
 
-// The applied mode reads the new state back, and the parts that read it back
-// are not here yet. Offering it would write segments that nothing reads and
-// call it the applied mode, so it is refused until the read side lands.
-func TestTheAppliedModeIsRefusedUntilTheReadSideExists(t *testing.T) {
+// The three modes are the plan's: off writes nothing, shadow writes without
+// being read, and on reads the new state back.
+//
+// The applied mode was refused while the read side did not exist: offering it
+// would have written segments that nothing reads and called it the applied
+// mode. The read side is here now, so the mode is accepted, and a name that
+// is not one of the three is still refused.
+func TestTheSegmentModeAcceptsTheThreeModes(t *testing.T) {
 	conf := defaultConfig()
 	conf.SummarySegmentMode = "on"
-	if err := conf.AgentConfig.Validate(); err == nil {
-		t.Fatal("the applied mode was accepted before the read side exists")
+	if err := conf.AgentConfig.Validate(); err != nil {
+		t.Fatalf("the applied mode was refused: %v", err)
 	}
 	conf.SummarySegmentMode = "shadow"
 	if err := conf.AgentConfig.Validate(); err != nil {
@@ -18,6 +22,10 @@ func TestTheAppliedModeIsRefusedUntilTheReadSideExists(t *testing.T) {
 	conf.SummarySegmentMode = "off"
 	if err := conf.AgentConfig.Validate(); err != nil {
 		t.Fatalf("the off mode was refused: %v", err)
+	}
+	conf.SummarySegmentMode = "applied"
+	if err := conf.AgentConfig.Validate(); err == nil {
+		t.Fatal("a mode that is not one of the three was accepted")
 	}
 }
 

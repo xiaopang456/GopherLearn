@@ -464,6 +464,16 @@ func main() {
 		log.Printf("initialize agent model: %v", err)
 		return
 	}
+	// The layered summary's write path. It is assembled here rather than next
+	// to the worker because the applied mode's read side needs it: the mode
+	// decides both what is written and what is sent, and a deployment that
+	// wrote the segments without reading them would pay for a model call per
+	// batch and answer nothing.
+	summarySegmentAssembly, err := buildSummarySegmentAssembly(conf, agentModel)
+	if err != nil {
+		log.Printf("initialize summary segment assembly: %v", err)
+		return
+	}
 	var knowledgeTools agentService.ToolRegistry = agentService.StaticToolRegistry{}
 	var knowledgeRegistry *agentTool.Registry
 	if conf.AgentConfig.MaxToolCalls > 0 {
@@ -651,7 +661,24 @@ func main() {
 					EvidenceMessageIDs: cited,
 				}, nil
 			}))
+		// A summary segment's citation is honoured only if the segment is
+		// still there and still covers the same turns. A segment is written
+		// once, so there is no version to check - but the row can be deleted
+		// and a later segment can take the same number.
+		historyTools.UseSummarySegmentEvidenceReader(
+			agentTool.NewSummarySegmentEvidenceReader(sessionDAO.DefaultRepository()))
 		registries := []agentService.ToolRegistry{knowledgeTools, memoryDraftTools, historyTools}
+		if summarySegmentAssembly.Applies() {
+			// browse_summary_segments opens the session's older segments. It
+			// is registered only in the applied mode, because there are no
+			// segments to browse in the other two.
+			browseTools, browseErr := agentTool.NewBrowseSummarySegmentsRegistry(sessionDAO.DefaultRepository())
+			if browseErr != nil {
+				log.Printf("initialize agent summary segment browse tool: %v", browseErr)
+				return
+			}
+			registries = append(registries, browseTools)
+		}
 		if memoryReadMode.UsesMemorySearchTool() {
 			// read_history_message stays registered but has nothing to offer
 			// under this mode: its allow-list is filled from the episodes the
@@ -709,6 +736,17 @@ func main() {
 		log.Printf("initialize agent summary provider: %v", err)
 		return
 	}
+	// In the applied mode the segments are the compression, so the rolling
+	// summary is neither read nor written.
+	//
+	// Two compressors over one stream would pay for the same turns twice and
+	// the window would carry both. The old table keeps what it already holds
+	// - the episode projection still reads it - and stops growing; the
+	// downstream switch to the board and the segments is a later step.
+	summarySource := agentService.SummaryProvider(summaryProvider)
+	if summarySegmentAssembly.Applies() {
+		summarySource = agentService.EmptySummaryProvider{}
+	}
 	// AGENT-017: mastery comes straight from TopicProgress on every turn, so a
 	// newly graded quiz changes the next explanation without any extraction,
 	// governance or staleness window in between.
@@ -747,12 +785,16 @@ func main() {
 		ModelWindowTokens: conf.AgentConfig.ContextModelWindowTokens, InputTargetTokens: conf.AgentConfig.ContextInputTargetTokens,
 		OutputReserveTokens: conf.AgentConfig.ContextOutputReserveTokens, EvidenceReserve: conf.AgentConfig.KnowledgeMaxRunTokens,
 		MaxGlobalUserMemoryTokens: conf.AgentConfig.ContextMaxGlobalUserMemoryTokens, MaxTopicUserMemoryTokens: conf.AgentConfig.ContextMaxTopicUserMemoryTokens,
-		MaxSummaryTokens:  conf.AgentConfig.ContextMaxSummaryTokens,
-		MaxMasteryTokens:  conf.AgentConfig.ContextMaxMasteryTokens,
-		MaxEpisodeTokens:  conf.AgentConfig.ContextMaxEpisodeTokens,
-		EpisodeRecallMode: agentService.EpisodeRecallMode(conf.AgentConfig.EpisodeRecallMode),
-		HistoryFetchLimit: conf.AgentConfig.ContextHistoryFetchLimit,
-		MemoryReadMode:    memoryReadMode,
+		MaxSummaryTokens:          conf.AgentConfig.ContextMaxSummaryTokens,
+		MaxMasteryTokens:          conf.AgentConfig.ContextMaxMasteryTokens,
+		MaxEpisodeTokens:          conf.AgentConfig.ContextMaxEpisodeTokens,
+		MaxWhiteboardTokens:       agentService.DefaultWhiteboardTokens,
+		MaxResidentSegmentTokens:  agentService.DefaultResidentSegmentTokens,
+		MaxRetrievedSegmentTokens: agentService.DefaultRetrievedSegmentTokens,
+		MaxSegmentTokens:          agentService.DefaultSegmentTokens,
+		EpisodeRecallMode:         agentService.EpisodeRecallMode(conf.AgentConfig.EpisodeRecallMode),
+		HistoryFetchLimit:         conf.AgentConfig.ContextHistoryFetchLimit,
+		MemoryReadMode:            memoryReadMode,
 	}, message.DefaultRepository(), learningTaskState, masteryProvider, agentService.MemoryProviderFunc(func(ctx context.Context, input agentService.RunContext) (agentService.MemoryRecall, error) {
 		recalled, err := memoryRetriever.RelevantMemories(ctx, memoryService.RecallRequest{
 			UserID: input.UserID, SessionID: input.SessionID, Question: input.Question,
@@ -763,10 +805,37 @@ func main() {
 		}
 
 		return agentService.MemoryRecall{Global: recalled.Global, Topic: recalled.Topic}, nil
-	}), summaryProvider)
+	}), summarySource)
 	if err != nil {
 		log.Printf("initialize agent context builder: %v", err)
 		return
+	}
+	// The layered summary's read side. It is attached only in the applied
+	// mode: the off and the shadow modes send exactly what they sent before.
+	if summarySegmentAssembly.Applies() {
+		// The preselector runs on the lexical channel alone. The vector
+		// channel needs an index of the segment vectors, and nothing writes
+		// that index yet, so a searcher here would find nothing and look
+		// like a search that failed.
+		preselector, preselectErr := agentService.NewSummarySegmentPreselector(nil, nil)
+		if preselectErr != nil {
+			log.Printf("initialize summary segment preselector: %v", preselectErr)
+			return
+		}
+		layeredProvider, layeredErr := agentService.NewDatabaseLayeredSummaryProvider(
+			sessionDAO.DefaultRepository(), preselector, agentService.DefaultResidentSummarySegments)
+		if layeredErr != nil {
+			log.Printf("initialize layered summary reader: %v", layeredErr)
+			return
+		}
+		if attachErr := contextBuilder.UseLayeredSummaryProvider(layeredProvider); attachErr != nil {
+			log.Printf("attach layered summary reader: %v", attachErr)
+			return
+		}
+		// The fallback generates a segment before the answer when the raw
+		// conversation no longer fits. It is the last resort, after the
+		// background has had its turn.
+		contextBuilder.UseSummarySegmentFallback(summarySegmentAssembly)
 	}
 	if memoryReadMode.UsesMemorySearchTool() {
 		// The same GlobalMemories function legacy_v2 uses, called directly.
@@ -873,6 +942,16 @@ func main() {
 	if err != nil {
 		log.Printf("initialize episode evidence loader: %v", err)
 		return
+	}
+	// In the applied mode the episode is projected from the raw messages only.
+	//
+	// The old rolling summary is a frozen picture of an earlier part of the
+	// session, taken before the layered summary existed. A value that was
+	// replaced afterwards is still in it, and reading it would let a stale
+	// statement become an assertion about the learner. Reading the summary
+	// segments instead is a later change.
+	if !agentService.EpisodeReadsLegacySummary(conf.AgentConfig.SummarySegmentMode) {
+		episodeLoader.WithoutLegacySummary()
 	}
 	episodeGenerator, err := episodeService.NewModelGenerator(agentModel, conf.AgentConfig.EpisodeMaxInputTokens, conf.AgentConfig.EpisodeMaxOutputTokens)
 	if err != nil {
@@ -1151,11 +1230,6 @@ func main() {
 	// The layered summary's write path. It is assembled only when the mode
 	// says it should run: a segment that is written and never read costs a
 	// model call per batch and answers nothing.
-	summarySegmentAssembly, err := buildSummarySegmentAssembly(conf, agentModel)
-	if err != nil {
-		log.Printf("initialize summary segment assembly: %v", err)
-		return
-	}
 	if summarySegmentAssembly.Enabled() {
 		if err := summarySegmentAssembly.Start(appCtx); err != nil {
 			log.Printf("start summary segment worker: %v", err)

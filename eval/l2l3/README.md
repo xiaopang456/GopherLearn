@@ -43,7 +43,7 @@ cd eval && go test ./cmd/l23 ./internal/l23
 
 | 字段 | 含义 |
 |---|---|
-| `expect` | 应当调用的**能力**（不是工具名）：`knowledge_search`、`document_read`、`episode_search`、`topic_memory_read`、`memory_draft`、`history_read` |
+| `expect` | 应当调用的**能力**（不是工具名）：`knowledge_search`、`document_read`、`episode_search`、`topic_memory_read`、`memory_draft`、`history_read`、`browse_summary_segments` |
 | `forbid` | 不应调用的能力，只要有一步出现就违规，成败不论 |
 | `max_tool_calls` | 本轮工具调用次数上限 |
 | `doc_constraint` | 可选。为 `true` 时要求 `document_read` 读的文档必须出自本轮自己的检索结果；需要读存下来的步骤参数，见"已知限制" |

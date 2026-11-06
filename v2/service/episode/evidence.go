@@ -39,6 +39,14 @@ type EvidenceLoader interface {
 type DatabaseEvidenceLoader struct {
 	db              *gorm.DB
 	maxMessageCount int
+	// legacySummary says whether the old rolling summary may be read.
+	//
+	// It is true by default, and the applied mode of the layered summary
+	// turns it off. The old summary is a frozen picture of the session taken
+	// before the layered summary existed: a value in it can be stale, and a
+	// stale value read here becomes an assertion about the learner. The
+	// applied mode therefore projects the raw messages only.
+	legacySummary bool
 }
 
 func NewDatabaseEvidenceLoader(db *gorm.DB, maxMessageCount int) (*DatabaseEvidenceLoader, error) {
@@ -51,7 +59,22 @@ func NewDatabaseEvidenceLoader(db *gorm.DB, maxMessageCount int) (*DatabaseEvide
 	if maxMessageCount < 32 || maxMessageCount > 20000 {
 		return nil, fmt.Errorf("episode evidence message limit must be between 32 and 20000")
 	}
-	return &DatabaseEvidenceLoader{db: db, maxMessageCount: maxMessageCount}, nil
+	return &DatabaseEvidenceLoader{db: db, maxMessageCount: maxMessageCount, legacySummary: true}, nil
+}
+
+// WithoutLegacySummary makes the loader project the raw messages only.
+//
+// It is the applied mode's rule: the episode says what happened in the
+// session, and the old rolling summary is a compression of a part of it that
+// was frozen before the layered summary existed. A value that was replaced
+// afterwards is still in there, so reading it would let an outdated statement
+// steer the projection. Reading the summary segments instead is a later
+// change; until then the raw messages are the whole source.
+func (l *DatabaseEvidenceLoader) WithoutLegacySummary() {
+	if l == nil {
+		return
+	}
+	l.legacySummary = false
 }
 
 func (l *DatabaseEvidenceLoader) Load(ctx context.Context, userID int64, sessionID string, targetMessageID uint) (ProjectionEvidence, error) {
@@ -79,28 +102,30 @@ func (l *DatabaseEvidenceLoader) Load(ctx context.Context, userID int64, session
 	}
 	view.TargetMessageAt = target.CreatedAt
 
-	var summary model.SessionSummary
-	if err := l.db.WithContext(ctx).
-		Where("user_id = ? AND session_id = ? AND covered_message_id <= ?", userID, sessionID, targetMessageID).
-		First(&summary).Error; err == nil {
-		view.Summary = &summary
-	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return ProjectionEvidence{}, err
-	}
-	if view.Summary != nil {
-		document, decodeErr := model.DecodeSessionSummaryDocument(view.Summary.Content)
-		if decodeErr != nil {
-			return ProjectionEvidence{}, fmt.Errorf("decode episode summary source: %w", decodeErr)
+	if l.legacySummary {
+		var summary model.SessionSummary
+		if err := l.db.WithContext(ctx).
+			Where("user_id = ? AND session_id = ? AND covered_message_id <= ?", userID, sessionID, targetMessageID).
+			First(&summary).Error; err == nil {
+			view.Summary = &summary
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return ProjectionEvidence{}, err
 		}
-		ids := document.EvidenceMessageIDs()
-		if len(ids) > 0 {
-			if err := l.db.WithContext(ctx).
-				Where("session_id = ? AND id IN ?", sessionID, ids).
-				Order("id ASC").Find(&view.SummaryMessages).Error; err != nil {
-				return ProjectionEvidence{}, err
+		if view.Summary != nil {
+			document, decodeErr := model.DecodeSessionSummaryDocument(view.Summary.Content)
+			if decodeErr != nil {
+				return ProjectionEvidence{}, fmt.Errorf("decode episode summary source: %w", decodeErr)
 			}
-			if len(view.SummaryMessages) != len(ids) {
-				return ProjectionEvidence{}, fmt.Errorf("episode summary evidence message missing")
+			ids := document.EvidenceMessageIDs()
+			if len(ids) > 0 {
+				if err := l.db.WithContext(ctx).
+					Where("session_id = ? AND id IN ?", sessionID, ids).
+					Order("id ASC").Find(&view.SummaryMessages).Error; err != nil {
+					return ProjectionEvidence{}, err
+				}
+				if len(view.SummaryMessages) != len(ids) {
+					return ProjectionEvidence{}, fmt.Errorf("episode summary evidence message missing")
+				}
 			}
 		}
 	}

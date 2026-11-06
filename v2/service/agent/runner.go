@@ -183,6 +183,12 @@ type ToolCallLimits struct {
 	// re-asking after it already had the learner's words, which is the shape a
 	// whole-run total of six does not see coming.
 	HistoryRead int
+	// BrowseSummarySegments bounds browse_summary_segments.
+	//
+	// It is zero in every mode that does not register the tool, which is the
+	// convention the other capabilities use: a zero leaves the whole-run
+	// total as the only fuse.
+	BrowseSummarySegments int
 }
 
 // limitFor charges a call to the capability behind the name rather than to the
@@ -204,6 +210,8 @@ func (l ToolCallLimits) limitFor(name string) int {
 		return l.ProposeMemory
 	case CapabilityHistoryRead:
 		return l.HistoryRead
+	case CapabilityBrowseSummarySegments:
+		return l.BrowseSummarySegments
 	default:
 		return 0
 	}
@@ -360,6 +368,7 @@ func (c RunnerConfig) Validate() error {
 		"memory_search": c.PerTool.MemorySearch, "knowledge_search": c.PerTool.KnowledgeSearch,
 		"document_read": c.PerTool.DocumentRead, "propose_memory": c.PerTool.ProposeMemory,
 		"topic_memory_read": c.PerTool.TopicMemoryRead, "read_history_message": c.PerTool.HistoryRead,
+		"browse_summary_segments": c.PerTool.BrowseSummarySegments,
 	} {
 		if limit < 0 {
 			return fmt.Errorf("%s call limit must not be negative", name)
@@ -457,6 +466,13 @@ type RunContext struct {
 	// fills this in after assembling the window, so a tool registry sees exactly
 	// what the model saw and nothing beyond it.
 	HistoryGrants []HistoryMessageGrant
+	// GrantSet is this run's shared read-back authorisation.
+	//
+	// The window's grants are its starting point. A tool that finds more
+	// evidence during the turn - the browse tool opening an older segment -
+	// extends the same set, so the read-back tool can read back the ids the
+	// browse tool just showed the model.
+	GrantSet *HistoryGrantSet
 	// Relevance is what the server-side pre-retrieval found before the model
 	// was asked anything. It is server-owned and nil when no pre-retrieval ran.
 	//
@@ -693,6 +709,20 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 		policy = rag.KnowledgeOnly
 	}
 	input.KnowledgePolicy = policy
+	// One cycle per turn, created here rather than in the window builder.
+	//
+	// The server-side pre-retrieval runs before the window is assembled, and
+	// it asks the embedding provider the same question the memory readers
+	// do. A cycle created after the pre-retrieval would be a cycle that
+	// arrives too late to be shared with it, and the turn would embed the
+	// learner's question twice.
+	//
+	// The cycle is created whatever the read mode is, because the
+	// pre-retrieval is not a memory reader and it runs under every mode. The
+	// mode decides who else may use it, not whether it exists.
+	if input.RecallCycle == nil {
+		input.RecallCycle = memoryrecall.New(input.Question)
+	}
 	// The server-side pre-retrieval answers the one question the model cannot:
 	// whether this question is about the learner's own material at all. It
 	// runs before the window is assembled, because its evidence belongs in it.
@@ -705,7 +735,12 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	// The tool input carries what the assembled window established, so a
 	// registry can scope itself to what this run may reach.
 	toolInput := input
-	toolInput.HistoryGrants = MergeHistoryMessageGrants(window.EpisodeHistoryGrants, window.SummaryHistoryGrants)
+	toolInput.HistoryGrants = MergeHistoryMessageGrants(window.EpisodeHistoryGrants, window.SummaryHistoryGrants,
+		window.SummarySegmentHistoryGrants)
+	// One authorisation set for the whole turn, shared by every tool that
+	// reads the learner's own words. A tool that opens an older segment
+	// extends it, and the read-back tool sees the extension.
+	toolInput.GrantSet = NewHistoryGrantSet(toolInput, toolInput.HistoryGrants)
 	toolInput.PreinjectedMemory = window.PreinjectedMemory
 	// The authoritative topic keys travel the same way and for the same reason:
 	// the window is where server state was actually read and re-checked, and a
