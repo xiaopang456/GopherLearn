@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { categoryRate, categoryReport, judgeInput, judgeVerdict, mergedOutcomes, truncationReport } from '../truncation.mjs'
+import { categoryRate, categoryReport, checkPointsFor, judgeCategories, judgeInput, judgeVerdict, mergedOutcomes, truncationReport } from '../truncation.mjs'
 import { splitForId } from '../scenarios.mjs'
 
 // A conversation of three turns. The user message of a turn is the only
@@ -126,6 +126,84 @@ test('a fabrication scenario that matches no turn stops instead of guessing', ()
   assert.equal(rows.length, 1)
   assert.equal(rows[0].input, null)
   assert.match(rows[0].error, /quoted name/)
+})
+
+test('the judge asks about the v2 categories that need asking', () => {
+  assert.deepEqual(judgeCategories().slice().sort(), ['R2', 'R3', 'R5', 'constraint', 'irrelevant', 'no_fabrication', 'stale'].sort())
+})
+
+test('each update category is asked about the value its question wants', () => {
+  assert.deepEqual(checkPointsFor({ category: 'R2' }).points, ['当前值正确，且没有拿被取代的旧值冒充当前值'])
+  assert.deepEqual(checkPointsFor({ category: 'R3' }).points, ['最初值正确，且没有拿后来的新值冒充最初值'])
+  assert.deepEqual(checkPointsFor({ category: 'R5', answer: { mode: 'needs_judge', required: ['只用标准库'] } }).points, ['只用标准库'])
+  // Without required and without an update direction there is nothing to ask, and
+  // saying so is better than inventing a check point.
+  assert.ok(checkPointsFor({ category: 'R5', answer: { mode: 'needs_judge' } }).error)
+  assert.ok(checkPointsFor({ category: 'R1' }).error)
+})
+
+// v3Update builds a draft-schema update scenario the scenario validator accepts:
+// building the judge input reads the history through materialize, so a fixture the
+// validator would refuse cannot be put to the judge at all.
+function v3Update(category) {
+  counter += 1
+  const id = `l4-${category}-${counter}`
+  const turns = Array.from({ length: 64 }, (_, index) => ({
+    user: `第${index + 1}轮用户消息`, assistant: `第${index + 1}轮助手消息`,
+    user_at: new Date(1767225600000 + index * 300000).toISOString(), assistant_at: new Date(1767225600000 + index * 300000 + 60000).toISOString(),
+  }))
+  const answer = category === 'R2'
+    ? { mode: 'fact', accepted: ['26分钟'], forbidden: ['41分钟'] }
+    : { mode: 'fact', accepted: ['41分钟'], forbidden: ['26分钟'] }
+  return {
+    id, category, split: splitForId(id), schema_version: 'l4.scenario.draft.v3',
+    question: '这个计划每次多长？', turns,
+    original_turn: 26, superseded_turn: 45, superseded_value: '41分钟',
+    distance_to_question: 20, evidence_turns: [26, 45], answer,
+  }
+}
+
+test('an undecided update attempt is put to the judge with one check point', () => {
+  for (const [category, want] of [['R2', '当前值正确，且没有拿被取代的旧值冒充当前值'], ['R3', '最初值正确，且没有拿后来的新值冒充最初值']]) {
+    const s = v3Update(category)
+    const rows = judgeInput(new Map([[s.id, s]]), [attempt(s.id, { answer: '要么是 26 分钟，要么是 41 分钟' })])
+    assert.equal(rows.length, 1, `${category}: ${JSON.stringify(rows)}`)
+    assert.equal(rows[0].error, undefined, `${category}: ${rows[0].error}`)
+    assert.equal(rows[0].input.check_point, want)
+    assert.deepEqual(Object.keys(rows[0].input), ['question', 'answer_key', 'evidence', 'response', 'check_point'])
+    assert.deepEqual(rows[0].input.evidence.map(item => item.turn), [26, 45])
+  }
+})
+
+test('a middle-fact attempt is not put to the judge', () => {
+  const s = v3Update('R2')
+  s.category = 'R1'
+  s.fact_turn = 26
+  delete s.original_turn
+  delete s.superseded_turn
+  delete s.superseded_value
+  s.distance_to_question = 64 + 1 - 26
+  s.evidence_turns = [26]
+  s.answer = { mode: 'fact', accepted: ['标签名'] }
+  assert.deepEqual(judgeInput(new Map([[s.id, s]]), [attempt(s.id, { answer: '想不起来了' })]), [])
+})
+
+test('the category guard still refuses a name that is in neither list', () => {
+  const s = scenarioOf('constraint')
+  assert.throws(() => judgeInput(new Map([[s.id, s]]), [attempt(s.id)], { selected: ['R7'] }), /unknown category/)
+  assert.throws(() => judgeInput(new Map([[s.id, s]]), [attempt(s.id)], { selected: ['nope'] }), /unknown category/)
+})
+
+test('an undecided update attempt leaves the category rate pending, not failed', () => {
+  const s = v3Update('R2')
+  const outcomes = []
+  for (const rep of [0, 1, 2]) outcomes.push({ id: s.id, arm: 'truncation', condition: 'main', rep, verdict: 'needs_judge' })
+  const report = categoryReport(outcomes, new Map([[s.id, s]]), { left: { arm: 'truncation', condition: 'main' }, right: { arm: 'truncation', condition: 'main' } })
+  const row = report.categories.find(item => item.category === 'R2')
+  assert.ok(row, JSON.stringify(report.categories.map(item => item.category)))
+  assert.equal(row.left.needs_judge, 3)
+  assert.equal(row.left.pass, 0)
+  assert.equal(row.left.fail, 0)
 })
 
 test('a stale scenario without a required gets the synthetic check point', () => {

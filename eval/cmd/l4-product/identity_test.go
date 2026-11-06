@@ -2,9 +2,77 @@ package main
 
 import (
 	"fmt"
+	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
+
+	"GopherAI/model"
 )
+
+// userNameColumnWidth reads the narrowest width the product's own tables give
+// the user name. The derived user name is written into every one of them, so
+// the evaluator has to stay inside the narrowest: a name that does not fit
+// makes an attempt fail with a database error before the question is ever
+// asked.
+//
+// A column without an explicit varchar tag falls back to the database's own
+// default, which is far wider than any explicit width here; such a column
+// cannot be the narrowest one, so it is not measured rather than guessed at.
+func userNameColumnWidth(t *testing.T) int {
+	t.Helper()
+	narrowest := 0
+	for _, column := range []struct {
+		model  interface{}
+		field  string
+		notice string
+	}{
+		{model.Message{}, "UserName", "the message table"},
+		{model.User{}, "Username", "the user table"},
+		{model.Session{}, "UserName", "the session table"},
+	} {
+		field, ok := reflect.TypeOf(column.model).FieldByName(column.field)
+		if !ok {
+			t.Fatalf("%s has no %s field", column.notice, column.field)
+		}
+		match := regexp.MustCompile(`varchar\((\d+)\)`).FindStringSubmatch(field.Tag.Get("gorm"))
+		if len(match) != 2 {
+			continue
+		}
+		width, err := strconv.Atoi(match[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if narrowest == 0 || width < narrowest {
+			narrowest = width
+		}
+	}
+	if narrowest == 0 {
+		t.Fatal("no explicit varchar width found for the user name")
+	}
+	return narrowest
+}
+
+// The derived name is what every user-name column stores, so it has to fit the
+// narrowest one. The width counts characters, which is what a varchar width
+// is, so the name is measured in characters too.
+func TestScenarioIdentityNameFitsTheMessageTable(t *testing.T) {
+	width := userNameColumnWidth(t)
+	for _, x := range [][4]string{
+		{"run", "arm-a", "case-a", "main"},
+		{"a-very-long-evaluation-run-id", "a-configuration-with-a-long-name", "a-scenario-with-a-long-id", "distractor"},
+	} {
+		_, name, err := scenarioIdentity(x[0], x[1], x[2], x[3])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if runes := utf8.RuneCountInString(name); runes > width {
+			t.Fatalf("the derived name %q is %d characters, the narrowest user-name column allows %d", name, runes, width)
+		}
+	}
+}
 
 func TestScenarioIdentity(t *testing.T) {
 	id, name, err := scenarioIdentity("run", "arm-a", "case-a", "main")

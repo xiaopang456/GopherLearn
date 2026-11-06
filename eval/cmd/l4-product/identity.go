@@ -11,6 +11,11 @@ import (
 
 // scenarioIdentity is stable across preparation and repetitions, but differs
 // across runs, configurations, scenarios and conditions.
+//
+// The user name is derived, so it has to fit the product's own columns: the
+// message table keeps the user name in a varchar(20). "l4_" plus sixteen hex
+// characters is nineteen characters, which fits and still carries sixty-four
+// bits of the digest; the name is an opaque label, the identity is the id.
 func scenarioIdentity(run, arm, scenario, condition string) (int64, string, error) {
 	for _, part := range []string{run, arm, scenario, condition} {
 		if strings.TrimSpace(part) == "" {
@@ -23,7 +28,7 @@ func scenarioIdentity(run, arm, scenario, condition string) (int64, string, erro
 	if id == 0 {
 		return 0, "", fmt.Errorf("invalid derived identity")
 	}
-	return id, "l4_" + hex.EncodeToString(digest[:16]), nil
+	return id, "l4_" + hex.EncodeToString(digest[:8]), nil
 }
 
 // identityInput is everything the command knows about the attempt that needs an

@@ -296,6 +296,26 @@ func (r *MemoryRecorder) SummarySegmentFallback(reason string, unsummarizedToken
 	r.logf("memory_metric name=summary_segment_fallback mode=%s reason=%s unsummarized_tokens=%d", mode, reason, unsummarizedTokens)
 }
 
+// KnowledgeIndexAudit records the outcome of one startup index audit.
+//
+// The counters carry counts, never document identifiers. A label that holds a
+// document id grows with the corpus, and the metric stops being a metric. The
+// documents themselves are listed in the log, next to the command that
+// rebuilds each of them.
+func (r *MemoryRecorder) KnowledgeIndexAudit(mode, status string, compared, missing, extra, rebuilt, skipped, failed int) {
+	mode = boundedLabel(mode, "off", "audit", "rebuild")
+	status = boundedLabel(status, "consistent", "inconsistent", "incomplete", "partial", "failed")
+	r.add("knowledge_index_audit_total{mode="+mode+",status="+status+"}", 1)
+	r.add("knowledge_index_audit_compared_documents", uint64(max(compared, 0)))
+	r.add("knowledge_index_audit_missing_documents", uint64(max(missing, 0)))
+	r.add("knowledge_index_audit_extra_documents", uint64(max(extra, 0)))
+	r.add("knowledge_index_audit_rebuilt_documents", uint64(max(rebuilt, 0)))
+	r.add("knowledge_index_audit_skipped_documents", uint64(max(skipped, 0)))
+	r.add("knowledge_index_audit_failed_documents", uint64(max(failed, 0)))
+	r.logf("memory_metric name=knowledge_index_audit mode=%s status=%s compared=%d missing=%d extra=%d rebuilt=%d skipped=%d failed=%d",
+		mode, status, compared, missing, extra, rebuilt, skipped, failed)
+}
+
 func (r *MemoryRecorder) Snapshot() MemorySnapshot {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

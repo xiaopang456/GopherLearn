@@ -16,11 +16,50 @@ export function normalizeFact(s) {
   return `seconds:${numerator}/${denominator}`
 }
 
+// Normalize numeric expressions without touching surrounding prose. Match spans
+// in the original string so negation handling retains its original offsets.
+const DIGITS = {零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9}
+function chineseNumber(s) {
+  if (/^\d+(?:\.\d+)?$/.test(s)) return Number(s)
+  let total = 0, digit = 0
+  for (const c of s) {
+    if (c === '十') { total += (digit || 1) * 10; digit = 0 }
+    else if (c === '百') { total += (digit || 1) * 100; digit = 0 }
+    else if (Object.hasOwn(DIGITS, c)) digit = digit * 10 + DIGITS[c]
+    else return NaN
+  }
+  return total + digit
+}
+const NUM = '(?:[0-9]+(?:\\.[0-9]+)?|[零〇一二两兩三四五六七八九十百]+)'
+const FACT_EXPR = new RegExp(`(?:凌晨|早上|上午|中午|下午|晚上|傍晚)?(?:${NUM})(?:[:：]\\d{1,2}|点(?:半|一刻|三刻|${NUM}分?)?)|(?:${NUM})(?:分钟|分鐘|minutes?|mins?|hours?|hrs?|小时|小時|时|時|秒钟|秒鐘|seconds?|secs?|秒|分|页|頁|次|天|h|s)`, 'giu')
+function canonicalExpression(s) {
+  const t = s.normalize('NFKC').replace(/\s+/gu, '').toLowerCase()
+  const time = new RegExp(`^(凌晨|早上|上午|中午|下午|晚上|傍晚)?(${NUM})(?:[:](\\d{1,2})|点(半|一刻|三刻|${NUM}分?)?)$`, 'u').exec(t)
+  if (time) {
+    let h = chineseNumber(time[2]); let m = time[3] === undefined ? (time[4] === '半' ? 30 : time[4] === '一刻' ? 15 : time[4] === '三刻' ? 45 : time[4] ? chineseNumber(time[4].replace(/分$/, '')) : 0) : Number(time[3])
+    const period = time[1]
+    if (period && (h < 1 || h > 12)) return null
+    if (['下午', '晚上', '傍晚'].includes(period) && h < 12) h += 12
+    if (['凌晨', '早上', '上午'].includes(period) && h === 12) h = 0
+    if (period === '中午' && h < 11) h += 12
+    if (h > 23 || m > 59) return null
+    return `clock:${h}:${m}`
+  }
+  const quantity = new RegExp(`^(${NUM})(分钟|分鐘|minutes?|mins?|hours?|hrs?|小时|小時|时|時|秒钟|秒鐘|seconds?|secs?|秒|分|页|頁|次|天|h|s)$`, 'iu').exec(t)
+  if (!quantity) return null
+  const n = chineseNumber(quantity[1]); const unit = quantity[2]
+  const duration = normalizeFact(`${n}${unit}`)
+  if (duration.startsWith('seconds:')) return duration
+  if (/^(分钟|分鐘|分|minutes?|mins?)$/i.test(unit)) return `seconds:${n * 60}/1`
+  if (/^(小时|小時|时|時)$/i.test(unit)) return `seconds:${n * 3600}/1`
+  if (/^(秒钟|秒鐘|秒|seconds?|secs?)$/i.test(unit)) return `seconds:${n}/1`
+  return `quantity:${n}:${unit === '頁' ? '页' : unit}`
+}
+
 // A fact answer is judged by what the answer says, not by whether it says it
 // in one word. The answer mentions a value or it does not; a value that the
 // answer denies or withdraws does not count as mentioned; and a mention whose
 // denial is not clear enough to call stays pending instead of being decided.
-const DURATION_MENTION = /(\d+(?:\.\d+)?)(分钟|分鐘|小时|小時|时|時|秒钟|秒鐘|秒|分|minutes|minute|mins|min|hours|hour|hrs|hr|seconds|second|secs|sec|h|s)/giu
 // A denial negates the value that follows it.
 const HARD_NEGATION = [
   '不是', '并非', '并不是', '并不', '而非', '没有', '不再', '不等于', '不算', '有误', '错了',
@@ -97,13 +136,26 @@ function clauseRanges(text, from, to) {
 function mentionsOf(text, value) {
   const found = []
   const normalized = normalizeFact(value)
-  const isDuration = normalized.startsWith('seconds:')
+  const canonical = canonicalExpression(normalized) ?? (normalized.startsWith('seconds:') ? normalized : null)
   const haystack = compact(text)
-  if (isDuration) {
-    DURATION_MENTION.lastIndex = 0
-    for (let match = DURATION_MENTION.exec(haystack.text); match; match = DURATION_MENTION.exec(haystack.text)) {
-      if (normalizeFact(match[0]) !== normalized) continue
-      found.push({ start: haystack.map[match.index], end: haystack.map[match.index + match[0].length - 1] + 1, value })
+  if (canonical) {
+    FACT_EXPR.lastIndex = 0
+    for (let match = FACT_EXPR.exec(haystack.text); match; match = FACT_EXPR.exec(haystack.text)) {
+      if (canonicalExpression(match[0]) !== canonical) continue
+      const start = match.index, end = start + match[0].length
+      const expression = match[0].toLowerCase()
+      const before = haystack.text.slice(Math.max(0, start - 2), start)
+      const after = haystack.text.slice(end)
+      // A bare 点 may mean a point, not a clock time; even a precise
+      // unqualified twelve-hour expression may mean AM or PM. Compound
+      // words such as 次元 and 天气 are not count/duration mentions.
+      const spokenClock = expression.includes('点')
+      const hasPeriod = /^(?:凌晨|早上|上午|中午|下午|晚上|傍晚)/u.test(expression)
+      const hour = spokenClock ? chineseNumber(expression.replace(/^(?:凌晨|早上|上午|中午|下午|晚上|傍晚)/u, '').split('点')[0]) : 0
+      const ambiguousClock = spokenClock && ((!hasPeriod && hour <= 12) || /[这那哪每]/u.test(before.slice(-1)) || /^(?:建议|意见|原因|问题|内容|要求|理由|好处|区别|方面|注意|重要)/u.test(after))
+      const ambiguousCompound = /次$/u.test(expression) && /^(?:元|方|数|數)/u.test(after) || /天$/u.test(expression) && /^(?:气|氣|然|赋|賦|线|線)/u.test(after) || /[a-z]$/iu.test(expression) && /^[a-z]/iu.test(after)
+      const embedded = /[a-z0-9零〇一二两兩三四五六七八九十百.]/iu.test(text[haystack.map[start] - 1] ?? '')
+      found.push({ start: haystack.map[start], end: haystack.map[end - 1] + 1, value, ambiguous: ambiguousClock || ambiguousCompound || embedded })
     }
     return found
   }
@@ -180,7 +232,13 @@ export function judgeFact(answer, scenario) {
   const spans = []
   for (const value of accepted) spans.push(...mentionsOf(text, value))
   for (const value of forbidden) spans.push(...mentionsOf(text, value))
-  for (const span of spans) span.state = mentionState(text, span, spans)
+  for (const span of spans) span.state = span.ambiguous ? 'uncertain' : mentionState(text, span, spans)
+  // R3 asks about history: saying the original value was cancelled does not
+  // make the historical claim false. Send any answer naming both values to
+  // the R3 semantic checkpoint, including explicit withdrawals or denials.
+  if (scenario.category === 'R3' && spans.some(span => accepted.includes(span.value)) && spans.some(span => forbidden.includes(span.value))) {
+    return { verdict: 'needs_judge', reason: 'mixed_fact_values' }
+  }
   const reading = factReading(spans, accepted)
   const wrong = factReading(spans, forbidden)
   if (reading.uncertain || wrong.uncertain) return { verdict: 'needs_judge', reason: 'negation_uncertain' }
