@@ -222,6 +222,19 @@ func (r *MemoryRecorder) Whiteboard(applied, changed, fabricated, suspiciousDele
 		mode, applied, changed, fabricated, suspiciousDelete, missedUpdate, truncated, dropped, droppedDone)
 }
 
+// WhiteboardDelta records that a batch was asked for its changes instead of
+// the whole board.
+//
+// The rewrite is the shape the board is designed around, and a batch that had
+// to switch shapes is a batch whose board had grown past the output budget.
+// The count is what says whether the board is being kept tight or is being
+// allowed to grow until every batch has to switch.
+func (r *MemoryRecorder) WhiteboardDelta() {
+	mode := r.modeLabel()
+	r.add("whiteboard_delta_batches_total{mode="+mode+"}", 1)
+	r.logf("memory_metric name=whiteboard_delta mode=%s", mode)
+}
+
 // SummarySegment records what one segment generation produced or why it did
 // not produce one.
 //

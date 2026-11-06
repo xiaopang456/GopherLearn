@@ -7,7 +7,6 @@ import (
 	"log"
 	"time"
 
-	"GopherAI/common/rag"
 	"GopherAI/model"
 )
 
@@ -291,7 +290,6 @@ func (p *ModelSummarySegmentProducer) persist(
 		Content:           result.SegmentContent,
 		NamesAndNumbers:   namesAndNumbers,
 		WhiteboardChanges: changes,
-		TokenEstimate:     rag.EstimateTokens(result.SegmentContent),
 		IndexStatus:       model.SessionSummarySegmentIndexPending,
 	}
 	if segment.StartAt.IsZero() {
@@ -300,13 +298,17 @@ func (p *ModelSummarySegmentProducer) persist(
 	if segment.EndAt.IsZero() {
 		segment.EndAt = segment.StartAt
 	}
+	// The estimate is what the segment costs when the window sends it, and
+	// the header it is measured with carries the segment's own end time. It
+	// is therefore taken after the times are settled rather than beside them.
+	segment.TokenEstimate = RenderedSegmentTokens(*segment)
 
 	board := &model.SessionWhiteboard{
 		UserID:           job.UserID,
 		SessionID:        job.SessionID,
 		Content:          result.WhiteboardContent,
 		CoveredMessageID: end,
-		TokenEstimate:    rag.EstimateTokens(result.WhiteboardContent),
+		TokenEstimate:    RenderedWhiteboardTokens(result.Whiteboard),
 	}
 	// The version is the one the board had when the model read it. If another
 	// writer moved the board on in the meantime, this write is refused and

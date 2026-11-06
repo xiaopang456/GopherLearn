@@ -20,7 +20,12 @@ import (
 // output the generator cannot parse.
 
 type stubSegmentModel struct {
-	content  string
+	content string
+	// byPrompt answers differently per system prompt. The generator asks for
+	// the whole board first and for the changes only when the board no longer
+	// fits the output budget, so a stub that answered one string to both
+	// calls could not tell the two paths apart.
+	byPrompt map[string]string
 	calls    int
 	prompts  []*schema.Message
 	failWith error
@@ -32,7 +37,13 @@ func (m *stubSegmentModel) Generate(_ context.Context, input []*schema.Message, 
 	if m.failWith != nil {
 		return nil, m.failWith
 	}
-	return schema.AssistantMessage(m.content, nil), nil
+	content := m.content
+	if len(input) > 0 && input[0] != nil {
+		if answer, ok := m.byPrompt[input[0].Content]; ok {
+			content = answer
+		}
+	}
+	return schema.AssistantMessage(content, nil), nil
 }
 
 func (m *stubSegmentModel) Stream(context.Context, []*schema.Message, ...modelcomponent.Option) (*schema.StreamReader[*schema.Message], error) {
@@ -225,8 +236,18 @@ func TestSegmentGeneratorTrimsAnOversizedSegmentInsteadOfRejectingIt(t *testing.
 	if err != nil {
 		t.Fatalf("an oversized segment must not fail: %v", err)
 	}
-	if len(result.Segment.Points) != model.SessionSummarySegmentPointLimit {
-		t.Fatalf("points = %d, want %d", len(result.Segment.Points), model.SessionSummarySegmentPointLimit)
+	if len(result.Segment.Points) > model.SessionSummarySegmentPointLimit {
+		t.Fatalf("points = %d, want at most %d", len(result.Segment.Points), model.SessionSummarySegmentPointLimit)
+	}
+	// The segment has to fit the block it is sent in. The item limit alone
+	// bounded how many points there were, not how big they were, so a segment
+	// could hold twenty points and still be trimmed to half of them by the
+	// renderer without anything counting it.
+	if cost := SegmentContentTokens(result.Segment, 21, 22); cost > DefaultSegmentTokens {
+		t.Fatalf("the rendered segment costs %d tokens, the block allows %d", cost, DefaultSegmentTokens)
+	}
+	if result.Diagnostics.DroppedPoints == 0 {
+		t.Fatal("the points the trim took away were not counted")
 	}
 }
 
@@ -392,14 +413,16 @@ func TestSegmentGeneratorCountsThePointsLostByABatchThatFailed(t *testing.T) {
 	}
 }
 
-// The board counters are reported even when the generation fails after the
-// engine ran, because that work still happened. A board that had to be
-// trimmed and then failed for another reason still cost the engine work, and
-// that work is what the counters exist to show.
-func TestSegmentGeneratorCountsTheBoardEvenWhenTheGenerationFailsAfterwards(t *testing.T) {
+// A board that does not fit the output budget is not a batch that failed.
+//
+// The rewrite grows with the board, so once the board is near the budget the
+// answer no longer fits - and a batch that cannot be stored wrote nothing at
+// all, after every token of it was paid for. The batch is asked for its
+// changes instead and the program merges them.
+func TestSegmentGeneratorAsksForTheChangesWhenTheBoardNoLongerFits(t *testing.T) {
 	recorder := swapMemoryRecorder(t)
-	// Ten long entries make the board bigger than the output budget, so the
-	// generation fails on the board after the engine has already merged it.
+	// Ten long entries make the rewritten board bigger than the output
+	// budget.
 	entries := make([]map[string]any, 0, 10)
 	for index := 0; index < 10; index++ {
 		entries = append(entries, map[string]any{
@@ -409,7 +432,7 @@ func TestSegmentGeneratorCountsTheBoardEvenWhenTheGenerationFailsAfterwards(t *t
 			"source_message_ids": []int{21},
 		})
 	}
-	payload, err := json.Marshal(map[string]any{
+	rewrite, err := json.Marshal(map[string]any{
 		"schema_version": 1,
 		"segment": map[string]any{
 			"topic":   "t",
@@ -425,19 +448,49 @@ func TestSegmentGeneratorCountsTheBoardEvenWhenTheGenerationFailsAfterwards(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	stub := &stubSegmentModel{content: string(payload)}
+	changes := `{
+      "schema_version": 1,
+      "segment": {"topic": "t", "points": [{"text": "p", "evidence_message_ids": [21]}], "names": [], "numbers": []},
+      "whiteboard_changes": {
+        "constraints": [
+          {"op": "update", "key": "duration", "text": "每天学习 48 分钟", "value": "48 分钟", "source_message_ids": [21]}
+        ]
+      }
+    }`
+	stub := &stubSegmentModel{
+		content:  string(rewrite),
+		byPrompt: map[string]string{segmentDeltaSystemPrompt: changes},
+	}
 	generator, err := NewModelSegmentGenerator(stub, 8000, 300)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := generator.GenerateSegment(context.Background(), segmentTestInput()); err == nil {
-		t.Fatal("a board over the output budget must fail")
+	input := segmentTestInput()
+	input.Whiteboard = `{"schema_version":1,"constraints":[{"key":"duration","text":"每天学习 30 分钟","value":"30 分钟","source_message_ids":[21]}]}`
+	result, err := generator.GenerateSegment(context.Background(), input)
+	if err != nil {
+		t.Fatalf("a board over the output budget must not fail the batch: %v", err)
+	}
+	if stub.calls != 2 {
+		t.Fatalf("the generator made %d calls, want the rewrite and then the changes", stub.calls)
 	}
 	snapshot := recorder.Snapshot()
-	if snapshot.Counters["summary_segment_total{mode=off,outcome=failed,reason=output_too_large}"] != 1 {
-		t.Fatalf("the reason was not counted: %#v", snapshot.Counters)
+	if snapshot.Counters["whiteboard_delta_batches_total{mode=off}"] != 1 {
+		t.Fatalf("the changes-only batch was not counted: %#v", snapshot.Counters)
+	}
+	if snapshot.Counters["summary_segment_total{mode=off,outcome=failed,reason=output_too_large}"] != 0 {
+		t.Fatalf("the batch was still counted as a failure: %#v", snapshot.Counters)
 	}
 	if snapshot.Totals["whiteboard_applied_total"] == 0 {
-		t.Fatalf("the board counters were not reported for the failed generation: %#v", snapshot.Totals)
+		t.Fatalf("the board counters were not reported: %#v", snapshot.Totals)
+	}
+	// The merged board carries the new value, merged into the entry that was
+	// already there rather than beside it.
+	var board model.SessionWhiteboardDocument
+	if err = json.Unmarshal([]byte(result.WhiteboardContent), &board); err != nil {
+		t.Fatal(err)
+	}
+	if len(board.Constraints) != 1 || board.Constraints[0].Value != "48 分钟" {
+		t.Fatalf("the board was not merged: %+v", board.Constraints)
 	}
 }

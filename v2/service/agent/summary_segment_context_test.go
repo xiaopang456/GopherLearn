@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"GopherAI/common/rag"
 	"GopherAI/model"
 )
 
@@ -482,5 +483,42 @@ func TestThePreselectorLeavesTheResidentSegmentsAlone(t *testing.T) {
 	}
 	if len(selected) != 0 {
 		t.Fatalf("the preselector chose a resident segment again: %d", len(selected))
+	}
+}
+
+// The preselector spends its budget on what the window sends, not on the body
+// the segment is stored in.
+//
+// The stored body is JSON: braces, quotes, field names and evidence ids. On a
+// real segment it runs to roughly three times the block the model reads, so a
+// budget spent on the body rejected segments that fitted - and the segment
+// carrying the answer was among them.
+func TestThePreselectorSpendsItsBudgetOnWhatTheWindowSends(t *testing.T) {
+	points := make([]model.SessionSummarySegmentPoint, 0, 12)
+	for index := 0; index < 12; index++ {
+		points = append(points, model.SessionSummarySegmentPoint{
+			Text: "梧苑每次读十五页，后来改成三十页", EvidenceMessageIDs: []uint{21, 22, 23},
+		})
+	}
+	segment := testSegment(t, 1, 1, 30, "梧苑读书计划的页数", points, nil)
+	stored := rag.EstimateTokens(segment.Content)
+	if stored <= DefaultPreselectedSegmentTokens {
+		t.Fatalf("the stored body costs %d tokens; the fixture does not exceed the budget", stored)
+	}
+	if rendered := RenderedSegmentTokens(segment); rendered > DefaultSegmentTokens+segmentSeparatorTokens {
+		t.Fatalf("the block costs %d tokens, over the budget of %d", rendered, DefaultSegmentTokens+segmentSeparatorTokens)
+	}
+	preselector, err := NewSummarySegmentPreselector(nil, nil)
+	if err != nil {
+		t.Fatalf("build preselector: %v", err)
+	}
+	selected, err := preselector.Select(context.Background(),
+		RunContext{UserID: 7, SessionID: "session", Question: "梧苑我每次读多少页？"},
+		[]model.SessionSummarySegment{segment}, nil)
+	if err != nil {
+		t.Fatalf("preselect: %v", err)
+	}
+	if len(selected) != 1 || selected[0].Seq != 1 {
+		t.Fatalf("the segment the block fits was not selected: %+v", selected)
 	}
 }

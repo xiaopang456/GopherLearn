@@ -353,3 +353,102 @@ func TestWhiteboardDropsAnEntryWithAnUnusableCitation(t *testing.T) {
 		}
 	}
 }
+
+// The board is measured on the block the window sends, not on the body it is
+// stored in.
+//
+// The stored body is JSON: braces, quotes, field names and message ids. On a
+// real board it runs to about a fifth more than the block the model reads, so
+// a budget spent on the body dropped entries the window would have carried
+// and still let the block overrun the budget it was supposed to fit.
+func TestTheBoardIsMeasuredOnTheBlockTheWindowSends(t *testing.T) {
+	board := model.SessionWhiteboardDocument{SchemaVersion: model.SessionWhiteboardSchemaV1}
+	for index := 0; index < model.SessionWhiteboardItemLimit; index++ {
+		entry := whiteboardEntry("constraint-"+string(rune('a'+index)),
+			"每天学习三十分钟，周末不学", strings.Repeat("值", 8))
+		entry.SourceMessageIDs = []uint{21, 22}
+		entry.UpdatedAtMessageID = uint(21 + index)
+		board.Constraints = append(board.Constraints, entry)
+	}
+	rendered := RenderedWhiteboardTokens(board)
+	stored := storedWhiteboardTokens(board)
+	if stored <= rendered {
+		t.Fatalf("the stored body costs %d and the block %d; the fixture does not show the difference", stored, rendered)
+	}
+	// Trimming is decided on the block, so a board whose block already fits
+	// keeps every entry no matter what its stored body costs.
+	if rendered > model.SessionWhiteboardTokenLimit {
+		t.Fatalf("the fixture does not fit the block: %d > %d", rendered, model.SessionWhiteboardTokenLimit)
+	}
+	trimmed := board
+	if changes := trimWhiteboardToTokenLimit(&trimmed); len(changes) != 0 {
+		t.Fatalf("a board that fits the block lost %d entries", len(changes))
+	}
+	if len(trimmed.Constraints) != len(board.Constraints) {
+		t.Fatalf("entries = %d, want %d", len(trimmed.Constraints), len(board.Constraints))
+	}
+}
+
+// Whatever the trim takes away, the block that is left has to fit.
+func TestTheTrimmedBoardFitsTheBlockItIsSentIn(t *testing.T) {
+	board := model.SessionWhiteboardDocument{SchemaVersion: model.SessionWhiteboardSchemaV1}
+	for index := 0; index < model.SessionWhiteboardItemLimit; index++ {
+		entry := whiteboardEntry("constraint-"+string(rune('a'+index)),
+			strings.Repeat("考试前两周改成每天一小时", 6), "")
+		entry.UpdatedAtMessageID = uint(21 + index)
+		board.Constraints = append(board.Constraints, entry)
+	}
+	changes := trimWhiteboardToTokenLimit(&board)
+	if len(changes) == 0 {
+		t.Fatal("the fixture did not need trimming, so it proves nothing")
+	}
+	if cost := RenderedWhiteboardTokens(board); cost > model.SessionWhiteboardTokenLimit {
+		t.Fatalf("the trimmed block costs %d, the budget is %d", cost, model.SessionWhiteboardTokenLimit)
+	}
+	if len(changes) != model.SessionWhiteboardItemLimit-len(board.Constraints) {
+		t.Fatalf("%d entries were dropped but %d changes were recorded", model.SessionWhiteboardItemLimit-len(board.Constraints), len(changes))
+	}
+}
+
+// A finished step gives up its place before anything that still stands, the
+// values and plan steps nobody mentioned since go next, and a constraint is
+// the last thing the board gives up.
+func TestTheBoardGivesUpItsEntriesInOrder(t *testing.T) {
+	board := model.SessionWhiteboardDocument{SchemaVersion: model.SessionWhiteboardSchemaV1}
+	constraint := whiteboardEntry("约束", "每天学习三十分钟", "三十分钟", 21)
+	// The constraint is the oldest entry on the board, so the previous rule -
+	// oldest first - would have taken it before anything else.
+	constraint.UpdatedAtMessageID = 5
+	done := whiteboardEntry("计划-已完成", "先读第一章", "已完成", 21)
+	done.State = "done"
+	done.UpdatedAtMessageID = 90
+	open := whiteboardEntry("计划-未完成", "再读第二章", "进行中", 21)
+	open.UpdatedAtMessageID = 40
+	worry := whiteboardEntry("担心", "怕读不完", "", 21)
+	worry.UpdatedAtMessageID = 60
+	board.Constraints = []model.SessionWhiteboardEntry{constraint}
+	board.Plan = []model.SessionWhiteboardEntry{done, open}
+	board.OpenItems = []model.SessionWhiteboardEntry{worry}
+
+	want := []string{"计划-已完成", "计划-未完成", "担心", "约束"}
+	for index, key := range want {
+		victim, found := nextBoardEntryToDrop(board)
+		if !found {
+			t.Fatalf("step %d: the board stopped giving entries up", index)
+		}
+		if strings.TrimSpace(victim.entry.Key) != key {
+			t.Fatalf("step %d: the board gave up %q, want %q", index, victim.entry.Key, key)
+		}
+		switch victim.group {
+		case whiteboardGroupConstraints:
+			board.Constraints = removeWhiteboardEntry(board.Constraints, victim.entry)
+		case whiteboardGroupPlan:
+			board.Plan = removeWhiteboardEntry(board.Plan, victim.entry)
+		case whiteboardGroupOpenItems:
+			board.OpenItems = removeWhiteboardEntry(board.OpenItems, victim.entry)
+		}
+	}
+	if _, found := nextBoardEntryToDrop(board); found {
+		t.Fatal("an empty board still offered an entry")
+	}
+}

@@ -87,6 +87,76 @@ func renderWhiteboardBlock(document model.SessionWhiteboardDocument, budget int)
 	return out
 }
 
+// unlimitedTokens is a budget large enough that the renderer shows everything.
+//
+// It is the width of the platform's int, not a number chosen here: a budget
+// that happened to be smaller than a real board would silently hide the part
+// that overflowed, and a measurement taken that way would agree with the
+// renderer while disagreeing with the board.
+const unlimitedTokens = int(^uint(0) >> 1)
+
+// RenderedWhiteboardTokens is what the board costs when the window sends it.
+//
+// The stored body is JSON: braces, quotes, field names and message ids. What
+// the model reads is the rendered block, which is a fraction of that. The
+// board's budget is a budget on what is sent, so it is measured on what is
+// sent; measuring the stored body instead spends the budget twice and refuses
+// updates that would have fitted.
+func RenderedWhiteboardTokens(board model.SessionWhiteboardDocument) int {
+	return rag.EstimateTokens(renderWhiteboardBlock(board, unlimitedTokens).Text)
+}
+
+// segmentSeparatorTokens is what a block charges for the break between two
+// segments. It is the same number the block's own loop adds.
+const segmentSeparatorTokens = 4
+
+// RenderedSegmentTokens is what one stored segment costs the block that
+// carries it.
+//
+// It is rendered under the per-segment budget every consumer uses, so the
+// number is the number the window pays rather than what the body would cost
+// if nothing trimmed it. The measure is taken without the board: a
+// supersession mark names a change that has not happened yet when the segment
+// is written, so counting marks here would make the number depend on what the
+// conversation does next, and a budget that moves after the fact cannot be
+// compared with anything.
+func RenderedSegmentTokens(segment model.SessionSummarySegment) int {
+	return renderedSegmentCost(segment, DefaultSegmentTokens)
+}
+
+// renderedSegmentCost renders one segment the way a block will and reports
+// what the block charges for it.
+func renderedSegmentCost(segment model.SessionSummarySegment, perSegmentTokens int) int {
+	block, _, _ := renderSummarySegment(segment, model.SessionWhiteboardDocument{},
+		segment.EndMessageID, perSegmentTokens)
+	if block == "" {
+		return 0
+	}
+	return rag.EstimateTokens(block) + segmentSeparatorTokens
+}
+
+// SegmentContentTokens is what a segment body costs once it is rendered,
+// measured with the header the finished segment will carry.
+//
+// The generator measures with this while the segment is still being built:
+// the header carries the message range and the time, so a body measured on
+// its own would read as fitting when the block it becomes does not.
+func SegmentContentTokens(content model.SessionSummarySegmentContent,
+	startMessageID, endMessageID uint) int {
+	raw, err := model.MarshalSessionSummarySegmentContent(content)
+	if err != nil {
+		return 0
+	}
+	segment := model.SessionSummarySegment{
+		StartMessageID: startMessageID, EndMessageID: endMessageID, Content: raw,
+	}
+	block, _, _ := renderSummarySegment(segment, model.SessionWhiteboardDocument{}, endMessageID, 0)
+	if block == "" {
+		return 0
+	}
+	return rag.EstimateTokens(block) + 4
+}
+
 // renderWhiteboardEntry renders one board entry.
 func renderWhiteboardEntry(entry model.SessionWhiteboardEntry) string {
 	var out strings.Builder

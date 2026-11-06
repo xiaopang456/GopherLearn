@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"GopherAI/common/rag"
 	"GopherAI/model"
 )
 
@@ -422,34 +423,85 @@ func entryIdentity(entry model.SessionWhiteboardEntry) string {
 	return strings.TrimSpace(entry.Key) + "\x00" + strings.TrimSpace(entry.Text)
 }
 
-// trimWhiteboardToTokenLimit drops the oldest entries until the board fits.
+// trimWhiteboardToTokenLimit drops entries until the board fits what the
+// window sends.
 //
 // The board is sent on every turn, so its size is a fixed cost. Dropping is
 // better than refusing the whole update: a board with fewer entries is still
-// a board, and a board that refused updates is not.
+// a board, and a board that refused updates is not. Every dropped entry is
+// recorded as a change, so the value that left the board is still answerable
+// from the segment that recorded it.
+//
+// The measure is the rendered block, not the stored body. The stored body is
+// JSON, and on a real board it runs to about a fifth more than the block the
+// model reads; measuring it dropped entries the window would have carried and
+// still let the block overrun the budget it was supposed to fit.
 func trimWhiteboardToTokenLimit(board *model.SessionWhiteboardDocument) []model.SessionSummarySegmentChange {
 	changes := make([]model.SessionSummarySegmentChange, 0)
-	for boardTokenEstimate(board) > model.SessionWhiteboardTokenLimit {
-		oldest, found := findOldestBoardEntry(board)
+	for RenderedWhiteboardTokens(*board) > model.SessionWhiteboardTokenLimit {
+		victim, found := nextBoardEntryToDrop(*board)
 		if !found {
 			break
 		}
 		changes = append(changes, model.SessionSummarySegmentChange{
-			Key:           strings.TrimSpace(oldest.entry.Key),
-			OldValue:      oldest.entry.Value,
-			OldMessageIDs: oldest.entry.SourceMessageIDs,
+			Key:           strings.TrimSpace(victim.entry.Key),
+			OldValue:      victim.entry.Value,
+			OldMessageIDs: victim.entry.SourceMessageIDs,
 			Removed:       true,
 		})
-		switch oldest.group {
+		switch victim.group {
 		case whiteboardGroupConstraints:
-			board.Constraints = removeWhiteboardEntry(board.Constraints, oldest.entry)
+			board.Constraints = removeWhiteboardEntry(board.Constraints, victim.entry)
 		case whiteboardGroupPlan:
-			board.Plan = removeWhiteboardEntry(board.Plan, oldest.entry)
+			board.Plan = removeWhiteboardEntry(board.Plan, victim.entry)
 		case whiteboardGroupOpenItems:
-			board.OpenItems = removeWhiteboardEntry(board.OpenItems, oldest.entry)
+			board.OpenItems = removeWhiteboardEntry(board.OpenItems, victim.entry)
 		}
 	}
 	return changes
+}
+
+// trimWhiteboardToOutputLimit drops entries until the stored body fits the
+// output budget.
+//
+// It exists as a floor under the delta rewrite: the delta keeps the update
+// small, but a board that was already at the limit when the batch started
+// still has to be stored inside the budget, and a batch that cannot be stored
+// is a batch that wrote nothing at all. The order is the same one the window
+// budget uses, so a board that is trimmed twice gives up the same entries in
+// the same order.
+func trimWhiteboardToOutputLimit(board *model.SessionWhiteboardDocument, limit int) []model.SessionSummarySegmentChange {
+	changes := make([]model.SessionSummarySegmentChange, 0)
+	for limit > 0 && storedWhiteboardTokens(*board) > limit {
+		victim, found := nextBoardEntryToDrop(*board)
+		if !found {
+			break
+		}
+		changes = append(changes, model.SessionSummarySegmentChange{
+			Key:           strings.TrimSpace(victim.entry.Key),
+			OldValue:      victim.entry.Value,
+			OldMessageIDs: victim.entry.SourceMessageIDs,
+			Removed:       true,
+		})
+		switch victim.group {
+		case whiteboardGroupConstraints:
+			board.Constraints = removeWhiteboardEntry(board.Constraints, victim.entry)
+		case whiteboardGroupPlan:
+			board.Plan = removeWhiteboardEntry(board.Plan, victim.entry)
+		case whiteboardGroupOpenItems:
+			board.OpenItems = removeWhiteboardEntry(board.OpenItems, victim.entry)
+		}
+	}
+	return changes
+}
+
+// storedWhiteboardTokens is what the board costs as the body it is stored in.
+func storedWhiteboardTokens(board model.SessionWhiteboardDocument) int {
+	content, err := model.MarshalSessionWhiteboardDocument(board)
+	if err != nil {
+		return 0
+	}
+	return rag.EstimateTokens(content)
 }
 
 // The board's groups, named so the trimming code can say which one an entry
@@ -465,9 +517,36 @@ type whiteboardEntryLocation struct {
 	entry model.SessionWhiteboardEntry
 }
 
-// findOldestBoardEntry returns the entry that should lose its place first.
-func findOldestBoardEntry(board *model.SessionWhiteboardDocument) (whiteboardEntryLocation, bool) {
-	oldest := whiteboardEntryLocation{}
+// nextBoardEntryToDrop returns the entry that should lose its place first.
+//
+// The entries are not worth the same. A finished step is worth nothing: it
+// already happened, and the segment that recorded it still says so. A value
+// and a plan step that nobody has mentioned since are worth little. A
+// constraint is worth the most, because it is what the learner asked the
+// answers to obey, and an answer that breaks one is wrong in a way the
+// learner cannot see.
+//
+// Inside a rank the oldest loses first: the newest is the one the current
+// conversation is about.
+func nextBoardEntryToDrop(board model.SessionWhiteboardDocument) (whiteboardEntryLocation, bool) {
+	// The rank a board entry gives up its place in.
+	const (
+		rankDonePlan = iota
+		rankValuesAndPlan
+		rankConstraints
+	)
+	rankOf := func(group string, entry model.SessionWhiteboardEntry) int {
+		switch {
+		case group == whiteboardGroupPlan && entry.State == "done":
+			return rankDonePlan
+		case group == whiteboardGroupConstraints:
+			return rankConstraints
+		default:
+			return rankValuesAndPlan
+		}
+	}
+	best := whiteboardEntryLocation{}
+	bestRank := 0
 	found := false
 	for _, group := range []struct {
 		name    string
@@ -478,13 +557,19 @@ func findOldestBoardEntry(board *model.SessionWhiteboardDocument) (whiteboardEnt
 		{whiteboardGroupOpenItems, board.OpenItems},
 	} {
 		for _, entry := range group.entries {
-			if !found || entry.UpdatedAtMessageID < oldest.entry.UpdatedAtMessageID {
-				oldest = whiteboardEntryLocation{group: group.name, entry: entry}
-				found = true
+			rank := rankOf(group.name, entry)
+			switch {
+			case !found || rank < bestRank:
+			case rank == bestRank && entry.UpdatedAtMessageID < best.entry.UpdatedAtMessageID:
+			default:
+				continue
 			}
+			best = whiteboardEntryLocation{group: group.name, entry: entry}
+			bestRank = rank
+			found = true
 		}
 	}
-	return oldest, found
+	return best, found
 }
 
 // removeWhiteboardEntry takes one entry out of a group.
@@ -497,20 +582,6 @@ func removeWhiteboardEntry(entries []model.SessionWhiteboardEntry, target model.
 		result = append(result, entry)
 	}
 	return result
-}
-
-// boardTokenEstimate estimates what the board costs to send.
-func boardTokenEstimate(board *model.SessionWhiteboardDocument) int {
-	total := 0
-	if board.Goal != nil {
-		total += messageTokenCost(board.Goal.Text)
-	}
-	for _, group := range [][]model.SessionWhiteboardEntry{board.Constraints, board.Plan, board.OpenItems} {
-		for _, entry := range group {
-			total += messageTokenCost(entry.Text)
-		}
-	}
-	return total
 }
 
 // filterWhiteboardEvidence decides which of an entry's citations survive.

@@ -184,14 +184,10 @@ func (p *SummarySegmentPreselector) Select(ctx context.Context, input RunContext
 		if len(selected) >= p.maxSegments {
 			break
 		}
-		cost := candidate.TokenEstimate
-		if cost <= 0 {
-			cost = rag.EstimateTokens(candidate.Content) + 4
-		}
-		if cost > p.maxSegmentTokens {
-			// A segment that cannot be shown inside one segment's budget is
-			// not a candidate: trimming it to the budget would leave a
-			// fragment that says nothing.
+		cost, ok := p.segmentCost(candidate)
+		if !ok {
+			// A segment this schema cannot read carries nothing the model
+			// could use, so it is not a candidate.
 			continue
 		}
 		if total+cost > p.maxTotalTokens {
@@ -202,6 +198,26 @@ func (p *SummarySegmentPreselector) Select(ctx context.Context, input RunContext
 	}
 	p.recordRecentUse(ctx, input, selected)
 	return selected, nil
+}
+
+// segmentCost is what one candidate costs the turn that selects it.
+//
+// It is measured on the block the renderer would emit under this
+// preselector's own per-segment budget, so the number the decision is made on
+// is the number the window pays. The stored body is JSON - braces, quotes,
+// field names, evidence ids - and on a real segment it runs to three times
+// the rendered block, so a budget spent on the body refused segments that
+// would have fitted and left the answer's own segment out of the window.
+//
+// There is no size gate beside this one. Whether a segment fits inside a
+// segment's allowance is the renderer's decision, and the renderer answers it
+// by trimming; a second judge here would only disagree with it.
+func (p *SummarySegmentPreselector) segmentCost(candidate model.SessionSummarySegment) (int, bool) {
+	cost := renderedSegmentCost(candidate, p.maxSegmentTokens)
+	if cost == 0 {
+		return 0, false
+	}
+	return cost, true
 }
 
 // recordRecentUse remembers the segments this turn reached for.
