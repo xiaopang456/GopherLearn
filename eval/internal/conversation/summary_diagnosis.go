@@ -179,7 +179,7 @@ func errorChain(err error) []string {
 // summarySettings is the product's configuration with the chat model pointed
 // at the counting proxy. The knowledge index is not part of a summary, so the
 // example configuration's own placeholders stay where they are.
-func summarySettings(repository, storage, chatModel string) (*entry.Settings, error) {
+func summarySettings(repository, storage, chatModel, scaledConfig string) (*entry.Settings, error) {
 	settings, err := offlineSettings(repository, storage)
 	if err != nil {
 		return nil, err
@@ -189,6 +189,12 @@ func summarySettings(repository, storage, chatModel string) (*entry.Settings, er
 	settings.Config.RagModelConfig.RagEmbeddingAPIKey = "placeholder-proxy-injected"
 	settings.Config.RagModelConfig.RagChatThinkingDialect = config.ChatThinkingDialectDeepSeek
 	settings.Config.AgentThinkingEnabled = true
+	// A scaled run says what it changes and inherits the rest. The overlay is
+	// applied before validation, so a configuration the product would refuse at
+	// startup is refused here rather than measured.
+	if err := applyScaledAgentConfig(&settings.Config.AgentConfig, scaledConfig); err != nil {
+		return nil, err
+	}
 	return settings, settings.Validate()
 }
 
@@ -207,7 +213,7 @@ func DiagnoseSummaryFailure(ctx context.Context, repository, scenario, condition
 		return diagnosis, err
 	}
 	defer os.RemoveAll(storage)
-	settings, err := summarySettings(repository, storage, chatModel)
+	settings, err := summarySettings(repository, storage, chatModel, "")
 	if err != nil {
 		return diagnosis, err
 	}

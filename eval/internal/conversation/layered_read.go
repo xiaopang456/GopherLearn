@@ -78,6 +78,45 @@ type LayeredToolCheck struct {
 }
 
 // LayeredRead is what one read-side run found.
+// LayeredBudget is what one window spent, block by block, in the product's own
+// estimator.
+//
+// A scaled run that reported only the provider's total could not say which
+// block took the room, and the acceptance checks are per block: the old summary
+// must be zero under the layered mode, the recent messages must keep the room
+// that was left for them, and the board must not silently take everything.
+type LayeredBudget struct {
+	InputTarget       int `json:"input_target"`
+	EvidenceReserved  int `json:"evidence_reserved"`
+	System            int `json:"system"`
+	TaskState         int `json:"task_state"`
+	CurrentQuestion   int `json:"current_question"`
+	Summary           int `json:"summary"`
+	Whiteboard        int `json:"whiteboard"`
+	ResidentSegments  int `json:"resident_segments"`
+	RetrievedSegments int `json:"retrieved_segments"`
+	RecentMessages    int `json:"recent_messages"`
+	PreRetrieval      int `json:"pre_retrieval"`
+	Assembled         int `json:"assembled"`
+}
+
+func budgetFrom(budget agent.BudgetBreakdown) LayeredBudget {
+	return LayeredBudget{
+		InputTarget:       budget.InputTarget,
+		EvidenceReserved:  budget.EvidenceReserved,
+		System:            budget.System,
+		TaskState:         budget.TaskState,
+		CurrentQuestion:   budget.CurrentQuestion,
+		Summary:           budget.Summary,
+		Whiteboard:        budget.Whiteboard,
+		ResidentSegments:  budget.ResidentSegments,
+		RetrievedSegments: budget.RetrievedSegments,
+		RecentMessages:    budget.RecentMessages,
+		PreRetrieval:      budget.PreRetrievalEvidence,
+		Assembled:         budget.Assembled,
+	}
+}
+
 type LayeredRead struct {
 	Scenario string `json:"scenario"`
 	Question string `json:"question"`
@@ -98,6 +137,11 @@ type LayeredRead struct {
 	Tools          []string `json:"capabilities"`
 	PromptRendered bool     `json:"prompt_rendered"`
 	WindowMessages int      `json:"window_messages"`
+	// Budget is what the window actually spent, block by block, in the
+	// product's own estimator. A scaled run that reported only a total could
+	// not say which block took the room, and the acceptance check on the old
+	// summary (zero under the layered mode) needs the block's own number.
+	Budget LayeredBudget `json:"budget"`
 
 	// Where the answer lives and whether the window carried it.
 	EvidenceTurns  []int  `json:"evidence_turns"`
@@ -153,7 +197,7 @@ type LayeredRead struct {
 // what the read side makes of it.
 func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	turns []Turn, evidenceTurns []int, accepted, forbidden []string,
-	tools []string, stage, proxyBase, chatModel string) (read LayeredRead, resultErr error) {
+	tools []string, stage, proxyBase, chatModel, scaledConfig string) (read LayeredRead, resultErr error) {
 	if len(turns) == 0 {
 		return read, fmt.Errorf("turns are required")
 	}
@@ -171,7 +215,7 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 		return read, err
 	}
 	defer os.RemoveAll(storage)
-	settings, err := summarySettings(repository, storage, chatModel)
+	settings, err := summarySettings(repository, storage, chatModel, scaledConfig)
 	if err != nil {
 		return read, err
 	}
@@ -300,6 +344,7 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	read.PromptRendered = rendered
 	read.Tools = tools
 	read.WindowMessages = len(window.Messages)
+	read.Budget = budgetFrom(window.Budget)
 	inspectWindow(&read, window, seeded, messages)
 
 	// The authorization chain: an id the window authorised is readable, an id
@@ -685,10 +730,10 @@ func buildLayeredReadWindow(ctx context.Context, s *Sandbox, repository string,
 		MaxSummaryTokens:          config.ContextMaxSummaryTokens,
 		MaxMasteryTokens:          config.ContextMaxMasteryTokens,
 		MaxEpisodeTokens:          config.ContextMaxEpisodeTokens,
-		MaxWhiteboardTokens:       agent.DefaultWhiteboardTokens,
-		MaxResidentSegmentTokens:  agent.DefaultResidentSegmentTokens,
-		MaxRetrievedSegmentTokens: agent.DefaultRetrievedSegmentTokens,
-		MaxSegmentTokens:          agent.DefaultSegmentTokens,
+		MaxWhiteboardTokens:       config.ContextMaxWhiteboardTokens,
+		MaxResidentSegmentTokens:  config.ContextMaxResidentSegmentTokens,
+		MaxRetrievedSegmentTokens: config.ContextMaxRetrievedSegmentTokens,
+		MaxSegmentTokens:          config.ContextMaxSegmentTokens,
 		EpisodeRecallMode:         agent.EpisodeRecallMode(config.EpisodeRecallMode),
 		HistoryFetchLimit:         config.ContextHistoryFetchLimit,
 		MemoryReadMode:            memoryrecall.ReadMode(settings.Config.MemoryReadMode),

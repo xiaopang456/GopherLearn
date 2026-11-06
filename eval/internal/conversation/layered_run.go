@@ -200,7 +200,7 @@ func RunLayeredSummary(ctx context.Context, repository, scenario, condition stri
 		return run, err
 	}
 	defer os.RemoveAll(storage)
-	settings, err := summarySettings(repository, storage, chatModel)
+	settings, err := summarySettings(repository, storage, chatModel, "")
 	if err != nil {
 		return run, err
 	}

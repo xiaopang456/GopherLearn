@@ -67,6 +67,8 @@ func run(args []string, out io.Writer) error {
 		"comma separated tool names this turn is rendered against")
 	stage := flags.String("stage", conversation.LayeredStageFull,
 		"full (seed, read, answer) or batches (seed only)")
+	scaledConfig := flags.String("scaled-config", "",
+		"[agentConfig] TOML overlay for a scaled run; absent keeps the product defaults")
 	timeout := flags.Duration("timeout", 0, "read deadline")
 	var accepted, forbidden listFlag
 	flags.Var(&accepted, "accepted", "an answer the run passes on (repeatable)")
@@ -125,7 +127,7 @@ func run(args []string, out io.Writer) error {
 		return err
 	}
 	read, runErr := conversation.RunLayeredRead(ctx, *repository, *scenario, *question,
-		turns, evidence, accepted, forbidden, toolNames, *stage, *proxy, *chatModel)
+		turns, evidence, accepted, forbidden, toolNames, *stage, *proxy, *chatModel, *scaledConfig)
 	fmt.Fprintf(out, "scenario=%s seeded=%d/%d board_in_window=%t segments=%v evidence=%v verdict=%s\n",
 		read.Scenario, read.SeededSegments, read.SeededBoard, read.WhiteboardInWindow,
 		read.SegmentsInWindow, read.EvidenceSeqs, read.Verdict)
