@@ -100,24 +100,25 @@ func TestAScaledConfigIsOptional(t *testing.T) {
 	}
 }
 
-// The harness runs one arm, and says so instead of pretending.
+// The harness builds two arms, and refuses anything else instead of pretending.
 //
-// A baseline configuration is a valid product configuration and an invalid
-// input here: its window is assembled by a path this driver does not build. It
-// used to be overwritten to the layered mode, which spent the segment-writing
-// calls first and then rendered empty blocks from budgets that belonged to
-// another arm - a wrong answer that looked like a result.
+// A mode it cannot assemble is a valid product configuration and an invalid
+// input here. It used to be overwritten to the layered mode, which spent the
+// segment-writing calls first and then rendered empty blocks from budgets that
+// belonged to another arm - a wrong answer that looked like a result.
 func TestTheHarnessRefusesAnArmItCannotBuild(t *testing.T) {
-	if err := requireLayeredArm("on"); err != nil {
-		t.Fatalf("the layered arm was refused: %v", err)
+	for _, mode := range []string{"on", "off"} {
+		if err := requireSupportedArm(mode); err != nil {
+			t.Fatalf("the %q arm was refused: %v", mode, err)
+		}
 	}
-	for _, mode := range []string{"off", "shadow", ""} {
-		err := requireLayeredArm(mode)
+	for _, mode := range []string{"shadow", ""} {
+		err := requireSupportedArm(mode)
 		if err == nil {
 			t.Fatalf("mode %q was accepted", mode)
 		}
-		if !strings.Contains(err.Error(), "read-back arm only") {
-			t.Fatalf("mode %q produced %v, want an error naming the arm", mode, err)
+		if !strings.Contains(err.Error(), "builds two arms") {
+			t.Fatalf("mode %q produced %v, want an error naming the arms", mode, err)
 		}
 	}
 }
@@ -135,12 +136,15 @@ func TestARunWithoutAConfigurationRunsTheHarnessArm(t *testing.T) {
 	if mode != "on" {
 		t.Fatalf("the run uses mode %q, want the harness arm", mode)
 	}
-	// A file that names the arm is honoured as written.
-	if mode, err := resolveArm("on", true); err != nil || mode != "on" {
-		t.Fatalf("a file naming the arm produced %q, %v", mode, err)
+	// A file that names either arm is honoured as written.
+	for _, want := range []string{"on", "off"} {
+		if mode, err := resolveArm(want, true); err != nil || mode != want {
+			t.Fatalf("a file naming %q produced %q, %v", want, mode, err)
+		}
 	}
-	// A file that names another arm is refused, not overridden.
-	if _, err := resolveArm("off", true); err == nil {
-		t.Fatal("a file naming another arm was overridden instead of refused")
+	// A file that names a mode this harness cannot build is refused, not
+	// overridden.
+	if _, err := resolveArm("shadow", true); err == nil {
+		t.Fatal("a file naming an unbuilt arm was overridden instead of refused")
 	}
 }

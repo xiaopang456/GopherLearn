@@ -450,7 +450,7 @@ func mustMarshalSummary(t *testing.T, document model.SessionSummaryDocument) str
 // converted.
 func TestTheProviderFallsBackToTheRawConversation(t *testing.T) {
 	reader := &fakeSegmentReader{watermark: 0}
-	provider, err := NewDatabaseLayeredSummaryProvider(reader, nil, DefaultResidentSummarySegments)
+	provider, err := NewDatabaseLayeredSummaryProvider(reader, nil, ResidentSegmentCount(DefaultResidentSegmentTokens, DefaultSegmentTokens))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +470,7 @@ func TestTheProviderFallsBackToTheRawConversation(t *testing.T) {
 // The migration is not an error when it cannot run.
 func TestTheMigrationFailureIsNotAFailureOfTheTurn(t *testing.T) {
 	reader := &fakeSegmentReader{watermark: 0}
-	provider, err := NewDatabaseLayeredSummaryProvider(reader, nil, DefaultResidentSummarySegments)
+	provider, err := NewDatabaseLayeredSummaryProvider(reader, nil, ResidentSegmentCount(DefaultResidentSegmentTokens, DefaultSegmentTokens))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -516,7 +516,7 @@ func TestAnOldSessionKeepsWorking(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider, err := NewDatabaseLayeredSummaryProvider(reader, nil, DefaultResidentSummarySegments)
+	provider, err := NewDatabaseLayeredSummaryProvider(reader, nil, ResidentSegmentCount(DefaultResidentSegmentTokens, DefaultSegmentTokens))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -623,7 +623,7 @@ func migratingProvider(t *testing.T, reader *fakeSegmentReader, covered uint) (*
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider, err := NewDatabaseLayeredSummaryProvider(reader, nil, DefaultResidentSummarySegments)
+	provider, err := NewDatabaseLayeredSummaryProvider(reader, nil, ResidentSegmentCount(DefaultResidentSegmentTokens, DefaultSegmentTokens))
 	if err != nil {
 		t.Fatal(err)
 	}

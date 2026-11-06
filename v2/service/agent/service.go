@@ -478,28 +478,33 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 			log.Printf("episode projection enqueue failed: session=%s error_type=%T", run.SessionID, err)
 		}
 		cancelEpisode()
-		// The layered summary's enqueue. It runs after the answer was stored, so
-		// the turn never waits for it, and it only decides whether a background
-		// job is wanted: no model call happens here.
-		//
-		// It sits inside the same gate as the two publishes around it because the
-		// job it may start does buy model calls, and a switched-off turn that
-		// still queued one would be "this turn used no capability" being true of
-		// the answer and false of the bill - the same mismatch the two publishes
-		// were moved in here to close.
-		//
-		// Nothing is lost for the summary by skipping a turn: the trigger counts
-		// from the stored watermark, so the next turn that does enqueue covers
-		// every message left behind, switched off or not.
-		summaryCtx, cancelSummary := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-		if _, err := s.summarySegment.Consider(summaryCtx, run.UserID, run.SessionID, persistedAssistant.ID); err != nil {
-			log.Printf("summary segment enqueue failed: session=%s error_type=%T", run.SessionID, err)
-		}
-		cancelSummary()
 		publishCtx, cancelPublish := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 		_ = s.memory.PublishAgentRun(publishCtx, run.UserID, run.SessionID, run.ID, request.Question, runnerResult.ToolCalls, runnerResult.MemoryDraft != nil)
 		cancelPublish()
 	}
+	// The layered summary's enqueue sits outside the gate above, and the
+	// difference is what the two things are about.
+	//
+	// The two publishes are memories of the learner: an episode about this
+	// person, a fact extracted from the run. A turn that switched its
+	// capabilities off has nothing to say to them. A segment and a board are
+	// the conversation's own record - what this session decided, in its own
+	// words - and the switch is about the learner's notes, not about whether
+	// this conversation remembers itself.
+	//
+	// It is also not a choice the gate could make: an ordinary conversation
+	// resolves to knowledge_disabled on every turn, so inside the gate no
+	// ordinary conversation would ever produce a segment, and the read side
+	// would have nothing to send.
+	//
+	// What it costs stays bounded the same way the publishes are: the trigger
+	// only records that a job is wanted, and the job is one batched call that
+	// runs after the answer with no learner waiting on it.
+	summaryCtx, cancelSummary := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	if _, err := s.summarySegment.Consider(summaryCtx, run.UserID, run.SessionID, persistedAssistant.ID); err != nil {
+		log.Printf("summary segment enqueue failed: session=%s error_type=%T", run.SessionID, err)
+	}
+	cancelSummary()
 	if err := sendEvent(ctx, sink, Event{
 		Type: EventRunCompleted, RunID: run.ID, TerminationReason: result.TerminationReason, UsedTopicKeys: append([]string{}, runnerResult.UsedTopicKeys...),
 		Content:     runnerResult.Answer,

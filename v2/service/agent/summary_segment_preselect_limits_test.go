@@ -46,3 +46,42 @@ func TestThePreselectionBudgetCanRejectEveryCandidate(t *testing.T) {
 		t.Fatalf("the segment was not selected with room for it (%d selected)", len(selected))
 	}
 }
+
+// The resident set is sized by its own block, with the preselector's rule.
+//
+// It used to be a constant of two, and a constant is a second answer to a
+// question the budget already answers: the scaled configuration gives the
+// resident block 310 tokens, which holds one 300-token segment, so the fixed
+// two asked the renderer for a segment it could never send. Both blocks now
+// divide by the same segment size.
+func TestTheResidentSetIsSizedByItsOwnBlock(t *testing.T) {
+	for _, c := range []struct {
+		name                     string
+		resident, segment, count int
+	}{
+		{"shipped", DefaultResidentSegmentTokens, DefaultSegmentTokens, 4},
+		{"scaled", 310, 300, 1},
+		{"below one segment", 120, 300, 1},
+		{"no resident budget", 0, 300, 1},
+	} {
+		if got := ResidentSegmentCount(c.resident, c.segment); got != c.count {
+			t.Fatalf("%s: a %d-token block of %d-token segments holds %d residents, want %d",
+				c.name, c.resident, c.segment, got, c.count)
+		}
+	}
+	// The floor is a floor, not a clamp that hides a configuration mistake the
+	// other way round: a block wide enough for four asks for four.
+	if ResidentSegmentCount(1600, 300) != 5 {
+		t.Fatal("a block of five segments asked for fewer")
+	}
+}
+
+// A reader built without a resident count is refused rather than defaulted.
+//
+// The default is what made the constant load-bearing: every caller could omit
+// it and still get a number that had nothing to do with its configuration.
+func TestTheReaderRefusesToInventAResidentCount(t *testing.T) {
+	if _, err := NewDatabaseLayeredSummaryProvider(&fakeSegmentReader{}, nil, 0); err == nil {
+		t.Fatal("a reader with no resident count was built anyway")
+	}
+}

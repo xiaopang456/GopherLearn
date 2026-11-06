@@ -64,14 +64,24 @@ type LayeredSummaryProvider interface {
 	LayeredSummary(ctx context.Context, input RunContext) (LayeredSummarySnapshot, error)
 }
 
-// DefaultResidentSummarySegments is how many of the newest segments travel
-// with every turn.
+// ResidentSegmentCount derives how many of the newest segments travel with
+// every turn, from the block that renders them.
 //
-// Two, because the newest one is the stretch the learner is talking about and
-// the one before it is the stretch that gives it context. The plan's budget
-// for the resident set is half of what the old rolling summary was allowed,
-// and two segments is what fits in it.
-const DefaultResidentSummarySegments = 2
+// It is the preselector's rule, not a second one: a segment is indivisible,
+// the block is the budget, and the count is the division. The same two numbers
+// that size the retrieved block size this one, so a configuration cannot end up
+// asking for two residents in a block that holds one - which is the defect the
+// old independent constant produced once already, when the default was fixed at
+// two and a scaled resident block of 310 tokens held a single 300-token
+// segment.
+//
+// One is the floor for the same reason the preselector has one: nothing
+// selected and nothing allowed are different states, and only the second is a
+// configuration mistake.
+func ResidentSegmentCount(residentTokens, segmentTokens int) int {
+	segments, _, _ := SummarySegmentPreselectLimits(residentTokens, segmentTokens)
+	return segments
+}
 
 // DatabaseLayeredSummaryProvider reads the layered summary out of MySQL.
 type DatabaseLayeredSummaryProvider struct {
@@ -86,13 +96,17 @@ type DatabaseLayeredSummaryProvider struct {
 }
 
 // NewDatabaseLayeredSummaryProvider builds the reader.
+//
+// The resident count is required and has no default: it is derived from the
+// block that renders it (ResidentSegmentCount), and a default here would be a
+// second answer to a question the budget already answers.
 func NewDatabaseLayeredSummaryProvider(reader SummarySegmentReader, preselect *SummarySegmentPreselector,
 	resident int) (*DatabaseLayeredSummaryProvider, error) {
 	if reader == nil {
 		return nil, fmt.Errorf("summary segment reader is required")
 	}
 	if resident <= 0 {
-		resident = DefaultResidentSummarySegments
+		return nil, fmt.Errorf("summary segment resident count is required: derive it from the block that renders it")
 	}
 	return &DatabaseLayeredSummaryProvider{reader: reader, preselect: preselect, resident: resident}, nil
 }

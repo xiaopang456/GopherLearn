@@ -894,7 +894,9 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 			preselector.UseRecentUse(summarySegmentIndex)
 		}
 		layeredProvider, layeredErr := agentService.NewDatabaseLayeredSummaryProvider(
-			sessionDAO.DefaultRepository(), preselector, agentService.DefaultResidentSummarySegments)
+			sessionDAO.DefaultRepository(), preselector,
+			agentService.ResidentSegmentCount(conf.AgentConfig.ContextMaxResidentSegmentTokens,
+				conf.AgentConfig.ContextMaxSegmentTokens))
 		if layeredErr != nil {
 			return nil, fmt.Errorf("initialize layered summary reader: %v", layeredErr)
 		}

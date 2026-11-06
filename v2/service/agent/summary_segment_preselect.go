@@ -356,6 +356,15 @@ func (p *SummarySegmentPreselector) vectorChannel(ctx context.Context, input Run
 	if p.vectors == nil || p.embed == nil {
 		return nil, nil
 	}
+	// A turn that switched its capabilities off does not reach for the
+	// question: the promise is that this turn's answer runs no retrieval, and a
+	// query vector is the first half of one. The lexical channel still ranks
+	// the segments, so the block is keyword-only rather than empty - and the
+	// zero below is about the answer, not about the background writer, which
+	// embeds what it stores so that later turns can find it.
+	if !input.KnowledgePolicy.CarriesAnyCapability() {
+		return nil, nil
+	}
 	vector, err := input.RecallCycle.QueryVector(ctx, question, p.embed)
 	if err != nil {
 		return nil, err

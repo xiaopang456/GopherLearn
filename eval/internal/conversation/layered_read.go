@@ -123,12 +123,18 @@ type LayeredRead struct {
 	Mode     string `json:"mode"`
 
 	// What reached the window.
-	WhiteboardInWindow bool     `json:"whiteboard_in_window"`
-	WhiteboardText     string   `json:"whiteboard_text"`
-	ResidentSegments   []int    `json:"resident_segments"`
-	RetrievedSegments  []int    `json:"retrieved_segments"`
-	SegmentsInWindow   []int    `json:"segments_in_window"`
-	SupersessionMarks  []string `json:"supersession_marks"`
+	WhiteboardInWindow bool   `json:"whiteboard_in_window"`
+	WhiteboardText     string `json:"whiteboard_text"`
+	ResidentSegments   []int  `json:"resident_segments"`
+	RetrievedSegments  []int  `json:"retrieved_segments"`
+	// PreselectedSegments is what the preselector handed the renderer, before
+	// the block decided what fit. RetrievedSegments above is what actually
+	// arrived. The two are reported separately because a segment that was
+	// ranked and then trimmed is a budget fact, and a segment that was never
+	// ranked is a selection fact; one number cannot carry both.
+	PreselectedSegments []int    `json:"preselected_segments"`
+	SegmentsInWindow    []int    `json:"segments_in_window"`
+	SupersessionMarks   []string `json:"supersession_marks"`
 	// Tools is the tool table this turn was rendered against, and
 	// PromptRendered says the product's renderer changed the prompt because of
 	// it. A run that claims to measure the read side has to say which turn it
@@ -233,8 +239,14 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	// The diagnostics carry the mode in their labels, and the recorder's
 	// default is off. The product sets this at startup; a harness that did
 	// not would label an applied run's counters "off" and a reader would
-	// have to guess which arm produced them.
-	observability.Memory.SetMode(observability.MemoryModeOn)
+	// have to guess which arm produced them. The truncated arm is labelled
+	// with its own mode for the same reason: its counters describe a run that
+	// wrote nothing.
+	memoryMode := observability.MemoryModeOn
+	if mode == LayeredArmTruncated {
+		memoryMode = observability.MemoryModeOff
+	}
+	observability.Memory.SetMode(memoryMode)
 	roles, err := LoadRolePrompts(repository, memoryrecall.ReadMode(settings.Config.MemoryReadMode))
 	if err != nil {
 		return read, err
@@ -317,28 +329,43 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	}
 
 	// The state the background would have written before this turn.
-	seeded, batches, err := seedLayeredState(ctx, s, messages, settings, segmentModel, sessionID,
-		settings.Config.AgentConfig.SummarySegmentMaxAttempts)
-	read.Batches = batches
-	if err != nil {
-		return read, err
+	//
+	// The truncated arm has no writer. Its mode is off, so nothing generated a
+	// segment in the product either; calling the writer here would invent
+	// state the arm does not have and spend model calls doing it.
+	seeded := seededLayered{}
+	var batches batchOutcome
+	if mode == LayeredArmOn {
+		seeded, batches, err = seedLayeredState(ctx, s, messages, settings, segmentModel, sessionID,
+			settings.Config.AgentConfig.SummarySegmentMaxAttempts)
+		if err != nil {
+			return read, err
+		}
+		read.SeededSegments = len(seeded.segments)
+		read.SeededBoard = boardEntryCount(seeded.board)
 	}
-	read.SeededSegments = len(seeded.segments)
-	read.SeededBoard = boardEntryCount(seeded.board)
+	read.Batches = batches
 	// The batch stage stops here. It exists to measure the writer's failure
 	// rate on its own: running the read side too would add one call per
 	// conversation that says nothing about the writer, and paying for answers
 	// to answer a question about parsing is how a measurement gets expensive
 	// enough that nobody repeats it.
 	if stage == LayeredStageBatches {
+		if mode != LayeredArmOn {
+			return read, fmt.Errorf("the arm with mode %q writes nothing, so it has no batch stage to measure",
+				LayeredArmTruncated)
+		}
 		return read, nil
 	}
 
 	// The read side, built the way the product builds it.
-	window, windowErr := buildLayeredReadWindow(ctx, s, repository, settings, sessionID, question)
+	window, recorded, windowErr := buildLayeredReadWindow(ctx, s, repository, settings, sessionID, question, mode)
 	if windowErr != nil {
 		read.Errors = append(read.Errors, "build window: "+windowErr.Error())
 		return read, windowErr
+	}
+	if recorded != nil {
+		read.PreselectedSegments = append([]int{}, recorded.retrieved...)
 	}
 	// The window's system prompt is not what the builder assembled: the
 	// product renders it against this turn's tool table, and a rule that names
@@ -733,42 +760,90 @@ func renderWindowPromptFor(window agent.ContextWindow,
 	return window, true, nil
 }
 
-// requireLayeredArm refuses a configuration this harness cannot run.
+// The two arms this harness builds.
 //
-// The driver builds one arm: the layered state read back into the window. The
-// two baseline arms - the old rolling summary, and a window that simply drops
-// what does not fit - are different assembly paths. A driver that pasted their
-// budgets onto this one would spend model calls generating segments and then
-// render empty blocks from budgets meant for another arm, and the result would
-// look like a measurement rather than a mistake.
-func requireLayeredArm(mode string) error {
-	if mode == agent.SummarySegmentModeOn {
+// They are one branch, one driver and one set of budgets; the mode is the only
+// difference. off writes nothing and reads nothing back, so its window is what
+// the product sends without a layered summary: the rolling summary and as much
+// of the recent conversation as fits, and everything younger is dropped. on
+// writes the segments and the board and reads them back.
+//
+// A third arm - the old rolling summary frozen at a moment so it never updates
+// - was proposed earlier and is not built. It needs an assembly path of its
+// own, and the comparison it was meant to support is the one these two answer:
+// what the conversation keeps of itself against what it throws away.
+const (
+	LayeredArmOn = agent.SummarySegmentModeOn
+	// LayeredArmTruncated is the mode where nothing is written back: the
+	// window is the rolling summary plus whatever recent conversation fits.
+	LayeredArmTruncated = agent.SummarySegmentModeOff
+)
+
+// requireSupportedArm refuses a configuration whose assembly this harness does
+// not build.
+//
+// The refusal is what keeps a run honest. A driver that overwrote the mode
+// would spend segment-writing calls first and then render blocks from budgets
+// belonging to another arm, and the report would read like a measurement.
+func requireSupportedArm(mode string) error {
+	if mode == LayeredArmOn || mode == LayeredArmTruncated {
 		return nil
 	}
-	return fmt.Errorf("this harness measures the layered read-back arm only; "+
-		"the configuration asks for summarySegmentMode=%q, whose assembly path is not built here", mode)
+	return fmt.Errorf("this harness builds two arms, summarySegmentMode=%q and %q; "+
+		"the configuration asks for %q, whose assembly path is not built here",
+		LayeredArmTruncated, LayeredArmOn, mode)
 }
 
 // resolveArm is which mode the run will use.
 //
 // A run with no configuration file is this harness measuring its own arm, so the
 // arm's mode is the default. A run that names a file has said what it wants, and
-// a mode this harness cannot build is refused rather than overridden: silently
-// switching a baseline configuration to the layered mode is what produced model
-// calls nobody asked for and blocks rendered from another arm's budgets.
+// a mode this harness cannot build is refused rather than overridden.
 func resolveArm(configuredMode string, hasConfiguration bool) (string, error) {
 	if !hasConfiguration {
-		return agent.SummarySegmentModeOn, nil
+		return LayeredArmOn, nil
 	}
-	if err := requireLayeredArm(configuredMode); err != nil {
+	if err := requireSupportedArm(configuredMode); err != nil {
 		return "", err
 	}
 	return configuredMode, nil
 }
 
+// recordingLayeredProvider keeps what the preselector handed back.
+//
+// The window is the second half of the chain and the block it renders is what
+// gets measured, so the two can differ: the renderer walks the selected
+// segments from the newest backwards and keeps what fits. Reading only the
+// block cannot tell "the preselector chose nothing" from "the preselector chose
+// something the block could not hold", and those are different defects.
+type recordingLayeredProvider struct {
+	inner     agent.LayeredSummaryProvider
+	retrieved []int
+	err       error
+}
+
+func (p *recordingLayeredProvider) LayeredSummary(ctx context.Context,
+	input agent.RunContext) (agent.LayeredSummarySnapshot, error) {
+	snapshot, err := p.inner.LayeredSummary(ctx, input)
+	if err != nil {
+		p.err = err
+		return snapshot, err
+	}
+	p.retrieved = make([]int, 0, len(snapshot.Retrieved))
+	for _, segment := range snapshot.Retrieved {
+		p.retrieved = append(p.retrieved, segment.Seq)
+	}
+	return snapshot, nil
+}
+
 // buildLayeredReadWindow assembles the window the way the product does.
+//
+// The arm decides whether the layered summary is attached at all: off is the
+// product's own off mode, where the read side does not exist, and faking it
+// with zeroed budgets would render the same empty blocks under a different
+// name.
 func buildLayeredReadWindow(ctx context.Context, s *Sandbox, repository string,
-	settings *entry.Settings, sessionID, question string) (agent.ContextWindow, error) {
+	settings *entry.Settings, sessionID, question, arm string) (agent.ContextWindow, *recordingLayeredProvider, error) {
 	config := settings.Config.AgentConfig
 	builder, err := agent.NewContextBuilder(agent.ContextConfig{
 		ModelWindowTokens:         config.ContextModelWindowTokens,
@@ -790,11 +865,17 @@ func buildLayeredReadWindow(ctx context.Context, s *Sandbox, repository string,
 	}, historyAdapter{store: guardedStore{s}, sessionID: sessionID},
 		nil, nil, nil, agent.EmptySummaryProvider{})
 	if err != nil {
-		return agent.ContextWindow{}, err
+		return agent.ContextWindow{}, nil, err
+	}
+	if arm == LayeredArmTruncated {
+		// No provider, no preselector, no blocks: this is the window the
+		// product sends when the mode is off.
+		window, buildErr := builder.Build(ctx, agent.RunContext{UserID: 7001, SessionID: sessionID, Question: question})
+		return window, nil, buildErr
 	}
 	preselector, err := agent.NewSummarySegmentPreselector(nil, nil)
 	if err != nil {
-		return agent.ContextWindow{}, err
+		return agent.ContextWindow{}, nil, err
 	}
 	// The preselector runs on the same numbers as the block that renders its
 	// answer, exactly as the product entry does. Left at its own defaults it
@@ -803,14 +884,17 @@ func buildLayeredReadWindow(ctx context.Context, s *Sandbox, repository string,
 	preselector.UseLimits(agent.SummarySegmentPreselectLimits(
 		config.ContextMaxRetrievedSegmentTokens, config.ContextMaxSegmentTokens))
 	provider, err := agent.NewDatabaseLayeredSummaryProvider(
-		sessiondao.NewRepository(s.db), preselector, agent.DefaultResidentSummarySegments)
+		sessiondao.NewRepository(s.db), preselector,
+		agent.ResidentSegmentCount(config.ContextMaxResidentSegmentTokens, config.ContextMaxSegmentTokens))
 	if err != nil {
-		return agent.ContextWindow{}, err
+		return agent.ContextWindow{}, nil, err
 	}
-	if err := builder.UseLayeredSummaryProvider(provider); err != nil {
-		return agent.ContextWindow{}, err
+	recorder := &recordingLayeredProvider{inner: provider}
+	if err := builder.UseLayeredSummaryProvider(recorder); err != nil {
+		return agent.ContextWindow{}, nil, err
 	}
-	return builder.Build(ctx, agent.RunContext{UserID: 7001, SessionID: sessionID, Question: question})
+	window, buildErr := builder.Build(ctx, agent.RunContext{UserID: 7001, SessionID: sessionID, Question: question})
+	return window, recorder, buildErr
 }
 
 // historyAdapter lets the builder read the conversation back.

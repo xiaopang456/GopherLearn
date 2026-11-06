@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"GopherAI/common/memoryrecall"
+	"GopherAI/common/rag"
 	"GopherAI/model"
 )
 
@@ -156,5 +157,67 @@ func TestAPreselectorWithoutTheVectorChannelCostsNoEmbedding(t *testing.T) {
 	}
 	if len(selected) != 1 || selected[0].Seq != 2 {
 		t.Fatalf("the preselector chose %v, want the segment the words match", selected)
+	}
+}
+
+// countingEmbedder counts the query vectors a turn buys.
+type countingEmbedder struct{ calls int }
+
+func (e *countingEmbedder) embed(context.Context, string) ([]float32, error) {
+	e.calls++
+	return []float32{1, 0, 0, 0}, nil
+}
+
+// A switched-off turn preselects on the words alone.
+//
+// The promise about a capability-free turn is about its answer, and a query
+// vector is the first half of a retrieval. The channel is wired here on
+// purpose: with it absent the zero would prove nothing, and the control below
+// is what turns the zero into a ceiling rather than an unplugged seam.
+//
+// The keyword channel still runs, so the block is smaller rather than empty -
+// and the background writer is untouched, because a segment that is never
+// embedded can never be found by a later turn.
+func TestASwitchedOffTurnPreselectsOnTheWordsAlone(t *testing.T) {
+	embedder := &countingEmbedder{}
+	searcher := &fakeVectorSearcher{hits: []SummarySegmentVectorHit{{Seq: 1, Score: 0.99}}}
+	preselector, err := NewSummarySegmentPreselector(embedder.embed, searcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	segments := []model.SessionSummarySegment{
+		testSegment(t, 1, 1, 30, "学习时长调整", []model.SessionSummarySegmentPoint{
+			{Text: "每次学习总时长定为 30 分钟", EvidenceMessageIDs: []uint{12}},
+		}, nil),
+		testSegment(t, 2, 31, 60, "网络协议", []model.SessionSummarySegmentPoint{
+			{Text: "决定使用长度字段拆包", EvidenceMessageIDs: []uint{45}},
+		}, nil),
+	}
+
+	off := vectorRun("拆包")
+	off.KnowledgePolicy = rag.KnowledgeDisabled
+	selected, err := preselector.Select(context.Background(), off, segments, nil)
+	if err != nil {
+		t.Fatalf("preselect: %v", err)
+	}
+	if embedder.calls != 0 {
+		t.Fatalf("a switched-off turn bought %d query vectors", embedder.calls)
+	}
+	if searcher.calls != 0 {
+		t.Fatalf("a switched-off turn searched the index %d times", searcher.calls)
+	}
+	if len(selected) != 1 || selected[0].Seq != 2 {
+		t.Fatalf("a switched-off turn selected %v, want the segment the words match", selected)
+	}
+
+	// The control: the same wiring, one switch away, does buy the vector.
+	on := vectorRun("拆包")
+	on.KnowledgePolicy = rag.KnowledgePreferred
+	if _, err := preselector.Select(context.Background(), on, segments, nil); err != nil {
+		t.Fatalf("preselect: %v", err)
+	}
+	if embedder.calls != 1 || searcher.calls != 1 {
+		t.Fatalf("the control bought %d vectors and %d searches, want one of each",
+			embedder.calls, searcher.calls)
 	}
 }

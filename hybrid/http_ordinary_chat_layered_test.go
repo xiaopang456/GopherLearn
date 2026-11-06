@@ -1,12 +1,16 @@
 package hybrid
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"GopherAI/model"
 
+	"github.com/cloudwego/eino/schema"
 	"gorm.io/gorm"
 )
 
@@ -109,5 +113,96 @@ func mustSeedOrdinaryLayeredState(t *testing.T, db *gorm.DB, userID int64, sessi
 		Content: string(content), IndexStatus: model.SessionSummarySegmentIndexPending, TokenEstimate: 40,
 	}).Error; err != nil {
 		t.Fatalf("write the segment: %v", err)
+	}
+}
+
+// The writer has to run on an ordinary conversation.
+//
+// This is the failure a capability gate would have caused, and the read side
+// could never show it: an ordinary conversation resolves to knowledge_disabled
+// on every turn, so an enqueue behind the gate would never run, and the window
+// would simply always be empty - a reading that looks like "the layered summary
+// did not help" rather than like a bug.
+//
+// So nothing is seeded here. The board and the segment are produced by the
+// product from prose turns alone, by the same background worker a deployment
+// runs, and only then does the next turn get asked what it was sent.
+func TestAnOrdinaryConversationWritesItsBoardAndSegments(t *testing.T) {
+	settings := testSettings(t)
+	settings.Config.AgentConfig.SummarySegmentMode = "on"
+	// The worker's clock, and the threshold: two unsummarized messages are
+	// enough, which one turn already leaves behind.
+	settings.Config.AgentConfig.SummarySegmentScanIntervalSeconds = 1
+	settings.Config.AgentConfig.SummarySegmentTriggerMessages = 2
+	settings.Config.AgentConfig.SummarySegmentTriggerTokens = 1000000
+	settings.Config.AgentConfig.SummarySegmentMaxAttempts = 1
+	app, db, _, agent, token, _ := httpFixtureWithSettings(t, settings, nil)
+
+	// One fake answers both contracts. The reply is written to satisfy the
+	// segment writer's own document - schema version, one point that cites a
+	// message the batch contains, one board entry - and is a string as well,
+	// so the turn that asks a question still gets an answer.
+	const reply = `{"schema_version":1,` +
+		`"segment":{"topic":"每天的读量","points":[{"text":"最初每天读 15 页","evidence_message_ids":[1]}]},` +
+		`"whiteboard":{"schema_version":1,"goal":{"text":"把每天的读量提到 30 页","source_message_ids":[1]},` +
+		`"plan":[{"key":"daily-pages","text":"每天读 30 页","value":"30 页","source_message_ids":[1]}]}}`
+	agent.setRespond(func(context.Context, int) (*schema.Message, error) {
+		return schema.AssistantMessage(reply, nil), nil
+	})
+
+	session := createSession(t, app, token, "ordinary-writes", "chat")
+	turn := func(index int) {
+		t.Helper()
+		body := fmt.Sprintf(`{"content":"第 %d 轮：我们每天读多少页？","requestId":"ordinary-writes-%d"}`, index, index)
+		status, envelope, raw := requestHTTP(t, app.Handler, "POST", "/api/v1/sessions/"+session+"/messages", body, token)
+		if status != 200 || envelope["error"] != nil {
+			t.Fatalf("turn %d failed: %d %s", index, status, raw)
+		}
+	}
+	for index := 1; index <= 3; index++ {
+		turn(index)
+	}
+
+	// The writer is a background worker. The test waits for it instead of
+	// assuming a clock.
+	deadline := time.Now().Add(30 * time.Second)
+	var segments, boards int64
+	for {
+		if err := db.Model(&model.SessionSummarySegment{}).Where("session_id = ?", session).Count(&segments).Error; err != nil {
+			t.Fatalf("count segments: %v", err)
+		}
+		if err := db.Model(&model.SessionWhiteboard{}).Where("session_id = ?", session).Count(&boards).Error; err != nil {
+			t.Fatalf("count boards: %v", err)
+		}
+		if segments > 0 && boards > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			var jobs []model.SessionSummarySegmentJob
+			_ = db.Where("session_id = ?", session).Find(&jobs).Error
+			t.Fatalf("an ordinary conversation wrote %d segments and %d boards after 3 turns (%d jobs queued)",
+				segments, boards, len(jobs))
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// And the turn after the write is sent them.
+	turn(4)
+	var board, segmentBlock bool
+	for _, request := range agent.Requests() {
+		for _, message := range request {
+			if message == nil {
+				continue
+			}
+			if strings.HasPrefix(message.Content, "Current state (server state;") {
+				board = true
+			}
+			if strings.HasPrefix(message.Content, "Summary segments (compressed record") {
+				segmentBlock = true
+			}
+		}
+	}
+	if !board || !segmentBlock {
+		t.Fatalf("the turn after the write was sent board=%t segments=%t", board, segmentBlock)
 	}
 }

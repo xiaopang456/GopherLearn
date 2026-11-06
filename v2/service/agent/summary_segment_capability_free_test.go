@@ -61,7 +61,7 @@ func TestTheConversationBlocksSurviveATurnThatSwitchedKnowledgeOff(t *testing.T)
 			if err != nil {
 				t.Fatalf("build preselector: %v", err)
 			}
-			provider, err := NewDatabaseLayeredSummaryProvider(reader, preselector, DefaultResidentSummarySegments)
+			provider, err := NewDatabaseLayeredSummaryProvider(reader, preselector, 2)
 			if err != nil {
 				t.Fatalf("build layered provider: %v", err)
 			}

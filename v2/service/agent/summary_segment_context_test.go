@@ -135,7 +135,7 @@ func buildLayeredWindow(t *testing.T, reader *fakeSegmentReader, history *fakeHi
 	if err != nil {
 		t.Fatalf("build context builder: %v", err)
 	}
-	provider, err := NewDatabaseLayeredSummaryProvider(reader, preselect, DefaultResidentSummarySegments)
+	provider, err := NewDatabaseLayeredSummaryProvider(reader, preselect, 2)
 	if err != nil {
 		t.Fatalf("build layered provider: %v", err)
 	}
