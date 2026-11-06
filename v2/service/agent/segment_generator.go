@@ -158,14 +158,14 @@ type segmentGenerationDocument struct {
 // generator that started failing for a new reason would look like a generator
 // that stopped failing.
 const (
-	segmentReasonNone          = "none"
-	segmentReasonInvalidOutput = "invalid_output"
-	segmentReasonUnknownSchema = "unknown_schema_version"
-	segmentReasonPointSource   = "point_without_source"
-	segmentReasonInputTooLarge = "input_too_large"
+	segmentReasonNone           = "none"
+	segmentReasonInvalidOutput  = "invalid_output"
+	segmentReasonUnknownSchema  = "unknown_schema_version"
+	segmentReasonPointSource    = "point_without_source"
+	segmentReasonInputTooLarge  = "input_too_large"
 	segmentReasonOutputTooLarge = "output_too_large"
-	segmentReasonModelError    = "model_error"
-	segmentReasonEmptyOutput   = "empty_output"
+	segmentReasonModelError     = "model_error"
+	segmentReasonEmptyOutput    = "empty_output"
 )
 
 // segmentFailure is why one generation produced no segment.

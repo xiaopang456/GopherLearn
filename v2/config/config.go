@@ -391,6 +391,69 @@ type AgentConfig struct {
 	EpisodeMaxOutputTokens          int    `toml:"episodeMaxOutputTokens"`
 	EpisodeMaxMessages              int    `toml:"episodeMaxMessages"`
 
+	// SummarySegmentMode decides whether the layered summary writes anything
+	// and whether the new state is read back:
+	//
+	//   - "off" writes nothing.
+	//   - "shadow" writes the segments and the board, but the context still
+	//     comes from the old path. The write side is watched without changing
+	//     what the model sees.
+	//
+	// The applied mode is not offered yet: the parts that read the new state
+	// back, and the fallback that goes with them, are the next change. Until
+	// then "on" would write exactly what "shadow" writes and read nothing, so
+	// it is refused rather than accepted and mistaken for the real thing.
+	//
+	// The default is off. The tables and the worker exist, but nothing reads
+	// the segments yet, and a segment that is written and never read is a
+	// segment that costs a model call per batch for nothing.
+	SummarySegmentMode string `toml:"summarySegmentMode"`
+	// SummarySegmentWorkerCount is how many segment jobs are processed at the
+	// same time.
+	SummarySegmentWorkerCount int `toml:"summarySegmentWorkerCount"`
+	// SummarySegmentQueueSize is how many listed jobs wait to be claimed.
+	SummarySegmentQueueSize int `toml:"summarySegmentQueueSize"`
+	// SummarySegmentScanIntervalSeconds is how often the worker looks for due
+	// jobs.
+	SummarySegmentScanIntervalSeconds int `toml:"summarySegmentScanIntervalSeconds"`
+	// SummarySegmentReconcileIntervalSeconds is how often the worker repairs a
+	// missed enqueue.
+	SummarySegmentReconcileIntervalSeconds int `toml:"summarySegmentReconcileIntervalSeconds"`
+	// SummarySegmentTaskTimeoutSeconds is how long one attempt may take.
+	SummarySegmentTaskTimeoutSeconds int `toml:"summarySegmentTaskTimeoutSeconds"`
+	// SummarySegmentLeaseSeconds is how long a claim is held.
+	SummarySegmentLeaseSeconds int `toml:"summarySegmentLeaseSeconds"`
+	// SummarySegmentRecoveryIntervalSeconds is how often expired leases are
+	// reclaimed while the worker runs.
+	SummarySegmentRecoveryIntervalSeconds int `toml:"summarySegmentRecoveryIntervalSeconds"`
+	// SummarySegmentRetryDelaySeconds is how long a failed job waits before
+	// it is tried again.
+	SummarySegmentRetryDelaySeconds int `toml:"summarySegmentRetryDelaySeconds"`
+	// SummarySegmentMaxAttempts is how many times a job is tried before it
+	// is failed.
+	SummarySegmentMaxAttempts int `toml:"summarySegmentMaxAttempts"`
+	// SummarySegmentTriggerMessages is how many unsummarized turns are enough
+	// on their own to want a segment.
+	SummarySegmentTriggerMessages int `toml:"summarySegmentTriggerMessages"`
+	// SummarySegmentTriggerTokens is how many unsummarized tokens are enough
+	// on their own to want a segment.
+	SummarySegmentTriggerTokens int `toml:"summarySegmentTriggerTokens"`
+	// SummarySegmentMaxMessages is how many turns one segment may cover.
+	SummarySegmentMaxMessages int `toml:"summarySegmentMaxMessages"`
+	// SummarySegmentMaxInputTokens is the segment generator's input budget.
+	SummarySegmentMaxInputTokens int `toml:"summarySegmentMaxInputTokens"`
+	// SummarySegmentMaxOutputTokens is the segment generator's output budget.
+	SummarySegmentMaxOutputTokens int `toml:"summarySegmentMaxOutputTokens"`
+	// SummarySegmentFetchLimit is how many turns are read at once.
+	SummarySegmentFetchLimit int `toml:"summarySegmentFetchLimit"`
+	// SummarySegmentFallbackTokens is how many unsummarized tokens the raw
+	// conversation may be worth before a segment is generated before the
+	// answer goes out.
+	SummarySegmentFallbackTokens int `toml:"summarySegmentFallbackTokens"`
+	// SummarySegmentFallbackBudgetSeconds is how long that generation may
+	// take.
+	SummarySegmentFallbackBudgetSeconds int `toml:"summarySegmentFallbackBudgetSeconds"`
+
 	// KnowledgeRelevanceThreshold is the rerank score above which the
 	// server-side pre-retrieval hands the learner's own material to the
 	// model before it answers.
@@ -498,6 +561,27 @@ func defaultConfig() *Config {
 		EpisodeTaskTimeoutSeconds: 30, EpisodeLeaseSeconds: 60, EpisodeRetryDelaySeconds: 15,
 		EpisodeRecoveryIntervalSeconds: 30, EpisodeQuietWindowSeconds: 600,
 		EpisodeMaxAttempts: 3, EpisodeMaxInputTokens: 12000, EpisodeMaxOutputTokens: 1800, EpisodeMaxMessages: 4096,
+		// The layered summary is off until the parts that read it exist. A
+		// segment that is written and never read costs a model call per
+		// batch and answers nothing.
+		SummarySegmentMode:                     "off",
+		SummarySegmentWorkerCount:              1,
+		SummarySegmentQueueSize:                32,
+		SummarySegmentScanIntervalSeconds:      3,
+		SummarySegmentReconcileIntervalSeconds: 60,
+		SummarySegmentTaskTimeoutSeconds:       30,
+		SummarySegmentLeaseSeconds:             60,
+		SummarySegmentRecoveryIntervalSeconds:  30,
+		SummarySegmentRetryDelaySeconds:        15,
+		SummarySegmentMaxAttempts:              3,
+		SummarySegmentTriggerMessages:          10,
+		SummarySegmentTriggerTokens:            6000,
+		SummarySegmentMaxMessages:              64,
+		SummarySegmentMaxInputTokens:           8000,
+		SummarySegmentMaxOutputTokens:          2000,
+		SummarySegmentFetchLimit:               256,
+		SummarySegmentFallbackTokens:           6000,
+		SummarySegmentFallbackBudgetSeconds:    8,
 	}}
 }
 
@@ -908,6 +992,23 @@ func applyAgentEnv(c *AgentConfig) error {
 		{"AGENT_EPISODE_MAX_INPUT_TOKENS", func(value int) { c.EpisodeMaxInputTokens = value }},
 		{"AGENT_EPISODE_MAX_OUTPUT_TOKENS", func(value int) { c.EpisodeMaxOutputTokens = value }},
 		{"AGENT_EPISODE_MAX_MESSAGES", func(value int) { c.EpisodeMaxMessages = value }},
+		{"AGENT_SUMMARY_SEGMENT_WORKER_COUNT", func(value int) { c.SummarySegmentWorkerCount = value }},
+		{"AGENT_SUMMARY_SEGMENT_QUEUE_SIZE", func(value int) { c.SummarySegmentQueueSize = value }},
+		{"AGENT_SUMMARY_SEGMENT_SCAN_INTERVAL_SECONDS", func(value int) { c.SummarySegmentScanIntervalSeconds = value }},
+		{"AGENT_SUMMARY_SEGMENT_RECONCILE_INTERVAL_SECONDS", func(value int) { c.SummarySegmentReconcileIntervalSeconds = value }},
+		{"AGENT_SUMMARY_SEGMENT_TASK_TIMEOUT_SECONDS", func(value int) { c.SummarySegmentTaskTimeoutSeconds = value }},
+		{"AGENT_SUMMARY_SEGMENT_LEASE_SECONDS", func(value int) { c.SummarySegmentLeaseSeconds = value }},
+		{"AGENT_SUMMARY_SEGMENT_RECOVERY_INTERVAL_SECONDS", func(value int) { c.SummarySegmentRecoveryIntervalSeconds = value }},
+		{"AGENT_SUMMARY_SEGMENT_RETRY_DELAY_SECONDS", func(value int) { c.SummarySegmentRetryDelaySeconds = value }},
+		{"AGENT_SUMMARY_SEGMENT_MAX_ATTEMPTS", func(value int) { c.SummarySegmentMaxAttempts = value }},
+		{"AGENT_SUMMARY_SEGMENT_TRIGGER_MESSAGES", func(value int) { c.SummarySegmentTriggerMessages = value }},
+		{"AGENT_SUMMARY_SEGMENT_TRIGGER_TOKENS", func(value int) { c.SummarySegmentTriggerTokens = value }},
+		{"AGENT_SUMMARY_SEGMENT_MAX_MESSAGES", func(value int) { c.SummarySegmentMaxMessages = value }},
+		{"AGENT_SUMMARY_SEGMENT_MAX_INPUT_TOKENS", func(value int) { c.SummarySegmentMaxInputTokens = value }},
+		{"AGENT_SUMMARY_SEGMENT_MAX_OUTPUT_TOKENS", func(value int) { c.SummarySegmentMaxOutputTokens = value }},
+		{"AGENT_SUMMARY_SEGMENT_FETCH_LIMIT", func(value int) { c.SummarySegmentFetchLimit = value }},
+		{"AGENT_SUMMARY_SEGMENT_FALLBACK_TOKENS", func(value int) { c.SummarySegmentFallbackTokens = value }},
+		{"AGENT_SUMMARY_SEGMENT_FALLBACK_BUDGET_SECONDS", func(value int) { c.SummarySegmentFallbackBudgetSeconds = value }},
 	}
 	for _, override := range overrides {
 		value, ok := os.LookupEnv(override.name)
@@ -1116,6 +1217,51 @@ func (c AgentConfig) Validate() error {
 	}
 	if c.SummaryEvidenceIDLimit < c.SummaryGroupItemLimit || c.SummaryEvidenceIDLimit > 2000 {
 		return fmt.Errorf("summaryEvidenceIDLimit must cover summaryGroupItemLimit and be at most 2000")
+	}
+	switch c.SummarySegmentMode {
+	case "off", "shadow":
+	default:
+		// "on" reads the new state back, and the parts that read it back are
+		// not here yet. Accepting it would write segments that nothing reads
+		// and call it the applied mode.
+		return fmt.Errorf("summarySegmentMode must be off or shadow")
+	}
+	if c.SummarySegmentWorkerCount < 1 || c.SummarySegmentWorkerCount > 16 ||
+		c.SummarySegmentQueueSize < c.SummarySegmentWorkerCount || c.SummarySegmentQueueSize > 1000 {
+		return fmt.Errorf("summary segment worker and queue sizes are invalid")
+	}
+	if c.SummarySegmentScanIntervalSeconds < 1 || c.SummarySegmentScanIntervalSeconds > 300 ||
+		c.SummarySegmentReconcileIntervalSeconds < 5 || c.SummarySegmentReconcileIntervalSeconds > 3600 {
+		return fmt.Errorf("summary segment scan intervals are invalid")
+	}
+	// Recovery has to run more often than a lease lasts, or a stranded job
+	// waits most of a lease before anything looks at it.
+	if c.SummarySegmentRecoveryIntervalSeconds < 5 || c.SummarySegmentRecoveryIntervalSeconds >= c.SummarySegmentLeaseSeconds {
+		return fmt.Errorf("summarySegmentRecoveryIntervalSeconds must be between 5 and summarySegmentLeaseSeconds")
+	}
+	if c.SummarySegmentTaskTimeoutSeconds < 1 || c.SummarySegmentTaskTimeoutSeconds > 120 ||
+		c.SummarySegmentLeaseSeconds <= c.SummarySegmentTaskTimeoutSeconds || c.SummarySegmentLeaseSeconds > 600 {
+		return fmt.Errorf("summary segment task timeout and lease are invalid")
+	}
+	if c.SummarySegmentRetryDelaySeconds < 1 || c.SummarySegmentRetryDelaySeconds > 3600 ||
+		c.SummarySegmentMaxAttempts < 1 || c.SummarySegmentMaxAttempts > 10 {
+		return fmt.Errorf("summary segment retry or attempt configuration is invalid")
+	}
+	if c.SummarySegmentTriggerMessages < 1 || c.SummarySegmentTriggerMessages > 1000 ||
+		c.SummarySegmentTriggerTokens < 1 || c.SummarySegmentTriggerTokens > 1000000 {
+		return fmt.Errorf("summary segment trigger thresholds are invalid")
+	}
+	if c.SummarySegmentMaxMessages < 1 || c.SummarySegmentMaxMessages > 512 ||
+		c.SummarySegmentMaxInputTokens < 512 || c.SummarySegmentMaxInputTokens > 100000 ||
+		c.SummarySegmentMaxOutputTokens < 128 || c.SummarySegmentMaxOutputTokens > 8000 {
+		return fmt.Errorf("summary segment model or message limits are invalid")
+	}
+	if c.SummarySegmentFetchLimit < c.SummarySegmentMaxMessages || c.SummarySegmentFetchLimit > 1024 {
+		return fmt.Errorf("summarySegmentFetchLimit must cover summarySegmentMaxMessages and be at most 1024")
+	}
+	if c.SummarySegmentFallbackTokens < 100 || c.SummarySegmentFallbackTokens > 1000000 ||
+		c.SummarySegmentFallbackBudgetSeconds < 1 || c.SummarySegmentFallbackBudgetSeconds > 300 {
+		return fmt.Errorf("summary segment fallback limits are invalid")
 	}
 	if c.EpisodeWorkerCount < 1 || c.EpisodeWorkerCount > 16 || c.EpisodeQueueSize < c.EpisodeWorkerCount || c.EpisodeQueueSize > 1000 {
 		return fmt.Errorf("episode worker and queue sizes are invalid")

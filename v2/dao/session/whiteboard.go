@@ -12,10 +12,14 @@ import (
 
 var (
 	// ErrWhiteboardNotFound means the session has no board yet.
-	ErrWhiteboardNotFound = errors.New("session whiteboard not found")
+	//
+	// It is the model's error so that a reader outside this package can
+	// recognise it: the writer has to tell "no board yet" from "a board I
+	// may not read", and it is not the only one that has to.
+	ErrWhiteboardNotFound = model.ErrWhiteboardNotFound
 	// ErrWhiteboardConflict means another writer moved the board on. It is not
 	// a failure: the caller re-reads and decides.
-	ErrWhiteboardConflict = errors.New("session whiteboard version conflict")
+	ErrWhiteboardConflict = model.ErrWhiteboardConflict
 )
 
 // GetWhiteboard returns the board only when both the session and user match.

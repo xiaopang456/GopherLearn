@@ -253,10 +253,10 @@ func TestSummarySegmentJobIsExclusivePerSession(t *testing.T) {
 
 	// Only the lease holder may finish it.
 	notHolder := &model.SessionSummarySegmentJob{ID: stored.ID, UserID: fixture.user.ID, LeaseToken: "someone-else"}
-	if err := fixture.repo.CompleteSummarySegmentJob(ctx, notHolder, claimAt); !errors.Is(err, ErrSummarySegmentJobConflict) {
+	if err := fixture.repo.CompleteSummarySegmentJob(ctx, notHolder, 20, claimAt); !errors.Is(err, ErrSummarySegmentJobConflict) {
 		t.Fatalf("completion by a non-holder error=%v", err)
 	}
-	if err := fixture.repo.CompleteSummarySegmentJob(ctx, claimed, claimAt); err != nil {
+	if err := fixture.repo.CompleteSummarySegmentJob(ctx, claimed, 30, claimAt); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -380,5 +380,193 @@ func TestDeletingASessionRemovesItsBoardSegmentsAndJobs(t *testing.T) {
 		if count != 0 {
 			t.Fatalf("%T kept %d rows after the session was deleted", table, count)
 		}
+	}
+}
+
+// The batch of a job is frozen when the batch starts. A target that moves
+// forward while the attempt is retried must not widen the batch: the retry
+// has to face the same turns, or it is not the same attempt again.
+func TestTheFrozenBatchSurvivesATargetThatMovesForward(t *testing.T) {
+	fixture := newLayerFixture(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	job := &model.SessionSummarySegmentJob{
+		UserID: fixture.user.ID, SessionID: fixture.session.ID,
+		DesiredMessageID: 20, StartMessageID: 5,
+		Status: model.SessionSummarySegmentJobPending, AvailableAt: now,
+	}
+	if err := fixture.repo.UpsertSummarySegmentJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := fixture.repo.ClaimSummarySegmentJob(ctx, fixture.user.ID, job.ID, now, time.Minute, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.BatchMessageID != 20 {
+		t.Fatalf("the frozen batch ends at %d, want 20", claimed.BatchMessageID)
+	}
+	if err := fixture.repo.RetrySummarySegmentJob(ctx, claimed, "model_refused", now.Add(time.Second), 3); err != nil {
+		t.Fatal(err)
+	}
+
+	// The target moves forward while the attempt is being retried.
+	later := &model.SessionSummarySegmentJob{
+		UserID: fixture.user.ID, SessionID: fixture.session.ID,
+		DesiredMessageID: 40, StartMessageID: 5,
+		Status: model.SessionSummarySegmentJobPending, AvailableAt: now,
+	}
+	if err := fixture.repo.UpsertSummarySegmentJob(ctx, later); err != nil {
+		t.Fatal(err)
+	}
+	retried, err := fixture.repo.ClaimSummarySegmentJob(ctx, fixture.user.ID, job.ID, now.Add(2*time.Second), time.Minute, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.BatchMessageID != 20 {
+		t.Fatalf("the frozen batch ends at %d, want 20", retried.BatchMessageID)
+	}
+	if retried.DesiredMessageID != 40 {
+		t.Fatalf("the target is %d, want 40", retried.DesiredMessageID)
+	}
+}
+
+// A segment that covers fewer turns than the batch holds leaves the rest of
+// the turns owed. The job stays open for them and starts after what was
+// covered, so the turns are not summarized twice.
+func TestTheJobContinuesAfterASegmentThatCoveredOnlyPartOfTheBatch(t *testing.T) {
+	fixture := newLayerFixture(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	job := &model.SessionSummarySegmentJob{
+		UserID: fixture.user.ID, SessionID: fixture.session.ID,
+		DesiredMessageID: 100, StartMessageID: 1,
+		Status: model.SessionSummarySegmentJobPending, AvailableAt: now,
+	}
+	if err := fixture.repo.UpsertSummarySegmentJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := fixture.repo.ClaimSummarySegmentJob(ctx, fixture.user.ID, job.ID, now, time.Minute, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The segment covered 40 of the 100 turns the batch holds.
+	if err := fixture.repo.CompleteSummarySegmentJob(ctx, claimed, 40, now); err != nil {
+		t.Fatal(err)
+	}
+	continued, err := fixture.repo.GetSummarySegmentJob(ctx, fixture.user.ID, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if continued.Status != model.SessionSummarySegmentJobPending {
+		t.Fatalf("the job status is %q, want pending", continued.Status)
+	}
+	if continued.StartMessageID != 41 {
+		t.Fatalf("the job starts at %d, want 41", continued.StartMessageID)
+	}
+	if continued.BatchMessageID != 100 {
+		t.Fatalf("the batch ends at %d, want 100", continued.BatchMessageID)
+	}
+}
+
+// A session that caught up gets new turns. The job that was completed has to
+// come back to life for them, with its attempts over and its start where the
+// last segment stopped.
+func TestACompletedJobComesBackToLifeForNewTurns(t *testing.T) {
+	fixture := newLayerFixture(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	job := &model.SessionSummarySegmentJob{
+		UserID: fixture.user.ID, SessionID: fixture.session.ID,
+		DesiredMessageID: 20, StartMessageID: 1,
+		Status: model.SessionSummarySegmentJobPending, AvailableAt: now,
+	}
+	if err := fixture.repo.UpsertSummarySegmentJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := fixture.repo.ClaimSummarySegmentJob(ctx, fixture.user.ID, job.ID, now, time.Minute, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.repo.CompleteSummarySegmentJob(ctx, claimed, 20, now); err != nil {
+		t.Fatal(err)
+	}
+	finished, err := fixture.repo.GetSummarySegmentJob(ctx, fixture.user.ID, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finished.Status != model.SessionSummarySegmentJobCompleted {
+		t.Fatalf("the job status is %q, want completed", finished.Status)
+	}
+	if finished.StartMessageID != 21 {
+		t.Fatalf("the job starts at %d, want the turn after the coverage 21", finished.StartMessageID)
+	}
+
+	// New turns arrive. The job comes back to life for them.
+	later := &model.SessionSummarySegmentJob{
+		UserID: fixture.user.ID, SessionID: fixture.session.ID,
+		DesiredMessageID: 40, StartMessageID: 1,
+		Status: model.SessionSummarySegmentJobPending, AvailableAt: now,
+	}
+	if err := fixture.repo.UpsertSummarySegmentJob(ctx, later); err != nil {
+		t.Fatal(err)
+	}
+	revived, err := fixture.repo.GetSummarySegmentJob(ctx, fixture.user.ID, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revived.Status != model.SessionSummarySegmentJobPending {
+		t.Fatalf("the revived job status is %q, want pending", revived.Status)
+	}
+	if revived.DesiredMessageID != 40 {
+		t.Fatalf("the revived job targets %d, want 40", revived.DesiredMessageID)
+	}
+	if revived.StartMessageID != 21 {
+		t.Fatalf("the revived job starts at %d, want 21", revived.StartMessageID)
+	}
+	if revived.Attempts != 0 {
+		t.Fatalf("the revived job has %d attempts, want 0", revived.Attempts)
+	}
+}
+
+// One session has one generation at a time. A takeover refuses while another
+// holder has the lease, and it takes the session when nobody holds it.
+func TestTheTakeoverWaitsForTheHolderToLetTheSessionGo(t *testing.T) {
+	fixture := newLayerFixture(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	job := &model.SessionSummarySegmentJob{
+		UserID: fixture.user.ID, SessionID: fixture.session.ID,
+		DesiredMessageID: 20, StartMessageID: 1,
+		Status: model.SessionSummarySegmentJobPending, AvailableAt: now,
+	}
+	if err := fixture.repo.UpsertSummarySegmentJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := fixture.repo.ClaimSummarySegmentJob(ctx, fixture.user.ID, job.ID, now, time.Minute, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.repo.TakeOverSummarySegmentJob(ctx, fixture.user.ID, fixture.session.ID, 30, 1, now, time.Minute); !errors.Is(err, ErrSummarySegmentJobConflict) {
+		t.Fatalf("takeover during a live lease error=%v", err)
+	}
+
+	// The holder is gone: the takeover takes the session and moves the start
+	// to the first turn no segment covers.
+	taken, err := fixture.repo.TakeOverSummarySegmentJob(ctx, fixture.user.ID, fixture.session.ID, 30, 11, now.Add(2*time.Minute), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if taken.Status != model.SessionSummarySegmentJobProcessing {
+		t.Fatalf("the taken job status is %q", taken.Status)
+	}
+	if taken.StartMessageID != 11 || taken.DesiredMessageID != 30 {
+		t.Fatalf("the taken job covers %d..%d", taken.StartMessageID, taken.DesiredMessageID)
+	}
+	if taken.LeaseToken == "" || taken.LeaseToken == claimed.LeaseToken {
+		t.Fatalf("the taken job holds the lease %q", taken.LeaseToken)
 	}
 }

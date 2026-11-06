@@ -79,6 +79,20 @@ type SessionWhiteboardGoal struct {
 	UpdatedAtMessageID uint   `json:"updated_at_message_id,omitempty"`
 }
 
+// ErrWhiteboardNotFound means the session has no board yet.
+//
+// It lives here rather than in the repository because the reader that has to
+// tell "no board yet" from "a board I may not read" is not the only one that
+// needs to know: the writer compares a version it read against the version it
+// is about to write, and it has to recognise the same condition.
+var ErrWhiteboardNotFound = errors.New("session whiteboard not found")
+
+// ErrWhiteboardConflict means another writer moved the board on.
+//
+// It is not a failure: the caller re-reads and decides. The work that was
+// done is not lost, only the write was refused.
+var ErrWhiteboardConflict = errors.New("session whiteboard version conflict")
+
 // SessionWhiteboardDocument is the stored board.
 type SessionWhiteboardDocument struct {
 	SchemaVersion int                      `json:"schema_version"`
