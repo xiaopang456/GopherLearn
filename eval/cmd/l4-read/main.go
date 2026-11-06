@@ -125,14 +125,20 @@ func run(args []string, out io.Writer) error {
 		read.Scenario, read.SeededSegments, read.SeededBoard, read.WhiteboardInWindow,
 		read.SegmentsInWindow, read.EvidenceSeqs, read.Verdict)
 	if len(read.ToolChecks) > 0 {
-		honoured := 0
+		// Authorised is the product's grant set answering, not the tool
+		// running: the row says so with Exercised. The names here are the
+		// honest ones so a reader of this line cannot mistake the two.
+		authorised, exercised := 0, 0
 		for _, check := range read.ToolChecks {
-			if check.Accepted {
-				honoured++
+			if check.Authorised {
+				authorised++
+			}
+			if check.Exercised {
+				exercised++
 			}
 		}
-		fmt.Fprintf(out, "tool_checks=%d honoured=%d grants=%d\n",
-			len(read.ToolChecks), honoured, read.Grants)
+		fmt.Fprintf(out, "authority_checks=%d authorised=%d tools_exercised=%d grants=%d\n",
+			len(read.ToolChecks), authorised, exercised, read.Grants)
 	}
 	body, err := json.MarshalIndent(read, "", "  ")
 	if err != nil {

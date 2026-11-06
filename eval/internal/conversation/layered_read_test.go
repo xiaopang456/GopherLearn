@@ -104,6 +104,58 @@ func TestTheQuestionTenseIsReadFromTheWordsTheScenarioUses(t *testing.T) {
 	}
 }
 
+// TestAReplacedFigureNamedFirstIsNotAPass guards the one case the phrasing
+// rule gets wrong on its own.
+//
+// "最初 30 页，后来 15 页" answers a question about the original with the
+// figure that was replaced. The figure sits next to 后来, so the phrasing rule
+// calls it a remark about a change and would pass an answer that is wrong.
+// The order is what separates the two readings, and the driver reports the
+// case as ambiguous rather than starting to guess.
+func TestAReplacedFigureNamedFirstIsNotAPass(t *testing.T) {
+	cases := []struct {
+		name     string
+		answer   string
+		inverted bool
+	}{
+		{
+			name:     "the replaced figure is the answer",
+			answer:   "你最初是 30 页，后来改成 15 页。",
+			inverted: true,
+		},
+		{
+			name:     "the accepted figure is the answer",
+			answer:   "你最初定的是 15 页，后来改成了 30 页。",
+			inverted: false,
+		},
+		{
+			name:     "only the accepted figure is named",
+			answer:   "你最初定的是 15 页。",
+			inverted: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := mentionsBefore(c.answer, []string{"30页"}, []string{"15页"}); got != c.inverted {
+				t.Fatalf("mentionsBefore(%q) = %t, want %t", c.answer, got, c.inverted)
+			}
+		})
+	}
+}
+
+// TestTheRawMentionSurvivesThePhrasingRule keeps the two readings apart: a
+// reader who distrusts the heuristic needs to see that the forbidden figure
+// was there at all, whatever the heuristic made of it.
+func TestTheRawMentionSurvivesThePhrasingRule(t *testing.T) {
+	answer := "你最初定的是 15 页，后来改成了 30 页。"
+	if !mentionsAny(answer, []string{"30页"}) {
+		t.Fatal("the raw reading lost a figure the answer names")
+	}
+	if mentionsOutsidePhrasing(answer, "30页", markersFor(tenseOf("我最初每次读多少页？"))) {
+		t.Fatal("the phrasing rule did not excuse a figure it should have")
+	}
+}
+
 func TestTheBlocksTheBuilderSendsAreReadBackByTheirOwnHeaders(t *testing.T) {
 	block := "Summary segments (compressed record of earlier turns in this session; the Current state block above is what is true now):\n" +
 		"[第 2 段 · 消息 25-48 · 2026-02-08 09:40]\n" +

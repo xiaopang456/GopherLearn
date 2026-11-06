@@ -33,6 +33,7 @@ import (
 
 	"GopherAI/common/aihelper"
 	"GopherAI/common/memoryrecall"
+	"GopherAI/common/observability"
 	"GopherAI/config"
 	sessiondao "GopherAI/dao/session"
 	"GopherAI/entry"
@@ -55,9 +56,18 @@ type LayeredToolCheck struct {
 	// Granted says the window authorised this id. An id the window did not
 	// authorise is one the model never saw, and asking for it must fail.
 	Granted bool `json:"granted"`
-	// Accepted says the tool went along with the request.
-	Accepted bool   `json:"accepted"`
-	Detail   string `json:"detail,omitempty"`
+	// Authorised is what the product's own grant set answers, not what this
+	// harness computed: the same HistoryGrantSet the read-back tool consults
+	// is asked whether the id is readable. It is still not the same thing as
+	// asking the tool, and Exercised says which question was answered.
+	Authorised bool `json:"authorised"`
+	// Exercised says the tool itself ran. It is false everywhere in this
+	// driver: the read-back and browse tools are built inside the product's
+	// internal wiring, which a harness in another module cannot import. A
+	// check that only reaches the grant set must not be reported as a tool
+	// call that succeeded or was refused.
+	Exercised bool   `json:"exercised"`
+	Detail    string `json:"detail,omitempty"`
 }
 
 // LayeredRead is what one read-side run found.
@@ -87,18 +97,29 @@ type LayeredRead struct {
 	ToolChecks []LayeredToolCheck `json:"tool_checks"`
 
 	// The answer.
-	Answer        string   `json:"answer"`
-	Accepted      []string `json:"accepted"`
-	Forbidden     []string `json:"forbidden"`
-	AcceptedSeen  bool     `json:"accepted_seen"`
-	ForbiddenSeen bool     `json:"forbidden_seen"`
+	Answer       string   `json:"answer"`
+	Accepted     []string `json:"accepted"`
+	Forbidden    []string `json:"forbidden"`
+	AcceptedSeen bool     `json:"accepted_seen"`
+	// ForbiddenSeen is the raw reading: the answer names a value the key
+	// forbids. ForbiddenUnframed is the one the heuristic verdict uses. Both
+	// are kept because they answer different questions, and a reader who
+	// distrusts the heuristic needs the first to re-decide for themselves.
+	ForbiddenSeen     bool `json:"forbidden_seen"`
+	ForbiddenUnframed bool `json:"forbidden_unframed"`
 	// ForbiddenFramed names the replaced values the answer mentions only as
 	// something that was changed. They do not count against the answer.
 	ForbiddenFramed []string `json:"forbidden_framed"`
 	// QuestionTense is what the question asked for: the value that holds now,
 	// the value it replaced, or neither. It decides which phrasing excuses a
 	// replaced figure.
-	QuestionTense    string `json:"question_tense"`
+	QuestionTense string `json:"question_tense"`
+	// Scorer names the rule the verdict came from. This driver's verdict is a
+	// smoke reading, not a scorer: the formal comparison is judged by the
+	// product's own score.mjs, where a value that appears on both sides goes
+	// to needs_judge and is judged twice. The name is here so a verdict
+	// copied out of this file cannot be mistaken for that one.
+	Scorer           string `json:"scorer"`
 	Verdict          string `json:"verdict"`
 	PromptTokens     int    `json:"prompt_tokens"`
 	CompletionTokens int    `json:"completion_tokens"`
@@ -137,6 +158,11 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 		return read, err
 	}
 	settings.Config.AgentConfig.SummarySegmentMode = "on"
+	// The diagnostics carry the mode in their labels, and the recorder's
+	// default is off. The product sets this at startup; a harness that did
+	// not would label an applied run's counters "off" and a reader would
+	// have to guess which arm produced them.
+	observability.Memory.SetMode(observability.MemoryModeOn)
 	roles, err := LoadRolePrompts(repository, memoryrecall.ReadMode(settings.Config.MemoryReadMode))
 	if err != nil {
 		return read, err
@@ -245,21 +271,32 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	// replaced and saying that it no longer holds.
 	read.QuestionTense = tenseOf(read.Question)
 	excusing := markersFor(read.QuestionTense)
-	unframed := make([]string, 0, len(forbidden))
 	for _, value := range forbidList(forbidden, accepted) {
 		if mentionsOutsidePhrasing(read.Answer, value, excusing) {
-			unframed = append(unframed, value)
+			read.ForbiddenUnframed = true
 		} else if mentionsAny(read.Answer, []string{value}) {
 			read.ForbiddenFramed = append(read.ForbiddenFramed, value)
 		}
 	}
-	read.ForbiddenSeen = len(unframed) > 0
+	// The framing rule can be talked into excusing the answer itself.
+	//
+	// "最初 30 页，后来 15 页" asks about the original and answers it with the
+	// replaced figure; the figure sits next to 后来, so the rule above calls
+	// it a remark. What separates the two is the order: when the replaced
+	// value is named first, it is the answer and the accepted one is the
+	// remark. That case is reported as ambiguous rather than as a pass,
+	// because the driver cannot tell a wrong answer from a correct one
+	// phrased backwards.
+	inverted := mentionsBefore(read.Answer, forbidList(forbidden, accepted), accepted)
+	read.Scorer = layeredReadScorer
 	switch {
 	case read.Answer == "":
 		read.Verdict = "empty"
-	case read.AcceptedSeen && !read.ForbiddenSeen:
+	case inverted:
+		read.Verdict = "ambiguous"
+	case read.AcceptedSeen && !read.ForbiddenUnframed:
 		read.Verdict = "pass"
-	case read.ForbiddenSeen && !read.AcceptedSeen:
+	case read.ForbiddenUnframed && !read.AcceptedSeen:
 		read.Verdict = "fail"
 	default:
 		read.Verdict = "ambiguous"
@@ -524,46 +561,63 @@ func evidenceSeqs(segments []model.SessionSummarySegment, messages []model.Messa
 	return seqs
 }
 
-// checkToolAuthority verifies the read-back authorization the window drew.
+// checkToolAuthority asks the product's own grant set what the window made
+// readable.
 //
 // The rule the window is built on is that an id is readable because a
 // statement that carried it reached the model, and an id from a statement the
-// budget cut is not readable because the model never saw it. So visibility is
-// decided on the text: the ids the window printed, collected from the
-// [message_ids=…] markers the renderer puts on every statement it sends. A
-// segment's range is not the test — a board statement cites turns from
-// anywhere in the session, including stretches no segment covers, and it is
-// still a statement the model read.
+// budget cut is not readable because the model never saw it. That decision is
+// the product's, so it is asked rather than recomputed here: the same
+// HistoryGrantSet the read-back tool consults is built from the window's
+// grants, and every id is put to it.
+//
+// What this does not do is run the tool. The read-back and browse tools are
+// built inside the product's internal wiring, which a harness in another
+// module cannot import, so the check stops at the authorisation the tool
+// would have consulted. Every row says so with Exercised=false, and a report
+// that reads these rows must not describe them as tool calls.
 func checkToolAuthority(s *Sandbox, sessionID string, window agent.ContextWindow,
 	seeded seededLayered, read *LayeredRead) {
 	read.Grants = len(window.SummarySegmentHistoryGrants)
 	visible := visibleMessageIDs(window)
+	run := agent.RunContext{UserID: 7001, SessionID: sessionID, Question: read.Question}
+	set := agent.NewHistoryGrantSet(run, window.SummarySegmentHistoryGrants)
 	for _, grant := range window.SummarySegmentHistoryGrants {
 		if !containsUint(read.GrantedIDs, grant.MessageID) {
 			read.GrantedIDs = append(read.GrantedIDs, grant.MessageID)
 		}
+		// Both answers are kept: what the window printed, and what the
+		// product says may be read. They should agree, and a row where they
+		// do not is the finding.
 		_, shown := visible[grant.MessageID]
+		authorised := set.Covers(grant.MessageID, sessionID)
 		read.ToolChecks = append(read.ToolChecks, LayeredToolCheck{
 			Tool: "read_history_message", MessageID: grant.MessageID, Source: grant.SourceKind,
-			Granted: true, Accepted: shown, Detail: grantNote(shown),
+			Granted: true, Authorised: authorised, Exercised: false,
+			Detail: grantNote(shown, authorised),
 		})
 	}
-	// A message the window never showed must not be readable.
+	// A message the window never showed must not be readable. This is the
+	// negative case: the id is real, it is in the session, and the window
+	// never put it in front of the model.
 	hidden := messageNotShown(s.db, sessionID, visible)
 	if hidden != 0 {
 		read.ToolChecks = append(read.ToolChecks, LayeredToolCheck{
-			Tool: "read_history_message", MessageID: hidden, Granted: false, Accepted: false,
+			Tool: "read_history_message", MessageID: hidden, Granted: false,
+			Authorised: set.Covers(hidden, sessionID), Exercised: false,
 			Detail: "not granted: the window never showed this message",
 		})
 	}
 	// The browse tool is authorised by the segments the window carried: a
 	// segment the window did not carry is one the model has to browse for.
+	// There is no grant set to ask for this one, so the row records what the
+	// window carried and says the tool was not run.
 	for _, segment := range seeded.segments {
+		inWindow := containsInt(read.SegmentsInWindow, segment.Seq)
 		read.ToolChecks = append(read.ToolChecks, LayeredToolCheck{
 			Tool: "browse_summary_segments", SegmentSeq: segment.Seq,
-			Granted:  containsInt(read.SegmentsInWindow, segment.Seq),
-			Accepted: true,
-			Detail:   browseNote(containsInt(read.SegmentsInWindow, segment.Seq)),
+			Granted: inWindow, Authorised: true, Exercised: false,
+			Detail: browseNote(inWindow),
 		})
 	}
 }
@@ -616,11 +670,20 @@ func browseNote(inWindow bool) string {
 }
 
 // grantNote says why a grant was or was not honoured.
-func grantNote(shown bool) string {
-	if shown {
-		return "granted: a statement the window sent carried this id"
+// grantNote says what the window showed and what the product's grant set
+// answered. The two can disagree, and that disagreement is the finding: it
+// means the grants and the rendered text no longer describe the same window.
+func grantNote(shown, authorised bool) string {
+	switch {
+	case shown && authorised:
+		return "shown in the window and authorised"
+	case shown && !authorised:
+		return "shown in the window but the grant set refuses it"
+	case !shown && authorised:
+		return "authorised but the window never showed it"
+	default:
+		return "neither shown nor authorised"
 	}
-	return "granted by the window but no statement it sent carries this id"
 }
 
 // messageNotShown returns one message the window did not show, or zero when
@@ -657,16 +720,69 @@ func boardEntryCount(document model.SessionWhiteboardDocument) int {
 	return count + len(document.Constraints) + len(document.Plan) + len(document.OpenItems)
 }
 
+// layeredReadScorer names the rule this driver's verdict comes from.
+//
+// It is deliberately not a scorer's name. The formal comparison is judged by
+// the product's own score.mjs, where an answer that names both the current and
+// the replaced value goes to needs_judge and is judged twice. What is written
+// here is a smoke reading that says whether the run is worth looking at.
+const layeredReadScorer = "tense-heuristic-smoke-only"
+
+// normaliseAnswer folds an answer down to the form the mention checks compare.
+//
+// Whitespace is removed because a rendered figure comes back as "15 页" from
+// one model and "15页" from another, and that difference is formatting, not an
+// answer. Case is folded for the same reason.
+func normaliseAnswer(answer string) string {
+	return strings.ToLower(strings.Join(strings.Fields(answer), ""))
+}
+
 // mentionsAny reports whether the answer names one of the values.
 func mentionsAny(answer string, values []string) bool {
-	normalised := strings.ToLower(strings.Join(strings.Fields(answer), ""))
+	normalised := normaliseAnswer(answer)
 	for _, value := range values {
-		needle := strings.ToLower(strings.Join(strings.Fields(value), ""))
+		needle := normaliseAnswer(value)
 		if needle != "" && strings.Contains(normalised, needle) {
 			return true
 		}
 	}
 	return false
+}
+
+// mentionsBefore reports whether a forbidden value is named before an accepted
+// one.
+//
+// It separates "最初 15 页，后来 30 页" (the accepted figure is the answer) from
+// "最初 30 页，后来 15 页" (the replaced figure is the answer). A phrase rule
+// that only looks at what sits next to a figure cannot tell them apart,
+// because in both the second figure sits next to a change word.
+func mentionsBefore(answer string, forbidden, accepted []string) bool {
+	normalised := normaliseAnswer(answer)
+	firstForbidden := firstMention(normalised, forbidden)
+	if firstForbidden < 0 {
+		return false
+	}
+	firstAccepted := firstMention(normalised, accepted)
+	if firstAccepted < 0 {
+		return false
+	}
+	return firstForbidden < firstAccepted
+}
+
+// firstMention returns where the earliest of the values first appears, or -1.
+func firstMention(normalised string, values []string) int {
+	first := -1
+	for _, value := range values {
+		needle := normaliseAnswer(value)
+		if needle == "" {
+			continue
+		}
+		index := strings.Index(normalised, needle)
+		if index >= 0 && (first < 0 || index < first) {
+			first = index
+		}
+	}
+	return first
 }
 
 // forbidList drops the accepted values from the forbidden ones.
@@ -761,8 +877,8 @@ func markersFor(tense string) []string {
 // figure is the sentence the figure sits in; a marker anywhere in the answer
 // would let a single "后来" elsewhere excuse every wrong figure it names.
 func mentionsOutsidePhrasing(answer, value string, excusing []string) bool {
-	text := []rune(strings.ToLower(strings.Join(strings.Fields(answer), "")))
-	needle := []rune(strings.ToLower(strings.Join(strings.Fields(value), "")))
+	text := []rune(normaliseAnswer(answer))
+	needle := []rune(normaliseAnswer(value))
 	if len(needle) == 0 {
 		return false
 	}

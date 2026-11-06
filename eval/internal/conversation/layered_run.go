@@ -205,6 +205,10 @@ func RunLayeredSummary(ctx context.Context, repository, scenario, condition stri
 		return run, err
 	}
 	settings.Config.AgentConfig.SummarySegmentMode = mode
+	// Same reason as the read driver: the recorder defaults to off, and a
+	// counter labelled with the wrong arm cannot be compared with one from a
+	// run that labelled it correctly.
+	observability.Memory.SetMode(mode)
 	roles, err := LoadRolePrompts(repository, memoryrecall.ReadMode(settings.Config.MemoryReadMode))
 	if err != nil {
 		return run, err
