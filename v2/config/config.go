@@ -327,23 +327,32 @@ type AgentConfig struct {
 	// keeps its own content. The patch rides along with the thinking switch
 	// and is registered only for the DeepSeek dialect with thinking on, so
 	// every other deployment sends the request it sent before.
-	AgentThinkingEnabled             bool   `toml:"agentThinkingEnabled"`
-	KnowledgeDefaultTopK             int    `toml:"knowledgeDefaultTopK"`
-	KnowledgeMaxTopK                 int    `toml:"knowledgeMaxTopK"`
-	KnowledgeMaxResultTokens         int    `toml:"knowledgeMaxResultTokens"`
-	KnowledgeMaxObservationTokens    int    `toml:"knowledgeMaxObservationTokens"`
-	KnowledgeMaxRunTokens            int    `toml:"knowledgeMaxRunTokens"`
-	DocumentReadMaxLines             int    `toml:"documentReadMaxLines"`
-	DocumentReadMaxBytes             int    `toml:"documentReadMaxBytes"`
-	DocumentReadMaxObservationTokens int    `toml:"documentReadMaxObservationTokens"`
-	ContextModelWindowTokens         int    `toml:"contextModelWindowTokens"`
-	ContextInputTargetTokens         int    `toml:"contextInputTargetTokens"`
-	ContextOutputReserveTokens       int    `toml:"contextOutputReserveTokens"`
-	ContextMaxGlobalUserMemoryTokens int    `toml:"contextMaxGlobalUserMemoryTokens"`
-	ContextMaxTopicUserMemoryTokens  int    `toml:"contextMaxTopicUserMemoryTokens"`
-	ContextMaxSummaryTokens          int    `toml:"contextMaxSummaryTokens"`
-	ContextMaxMasteryTokens          int    `toml:"contextMaxMasteryTokens"`
-	ContextMaxEpisodeTokens          int    `toml:"contextMaxEpisodeTokens"`
+	AgentThinkingEnabled             bool `toml:"agentThinkingEnabled"`
+	KnowledgeDefaultTopK             int  `toml:"knowledgeDefaultTopK"`
+	KnowledgeMaxTopK                 int  `toml:"knowledgeMaxTopK"`
+	KnowledgeMaxResultTokens         int  `toml:"knowledgeMaxResultTokens"`
+	KnowledgeMaxObservationTokens    int  `toml:"knowledgeMaxObservationTokens"`
+	KnowledgeMaxRunTokens            int  `toml:"knowledgeMaxRunTokens"`
+	DocumentReadMaxLines             int  `toml:"documentReadMaxLines"`
+	DocumentReadMaxBytes             int  `toml:"documentReadMaxBytes"`
+	DocumentReadMaxObservationTokens int  `toml:"documentReadMaxObservationTokens"`
+	ContextModelWindowTokens         int  `toml:"contextModelWindowTokens"`
+	ContextInputTargetTokens         int  `toml:"contextInputTargetTokens"`
+	ContextOutputReserveTokens       int  `toml:"contextOutputReserveTokens"`
+	ContextMaxGlobalUserMemoryTokens int  `toml:"contextMaxGlobalUserMemoryTokens"`
+	ContextMaxTopicUserMemoryTokens  int  `toml:"contextMaxTopicUserMemoryTokens"`
+	ContextMaxSummaryTokens          int  `toml:"contextMaxSummaryTokens"`
+	ContextMaxMasteryTokens          int  `toml:"contextMaxMasteryTokens"`
+	ContextMaxEpisodeTokens          int  `toml:"contextMaxEpisodeTokens"`
+	// The layered summary's four block budgets. They were constants until the
+	// scaled run needed a smaller history: a deployment could reach the code
+	// that sends the board and the segments but could not say how much room
+	// they get. The defaults are the constants' old values, so a configuration
+	// that says nothing keeps the behaviour it had.
+	ContextMaxWhiteboardTokens       int    `toml:"contextMaxWhiteboardTokens"`
+	ContextMaxResidentSegmentTokens  int    `toml:"contextMaxResidentSegmentTokens"`
+	ContextMaxRetrievedSegmentTokens int    `toml:"contextMaxRetrievedSegmentTokens"`
+	ContextMaxSegmentTokens          int    `toml:"contextMaxSegmentTokens"`
 	EpisodeRecallMode                string `toml:"episodeRecallMode"`
 	// MemoryReadMode selects the whole long-term memory read path.
 	//
@@ -573,6 +582,19 @@ var config *Config
 
 const mib int64 = 1024 * 1024
 
+// The layered summary's block budgets, as shipped.
+//
+// They are restated here rather than imported from service/agent because that
+// package imports this one. A test in internal/isolated asserts they still
+// equal the agent package's Default* constants, so the two cannot drift apart
+// without something failing.
+const (
+	defaultWhiteboardTokens       = 1200
+	defaultResidentSegmentTokens  = 1200
+	defaultRetrievedSegmentTokens = 1000
+	defaultSegmentTokens          = 300
+)
+
 func defaultConfig() *Config {
 	return &Config{JwtConfig: JwtConfig{
 		ExpireDuration: 24,
@@ -616,9 +638,13 @@ func defaultConfig() *Config {
 		ContextModelWindowTokens: 32768, ContextInputTargetTokens: 28000, ContextOutputReserveTokens: 4000,
 		ContextMaxGlobalUserMemoryTokens: 800, ContextMaxTopicUserMemoryTokens: 1200, ContextMaxSummaryTokens: 2000, ContextMaxMasteryTokens: 900,
 		ContextMaxEpisodeTokens: 1000, EpisodeRecallMode: "shadow_only",
-		MemoryReadMode:           string(memoryrecall.DefaultReadMode()),
-		ContextHistoryFetchLimit: 128,
-		SummaryTriggerMessages:   12, SummaryTriggerTokens: 6000, SummaryRetainMessages: 8,
+		ContextMaxWhiteboardTokens:       defaultWhiteboardTokens,
+		ContextMaxResidentSegmentTokens:  defaultResidentSegmentTokens,
+		ContextMaxRetrievedSegmentTokens: defaultRetrievedSegmentTokens,
+		ContextMaxSegmentTokens:          defaultSegmentTokens,
+		MemoryReadMode:                   string(memoryrecall.DefaultReadMode()),
+		ContextHistoryFetchLimit:         128,
+		SummaryTriggerMessages:           12, SummaryTriggerTokens: 6000, SummaryRetainMessages: 8,
 		SummaryMaxInputTokens: 8000, SummaryFetchLimit: 512, SummaryTimeoutSeconds: 20,
 		SummaryStageBudgetSeconds: 8, SummaryFailureCooldownSeconds: 30,
 		SummaryGroupItemLimit: 20, SummaryOpenLoopsItemLimit: 20, SummaryEvidenceIDLimit: 64,
@@ -1037,6 +1063,10 @@ func applyAgentEnv(c *AgentConfig) error {
 		{"AGENT_CONTEXT_MAX_SUMMARY_TOKENS", func(value int) { c.ContextMaxSummaryTokens = value }},
 		{"AGENT_CONTEXT_MAX_MASTERY_TOKENS", func(value int) { c.ContextMaxMasteryTokens = value }},
 		{"AGENT_CONTEXT_MAX_EPISODE_TOKENS", func(value int) { c.ContextMaxEpisodeTokens = value }},
+		{"AGENT_CONTEXT_MAX_WHITEBOARD_TOKENS", func(value int) { c.ContextMaxWhiteboardTokens = value }},
+		{"AGENT_CONTEXT_MAX_RESIDENT_SEGMENT_TOKENS", func(value int) { c.ContextMaxResidentSegmentTokens = value }},
+		{"AGENT_CONTEXT_MAX_RETRIEVED_SEGMENT_TOKENS", func(value int) { c.ContextMaxRetrievedSegmentTokens = value }},
+		{"AGENT_CONTEXT_MAX_SEGMENT_TOKENS", func(value int) { c.ContextMaxSegmentTokens = value }},
 		{"AGENT_CONTEXT_HISTORY_FETCH_LIMIT", func(value int) { c.ContextHistoryFetchLimit = value }},
 		{"AGENT_SUMMARY_TRIGGER_MESSAGES", func(value int) { c.SummaryTriggerMessages = value }},
 		{"AGENT_SUMMARY_TRIGGER_TOKENS", func(value int) { c.SummaryTriggerTokens = value }},
@@ -1227,8 +1257,13 @@ func (c AgentConfig) Validate() error {
 		return fmt.Errorf("contextMaxEpisodeTokens must be between 800 and 1200")
 	}
 	if c.ContextMaxGlobalUserMemoryTokens < 0 || c.ContextMaxTopicUserMemoryTokens < 0 || c.ContextMaxSummaryTokens < 0 || c.ContextMaxMasteryTokens < 0 ||
-		c.ContextMaxGlobalUserMemoryTokens+c.ContextMaxTopicUserMemoryTokens+c.ContextMaxSummaryTokens+c.ContextMaxMasteryTokens+c.ContextMaxEpisodeTokens >= c.ContextInputTargetTokens-c.KnowledgeMaxRunTokens {
-		return fmt.Errorf("context profile, topic note, episode, summary and mastery budgets leave no room for required context")
+		c.ContextMaxWhiteboardTokens < 0 || c.ContextMaxResidentSegmentTokens < 0 ||
+		c.ContextMaxRetrievedSegmentTokens < 0 || c.ContextMaxSegmentTokens < 0 {
+		return fmt.Errorf("context block budgets cannot be negative")
+	}
+	if c.ContextMaxGlobalUserMemoryTokens+c.ContextMaxTopicUserMemoryTokens+c.ContextMaxSummaryTokens+c.ContextMaxMasteryTokens+c.ContextMaxEpisodeTokens+
+		c.ContextMaxWhiteboardTokens+c.ContextMaxResidentSegmentTokens+c.ContextMaxRetrievedSegmentTokens >= c.ContextInputTargetTokens-c.KnowledgeMaxRunTokens {
+		return fmt.Errorf("context profile, topic note, episode, summary, mastery, board and segment budgets leave no room for required context")
 	}
 	if c.ContextMaxMasteryTokens > 2000 {
 		return fmt.Errorf("contextMaxMasteryTokens must not exceed 2000")

@@ -840,12 +840,20 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		ModelWindowTokens: conf.AgentConfig.ContextModelWindowTokens, InputTargetTokens: conf.AgentConfig.ContextInputTargetTokens,
 		OutputReserveTokens: conf.AgentConfig.ContextOutputReserveTokens, EvidenceReserve: conf.AgentConfig.KnowledgeMaxRunTokens,
 		MaxGlobalUserMemoryTokens: conf.AgentConfig.ContextMaxGlobalUserMemoryTokens, MaxTopicUserMemoryTokens: conf.AgentConfig.ContextMaxTopicUserMemoryTokens,
-		MaxSummaryTokens:  conf.AgentConfig.ContextMaxSummaryTokens,
-		MaxMasteryTokens:  conf.AgentConfig.ContextMaxMasteryTokens,
-		MaxEpisodeTokens:  conf.AgentConfig.ContextMaxEpisodeTokens,
-		EpisodeRecallMode: agentService.EpisodeRecallMode(conf.AgentConfig.EpisodeRecallMode),
-		HistoryFetchLimit: conf.AgentConfig.ContextHistoryFetchLimit,
-		MemoryReadMode:    memoryReadMode,
+		MaxSummaryTokens: conf.AgentConfig.ContextMaxSummaryTokens,
+		MaxMasteryTokens: conf.AgentConfig.ContextMaxMasteryTokens,
+		MaxEpisodeTokens: conf.AgentConfig.ContextMaxEpisodeTokens,
+		// The layered summary's four block budgets. They are configuration, not
+		// constants: a deployment that turns the mode on is choosing how much
+		// of the window the board and the segments may take, and a scaled-down
+		// run has to be able to say a smaller number.
+		MaxWhiteboardTokens:       conf.AgentConfig.ContextMaxWhiteboardTokens,
+		MaxResidentSegmentTokens:  conf.AgentConfig.ContextMaxResidentSegmentTokens,
+		MaxRetrievedSegmentTokens: conf.AgentConfig.ContextMaxRetrievedSegmentTokens,
+		MaxSegmentTokens:          conf.AgentConfig.ContextMaxSegmentTokens,
+		EpisodeRecallMode:         agentService.EpisodeRecallMode(conf.AgentConfig.EpisodeRecallMode),
+		HistoryFetchLimit:         conf.AgentConfig.ContextHistoryFetchLimit,
+		MemoryReadMode:            memoryReadMode,
 	}, message.DefaultRepository(), learningTaskState, masteryProvider, agentService.MemoryProviderFunc(func(ctx context.Context, input agentService.RunContext) (agentService.MemoryRecall, error) {
 		recalled, err := memoryRetriever.RelevantMemories(ctx, memoryService.RecallRequest{
 			UserID: input.UserID, SessionID: input.SessionID, Question: input.Question,
