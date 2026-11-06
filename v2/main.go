@@ -876,6 +876,16 @@ func main() {
 			// find it again.
 			layeredProvider.UseRecentUse(summarySegmentIndex)
 		}
+		// A session the old path summarised has neither a board nor a segment.
+		// Converting it when it is read gives it the same shape as a new one
+		// without waiting for the background.
+		migrator, migrateErr := agentService.NewSummarySegmentMigrator(
+			sessionDAO.DefaultRepository(), sessionDAO.DefaultRepository(), sessionDAO.DefaultRepository())
+		if migrateErr != nil {
+			log.Printf("initialize summary segment migrator: %v", migrateErr)
+			return
+		}
+		layeredProvider.UseMigrator(migrator)
 		if attachErr := contextBuilder.UseLayeredSummaryProvider(layeredProvider); attachErr != nil {
 			log.Printf("attach layered summary reader: %v", attachErr)
 			return

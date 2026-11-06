@@ -100,6 +100,12 @@ type SessionWhiteboardDocument struct {
 	Constraints   []SessionWhiteboardEntry `json:"constraints,omitempty"`
 	Plan          []SessionWhiteboardEntry `json:"plan,omitempty"`
 	OpenItems     []SessionWhiteboardEntry `json:"open_items,omitempty"`
+	// MigratedFromVersion is the version of the old rolling summary this
+	// board was built from, and it is zero for a board the new path wrote.
+	//
+	// The old summary is rewritten as the session goes on, so the version
+	// is what says which revision of it this board came from.
+	MigratedFromVersion uint64 `json:"migrated_from_version,omitempty"`
 }
 
 // DecodeSessionWhiteboardDocument parses a stored board.

@@ -822,6 +822,15 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		if layeredErr != nil {
 			return nil, fmt.Errorf("initialize layered summary reader: %v", layeredErr)
 		}
+		// A session the old path summarised has neither a board nor a segment.
+		// Converting it when it is read gives it the same shape as a new one
+		// without waiting for the background.
+		migrator, migrateErr := agentService.NewSummarySegmentMigrator(
+			sessionDAO.DefaultRepository(), sessionDAO.DefaultRepository(), sessionDAO.DefaultRepository())
+		if migrateErr != nil {
+			return nil, fmt.Errorf("initialize summary segment migrator: %v", migrateErr)
+		}
+		layeredProvider.UseMigrator(migrator)
 		if attachErr := contextBuilder.UseLayeredSummaryProvider(layeredProvider); attachErr != nil {
 			return nil, fmt.Errorf("attach layered summary reader: %v", attachErr)
 		}

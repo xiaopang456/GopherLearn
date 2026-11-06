@@ -78,7 +78,11 @@ type DatabaseLayeredSummaryProvider struct {
 	reader    SummarySegmentReader
 	preselect *SummarySegmentPreselector
 	recent    SummarySegmentRecentUse
-	resident  int
+	// migrate converts a session the old path summarised into the new
+	// tables. It is optional: without it an old session waits for the
+	// background to write its first segment.
+	migrate  SummarySegmentMigration
+	resident int
 }
 
 // NewDatabaseLayeredSummaryProvider builds the reader.
@@ -105,6 +109,72 @@ func (p *DatabaseLayeredSummaryProvider) UseRecentUse(recent SummarySegmentRecen
 	p.recent = recent
 }
 
+// UseMigrator attaches the conversion of an old summary into the new tables.
+//
+// It is a setter rather than a constructor argument because the conversion
+// is a deployment's business: a deployment that has never run the old path
+// has nothing to convert.
+func (p *DatabaseLayeredSummaryProvider) UseMigrator(migrator SummarySegmentMigration) {
+	if p == nil {
+		return
+	}
+	p.migrate = migrator
+}
+
+// layeredState is one read of the session's new state.
+//
+// The three parts are read together because they say the same thing from
+// three sides: the board is what is true now, the segments are what the
+// session did, and the watermark is how far the segments reach.
+type layeredState struct {
+	board     *model.SessionWhiteboard
+	resident  []model.SessionSummarySegment
+	watermark uint
+}
+
+// readLayeredState reads the board, the resident segments and the watermark.
+//
+// A read that fails is a failure and not a partial state: the caller keeps
+// what it had.
+func (p *DatabaseLayeredSummaryProvider) readLayeredState(ctx context.Context, input RunContext) (layeredState, error) {
+	state := layeredState{}
+	board, err := p.reader.GetWhiteboard(ctx, input.UserID, input.SessionID)
+	if err != nil && !errors.Is(err, model.ErrWhiteboardNotFound) {
+		return state, fmt.Errorf("load session whiteboard: %w", err)
+	}
+	state.board = board
+	resident, err := p.reader.ListLatestSummarySegments(ctx, input.UserID, input.SessionID, p.resident)
+	if err != nil {
+		return state, fmt.Errorf("load resident summary segments: %w", err)
+	}
+	state.resident = resident
+	watermark, _, err := p.reader.GetSummarySegmentWatermark(ctx, input.UserID, input.SessionID)
+	if err != nil {
+		return state, fmt.Errorf("load summary segment watermark: %w", err)
+	}
+	state.watermark = watermark
+	return state, nil
+}
+
+// layeredStateCarriesCoverage says whether the segments carry the coverage
+// the watermark claims.
+//
+// The watermark says how far the summary reaches, and the raw messages below
+// it are dropped from the window. A session with no segments has no
+// coverage, so its watermark is zero. A session with segments reaches at
+// least as far as its newest segment, and the watermark is the highest end
+// the segments reach.
+//
+// A state that says otherwise was read across a write. Believing it would
+// drop a stretch of the conversation from the window without putting
+// anything in its place.
+func layeredStateCarriesCoverage(resident []model.SessionSummarySegment, watermark uint) bool {
+	if len(resident) == 0 {
+		return watermark == 0
+	}
+	return resident[0].EndMessageID >= watermark
+}
+
 // LayeredSummary reads the board, the resident segments and the segments this
 // question is about.
 //
@@ -119,9 +189,53 @@ func (p *DatabaseLayeredSummaryProvider) LayeredSummary(ctx context.Context, inp
 	if input.UserID <= 0 || strings.TrimSpace(input.SessionID) == "" {
 		return snapshot, fmt.Errorf("layered summary identity is required")
 	}
-	board, err := p.reader.GetWhiteboard(ctx, input.UserID, input.SessionID)
-	if err != nil && !errors.Is(err, model.ErrWhiteboardNotFound) {
-		return snapshot, fmt.Errorf("load session whiteboard: %w", err)
+	state, err := p.readLayeredState(ctx, input)
+	if err != nil {
+		return snapshot, err
+	}
+	board, resident, watermark := state.board, state.resident, state.watermark
+	if !layeredStateCarriesCoverage(resident, watermark) {
+		// The state was read across a write: the segments that reach the
+		// watermark are not the ones in the snapshot. Nothing is claimed as
+		// covered, so the raw messages below it are still sent.
+		watermark = 0
+	}
+	// A session the old path summarised has neither a board nor a segment.
+	// Converting it here gives it the same shape as a new one, and the turn
+	// does not have to wait for the background to catch up.
+	if p.migrate != nil && (board == nil || len(resident) == 0) {
+		mayHaveChanged, migrateErr := p.migrate.Migrate(ctx, input)
+		if migrateErr != nil {
+			// The conversion is an optimisation over a conversation that is
+			// still there. A failure costs the board and the first segment,
+			// and the turn goes on with the raw conversation.
+			log.Printf("[agent-context] summary segment migration failed: session=%s error_type=%T",
+				input.SessionID, migrateErr)
+		} else if mayHaveChanged {
+			// The conversion wrote, or lost the race to a writer that did.
+			// Either way the state has to be read again, and it is taken
+			// only when it is whole: a board that could not be read and a
+			// segment list that could not be read would leave the window
+			// claiming a coverage it does not carry, and the raw messages
+			// below the watermark would be dropped without anything in
+			// their place.
+			reread, rereadErr := p.readLayeredState(ctx, input)
+			switch {
+			case rereadErr != nil:
+				log.Printf("[agent-context] summary segment migration reread failed: session=%s error_type=%T",
+					input.SessionID, rereadErr)
+			case !layeredStateCarriesCoverage(reread.resident, reread.watermark):
+				// The read crossed a write, and the segments that reach
+				// the watermark are not in the snapshot. The state stays
+				// where it was, so the raw messages below the watermark
+				// are still sent and the turn does not lose that part of
+				// the conversation.
+				log.Printf("[agent-context] summary segment migration reread inconsistent: session=%s",
+					input.SessionID)
+			default:
+				board, resident, watermark = reread.board, reread.resident, reread.watermark
+			}
+		}
 	}
 	if board != nil {
 		snapshot.Board = board
@@ -133,15 +247,7 @@ func (p *DatabaseLayeredSummaryProvider) LayeredSummary(ctx context.Context, inp
 			snapshot.BoardDocument = document
 		}
 	}
-	watermark, _, err := p.reader.GetSummarySegmentWatermark(ctx, input.UserID, input.SessionID)
-	if err != nil {
-		return snapshot, fmt.Errorf("load summary segment watermark: %w", err)
-	}
 	snapshot.CoveredMessageID = watermark
-	resident, err := p.reader.ListLatestSummarySegments(ctx, input.UserID, input.SessionID, p.resident)
-	if err != nil {
-		return snapshot, fmt.Errorf("load resident summary segments: %w", err)
-	}
 	snapshot.Resident = resident
 	if err := p.addRecentUse(ctx, input, &snapshot); err != nil {
 		// The recent-use record is a memory, not a source of truth: losing it
