@@ -2,9 +2,52 @@ package main
 
 import (
 	"fmt"
+	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+
+	"GopherAI/model"
 )
+
+// messageUserNameWidth reads the width the product's message table gives the
+// user name. The derived user name is written there, so the evaluator has to
+// stay inside it: a name that does not fit makes every attempt fail with a
+// database error before the question is ever asked.
+func messageUserNameWidth(t *testing.T) int {
+	t.Helper()
+	field, ok := reflect.TypeOf(model.Message{}).FieldByName("UserName")
+	if !ok {
+		t.Fatal("the message model has no UserName field")
+	}
+	match := regexp.MustCompile(`varchar\((\d+)\)`).FindStringSubmatch(field.Tag.Get("gorm"))
+	if len(match) != 2 {
+		t.Fatalf("the message user name has no varchar width: %q", field.Tag.Get("gorm"))
+	}
+	width, err := strconv.Atoi(match[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return width
+}
+
+// The derived name is what the message table stores, so it has to fit.
+func TestScenarioIdentityNameFitsTheMessageTable(t *testing.T) {
+	width := messageUserNameWidth(t)
+	for _, x := range [][4]string{
+		{"run", "arm-a", "case-a", "main"},
+		{"a-very-long-evaluation-run-id", "a-configuration-with-a-long-name", "a-scenario-with-a-long-id", "distractor"},
+	} {
+		_, name, err := scenarioIdentity(x[0], x[1], x[2], x[3])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(name) > width {
+			t.Fatalf("the derived name %q is %d characters, the message table allows %d", name, len(name), width)
+		}
+	}
+}
 
 func TestScenarioIdentity(t *testing.T) {
 	id, name, err := scenarioIdentity("run", "arm-a", "case-a", "main")
