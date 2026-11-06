@@ -44,28 +44,27 @@
 
 ## 三处模型配置各管什么
 
-同一个 chat 模型通常要写三遍，这是最容易填错的地方。三处各管一段：
+同一个 chat 模型的名字通常要写三处，但**决定用哪个模型的只有两处**——这是最容易填错的地方。三段各管一段：
 
 | 位置 | 管谁 | 取哪些字段 |
 |---|---|---|
-| `[isolatedEntry]` | **学习 Agent** 的 chat 客户端，外加 **embedding 服务的密钥** | `chatKey`、`chatModel`、`chatBaseURL`、`embeddingKey` |
-| `[ragModelConfig]` | **embedding 服务**的模型名/地址/维度；情景关系分类器**身份标签**里的模型名（不发给 provider，见下表）；思考开关的方言 | `embeddingModel`、`embeddingBaseUrl`、`dimension`、`chatModelName`、`baseUrl`、`chatThinkingDialect` |
+| `[isolatedEntry]` | **学习 Agent** 的 chat 客户端 | `chatKey`、`chatModel`、`chatBaseURL` |
+| `[ragModelConfig]` | **embedding 服务**的模型名/地址/密钥/维度（四件都在这一段）；情景关系分类器**身份标签**里的模型名（不发给 provider，见下表）；思考开关的方言 | `embeddingModel`、`embeddingBaseUrl`、`embeddingApiKey`、`dimension`、`chatModelName`、`chatThinkingDialect` |
 | `[ordinaryChat]` | **普通聊天**（直连，不经 Agent 回路）的 chat 客户端 | `GOPHERLEARN_OPENAI_BASE_URL`、`GOPHERLEARN_OPENAI_API_KEY`、`GOPHERLEARN_OPENAI_MODEL` |
 
-**大多数部署三处填同一个模型就行**：学习 Agent 与普通聊天用同一个 chat 模型，embedding 用同一家（也可以是另一家）的 embedding 模型。
+**同一个 chat 模型要写两遍**：学习 Agent 与普通聊天各自配置，所以大多数部署会把 `[isolatedEntry]` 与 `[ordinaryChat]` 填成同一个模型、同一个地址。embedding 是另一件事，用同一家或另一家都行。
 
 代码上的对应关系：
 
 | 字段 | 被谁读 | 位置 |
 |---|---|---|
 | `[isolatedEntry].chatKey` / `chatModel` / `chatBaseURL` | 构造学习 Agent 的 chat 客户端 | `v2/internal/isolated/dependencies.go`（`ProductionDependencies` → `ChatModel`） |
-| `[isolatedEntry].embeddingKey` | 构造 embedder（模型名与地址来自 `[ragModelConfig]`） | `v2/internal/isolated/dependencies.go`（`ProductionDependencies` → `Embedder`） |
+| `[ragModelConfig].embeddingApiKey` | 构造 embedder，与它认证的模型名、地址在同一段 | `v2/internal/isolated/dependencies.go`（`ProductionDependencies` → `Embedder`）；是否必填由入口判（`v2/internal/isolated/settings.go`），因为默认配置不该自带密钥 |
 | `[ragModelConfig].chatModelName` | 情景记忆**关系分类器的身份标签**——它不进请求体，答问题用的模型来自 `[isolatedEntry].chatModel` | `v2/internal/isolated/wiring.go`（`episoderelation.NewChatClassifier` 的 `Chat` 是 Agent 那个客户端，`ModelName` 只拼进 `identity`） |
-| `[ragModelConfig].baseUrl` | **目前没有任何客户端从它构建**；入口只在启动校验时要求它非空 | `v2/config/config.go`（`RagModelConfig.Validate`） |
 | `[ragModelConfig].chatThinkingDialect` | 决定思考开关怎么写进请求体 | `v2/internal/isolated/dependencies.go` → `aihelper.ThinkingExtraFields` |
 | `[ordinaryChat].*` | 构造普通聊天的 OpenAI 兼容客户端 | `conversation/client.go` → `internal/openai` |
 
-> `baseUrl` 目前**只被校验、不被使用**：Agent 的 chat 客户端地址取自 `[isolatedEntry].chatBaseURL`。填错它不会立刻报错，但它是个必填项——这是历史结构留下的形状。
+> 曾经有一个 `ragModelConfig.baseUrl`：**没有任何客户端从它构建**，只在启动校验里要求非空。它已被删除，留着它的配置文件会被**指名拒绝**并说明地址该写在哪里（`isolatedEntry.chatBaseURL`）。宽容地忽略才是危险的一条：那会让运维以为配置了地址，而程序用的是别处。
 >
 > `chatModelName` 同理容易被误解：它**不是**发给 provider 的模型名，只被拼进情景关系分类器的身份字符串（`relation_<名字>_<版本>`），身份是「关系判定提案」的键。所以把它写成与 `chatModel` 不同的值**不会报错**，但会出现"提案键写着 A 模型、实际答题的是 B 模型"——而"模型升级就换键"这个设计正是靠它俩一致才成立。**请与 `[isolatedEntry].chatModel` 写成同一个值。**
 
@@ -86,9 +85,8 @@
 | `chatKey` | ✅ | — | 学习 Agent 的 chat 密钥，不能为空 |
 | `chatModel` | ✅ | — | 学习 Agent 的 chat 模型名，不能为空 |
 | `chatBaseURL` | ✅ | — | 学习 Agent 的 chat 服务地址，不能为空。末尾不必带 `/chat/completions`，客户端会自己拼 |
-| `embeddingKey` | ✅ | — | embedding 服务的密钥，不能为空。**注意**：这一项只有密钥，模型名与地址在 `[ragModelConfig]` |
 
-四个模型项有一项为空就会得到 `explicit model settings required; environment credentials are not read`。
+`chatKey` / `chatModel` / `chatBaseURL` 任何一项为空，或 `[ragModelConfig].embeddingApiKey` 为空，都会得到 `explicit model settings required; environment credentials are not read`。嵌入密钥为什么写在 `[ragModelConfig]` 而它的"必填"由入口判：默认配置不该自带密钥，而只读模型名/地址的工具（建表命令、离线规划）也要能加载同一份文件。
 
 ### `[mainConfig]`
 
@@ -192,7 +190,7 @@ go -C v2 run ./cmd/indexaudit -config ../config.toml
 | `embeddingBaseUrl` | ✅ | `https://dashscope.aliyuncs.com/compatible-mode/v1` | embedding 服务地址，不能为空。客户端会自己拼 `/embeddings` |
 | `dimension` | ✅ | `1024` | 向量维度，必须大于 0，且**必须与模型实际输出一致**；改它等于改索引 schema，和已有向量对不上 |
 | `chatModelName` | ✅ | `qwen3.8-max` | 情景关系分类器**身份标签**里的模型名，不能为空；**它不决定答题用哪个模型**（那个来自 `[isolatedEntry].chatModel`），但必须与它写成同一个值，否则提案键与实际模型不一致。见上面「三处模型配置各管什么」 |
-| `baseUrl` | ✅ | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 必填，但**当前没有任何客户端从它构建**；见上面「三处模型配置各管什么」 |
+| `embeddingApiKey` | ✅（入口判） | 空（**不给默认值**） | embedding 服务的密钥。它与模型名、地址在同一段；正式入口要求它非空 |
 | `chatThinkingDialect` | | `qwen` | 思考开关的方言，取值 `qwen` / `deepseek` / `none`，**写错的值在启动时就被拒** |
 | `rerankEnabled` | | `false` | 是否开启重排 |
 | `rerankProvider` | | `local` | 重排服务形态：`local`（本地模型服务）或 `dashscope`（远程重排 API） |
@@ -218,6 +216,14 @@ go -C v2 run ./cmd/indexaudit -config ../config.toml
 | `memoryReadMode` | `legacy_v2` | 长期记忆的整条读取路径模式 |
 | `episodeRecallMode` | `shadow_only` | 情景召回模式 |
 | `episodeRelationMode` | `off` | 情景关系抽取模式 |
+| `summaryGroupItemLimit` | `20` | 摘要里**每一组**最多留多少条。超出时按「留最新、丢最早」截断，**整份摘要不会被丢掉** |
+| `summaryOpenLoopsItemLimit` | `20` | 摘要里「待办」这一组最多留多少条。待办涨得最快，单独给一个上限，方便实测发现砍太狠时调大 |
+| `summaryEvidenceIDLimit` | `64` | 整份摘要最多引用多少条**不同的消息编号**。超出时丢最旧的条目 |
+
+三个上限是**预算**，不是"合法/非法"的开关：以前某一组超限会让整份摘要被拒，于是这个会话的摘要从此不再更新，只能退回旧摘要加原始消息。现在超限走截断，被截掉的部分会在日志和指标里如实记一笔（`summary_truncated`），也会在评测报告里单独计数。
+
+- 把 `summaryOpenLoopsItemLimit` 调大时，`summaryEvidenceIDLimit` 通常也要一起调大：每条待办至少引用一条消息，条目多了、编号上限没跟上，结果还是会被引用上限截掉。
+- 上限调小 = 少留历史、省 token；上限调大 = 多留历史，但摘要更长、更占上下文预算。
 
 `maxToolCalls` / `maxModelCalls` / `maxGraphSteps` 三个数必须**互相够得着**，否则启动报错并说明是哪一处不够：
 
@@ -413,11 +419,13 @@ rerankEndpoint = "http://127.0.0.1:18083"
 | `explicit independent setting required: <段.键>` | 某个必须显式写出的键没写 | 按上表补上那个键（多半是 `[ragModelConfig].dimension` 或 `[redisConfig].db`） |
 | `isolatedEntry.isolated must be explicitly true` | `[isolatedEntry].isolated` 不是 `true` | 改成 `true` |
 | `hybrid entry refuses business migration` | `[isolatedEntry].migrate` 写成了 `true` | 改成 `false` |
-| `explicit model settings required; environment credentials are not read` | `[isolatedEntry]` 的四个模型项有一项为空 | 补上 `chatKey` / `chatModel` / `chatBaseURL` / `embeddingKey`；**环境变量不算数** |
+| `explicit model settings required; environment credentials are not read` | chat 三项之一为空，或嵌入密钥为空 | 补上 `[isolatedEntry]` 的 `chatKey` / `chatModel` / `chatBaseURL`，以及 `[ragModelConfig].embeddingApiKey`；**环境变量不算数** |
 | `explicit independent MySQL host/port/database/user/charset required` | `[mysqlConfig]` 有一项为空 | 补上 |
 | `explicit independent Redis host/port required` | `[redisConfig]` 的 host 或 port 为空 | 补上 |
 | `explicit HTTP host/port required` | `[mainConfig]` 的 host 或 port 为空 | 补上 |
-| `chat model name and base URL are required` | `[ragModelConfig].chatModelName` 或 `baseUrl` 为空 | 补上 |
+| `chat model name is required` | `[ragModelConfig].chatModelName` 为空 | 补上（它与 `[isolatedEntry].chatModel` 写成同一个值） |
+| `retired configuration setting: ragModelConfig.baseUrl was removed …` | 文件里还留着已废弃的 `baseUrl` | 删掉那一行；Agent 的地址只来自 `[isolatedEntry].chatBaseURL` |
+| `retired configuration setting: isolatedEntry.embeddingKey moved …` | 嵌入密钥还写在 `[isolatedEntry]` | 挪成 `[ragModelConfig].embeddingApiKey` |
 | `embedding model name, base URL and positive dimension are required` | `[ragModelConfig]` 的 embedding 三项有一项不对 | 补上，`dimension` 必须大于 0 |
 | `JWT_SECRET must contain at least 32 bytes` | `[jwtConfig].key` 短于 32 字节 | 换成一个至少 32 字节的随机串 |
 | `the retired default JWT secret is forbidden` | `[jwtConfig].key` 用了已退役的默认值 | 换一个新的 |

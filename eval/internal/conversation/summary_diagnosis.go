@@ -94,6 +94,11 @@ type SummaryDiagnosis struct {
 // The phrases that name the step a failure came from. The product's decoder
 // reports a document that breaks a limit with the same prefix it uses for a
 // body it could not read, so the phrases of the innermost error decide.
+//
+// The phrases of the item limits are kept even though the product does not
+// refuse a document for breaking one any more: a document that outgrew its
+// budget is trimmed, and a saved diagnosis from a run before that change can
+// still carry the old error and has to be readable.
 var summaryFailurePhrases = []struct {
 	phrase string
 	stage  string
@@ -181,7 +186,7 @@ func summarySettings(repository, storage, chatModel string) (*entry.Settings, er
 	}
 	settings.Entry.ChatModel = chatModel
 	settings.Entry.ChatKey = "placeholder-proxy-injected"
-	settings.Entry.EmbeddingKey = "placeholder-proxy-injected"
+	settings.Config.RagModelConfig.RagEmbeddingAPIKey = "placeholder-proxy-injected"
 	settings.Config.RagModelConfig.RagChatThinkingDialect = config.ChatThinkingDialectDeepSeek
 	settings.Config.AgentThinkingEnabled = true
 	return settings, settings.Validate()
@@ -237,7 +242,7 @@ func DiagnoseSummaryFailure(ctx context.Context, repository, scenario, condition
 		return diagnosis, err
 	}
 	policy := ProductSummaryConfig(settings.Config)
-	generator, err := agent.NewModelSummaryGenerator(wrapped, policy.MaxInputTokens, policy.MaxOutputTokens)
+	generator, err := agent.NewModelSummaryGenerator(wrapped, policy.MaxInputTokens, policy.MaxOutputTokens, policy.Budget)
 	if err != nil {
 		return diagnosis, err
 	}

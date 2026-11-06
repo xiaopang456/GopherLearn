@@ -85,7 +85,7 @@ func testSettings(t *testing.T) *entry.Settings {
 	}
 	text := strings.ReplaceAll(string(data), `key = ""`, `key = "synthetic-isolated-test-key-at-least-32-characters"`)
 	text = strings.ReplaceAll(text, `chatKey = ""`, `chatKey = "synthetic-provider-never-sent"`)
-	text = strings.ReplaceAll(text, `embeddingKey = ""`, `embeddingKey = "synthetic-embedding-never-sent"`)
+	text = strings.ReplaceAll(text, `embeddingApiKey = ""`, `embeddingApiKey = "synthetic-embedding-never-sent"`)
 	path := filepath.Join(t.TempDir(), "isolated.toml")
 	if err := os.WriteFile(path, []byte(text), 0600); err != nil {
 		t.Fatal(err)

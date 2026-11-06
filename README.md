@@ -118,8 +118,8 @@ Copy-Item config.integrated.example.toml config.integrated.toml.local   # PowerS
 
 | 段 | 必填的键 | 说明 |
 |---|---|---|
-| `[isolatedEntry]` | `isolated`、`migrate`、`chatKey`、`chatModel`、`chatBaseURL`、`embeddingKey` | `isolated` 必须写 `true`，`migrate` 必须写 `false`；四个模型项不能为空 |
-| `[ragModelConfig]` | `embeddingModel`、`embeddingBaseUrl`、`dimension`、`chatModelName`、`baseUrl` | `dimension` 必须与 embedding 模型实际输出的维度一致，写错会让已有向量对不上 |
+| `[isolatedEntry]` | `isolated`、`migrate`、`chatKey`、`chatModel`、`chatBaseURL` | `isolated` 必须写 `true`，`migrate` 必须写 `false`；三个 chat 项不能为空 |
+| `[ragModelConfig]` | `embeddingModel`、`embeddingBaseUrl`、`embeddingApiKey`、`dimension`、`chatModelName` | `dimension` 必须与 embedding 模型实际输出的维度一致，写错会让已有向量对不上；嵌入密钥与它认证的模型在同一段 |
 | `[mysqlConfig]` | `host`、`port`、`user`、`databaseName`、`charset`、`password` | 本次部署自己的 schema 与账号 |
 | `[redisConfig]` | `host`、`port`、`db`、`password` | 独立的 Redis Stack 实例；口令必须与实例的 `requirepass` **逐字一致** |
 | `[mainConfig]` | `host`、`port` | 后端监听地址 |
@@ -127,13 +127,13 @@ Copy-Item config.integrated.example.toml config.integrated.toml.local   # PowerS
 | `[jwtConfig]` | `key` | 令牌签名密钥，**至少 32 字节**；换掉它会让所有已签发令牌失效 |
 | `[ordinaryChat]` | `GOPHERLEARN_AI_PROVIDER`、`GOPHERLEARN_OPENAI_BASE_URL`、`GOPHERLEARN_OPENAI_API_KEY`、`GOPHERLEARN_OPENAI_MODEL` | 普通聊天的模型；provider 必须是 `openai_compatible` |
 
-**三处模型配置分别管什么**——这是最容易填错的地方：
+**模型相关的三段配置分别管什么**——这是最容易填错的地方：
 
-- `[isolatedEntry]` —— **学习 Agent** 的 chat 模型（地址、模型名、密钥），外加 **embedding 服务的密钥**；
-- `[ragModelConfig]` —— **embedding 服务**的模型名、地址与向量维度，情景关系分类器**身份标签**里的模型名（它不决定答题用哪个模型，但请写成和上面 `chatModel` 一样的值），以及**思考开关的方言**；
+- `[isolatedEntry]` —— **学习 Agent** 的 chat 模型（地址、模型名、密钥）；
+- `[ragModelConfig]` —— **embedding 服务**的模型名、地址、密钥与向量维度（四件都在这一段），情景关系分类器**身份标签**里的模型名（它不决定答题用哪个模型，但请写成和上面 `chatModel` 一样的值），以及**思考开关的方言**；
 - `[ordinaryChat]` —— **普通聊天**的模型（地址、模型名、密钥）。
 
-**大多数部署三处填同一个模型就行**：学习 Agent 与普通聊天用同一个 chat 模型，embedding 用同一家（也可以是另一家）的 embedding 模型。
+**同一个 chat 模型要写两遍**：学习 Agent 与普通聊天各自独立配置，所以大多数部署会把 `chatModel` / `chatBaseURL` / 密钥在 `[isolatedEntry]` 与 `[ordinaryChat]` 里填成同样的值。让普通聊天继承 Agent 的配置是"把普通对话整合进 v2"那一步的内容，现在还没有。
 
 下面是一个**可以直接抄**的例子（DeepSeek 聊天 + 百炼 embedding）：只有密钥和口令要换成你自己的，其余值照抄即可。
 
@@ -145,18 +145,15 @@ migrate = false
 chatKey = "<你的 DeepSeek API Key>"
 chatModel = "deepseek-flash"
 chatBaseURL = "https://api.deepseek.com/v1"
-# embedding 服务的密钥
-embeddingKey = "<你的百炼 API Key>"
 
 [ragModelConfig]
-# embedding 的模型名、地址与向量维度
+# embedding 的模型名、地址、密钥与向量维度（四件都在这一段）
 embeddingModel = "qwen3.7-text-embedding"
 embeddingBaseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+embeddingApiKey = "<你的百炼 API Key>"
 dimension = 1024
 # 情景关系分类器的身份标签用这个名字（答题用的模型来自上面的 chatModel）：请写成和 chatModel 一样的值
 chatModelName = "deepseek-flash"
-# 必填项，但当前没有客户端从它构建（详见 docs/CONFIGURATION.md）
-baseUrl = "https://api.deepseek.com/v1"
 # 思考开关的方言：DeepSeek 用 deepseek（默认的 qwen 写法它不认）
 chatThinkingDialect = "deepseek"
 
@@ -194,7 +191,8 @@ host = "127.0.0.1"
 port = 18082
 ```
 
-> 换 provider 时要动四处，但只有两半是真的在用：`chatModel` / `chatBaseURL` 决定学习 Agent 用哪个模型、哪个地址；`chatModelName` 是关系分类器的身份标签（**照抄 `chatModel`**），`baseUrl` 是必填但当前没有消费者的一项（**照抄 `chatBaseURL`**）。两把密钥换成你自己的，`chatThinkingDialect` 改成对方认的写法（默认 `qwen`）。
+> 换 chat provider 要改**两处**：`[isolatedEntry]` 的 `chatKey` / `chatModel` / `chatBaseURL`（学习 Agent 用）和 `[ordinaryChat]` 的三个值（普通聊天用）——大多数部署把这两处填成同一个模型。`chatModelName` 是关系分类器的身份标签，**照抄 `chatModel`**；`chatThinkingDialect` 改成对方认的写法（默认 `qwen`）。
+> 换 embedding 服务只改一段：`[ragModelConfig]` 的 `embeddingModel` / `embeddingBaseUrl` / `embeddingApiKey`，外加 `dimension` 要与新模型的实际输出维度一致。
 > 完整字段表、每个字段的默认值与校验规则见 [配置参考](docs/CONFIGURATION.md)。
 
 ### 5.2 可选功能
@@ -472,6 +470,9 @@ docker compose -p gopherlearn-integrated -f compose.integrated.yml down
 
 **Q：启动报 `explicit model settings required; environment credentials are not read` / `explicit independent setting required: …`**
 配置没填对，或键名写错。入口要求 `[isolatedEntry]`、`[mysqlConfig]`、`[redisConfig]`、`[mainConfig]`、`[knowledgeConfig]`、`[ragModelConfig]` 的字段**显式存在**；凭据只能写在 TOML 里，环境变量不算。
+
+**Q：升级后启动报 `retired configuration setting: …`**
+配置文件里留着这个版本**不再读取**的键。它被指名拒绝而不是被忽略，是因为宽容地忽略会让程序与配置各说各话——一条没人用的地址或密钥看起来还在，实际已经不算数。提示会写清改哪里：`ragModelConfig.baseUrl` 删掉（Agent 的地址只用 `isolatedEntry.chatBaseURL`）；`isolatedEntry.embeddingKey` 挪成 `ragModelConfig.embeddingApiKey`。
 
 **Q：注册时提示"邮件服务未配置"（业务码 2012）**
 `[emailConfig]` 没配或为空。这只影响新用户注册，已有账号和其它功能照常可用。

@@ -39,7 +39,6 @@ key = "a-jwt-secret-of-at-least-thirty-two-bytes"
 embeddingModel = "synthetic-embedding"
 embeddingBaseUrl = "https://embedding.example.invalid/v1"
 chatModelName = "synthetic-chat"
-baseUrl = "https://chat.example.invalid/v1"
 dimension = 1024
 `
 	if err := os.WriteFile(filepath.Join(root, "product.toml.local"), []byte(product), 0o600); err != nil {
@@ -190,10 +189,10 @@ func TestRunOnFakesWritesARunDirectoryAndSaysItIsOffline(t *testing.T) {
 }
 
 func TestRealRunNeedsAProductConfigWithAnEmbeddingKey(t *testing.T) {
-	// The staged product file has no isolatedEntry.embeddingKey, so a real run
+	// The staged product file has no ragModelConfig.embeddingApiKey, so a real run
 	// stops before it contacts anything.
 	code, _, stderr := runCLI("run", "-config", stageInputs(t), "-env", "real")
-	if code == 0 || !strings.Contains(stderr, "embeddingKey is required") {
+	if code == 0 || !strings.Contains(stderr, "embeddingApiKey is required") {
 		t.Fatalf("exit %d, stderr: %s", code, stderr)
 	}
 }

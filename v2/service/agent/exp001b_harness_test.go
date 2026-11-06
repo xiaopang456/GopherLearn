@@ -100,7 +100,7 @@ type exp001bGenerator struct {
 	durationMillis int64
 }
 
-func (g *exp001bGenerator) GenerateSummary(ctx context.Context, previous string, messages []model.Message) (string, error) {
+func (g *exp001bGenerator) GenerateSummary(ctx context.Context, previous string, messages []model.Message) (SummaryGeneration, error) {
 	started := time.Now()
 	g.mu.Lock()
 	g.calls++
@@ -125,7 +125,7 @@ func (g *exp001bGenerator) GenerateSummary(ctx context.Context, previous string,
 	g.durationMillis += time.Since(started).Milliseconds()
 	g.outputTokens += rag.EstimateTokens(output)
 	g.mu.Unlock()
-	return output, err
+	return SummaryGeneration{Content: output}, err
 }
 
 func (g *exp001bGenerator) metrics() (int, int, int, int64) {
@@ -232,7 +232,7 @@ func exp001bRunModelOutputInjection(t *testing.T, name, response string, appendR
 	chat := &scriptedChatModel{respond: func(context.Context, int) (*schema.Message, error) {
 		return schema.AssistantMessage(response, nil), nil
 	}}
-	generator, err := NewModelSummaryGenerator(chat, 8000, 2000)
+	generator, err := NewModelSummaryGenerator(chat, 8000, 2000, model.DefaultSummaryBudget())
 	if err != nil {
 		t.Fatal(err)
 	}

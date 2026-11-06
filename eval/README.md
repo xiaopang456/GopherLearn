@@ -62,7 +62,6 @@ key = "a-jwt-secret-of-at-least-thirty-two-bytes"
 embeddingModel = "synthetic-embedding"
 embeddingBaseUrl = "https://embedding.example.invalid/v1"
 chatModelName = "synthetic-chat"
-baseUrl = "https://chat.example.invalid/v1"
 dimension = 1024
 ```
 
@@ -167,7 +166,7 @@ evidence_sets = [ 证据集, 证据集, … ]        # 命中其中任何一个�
 - `[metrics]`：`hitThreshold`（命中阈值，默认 0.5，**须在看结果之前定好**；写小数点，`1.0` 而不是 `1`）、`bootstrapSeed`、`bootstrapResamples`。
 - `[limits]`：`maxEmbeddingCalls`、`maxRerankCalls`，**默认 0 = 不允许任何付费调用**。配置里出现未知键会报错（拼错限额名不会悄悄回到默认）。
 
-产品配置里：嵌入密钥在 `[isolatedEntry].embeddingKey`；重排令牌**只**从环境变量 `RAG_RERANK_AUTH_TOKEN` 读取，且只在重排启用时。
+产品配置里：嵌入密钥在 `[ragModelConfig].embeddingApiKey`，与它认证的模型名、地址在同一段；重排令牌**只**从环境变量 `RAG_RERANK_AUTH_TOKEN` 读取，且只在重排启用时。
 真实运行要求 `ragModelConfig.dimension = 1024` 且 `redisConfig.db = 0`（产品的块索引固定如此）。
 
 ## 四个模式

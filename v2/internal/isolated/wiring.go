@@ -718,8 +718,10 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		// where widening it is the right answer.
 		MaxDeadlineShare: agentService.DefaultSummaryConfig().MaxDeadlineShare,
 		FailureCooldown:  time.Duration(conf.AgentConfig.SummaryFailureCooldownSeconds) * time.Second,
+		Budget: agentService.SummaryBudgetOf(conf.AgentConfig.SummaryGroupItemLimit,
+			conf.AgentConfig.SummaryOpenLoopsItemLimit, conf.AgentConfig.SummaryEvidenceIDLimit),
 	}
-	summaryGenerator, err := agentService.NewModelSummaryGenerator(agentModel, summaryConfig.MaxInputTokens, summaryConfig.MaxOutputTokens)
+	summaryGenerator, err := agentService.NewModelSummaryGenerator(agentModel, summaryConfig.MaxInputTokens, summaryConfig.MaxOutputTokens, summaryConfig.Budget)
 	if err != nil {
 		return nil, fmt.Errorf("initialize agent summary generator: %v", err)
 	}
@@ -861,7 +863,7 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	}
 	agentRunner, err := agentService.NewRunner(
 		agentModel,
-		checkedRegistry{agentTools},
+		registryForRunner(agentTools),
 		agentDAO.DefaultRepository(),
 		contextBuilder,
 		agentRunnerConfig(memoryReadMode, conf.AgentConfig, conf.RagModelConfig.RagChatThinkingDialect),

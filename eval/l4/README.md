@@ -69,3 +69,32 @@ A run directory may hold more than one scored directory when the scoring rules c
 This implements the offline execution chain. Paid execution remains disabled. A real evaluation separately needs a frozen reviewed dataset, immutable corpus metadata bound to its shared index, a budget-enforcing upstream proxy, approved price accounting and calibrated semantic judgments. The fake command cannot certify model quality or real cost. `BackgroundAudit.Complete` is derived from journal verification, model coverage and successful shutdown, never from polling alone.
 
 For full-product runs, the planned protocol uses a fresh database per attempt and a 24-hour episode quiet window. Reports must state: full product service; no background execution before the measured answer; subsequent background calls accounted separately. Before/after job counts alone cannot prove no transient execution. Unattributed or incomplete observations invalidate an attempt.
+
+For real scenario runs, provide `-run-id`, `-arm`, `-qid` and `-condition`.
+The command derives the same evaluation user for preparation and all repeats,
+and a different user for each run, configuration, scenario and condition.
+Scenario users have an intentionally empty knowledge base: this evaluation
+measures conversation history. Do not provide a knowledge seed or explicit user
+identity for these phases. Before answering, the evaluator refuses users with entries in either derived
+memory index, preventing repeats from inheriting a previous attempt’s state.
+After the answer and the background window, the same two indexes are read again
+and written into the attempt record: the evaluation user's entry counts, the
+entry counts and user identifiers of everyone else in the shared index, and keys
+whose owner cannot be parsed. A failed read is recorded with its error and
+invalidates the attempt; an absent reading is never reported as a clean one.
+The hash-derived ID has a small collision probability, so operators must check
+the generated identity manifest for duplicates before dispatch.
+
+`node l4/validate-v3.mjs <scenario directory> [earlier dataset directory] [--out report.json]`
+checks a scenario collection offline: the per-scenario rules above, unique ids
+and names, names absent from any earlier dataset, no repeated turns inside or
+between histories, the key turn actually carrying the answer and the plan name,
+answer values absent from every other turn (including the same quantity written
+in another unit), numbers within three of a key value or derived from it, dates
+against the calendar and against the weekday, questions that carry an answer or
+a number, and questions that restate the constraint they are testing. Anything
+it cannot decide is listed as a review item with the turn it came from, never
+dropped: relative dates still need a person to resolve them, and naturalness,
+paraphrase leaks, whether retrieval selected the intended segment and whether a
+tail turn was still un-summarised are properties of a run or of a reader, not of
+this check.

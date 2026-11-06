@@ -144,10 +144,14 @@ type Rabbitmq struct {
 type RagModelConfig struct {
 	RagEmbeddingModel   string `toml:"embeddingModel"`
 	RagEmbeddingBaseURL string `toml:"embeddingBaseUrl"`
-	RagChatModelName    string `toml:"chatModelName"`
-	RagDocDir           string `toml:"docDir"`
-	RagBaseUrl          string `toml:"baseUrl"`
-	RagDimension        int    `toml:"dimension"`
+	// RagEmbeddingAPIKey sits with the model name and address it belongs to. It
+	// used to live in the entry envelope, which split one service's three settings
+	// across two sections. It has no default: a key is never something a build
+	// ships.
+	RagEmbeddingAPIKey string `toml:"embeddingApiKey"`
+	RagChatModelName   string `toml:"chatModelName"`
+	RagDocDir          string `toml:"docDir"`
+	RagDimension       int    `toml:"dimension"`
 	// RagChatThinkingDialect selects how the chat model's thinking switch is
 	// expressed on the wire. See the ChatThinkingDialect* constants.
 	//
@@ -424,6 +428,12 @@ type AgentConfig struct {
 	SummaryTimeoutSeconds         int    `toml:"summaryTimeoutSeconds"`
 	SummaryStageBudgetSeconds     int    `toml:"summaryStageBudgetSeconds"`
 	SummaryFailureCooldownSeconds int    `toml:"summaryFailureCooldownSeconds"`
+	// The summary budget is how much a summary may hold. A summary that
+	// outgrew it is trimmed to it rather than thrown away, so these limits
+	// decide how much history is kept, not whether the summary updates at all.
+	SummaryGroupItemLimit     int `toml:"summaryGroupItemLimit"`
+	SummaryOpenLoopsItemLimit int `toml:"summaryOpenLoopsItemLimit"`
+	SummaryEvidenceIDLimit    int `toml:"summaryEvidenceIDLimit"`
 	// EpisodeRelationMode selects the episodic write-side relation pass:
 	// "off", "shadow" or "apply".
 	//
@@ -507,8 +517,8 @@ func defaultConfig() *Config {
 		Subject:        "gopherai-user",
 	}, RagModelConfig: RagModelConfig{
 		RagEmbeddingModel: "qwen3.7-text-embedding", RagEmbeddingBaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-		RagChatModelName: "qwen3.8-max", RagBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-		RagDimension: 1024, RagRerankEnabled: false, RagRerankProvider: RerankProviderLocal, RagRerankEndpoint: "http://host.docker.internal:18081",
+		RagChatModelName: "qwen3.8-max",
+		RagDimension:     1024, RagRerankEnabled: false, RagRerankProvider: RerankProviderLocal, RagRerankEndpoint: "http://host.docker.internal:18081",
 	}, KnowledgeConfig: KnowledgeConfig{
 		StorageDir:          "data/knowledge",
 		MaxFileSizeBytes:    5 * mib,
@@ -548,6 +558,7 @@ func defaultConfig() *Config {
 		SummaryTriggerMessages:   12, SummaryTriggerTokens: 6000, SummaryRetainMessages: 8,
 		SummaryMaxInputTokens: 8000, SummaryFetchLimit: 512, SummaryTimeoutSeconds: 20,
 		SummaryStageBudgetSeconds: 8, SummaryFailureCooldownSeconds: 30,
+		SummaryGroupItemLimit: 20, SummaryOpenLoopsItemLimit: 20, SummaryEvidenceIDLimit: 64,
 		// Literals, not the service package's constants: config must not
 		// import a service, and the service parses and validates this string
 		// at assembly time rather than trusting it here.
@@ -654,7 +665,6 @@ func applyRagEnv(c *RagModelConfig) error {
 		set  func(string)
 	}{
 		{"OPENAI_MODEL_NAME", func(value string) { c.RagChatModelName = value }},
-		{"OPENAI_BASE_URL", func(value string) { c.RagBaseUrl = value }},
 		{"OPENAI_THINKING_DIALECT", func(value string) { c.RagChatThinkingDialect = value }},
 		{"EMBEDDING_MODEL_NAME", func(value string) { c.RagEmbeddingModel = value }},
 		{"EMBEDDING_BASE_URL", func(value string) { c.RagEmbeddingBaseURL = value }},
@@ -708,8 +718,8 @@ func applyRerankTokenEnv(c *RagModelConfig) error {
 }
 
 func (c RagModelConfig) Validate() error {
-	if strings.TrimSpace(c.RagChatModelName) == "" || strings.TrimSpace(c.RagBaseUrl) == "" {
-		return fmt.Errorf("chat model name and base URL are required")
+	if strings.TrimSpace(c.RagChatModelName) == "" {
+		return fmt.Errorf("chat model name is required")
 	}
 	if strings.TrimSpace(c.RagEmbeddingModel) == "" || strings.TrimSpace(c.RagEmbeddingBaseURL) == "" || c.RagDimension <= 0 {
 		return fmt.Errorf("embedding model name, base URL and positive dimension are required")
@@ -952,6 +962,9 @@ func applyAgentEnv(c *AgentConfig) error {
 		{"AGENT_SUMMARY_TIMEOUT_SECONDS", func(value int) { c.SummaryTimeoutSeconds = value }},
 		{"AGENT_SUMMARY_STAGE_BUDGET_SECONDS", func(value int) { c.SummaryStageBudgetSeconds = value }},
 		{"AGENT_SUMMARY_FAILURE_COOLDOWN_SECONDS", func(value int) { c.SummaryFailureCooldownSeconds = value }},
+		{"AGENT_SUMMARY_GROUP_ITEM_LIMIT", func(value int) { c.SummaryGroupItemLimit = value }},
+		{"AGENT_SUMMARY_OPEN_LOOPS_ITEM_LIMIT", func(value int) { c.SummaryOpenLoopsItemLimit = value }},
+		{"AGENT_SUMMARY_EVIDENCE_ID_LIMIT", func(value int) { c.SummaryEvidenceIDLimit = value }},
 		{"AGENT_EPISODE_RELATION_MAX_CANDIDATES", func(value int) { c.EpisodeRelationMaxCandidates = value }},
 		{"AGENT_EPISODE_WORKER_COUNT", func(value int) { c.EpisodeWorkerCount = value }},
 		{"AGENT_EPISODE_QUEUE_SIZE", func(value int) { c.EpisodeQueueSize = value }},
@@ -1161,6 +1174,19 @@ func (c AgentConfig) Validate() error {
 	}
 	if c.SummaryFailureCooldownSeconds < 1 || c.SummaryFailureCooldownSeconds > 600 {
 		return fmt.Errorf("summaryFailureCooldownSeconds must be between 1 and 600")
+	}
+	// The budget limits how much history a summary keeps. They have to leave
+	// room for the citations themselves: every item of every group cites at
+	// least one message, so a budget of ids that is smaller than the budget of
+	// items would trim items that did not have to go.
+	if c.SummaryGroupItemLimit < 1 || c.SummaryGroupItemLimit > 200 {
+		return fmt.Errorf("summaryGroupItemLimit must be between 1 and 200")
+	}
+	if c.SummaryOpenLoopsItemLimit < 1 || c.SummaryOpenLoopsItemLimit > 200 {
+		return fmt.Errorf("summaryOpenLoopsItemLimit must be between 1 and 200")
+	}
+	if c.SummaryEvidenceIDLimit < c.SummaryGroupItemLimit || c.SummaryEvidenceIDLimit > 2000 {
+		return fmt.Errorf("summaryEvidenceIDLimit must cover summaryGroupItemLimit and be at most 2000")
 	}
 	if c.EpisodeWorkerCount < 1 || c.EpisodeWorkerCount > 16 || c.EpisodeQueueSize < c.EpisodeWorkerCount || c.EpisodeQueueSize > 1000 {
 		return fmt.Errorf("episode worker and queue sizes are invalid")

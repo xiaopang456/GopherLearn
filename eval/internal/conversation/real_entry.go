@@ -191,7 +191,7 @@ func realSettings(repository, storage string, env RealEnvironment) (*entry.Setti
 	}
 	settings.Entry.ChatModel = env.ChatModel
 	settings.Entry.ChatKey = "placeholder-proxy-injected"
-	settings.Entry.EmbeddingKey = "placeholder-proxy-injected"
+	settings.Config.RagModelConfig.RagEmbeddingAPIKey = "placeholder-proxy-injected"
 	settings.Config.RagModelConfig.RagEmbeddingModel = env.EmbeddingModel
 	settings.Config.RagModelConfig.RagRerankModel = env.RerankModel
 	settings.Config.RagModelConfig.RagChatModelName = env.ChatModel
@@ -275,19 +275,12 @@ func PrepareRealProductReport(ctx context.Context, repository string, turns []Tu
 		return report, err
 	}
 	policy := ProductSummaryConfig(settings.Config)
-	generator, err := agent.NewModelSummaryGenerator(chat, policy.MaxInputTokens, policy.MaxOutputTokens)
+	generator, err := agent.NewModelSummaryGenerator(chat, policy.MaxInputTokens, policy.MaxOutputTokens, policy.Budget)
 	if err != nil {
 		return report, err
 	}
 	prepared, err := s.Prepare(ctx, env.UserID, env.SessionID, env.UserName, turns, generator, policy)
-	for _, turn := range prepared {
-		if turn.SummaryDegraded {
-			report.DegradedTurns++
-		}
-		if turn.CooldownWaitMilliseconds > 0 {
-			report.CooldownWaits++
-		}
-	}
+	SummarizeTurns(prepared, &report)
 	report.FailureCooldownSeconds = int(policy.FailureCooldown / time.Second)
 	report.Turns = prepared
 	report.Calls = ledger.Calls()
@@ -325,6 +318,11 @@ func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, que
 		}
 	}()
 	if err := env.Validate(); err != nil {
+		return result, err
+	}
+	before, err := requireEmptyUserIndexes(ctx, env)
+	result.MemoryIndexEvidence.BeforeAnswer = before
+	if err != nil {
 		return result, err
 	}
 	if err := ctx.Err(); err != nil {
@@ -405,7 +403,6 @@ func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, que
 	}
 	settings.Entry.ChatBaseURL = wire.URL + "/v1"
 	settings.Config.RagRerankEndpoint = wire.URL + "/v1/rerank"
-	settings.Config.RagBaseUrl = wire.URL + "/v1"
 	settings.Config.RagEmbeddingBaseURL = wire.URL + "/v1"
 	settings.Config.JwtConfig.Key, err = randomHex(32)
 	if err != nil {
@@ -497,14 +494,25 @@ func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, que
 	var stoppedErr error
 	_, result.StoppedCounts, stoppedErr = s.ObserveJobs(collect)
 	result.Events, result.Audit.ExecutedBeforeAnswer, resultErr = journal.Finish(collect)
+	// The product has stopped and the background window has closed, so this is
+	// the state the next repeat of this scenario would inherit. It reads on its
+	// own deadline: a journal window that ran out must not erase the evidence,
+	// and a failed read is recorded and reported, never left blank.
+	evidence, evidenceDone := context.WithTimeout(context.Background(), 20*time.Second)
+	after, indexErr := observeMemoryIndexes(evidence, env)
+	evidenceDone()
+	if indexErr != nil {
+		after.Error = indexErr.Error()
+	}
+	result.MemoryIndexEvidence.AfterAnswer = after
 	result.Calls = AttributeCalls(ledger.Calls(), result.Audit.Answered)
 	var usageErr error
 	result.UsageByRole, usageErr = SummarizeCalls(result.Calls)
 	for _, c := range result.Calls {
 		result.Audit.Calls = append(result.Audit.Calls, BackgroundCall{Role: c.Role, Started: c.Started})
 	}
-	result.Audit.Complete = resultErr == nil && barrierErr == nil && stopErr == nil && stoppedErr == nil && err == nil && usageErr == nil && ledger.Complete()
-	resultErr = errors.Join(resultErr, requestErr, barrierErr, err, stopErr, stoppedErr, usageErr, result.Audit.ValidateBackground())
+	result.Audit.Complete = resultErr == nil && barrierErr == nil && stopErr == nil && stoppedErr == nil && err == nil && indexErr == nil && usageErr == nil && ledger.Complete()
+	resultErr = errors.Join(resultErr, requestErr, barrierErr, err, indexErr, stopErr, stoppedErr, usageErr, result.Audit.ValidateBackground())
 	result.BackgroundAudit.Valid = resultErr == nil
 	return result, resultErr
 }

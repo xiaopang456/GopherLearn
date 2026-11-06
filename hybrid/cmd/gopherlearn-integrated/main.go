@@ -22,6 +22,7 @@ import (
 	"syscall"
 
 	"GopherAI/common/rag"
+	"GopherAI/config"
 	"gopherlearn-v2-hybrid"
 )
 
@@ -45,10 +46,15 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err := hybrid.Run(ctx, *path); err != nil {
 		// Dependency errors can quote a configuration value, so only the refusal
 		// reaches the operator's terminal; the file and its cause stay unsent.
-		// A rerank failure is the exception: its cause is a fixed sentence that
-		// names what to fix and quotes no configuration value, and an operator
-		// who cannot see it has nothing to act on.
+		// Two classes are deliberately exempt, because their message is a fixed
+		// sentence that names what to change and quotes no value: a rerank
+		// failure, and a configuration refusal the loader marked as safe. An
+		// operator who cannot read either of them has nothing to act on - and a
+		// release that retires a configuration key would otherwise fail with one
+		// generic line while the fix is a single line of the file.
 		if message := rag.OperatorMessage(err); message != "" {
+			fmt.Fprintln(stderr, message)
+		} else if message := config.SafeRefusalMessage(err); message != "" {
 			fmt.Fprintln(stderr, message)
 		} else {
 			fmt.Fprintln(stderr, "integrated entry refused or failed; check the configuration requirements and the schema, Redis instance and storage directory it points at")

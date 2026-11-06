@@ -137,16 +137,23 @@ func TestRagRerankEnvironmentAndValidation(t *testing.T) {
 func TestRagChatAndEmbeddingEnvironmentAreIndependent(t *testing.T) {
 	cfg := defaultConfig().RagModelConfig
 	t.Setenv("OPENAI_MODEL_NAME", "qwen3.8-max")
-	t.Setenv("OPENAI_BASE_URL", "https://chat.example/v1")
 	t.Setenv("EMBEDDING_MODEL_NAME", "qwen3.7-text-embedding")
 	t.Setenv("EMBEDDING_BASE_URL", "https://embedding.example/v1")
+	// The retired variable stays set: the parse must succeed with nothing taken
+	// from it, rather than refusing a file that still carries the name in the
+	// environment. Only the file form is refused by name, because there the
+	// operator can see and delete the line.
+	t.Setenv("OPENAI_BASE_URL", "https://chat.example/v1")
+	// A key is never read from the environment, so the test supplies the one
+	// field Validate insists on.
+	cfg.RagEmbeddingAPIKey = "synthetic-key-never-sent"
 	if err := applyRagEnv(&cfg); err != nil {
 		t.Fatal(err)
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.RagChatModelName != "qwen3.8-max" || cfg.RagBaseUrl != "https://chat.example/v1" {
+	if cfg.RagChatModelName != "qwen3.8-max" {
 		t.Fatalf("chat override mismatch: %+v", cfg)
 	}
 	if cfg.RagEmbeddingModel != "qwen3.7-text-embedding" || cfg.RagEmbeddingBaseURL != "https://embedding.example/v1" || cfg.RagDimension != 1024 {
@@ -240,6 +247,7 @@ func TestDefaultAgentConfigAndEnvironmentOverrides(t *testing.T) {
 		got.ContextMaxSummaryTokens != 2000 || got.ContextMaxMasteryTokens != 900 || got.ContextMaxEpisodeTokens != 1000 || got.EpisodeRecallMode != "shadow_only" || got.ContextHistoryFetchLimit != 128 ||
 		got.SummaryTriggerMessages != 12 || got.SummaryTriggerTokens != 6000 || got.SummaryRetainMessages != 8 ||
 		got.SummaryMaxInputTokens != 8000 || got.SummaryFetchLimit != 512 || got.SummaryTimeoutSeconds != 20 || got.SummaryFailureCooldownSeconds != 30 ||
+		got.SummaryGroupItemLimit != 20 || got.SummaryOpenLoopsItemLimit != 20 || got.SummaryEvidenceIDLimit != 64 ||
 		got.EpisodeWorkerCount != 1 || got.EpisodeQueueSize != 32 || got.EpisodeQuietWindowSeconds != 600 ||
 		got.EpisodeMaxInputTokens != 12000 || got.EpisodeMaxMessages != 4096 {
 		t.Fatalf("unexpected agent defaults: %+v", got)
@@ -347,6 +355,9 @@ func TestAgentConfigRejectsUnsafeLimits(t *testing.T) {
 		{"summary fetch", func(c *AgentConfig) { c.SummaryFetchLimit = 1 }},
 		{"summary timeout", func(c *AgentConfig) { c.SummaryTimeoutSeconds = 0 }},
 		{"summary cooldown", func(c *AgentConfig) { c.SummaryFailureCooldownSeconds = 0 }},
+		{"summary group item limit", func(c *AgentConfig) { c.SummaryGroupItemLimit = 0 }},
+		{"summary open loops item limit", func(c *AgentConfig) { c.SummaryOpenLoopsItemLimit = 0 }},
+		{"summary evidence id limit", func(c *AgentConfig) { c.SummaryEvidenceIDLimit = 1 }},
 		{"episode workers", func(c *AgentConfig) { c.EpisodeWorkerCount = 0 }},
 		{"episode queue", func(c *AgentConfig) { c.EpisodeQueueSize = 0 }},
 		{"episode scan", func(c *AgentConfig) { c.EpisodeScanIntervalSeconds = 0 }},
@@ -377,7 +388,7 @@ func TestReadOnlyAccessorsReportWhatTheRunWillUse(t *testing.T) {
 	// writes the configuration it reads. The assertions are about the values
 	// the accessors report, not about a file that happens to exist.
 	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(path, []byte("[ragModelConfig]\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("[ragModelConfig]\nembeddingApiKey = \"synthetic-key-never-sent\"\n"), 0o600); err != nil {
 		t.Fatalf("write configuration: %v", err)
 	}
 	rag, err := LoadRagEmbedding(path)
@@ -385,7 +396,7 @@ func TestReadOnlyAccessorsReportWhatTheRunWillUse(t *testing.T) {
 		t.Fatalf("rag load: %v", err)
 	}
 	if rag.RagEmbeddingModel == "" || rag.RagEmbeddingBaseURL == "" || rag.RagDimension <= 0 ||
-		rag.RagChatModelName == "" || rag.RagBaseUrl == "" {
+		rag.RagChatModelName == "" || rag.RagEmbeddingAPIKey == "" {
 		t.Fatalf("the RAG accessor left a field unset: %+v", rag)
 	}
 	budget, err := LoadEpisodeTokenBudget(path)
