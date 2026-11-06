@@ -78,16 +78,20 @@ storageDir = "data/gopherlearn-integrated/knowledge"
 # GET /api/v1/knowledge/documents/:id/processing —— 回答 {"mode":"legacy","status":<index_status>}。
 # 这个接口只回答文档所有者自己的文档状态。
 
-# 启动时校验知识索引：把记录里的块数和 Redis 里实际存的块数对一遍。
+# 启动时校验知识索引，问两个问题：每个文档在 Redis 里的块数是否等于记录里的块数；
+# 搜索索引本身是否存在、它自报的文档数是否等于这些键的个数。只比块数看不见
+# "索引没了但块都还在"，而那种情况下检索一条证据也返回不了。
 #
 # mode 三选一：
 #   off     —— 不比对；
-#   audit   —— 只比对，把不一致的文档清单和重建命令写进日志和指标（默认）；
+#   audit   —— 只比对，把结果写进日志和指标（默认）；
 #   rebuild —— 比对之后，把缺块的文档退回 pending，交给索引 worker 重建。
 #
 # 校验永远不阻止启动：索引缺块是"检索少给证据"，不是"服务起不来"。
 # rebuild 每次启动最多退回 rebuildLimit 个文档，超出的只告警，等下一次启动；
 # 重建会重新调用 embedding 接口，是要花钱的，所以默认档是只比对。
+# 索引本身的问题只报告、不退回文档：缺的是索引元数据，装配检索服务时和下一次索引
+# 文档时都会自己把它建出来，退回文档只会重复付 embedding 的钱。
 [knowledgeConfig.startupIndexAudit]
 mode = "audit"
 rebuildLimit = 20

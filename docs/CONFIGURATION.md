@@ -168,19 +168,19 @@ shell 死掉，服务还活着，容器在宽限期结束后被强杀——服�
 | `scanIntervalSeconds` | | `5` | 扫描间隔（秒），必须大于 0 |
 | `indexTimeoutSeconds` | | `300` | 单次索引超时（秒），必须大于 0 |
 | `executionMode` | | 空 | 这个版本**只提供进程内处理**：省略或 `legacy` 都是同一个进程内处理；写出别的值（例如从旧配置继承下来的其它取值）会在启动时被拒绝，而不是悄悄降级成本地处理 |
-| `startupIndexAudit.mode` | | `audit` | 启动时把记录里的块数和 Redis 里实际存的块数对一遍：`off` 不比对，`audit` 只比对并把不一致的文档清单和重建命令写进日志和指标，`rebuild` 在比对之后把缺块的文档退回 `pending` 交给 worker 重建。**校验永远不阻止启动**：索引缺块是"检索少给证据"，不是"服务起不来" |
+| `startupIndexAudit.mode` | | `audit` | 启动时校验知识索引，问两个问题：**每个文档**在 Redis 里的块数是否等于记录里的块数；**搜索索引本身**是否存在、它自报的文档数是否等于这些键的个数（索引被删掉时块都还在，只比块数会把它报成"一致"）。`off` 不比对，`audit` 只把结果写进日志和指标，`rebuild` 在比对之后把缺块的文档退回 `pending` 交给 worker 重建。索引本身的问题（缺失、自报数不符、仍在建、有索引失败）只报告、不退回文档：补上索引靠创建索引，退回文档只会重复付 embedding 的钱。**校验永远不阻止启动**：索引缺块是"检索少给证据"，不是"服务起不来" |
 | `startupIndexAudit.rebuildLimit` | | `20` | `rebuild` 模式下一次启动最多退回多少个文档；超出的只告警，等下一次启动。取值不能为负 |
 
 文档状态由文档所有者自己的接口查看：`GET /api/v1/knowledge/documents/:id/processing`。
 
-随时手工查一次（只读，不删任何键、不重建任何文档）：
+随时手工查一次（只读，不删任何键、不创建索引、不重建任何文档）：
 
 ```bash
 # 在仓库根目录执行；go -C 会把程序的工作目录切到 v2/，所以配置写成 ../config.toml
 go -C v2 run ./cmd/indexaudit -config ../config.toml
 ```
 
-输出里每个缺块的文档都带一条重建命令：`POST /api/v1/knowledge/documents/<id>/reindex`。
+输出里每个缺块的文档都带一条重建命令：`POST /api/v1/knowledge/documents/<id>/reindex`；索引本身的问题逐条写成 `index_problem="……"`，汇总行用 `index_problems=<个数>` 计数。`current index "gopherai_knowledge_chunks_v3_idx" does not exist` 就是"块都在、索引没了"这一种。
 
 ### `[ragModelConfig]`
 
