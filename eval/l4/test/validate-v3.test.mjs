@@ -170,6 +170,18 @@ test('relative time is listed for a person to resolve', () => {
  assert.equal(report.errors.length, 0)
 })
 
+test('a time promise is listed but "等待会" is not one', () => {
+ // 待会 used to match inside 等待会…, so "等待会让测试变慢" was reported as a
+ // relative-time promise. Both readings are asserted here: the real promise is
+ // still listed, and the substring that is not a promise is not.
+ const promise = r1('promise-example')
+ promise.turns[5] = {...promise.turns[5], user: '待会我再跑一遍', assistant: '好'}
+ assert.ok(kindsAt(validateDataset([promise]), 6).includes('relative time'))
+ const notPromise = r1('waiting-example')
+ notPromise.turns[5] = {...notPromise.turns[5], user: '我还想测超时路径', assistant: '超时要用可控的时间源，别靠真实等待，等待会让测试变慢且不稳'}
+ assert.deepEqual(kindsAt(validateDataset([notPromise]), 6).filter(kind => kind === 'relative time'), [])
+})
+
 test('dates are checked against the calendar and against a year', () => {
  const s = r1()
  s.turns[6] = {...s.turns[6], user: '2026-02-09 星期一 开始', assistant: '好的'}

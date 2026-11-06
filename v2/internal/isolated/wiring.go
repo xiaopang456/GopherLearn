@@ -805,7 +805,7 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	}
 	agentRunner, err := agentService.NewRunner(
 		agentModel,
-		checkedRegistry{agentTools},
+		registryForRunner(agentTools),
 		agentDAO.DefaultRepository(),
 		contextBuilder,
 		agentRunnerConfig(memoryReadMode, conf.AgentConfig, conf.RagModelConfig.RagChatThinkingDialect),

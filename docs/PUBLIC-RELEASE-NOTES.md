@@ -5,7 +5,8 @@
 ## v0.2.2 · Redis 停止时的落盘与默认开启 AOF
 
 这一版没有面向学习者的新功能，改的是**部署**：检索索引在 Redis 里，Redis 停止或崩溃时的
-落盘方式决定了「重启之后索引还在不在、还全不全」。已有部署需要更新一次 Redis 配置并重启。
+落盘方式决定了「重启之后索引还在不在、还全不全」。已有部署需要更新一次 Redis 配置并重启，
+还要改**两处模型配置项**——旧写法会被指名拒绝，服务不会带着没人用的配置启动。
 
 ### 已有部署要做什么
 
@@ -37,6 +38,62 @@
 - **默认开启 AOF。** 每次写入都追加到文件里，最多丢一秒的写入；RDB 快照照旧保留。
 - **老配置会被提醒。** 没开 AOF 的配置启动时会在日志里看到一行提示（只有分类，不含配置
   内容），但**不会拒绝启动**。
+
+### 模型配置改成一处一个（升级前要先改这两处）
+
+嵌入服务的密钥过去写在 `[isolatedEntry].embeddingKey`，而它的模型名与地址写在
+`[ragModelConfig]` 里——一件事被拆成两段。`[ragModelConfig].baseUrl` 则会被程序读进来，
+但**没有任何客户端用它拨号**：学习 Agent 的地址一直取 `[isolatedEntry].chatBaseURL`。
+这一版把它们收拢成一处一个：密钥与它认证的模型名、地址放在同一段，那条没人用的地址删掉。
+
+**旧写法会被指名拒绝，不是被忽略。** 这是刻意的：配置文件里留着一行不再读取的地址或密钥，
+看起来还在、实际已经不算数，配置与程序各说各话——这类差别最后表现为一次莫名的失败或一笔
+莫名的费用，而不是一个错误。所以带这两行的配置**起不来**，报错会写清改哪里。
+
+改法（键名与 `config.integrated.example.toml` 一致）：
+
+```toml
+# 改之前
+[isolatedEntry]
+chatKey = "..."
+chatModel = "..."
+chatBaseURL = "https://provider.invalid/v1"
+embeddingKey = "..."                        # ← 这一行挪走
+
+[ragModelConfig]
+embeddingModel = "..."
+embeddingBaseUrl = "https://embedding.invalid/v1"
+baseUrl = "https://provider.invalid/v1"     # ← 这一行删掉，没有任何客户端用它
+
+# 改之后
+[isolatedEntry]
+chatKey = "..."
+chatModel = "..."
+chatBaseURL = "https://provider.invalid/v1"  # Agent 的地址只有这一处
+
+[ragModelConfig]
+embeddingModel = "..."
+embeddingBaseUrl = "https://embedding.invalid/v1"
+embeddingApiKey = "..."                      # ← 密钥挪到这里，与它的模型名、地址同段
+```
+
+没改就启动会看到下面两句之一（**原文照抄**；实际输出在行首还带日志时间戳，`exit status 1`
+是 Go 的 `go run` 补的一行）：
+
+```text
+load configuration: retired configuration setting: ragModelConfig.baseUrl was removed: no client is built from it. The learning Agent's chat address comes from isolatedEntry.chatBaseURL. Delete this line.
+
+load configuration: retired configuration setting: isolatedEntry.embeddingKey moved to ragModelConfig.embeddingApiKey, beside the embedding model name and address it belongs to. Move the key there and delete this line.
+```
+
+这两句是 `go -C v2 run ./cmd/schemainit -config <你的配置文件>` 打出来的——README 的最短路径里
+它就排在改配置之后、起服务之前，所以按正常顺序升级的话，你最先在这一步看到原因。直接跑正式
+入口 `hybrid/cmd/gopherlearn-integrated` 时只会看到一句笼统的
+`integrated entry refused or failed; check the configuration requirements and the schema, Redis instance and storage directory it points at`，
+**具体原因要用 `schemainit` 那一步看**。入口把配置错误压成一句通用话不是这一版带来的，已单独记下来待修。
+
+顺带一条：`OPENAI_BASE_URL` 这个环境变量不再被读来填上面那个地址（它以前写进的就是那个没人用的
+字段）。重排密钥的给法不变，仍然只从环境变量 `RAG_RERANK_AUTH_TOKEN` 读。
 
 ### 不需要数据库迁移
 

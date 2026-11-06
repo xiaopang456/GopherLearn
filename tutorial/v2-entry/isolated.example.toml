@@ -6,7 +6,6 @@ migrate = false
 chatKey = ""
 chatModel = "explicit-model-name"
 chatBaseURL = "https://provider.invalid/v1"
-embeddingKey = ""
 [mainConfig]
 host = "127.0.0.1"
 port = 18082
@@ -32,8 +31,8 @@ storageDir = "data/v2-isolated/knowledge"
 [ragModelConfig]
 embeddingModel = "explicit-embedding-model"
 embeddingBaseUrl = "https://embedding.invalid/v1"
+embeddingApiKey = ""
 chatModelName = "explicit-model-name"
-baseUrl = "https://provider.invalid/v1"
 dimension = 1024
 rerankEnabled = false
 # Omitted agent fields retain the build's defaults: legacy_v2/shadow_only.

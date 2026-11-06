@@ -4,14 +4,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/BurntSushi/toml"
-
 	appconfig "GopherAI/config"
 )
 
 // Product is the product configuration a run needs: the application's own parsed
-// configuration and the embedding key, which lives beside it in the isolated
-// entry's section.
+// configuration and the embedding key it will spend, which sits in the RAG section
+// beside the embedding model name and address it authenticates to.
 type Product struct {
 	App          *appconfig.Config
 	EmbeddingKey string
@@ -22,25 +20,19 @@ type Product struct {
 // product reads its models, dimension and reranker settings.
 //
 // LoadExplicit reads one environment variable, RAG_RERANK_AUTH_TOKEN, and only
-// when the file enables the reranker. The embedding key is read from
-// [isolatedEntry].embeddingKey. Neither value is ever logged by this package.
+// when the file enables the reranker. The embedding key comes from
+// [ragModelConfig].embeddingApiKey - the section holding the model it belongs to -
+// and is taken from that same parse rather than a second decode of the file.
+// Neither value is ever logged by this package.
 func LoadProduct(path string) (*Product, error) {
 	app, err := appconfig.LoadExplicit(path)
 	if err != nil {
 		return nil, err
 	}
-	var envelope struct {
-		Entry struct {
-			EmbeddingKey string `toml:"embeddingKey"`
-		} `toml:"isolatedEntry"`
+	if strings.TrimSpace(app.RagModelConfig.RagEmbeddingAPIKey) == "" {
+		return nil, fmt.Errorf("product configuration %s: ragModelConfig.embeddingApiKey is required", path)
 	}
-	if _, err := toml.DecodeFile(path, &envelope); err != nil {
-		return nil, fmt.Errorf("read isolatedEntry from %s: %w", path, err)
-	}
-	if strings.TrimSpace(envelope.Entry.EmbeddingKey) == "" {
-		return nil, fmt.Errorf("product configuration %s: isolatedEntry.embeddingKey is required", path)
-	}
-	return &Product{App: app, EmbeddingKey: envelope.Entry.EmbeddingKey}, nil
+	return &Product{App: app, EmbeddingKey: app.RagModelConfig.RagEmbeddingAPIKey}, nil
 }
 
 // LoadProductOffline reads the product configuration for planning: the
