@@ -40,7 +40,13 @@ type ProductResult struct {
 	Provenance      Provenance           `json:"provenance"`
 	ContextMessages []*schema.Message    `json:"context_messages"`
 	Audit           BackgroundAudit      `json:"background_evidence"`
-	BackgroundAudit struct {
+	// MemoryIndexEvidence is read from the shared derived memory indexes: once
+	// before the answer is asked and once after the background window closed.
+	// A real attempt without both readings is not decidable, because the second
+	// one is the only evidence that the answer did not leave state behind for
+	// the next repeat.
+	MemoryIndexEvidence MemoryIndexEvidence `json:"memory_index_evidence"`
+	BackgroundAudit     struct {
 		Valid  bool   `json:"valid"`
 		Reason string `json:"reason,omitempty"`
 	} `json:"backgroundAudit"`
