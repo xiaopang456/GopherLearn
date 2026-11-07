@@ -11,7 +11,7 @@ import (
 	"GopherAI/model"
 )
 
-// STABILIZE-058 Phase A1: the deterministic read chain.
+// The deterministic read chain.
 //
 // Everything here runs without a network, a model or a vector. What it pins is
 // the part of the claim that is decidable by construction: that a replaced

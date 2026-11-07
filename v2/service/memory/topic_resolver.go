@@ -66,11 +66,11 @@ type TopicResolverConfig struct {
 
 // DefaultTopicResolverConfig carries only the structural bounds.
 //
-// MinStandout and MinMargin are deliberately left at zero: the STABILIZE-030
+// MinStandout and MinMargin are deliberately left at zero: the
 // development gate failed at every point of the frozen grid, so there is no
 // validated value to ship. A number left in a Default*Config() is a
 // production default whatever the comment above it says — that is exactly how
-// BUG-AGENT-140 happened — so the semantic constructor demands both explicitly
+// happened — so the semantic constructor demands both explicitly
 // and refuses to build without them.
 func DefaultTopicResolverConfig() TopicResolverConfig {
 	return TopicResolverConfig{
@@ -261,7 +261,7 @@ func (r *TopicResolver) Resolve(ctx context.Context, request TopicResolveRequest
 		resolution.ReasonCodes = append(resolution.ReasonCodes, "no_topic_signal")
 		return resolution
 	}
-	// STABILIZE-031 5.3: a question that is all shell names no subject either.
+	// A question that is all shell names no subject either.
 	// "上次聊了什么" used to reach the semantic layer, buy an embedding and
 	// possibly propose a key — that is the system deciding a topic the learner
 	// never mentioned.
@@ -283,7 +283,7 @@ func (r *TopicResolver) Resolve(ctx context.Context, request TopicResolveRequest
 	return semantic
 }
 
-// identifierNegativeEvidence is STABILIZE-031 5.2.
+// identifierNegativeEvidence is the spelled-out-name rule.
 //
 // standout and margin both ask "how good is this candidate relative to the
 // batch it arrived with". This asks something else entirely: the learner

@@ -13,8 +13,8 @@ import (
 )
 
 // Summary read-back is a mode, not a tool upgrade. The tool implementation is
-// shared with every mode that existed before it, so what keeps STABILIZE-063's
-// published numbers describing STABILIZE-063 is this file: the bytes each older
+// shared with every mode that existed before it, so what keeps the
+// published numbers describing the source-priority mode is this file: the bytes each older
 // mode sends as its system prompt, the predicates each older mode answers, and
 // the grant set each older mode can assemble.
 

@@ -10,7 +10,7 @@ import (
 	"GopherAI/service/episode"
 )
 
-// STABILIZE-065 Phase 2-C1: an abstained row must be invisible to memory.
+// An abstained row must be invisible to memory.
 //
 // Persisting an abstention instead of writing nothing is only safe if the row
 // cannot be mistaken for memory. Every production read that serves recall,

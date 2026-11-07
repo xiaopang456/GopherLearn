@@ -15,7 +15,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 )
 
-// BUG-AGENT-217 (red first): two governed searches in one turn share one
+// The concurrency regression (red first): two governed searches in one turn share one
 // MemoryEvidenceRegistry, but the governor numbers its cards by each search's
 // own candidate order. A second search whose ranking reorders the episodes
 // issues E1 for an episode the first search had already issued as E2, and the
@@ -249,7 +249,7 @@ func TestReorderWithNewEpisodeKeepsExistingNumbers(t *testing.T) {
 	}
 }
 
-// The legitimate-reuse case BUG-AGENT-215 already covered, one step closer to
+// The legitimate-reuse case already covered, one step closer to
 // production: the tool refuses an identical query, so a second search always
 // arrives with different words - here returning the same episodes in the same
 // order. Same labels, no error, no duplicate entries.

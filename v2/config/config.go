@@ -347,7 +347,7 @@ type AgentConfig struct {
 	EpisodeRecallMode                string `toml:"episodeRecallMode"`
 	// MemoryReadMode selects the whole long-term memory read path.
 	//
-	// STABILIZE-031: the unit of choice is a complete mode, not a component
+	// The unit of choice is a complete mode, not a component
 	// switch, and the default is legacy_v2 until a brand-new blind set says
 	// otherwise. A development gate that did not pass is not a reason to ship.
 	MemoryReadMode string `toml:"memoryReadMode"`
@@ -356,7 +356,7 @@ type AgentConfig struct {
 	// They have no production default on purpose. Enabling
 	// episode_v3_semantic without supplying both is a startup failure, because
 	// a number that stays in a Default*Config() is a production default no
-	// matter what the comment above it says (BUG-AGENT-140).
+	// matter what the comment above it says.
 	MemoryTopicStandout float64 `toml:"memoryTopicStandout"`
 	MemoryTopicMargin   float64 `toml:"memoryTopicMargin"`
 	// TopicConsentSecret signs the read-side confirmation ticket of
@@ -390,8 +390,8 @@ type AgentConfig struct {
 	//
 	// Like the semantic gate above, these have no production default and must be
 	// absent unless the mode that uses them is selected. A number that stays in a
-	// Default*Config() is a production default whatever the comment says
-	// (BUG-AGENT-140), and here it would also be a credential read by a mode
+	// Default*Config() is a production default whatever the comment says, and here it
+	// would also be a credential read by a mode
 	// nobody chose.
 	MemoryPlannerModel          string `toml:"memoryPlannerModel"`
 	MemoryPlannerBaseURL        string `toml:"memoryPlannerBaseURL"`
@@ -403,7 +403,7 @@ type AgentConfig struct {
 	// else.
 	//
 	// They have no production default for the same reason the planner fields do
-	// not (BUG-AGENT-140): a number that survives in a Default*Config() is a
+	// not: a number that survives in a Default*Config() is a
 	// production default whatever the comment above it says, and these numbers
 	// decide how much of a learner's personal history one tool call may reach.
 	// Under any other mode they must be absent, so that flipping one string
@@ -413,7 +413,7 @@ type AgentConfig struct {
 	MemoryToolCandidateDepth int     `toml:"memoryToolCandidateDepth"`
 	MemoryToolMinConfidence  float64 `toml:"memoryToolMinConfidence"`
 	MemoryToolTimeoutMS      int     `toml:"memoryToolTimeoutMs"`
-	// MemoryToolWindowPolicy selects the STABILIZE-036 experiment. Empty means
+	// MemoryToolWindowPolicy selects the experiment. Empty means
 	// the shipped window. It is a separate setting rather than a mode of its
 	// own because it changes only how much of an already-selected candidate set
 	// one observation carries, and a mode would have implied a second read path
@@ -1377,7 +1377,7 @@ func (c AgentConfig) validateMemoryTool(mode memoryrecall.ReadMode) error {
 //
 // Both directions matter. An incomplete configuration must stop startup rather
 // than silently fall back to another mode, because a mode nobody selected
-// running in production is exactly what STABILIZE-031 found. And a complete
+// running in production is exactly what an earlier round found. And a complete
 // configuration under a mode that cannot use it is a credential and an endpoint
 // sitting live for the day someone flips a string.
 // validateTopicConsent keeps the signing key out of every mode that cannot use

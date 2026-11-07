@@ -18,7 +18,7 @@ import (
 // Config is everything the mode needs. There are no defaults for the identity
 // fields: a model name or an endpoint that came from a Default*Config() is a
 // production default no matter what the comment above it says, which is the
-// finding BUG-AGENT-140 recorded.
+// finding the configuration rule recorded.
 type Config struct {
 	Model             string
 	BaseURL           string
@@ -111,7 +111,7 @@ type InjectedMemory struct {
 // discarded. Production ignores them; an evaluation needs them, and needs them
 // from the same call that produced the injection. The alternative - running the
 // planner once to measure it and again to use it - would make "both arms
-// consumed the same plan" a claim rather than a fact, and STABILIZE-031 is a
+// consumed the same plan" a claim rather than a fact, and the earlier design is a
 // record of what unattributable arms cost.
 type Result struct {
 	Topic       []string

@@ -12,7 +12,7 @@ import (
 	"GopherAI/model"
 )
 
-// STABILIZE-065 Phase 2-C1.1: the second semantic layer becomes production.
+// The second semantic layer becomes production.
 //
 // The blocking fact this file exists for, stated before it is fixed:
 //

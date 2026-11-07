@@ -1,6 +1,6 @@
 package episode
 
-// STABILIZE-065 F5: partial-trim behaviour at the real Projector seam.
+// Partial-trim behaviour at the real Projector seam.
 //
 // This is the genuine F5 required by C3-A.2: a fake Generator returns one
 // EpisodeDocument carrying three assertions across at least two different

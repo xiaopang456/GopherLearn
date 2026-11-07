@@ -52,7 +52,7 @@ func (r SlotRef) SupportsPresent() bool {
 
 // SupportsHistory reports whether it can establish what happened. Every issued
 // reference can, including replaced ones - that is the whole correction this
-// design makes to STABILIZE-057's materials.
+// design makes to the earlier evaluation's materials.
 func (r SlotRef) SupportsHistory() bool { return r.State.CanEstablishHistory() }
 
 // Registry is what one turn actually issued.
@@ -345,7 +345,7 @@ func neutralise(string) string { return NeutralisedSentence }
 // StripIssuedRefs removes only the labels this turn issued, leaving forged ones
 // in place.
 //
-// It exists for the judge boundary. BUG-AGENT-154: reference numbers made the
+// It exists for the judge boundary: reference numbers made the
 // judge read memory citations as document citations, and because only one arm
 // carried them it could tell the arms apart. Stripping with a broad regex would
 // have hidden the forged references the deterministic check needs to catch, so

@@ -27,7 +27,7 @@ func RequireMySQLDSN(t testing.TB) string {
 }
 
 // ValidateMySQLDSN accepts only database names with an explicit "test" token,
-// such as GopherAI_test_stabilize or GopherAI_stabilize_test. Merely containing
+// such as GopherAI_test_demo or GopherAI_demo_test. Merely containing
 // those four letters inside another word is not enough.
 func ValidateMySQLDSN(dsn string) error {
 	parsed, err := mysqlconfig.ParseDSN(dsn)

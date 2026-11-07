@@ -16,7 +16,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-// This file replays the six STABILIZE-054 acceptance scenarios with a scripted
+// This file replays the six acceptance scenarios with a scripted
 // model and no external calls at all. Three of them passed before; three failed
 // on tool_call_limit. The point is that all six now finish, and that the three
 // that already worked still work.

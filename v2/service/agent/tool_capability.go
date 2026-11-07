@@ -6,14 +6,14 @@ import (
 	"strings"
 )
 
-// STABILIZE-061: the one place that knows which tool name means which
+// the one place that knows which tool name means which
 // capability.
 //
 // Before this file the mapping existed seven times - the per-capability budget
 // switch, the repeated-tool ledger's read-only test, three availability probes,
 // the memory-search step summary and the draft receipt - each written as a
 // switch on a string constant. That was survivable while there was exactly one
-// name per capability. STABILIZE-061 introduces a second surface, where the
+// name per capability. One earlier change introduces a second surface, where the
 // same two implementations are exposed under names that say what they do, and a
 // seventh copy of the mapping is seven chances for a renamed tool to keep
 // working in the model's eyes while silently losing its budget, its duplicate
@@ -48,7 +48,7 @@ const (
 // ToolSurface selects which names the model sees for the same capabilities.
 //
 // It is a property of the read mode, not of a tool: the implementations behind
-// both surfaces are the same code, and that is the point. STABILIZE-060 found
+// both surfaces are the same code, and that is the point. An earlier round found
 // three different ways of saying "remember this" all routed into Episode
 // search, on a surface where the two memory tools were called propose_memory
 // and memory_search - names that describe the same family rather than two
@@ -57,7 +57,7 @@ const (
 type ToolSurface string
 
 const (
-	// SurfaceLegacy is every mode that existed before STABILIZE-061. Its names
+	// SurfaceLegacy is every mode that existed before the explicit-actions surface. Its names
 	// are frozen: modes with published measurements must keep exposing the
 	// byte-identical schema those measurements describe.
 	SurfaceLegacy ToolSurface = "legacy"
@@ -67,7 +67,7 @@ const (
 	// SurfaceExplicitSources keeps the explicit memory actions and also names
 	// document retrieval by the source it can actually reach.
 	SurfaceExplicitSources ToolSurface = "explicit_sources"
-	// SurfaceSourcePriority is STABILIZE-063's source-priority contract. The
+	// SurfaceSourcePriority is the source-priority contract. The
 	// names are identical to explicit_sources - a name is not the variable this
 	// round studies - while the descriptions the model reads state each
 	// source's priority, and the server defers the non-save first tool choice.
@@ -84,7 +84,7 @@ func (s ToolSurface) Valid() bool {
 // anything to the Runner.
 const (
 	// SaveMemoryDraftToolName says both halves of what the tool does: it saves
-	// a draft, and a draft is not a memory. STABILIZE-060's failures were all
+	// a draft, and a draft is not a memory. The failures that led here were all
 	// requests to save, and a model that reads "propose_memory" beside
 	// "memory_search" has no contract-level reason to prefer one.
 	SaveMemoryDraftToolName = "save_memory_draft"
@@ -217,7 +217,7 @@ func (c MemoryToolCapability) ReadsLongTermMemory() bool {
 // ForcedToolNamesFor lists every name this configuration's first-tool rule can
 // ever bind, on this configuration's surface.
 //
-// It exists because of BUG-AGENT-214. The Runner forced a tool by name while
+// It exists because the Runner once forced a tool by name while
 // the registry built the tool table from the capability map, and under a new
 // surface those two disagreed: the table held search_uploaded_documents and the
 // Runner asked the model to call knowledge_search. The model cannot bind a name
@@ -251,7 +251,7 @@ func ForcedToolNamesFor(config RunnerConfig) []string {
 // capabilities that are actually on the table. Every branch of the first-tool
 // rule is guarded by that capability being available, so a capability nobody
 // registered can never be forced and its absence is not a fault. What is a
-// fault - and what BUG-AGENT-214 was - is a capability that IS registered,
+// fault - and what that fault was - is a capability that IS registered,
 // under a name the rule would not ask for: the tool is right there, the model
 // is told to call something else, and the turn dies before its first model
 // request.

@@ -1,6 +1,6 @@
 package agent
 
-// STABILIZE-065 F5: partial-truncation behaviour tests.
+// Partial-truncation behaviour tests.
 //
 // These pin the mastery/context truncation edge cases the evaluator relies on:
 // when a block does not fit, the trim must keep the mandatory rule line and a

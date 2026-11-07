@@ -45,18 +45,18 @@ func TestAgentMemoryToolModeConstructsNoOlderReadChain(t *testing.T) {
 	if mode.AutoInjectsTopicAndEpisodeMemory() {
 		t.Fatalf("mode %s still auto-injects topic and episode memory", mode)
 	}
-	// STABILIZE-039 added a second mode that registers the tool. The invariant
+	// A later round added a second mode that registers the tool. The invariant
 	// that still has to hold is the one this test was written for: none of the
 	// modes measured before the tool existed may acquire it, and none of them
 	// may stop injecting the memory their results were produced with.
-	// STABILIZE-050 adds a fifth. It registers the tool for episodic history
+	// One earlier change adds a fifth. It registers the tool for episodic history
 	// only - it cannot serve semantic kinds at all - but it does register it,
 	// and the invariant this list protects is unchanged: no mode measured
 	// before the tool existed may acquire it.
-	// STABILIZE-058 adds a sixth, which extends the fifth: it registers the
+	// One earlier change adds a sixth, which extends the fifth: it registers the
 	// tool and governs what a card is made of. The invariant is unchanged and
 	// still the only thing this list protects.
-	// STABILIZE-061 adds a seventh, which is the sixth under two different tool
+	// One earlier change adds a seventh, which is the sixth under two different tool
 	// names. It registers the tool - under the name search_past_sessions - and
 	// the invariant is still the only thing this list protects: no mode
 	// measured before the tool existed may acquire it, whatever the tool is
@@ -89,7 +89,7 @@ func TestAgentMemoryToolModeConstructsNoOlderReadChain(t *testing.T) {
 	if memoryrecall.ModeAgentMemoryToolV1.UsesAuthoritativeTopicBootstrap() {
 		t.Fatal("agent_memory_tool_v1 acquired the authoritative topic bootstrap")
 	}
-	// STABILIZE-040 adds a third. The same rule applies to the narrow tool: no
+	// One earlier change adds a third. The same rule applies to the narrow tool: no
 	// mode measured before it existed may register it, and the two modes that
 	// preceded it must not have acquired the shared dedup either, because that
 	// changes what a second memory_search may return.

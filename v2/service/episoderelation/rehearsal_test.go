@@ -15,7 +15,7 @@ import (
 	"GopherAI/service/episodeassert"
 )
 
-// The STABILIZE-065 phase 1 zero-call rehearsal.
+// The phase 1 zero-call rehearsal.
 //
 // It runs the chain the specification names, and it runs the production halves
 // of it rather than a version of them that lives in this file:
@@ -506,7 +506,7 @@ func TestEpisodeRelationRehearsal(t *testing.T) {
 	}
 
 	writeRehearsalReport(t, report)
-	t.Logf("STABILIZE-065 rehearsal: %+v", report)
+	t.Logf("relation rehearsal: %+v", report)
 }
 
 func containsString(haystack, needle string) bool {

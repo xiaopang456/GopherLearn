@@ -24,7 +24,7 @@ func episodicHarness(t *testing.T, mutate func(*toolHarness)) *toolHarness {
 
 // toolParameters renders what the model actually receives: the description and
 // the parameter schema. The schema has to be pulled out of ParamsOneOf, because
-// marshalling the ToolInfo drops it (BUG-EVAL-034).
+// marshalling the ToolInfo drops it.
 func toolParameters(t *testing.T, invokable tool.InvokableTool) (string, string) {
 	t.Helper()
 	info, err := invokable.Info(context.Background())
@@ -72,12 +72,12 @@ func TestEpisodeContractOffersNoKinds(t *testing.T) {
 // freeze bound, and it is what makes "the old modes are byte-identical" a fact
 // rather than an intention.
 func TestGeneralContractIsUnchanged(t *testing.T) {
-	const frozenBySTABILIZE058v181 = "790f2ba6e0bf9b9f517d72437c01636f6324ad6c59b1652109fed93e1a8c6490"
+	const frozenContractDigest = "790f2ba6e0bf9b9f517d72437c01636f6324ad6c59b1652109fed93e1a8c6490"
 	digest, err := MemorySearchSchemaDigest()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if digest != frozenBySTABILIZE058v181 {
+	if digest != frozenContractDigest {
 		t.Fatalf("the general memory_search schema changed: %s", digest)
 	}
 	h := newToolHarness(t, nil)

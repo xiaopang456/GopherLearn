@@ -270,7 +270,7 @@ func containsCode(codes []string, want string) bool {
 	return false
 }
 
-// STABILIZE-031 5.2. The learner spelled out a name; a candidate topic that
+// The learner spelled out a name; a candidate topic that
 // does not contain it is not that thing however high it ranks. This is a
 // different kind of evidence from standout and margin, which is the point:
 // tightening those numbers could not separate these cases, because none-08
@@ -324,7 +324,7 @@ func TestIdentifierPresentInTopicStillAccepts(t *testing.T) {
 	}
 }
 
-// STABILIZE-031 5.3. A question that is all shell names no subject, so the
+// A question that is all shell names no subject, so the
 // semantic layer must not run — it would spend a call and might propose a topic
 // the learner never mentioned.
 func TestNoTopicAfterShellStripAbstainsBeforeTheProvider(t *testing.T) {

@@ -5,8 +5,8 @@
 // It is a leaf package on purpose. Both the production tool and the offline
 // evaluators need these answers, and an offline aggregator that re-implements
 // them "closely enough" produces a token figure that describes nothing the
-// model ever read. STABILIZE-035 measured its cost with a second, private copy
-// of the rendering loop; this package exists so STABILIZE-036 cannot.
+// model ever read. An earlier round measured its cost with a second, private copy
+// of the rendering loop; this package exists so that cannot happen again.
 package memorywindow
 
 import (
@@ -15,7 +15,7 @@ import (
 	"GopherAI/common/rag"
 )
 
-// The STABILIZE-036 method parameters. They are constants rather than settings
+// The window method parameters. They are constants rather than settings
 // because a number a deployment could choose is a number an experiment can be
 // re-asked for until it flatters. A different value is a different method
 // version, with its own freeze and its own gates.
@@ -84,7 +84,7 @@ func Interleave(semantic, episodic []Ranked, limit int) []Ranked {
 	return out
 }
 
-// Reserve is the STABILIZE-036 append sequence: the same deterministic
+// Reserve is the append sequence: the same deterministic
 // interleave of both per-kind lists, taken up to limit, with everything the
 // base window already holds removed.
 //
@@ -141,7 +141,7 @@ func Fit(content string, quoteCost int, used int, budget Budget) (body string, t
 
 // FitWhole renders one appended card, which may not be shrunk to fit.
 //
-// The difference from Fit is the one rule STABILIZE-036 froze before seeing any
+// The difference from Fit is the one rule an earlier round froze before seeing any
 // result: an extra card is a bonus, so it is rendered under the same per-card
 // cap as every other card and then either fits whole or is dropped whole. The
 // alternative — squeezing it into whatever is left — would let the budget buy
@@ -162,7 +162,7 @@ func FitWhole(content string, quoteCost int, used int, limit int, budget Budget)
 	return body, truncated, cost, true
 }
 
-// DynamicLimit is the STABILIZE-036 per-call ceiling: the base observation may
+// DynamicLimit is the per-call ceiling: the base observation may
 // grow by at most a third and a bit, and never past the absolute cap.
 //
 // A base of zero returns zero, which is what stops a failed or empty search

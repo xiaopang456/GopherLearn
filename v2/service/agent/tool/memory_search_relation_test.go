@@ -21,12 +21,12 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 )
 
-// STABILIZE-065 Phase 1.1.1, blocker 1: relations reach the model.
+// Blocker 1: relations reach the model.
 //
 // Phase 1.1 gave the relation store a real schema, a real writer and a
 // relation-aware resolver. Nothing read it. ResolveWithRelations and
 // RenderRelationNote had tests that called them directly and no production
-// caller at all, which is the same shape of defect STABILIZE-058 v1.2 found in
+// caller at all, which is the same shape of defect an earlier audit found in
 // ExpandEpisodes: a governed read that exists in a helper and is absent from
 // the system.
 //

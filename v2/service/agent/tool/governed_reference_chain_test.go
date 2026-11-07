@@ -8,7 +8,7 @@ import (
 	serviceagent "GopherAI/service/agent"
 )
 
-// STABILIZE-058 v1.3, group B: one mapping, end to end.
+// Group B: one mapping, end to end.
 //
 // v1.2 showed the model [E1.d1] and registered something else. governCards
 // built a refs slice and never appended to it, discarded what Register handed

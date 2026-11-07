@@ -2,7 +2,7 @@
 // long-term memory readers share.
 //
 // Episode recall and TopicKey resolution ask the same question of the same
-// embedding provider. Before STABILIZE-030 they could not know about each
+// embedding provider. Before that, they could not know about each
 // other, so a mixed question that needed both paid for two identical embedding
 // calls — or, worse, one of them was switched off to save the call and lost the
 // channel it needed. A Cycle is created once per Agent turn, handed to both

@@ -8,7 +8,7 @@ import (
 	"GopherAI/common/memoryrecall"
 )
 
-// The default is the whole point of STABILIZE-031. If this ever flips, a read
+// The default is the whole point of the read-mode decision. If this ever flips, a read
 // path whose development gate did not pass is live for every user.
 func TestShippedDefaultReadModeIsLegacyV2(t *testing.T) {
 	if got := defaultConfig().AgentConfig.MemoryReadMode; got != string(memoryrecall.ModeLegacyV2) {

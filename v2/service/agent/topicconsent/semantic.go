@@ -31,7 +31,7 @@ const (
 	// DescriptorWithLearningExamples adds the text of quiz questions the
 	// learner has been asked on that topic.
 	//
-	// It is the descriptor STABILIZE-049 reached 40/40 with, and the extra
+	// It is the descriptor the earlier round reached 40/40 with, and the extra
 	// vocabulary is what let a question about 固定头 and 长度字段 match the topic
 	// 粘包处理 at all. It is more revealing than the minimal policy: the question
 	// text is system-authored rather than the learner's own writing, and it
@@ -110,7 +110,7 @@ type SemanticSuggesterConfig struct {
 	MaxBatchInputs int
 	// MinCosine is the absolute floor a semantic neighbour must clear.
 	//
-	// An absolute threshold is a known hazard - STABILIZE-030 recorded that it
+	// An absolute threshold is a known hazard - an earlier round recorded that it
 	// drifts with pool size - and it is used here for one thing a relative rule
 	// cannot do: decide that a question is about none of this learner's topics.
 	// Without it a pure Top-K would hand back five unrelated subjects for a

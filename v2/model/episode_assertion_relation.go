@@ -9,7 +9,7 @@ import (
 // The write-side relation between two assertions, and the proposal that
 // suggested it.
 //
-// STABILIZE-063 and -064 gave an assertion three states - current, replaced,
+// Two earlier rounds gave an assertion three states - current, replaced,
 // unknown - and one edge, ReplacedByAssertionID. That is enough to say "this
 // decision was superseded by that one" and nothing else, and the eight
 // replacements the 064 corpus carried were seeded by hand rather than inferred

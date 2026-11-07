@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// STABILIZE-030 replaces the single mutually exclusive Intent with a plan that
+// The planned read path replaces the single mutually exclusive Intent with a plan that
 // keeps the three things a question can say about history apart.
 //
 // The old router answered "which one query do I run" with one enum, so the

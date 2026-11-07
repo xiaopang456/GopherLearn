@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// STABILIZE-062 v1.4, the production seams.
+// The production seams.
 //
 // The round before this one gave the evaluator a structural classifier and then
 // discovered its real run had three turns it still could not classify, because

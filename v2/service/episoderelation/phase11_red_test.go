@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// STABILIZE-065 Phase 1.1 red lights.
+// Red lights.
 //
 // Phase 1 built a component and called it done. These state the ten things
 // that were missing between "a package exists" and "production uses it", and

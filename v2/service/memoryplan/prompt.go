@@ -48,7 +48,7 @@ You are proposing what to read. You are not deciding what is true, and you are n
 
 // VerifierPrompt is the Verifier's whole instruction.
 //
-// The five relations are the point of this task. STABILIZE-031 could already
+// The five relations are the point of this task. The earlier design could already
 // find the right subject; what it could not do was tell "this is about the same
 // thing" apart from "this supports what was asked", and every safety failure it
 // added was a record of the learner's own, in force, on the subject, and

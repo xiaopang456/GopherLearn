@@ -11,7 +11,7 @@ import (
 
 // Reassembling streamed tool calls before judging them.
 //
-// STABILIZE-062 v1.1 spent a real run learning why this has to exist. Its
+// Spent a real run learning why this has to exist. Its
 // observer looked at each streamed chunk on its own and asked "is this tool
 // name on the table". In a streamed tool call the name arrives once, in one
 // chunk, and every following chunk carries an argument fragment and an empty

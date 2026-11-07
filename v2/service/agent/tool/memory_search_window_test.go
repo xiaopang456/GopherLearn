@@ -85,7 +85,7 @@ func refsOf(output MemorySearchOutput) []string {
 	return out
 }
 
-// The shipped policy is unchanged by anything STABILIZE-036 added. The reserve
+// The shipped policy is unchanged by anything the bounded window added. The reserve
 // is computed on every mixed call, so this is the test that says computing it
 // is not the same as using it.
 func TestFixedPolicyIgnoresTheReserve(t *testing.T) {

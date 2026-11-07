@@ -13,9 +13,9 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-// STABILIZE-056.
+// The knowledge-first rule and the confirmed mode's first tool choice.
 //
-// Under agent_memory_user_confirmed_v1 three of the six STABILIZE-055 browser
+// Under agent_memory_user_confirmed_v1 three of the six browser
 // scenarios came back refused with knowledgeReason=search_required, having made
 // no tool call at all. The recorded outcome is itself the proof of two of the
 // three inputs: reaching search_required requires knowledgeSearchAvailable and
@@ -54,7 +54,7 @@ func userConfirmedRunnerConfig() RunnerConfig {
 
 // topicWindowBuilder stands in for a window a verified consent produced. It
 // carries the confirmed topic keys and nothing else; the consent chain itself
-// is unchanged by STABILIZE-056 and is tested where it lives.
+// is unchanged by that rule and is tested where it lives.
 type topicWindowBuilder struct{ used []string }
 
 func (b topicWindowBuilder) Build(ctx context.Context, input RunContext) (ContextWindow, error) {
@@ -142,7 +142,7 @@ func citedAnswer(int) *schema.Message {
 	return schema.AssistantMessage("TCP 面向字节流，消息边界要在应用层自己划 [1]。", nil)
 }
 
-// STABILIZE-062 found this at the real-provider boundary: the explicit-source
+// An earlier round found this at the real-provider boundary: the explicit-source
 // registry exposed search_uploaded_documents, while forcedToolName still
 // returned the legacy knowledge_search constant. react rejected that forced
 // choice before the first model request, so a routing result looked like a
@@ -528,7 +528,7 @@ func TestStreamingAndSyncAgreeOnForcedKnowledgeSearch(t *testing.T) {
 	}
 }
 
-// 12 and 13. Forcing the first tool must not reopen STABILIZE-055: the forced
+// 12 and 13. Forcing the first tool must not reopen the earlier scenarios: the forced
 // call happens once, the run still ends, and the budgets are the frozen ones.
 func TestForcedSearchDoesNotReopenTheToolLoop(t *testing.T) {
 	config := userConfirmedRunnerConfig()
@@ -550,7 +550,7 @@ func TestForcedSearchDoesNotReopenTheToolLoop(t *testing.T) {
 			}
 			if call >= 2 && call <= 6 {
 				// A model that keeps trying the refused capability after the
-				// forced search, exactly the STABILIZE-055 shape.
+				// forced search, exactly the shape.
 				return &schema.Message{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{
 					ID: "s1", Function: schema.FunctionCall{Name: memorySearchToolName, Arguments: string(semantic)},
 				}}}
@@ -575,7 +575,7 @@ func TestForcedSearchDoesNotReopenTheToolLoop(t *testing.T) {
 // The pre-fix reproduction, kept as a control rather than described in prose.
 //
 // With the old rule - memory_search available suppresses the knowledge-first
-// choice - the STABILIZE-055 questions that name the learner's own material
+// choice - the questions that name the learner's own material
 // reach the grounding gate having made no tool call, and the gate refuses
 // them with search_required. This is the exact recorded shape, and it is what
 // the fix has to move.
@@ -596,7 +596,7 @@ func TestOldRuleStillReproducesTheSearchRequiredRefusal(t *testing.T) {
 			return citedAnswer(call), nil
 		}}
 		// AgentMemoryToolRunnerConfig is the old envelope: the flag is off, so
-		// this is the pre-STABILIZE-056 first-tool rule.
+		// this is the earlier first-tool rule.
 		runner := mustRunner(t, fake, StaticToolRegistry{Registered: []tool.BaseTool{memory.build(t),
 			search.build(t, groundedResults())}}, newMemoryStepRepository(), AgentMemoryToolRunnerConfig())
 		input := testRunContext()

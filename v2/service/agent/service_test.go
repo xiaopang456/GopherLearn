@@ -874,7 +874,7 @@ func (c *eventCollector) ordered(types ...EventType) bool {
 	return position == len(types)
 }
 
-// BUG-AGENT-103. A run whose lease ends must still end visibly: a terminal row
+// A run whose lease ends must still end visibly: a terminal row
 // and a run_failed event. Before the fix the service returned the lease error
 // directly, so the row was left for the reaper to mark lease_expired and the
 // client saw a stream that simply stopped.
