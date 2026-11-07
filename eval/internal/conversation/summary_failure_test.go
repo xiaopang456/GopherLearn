@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"testing"
 
+	sessiondao "GopherAI/dao/session"
 	"GopherAI/model"
 	agent "GopherAI/service/agent"
 )
@@ -13,11 +14,22 @@ import (
 // The offline regressions for the environment-failure rule.
 //
 // The rule is a causal one: the run is the environment's when the FIRST
-// failure of the compaction was the upstream's, and the window carried no
-// summary. A cooldown alone says nothing, because the same cooldown follows
-// a timeout, an output that was too long, a body that would not parse and a
-// storage failure. These tests pin each of those apart, offline, without a
-// model call.
+// failure of the compaction happened at the summary MODEL request, that
+// request timed out, and the window carried no summary.
+//
+// Two things this file pins, because both went wrong once:
+//
+//   - The STAGE decides, not the wording. A store read that ran out of time
+//     is the database's timeout, and a document that would not parse is the
+//     model's answer; neither may be turned into the upstream's by a
+//     timeout wording in the same message. Only a timeout whose stage is
+//     confirmed to be the model request is the upstream's, and a timeout
+//     whose stage could not be read is 待核.
+//   - A summary that reached the store is a write. The provider answers
+//     without an error when the compaction was never triggered and when the
+//     same snapshot is read again, so its answer proves nothing.
+//
+// These tests run offline: no model call, no network.
 
 // scriptedSummaryGenerator stands in for the product's generator.
 type scriptedSummaryGenerator struct {
@@ -59,82 +71,178 @@ func (p *cooldownOnlyProvider) SessionSummary(context.Context, agent.RunContext)
 	return agent.SummarySnapshot{}, agent.ErrSummaryCoolingDown
 }
 
-func TestClassifySummaryFailureReadsTheCause(t *testing.T) {
+// readingProvider answers with a snapshot and never writes. This is what a
+// turn that did not need to compact looks like, and what reading the same
+// stored snapshot again looks like.
+type readingProvider struct {
+	snapshot agent.SummarySnapshot
+}
+
+func (p readingProvider) SessionSummary(context.Context, agent.RunContext) (agent.SummarySnapshot, error) {
+	return p.snapshot, nil
+}
+
+// committingProvider writes the summary to the store once and then reads it
+// back.
+type committingProvider struct {
+	repo  agent.SummaryRepository
+	wrote bool
+}
+
+func (p *committingProvider) SessionSummary(ctx context.Context, input agent.RunContext) (agent.SummarySnapshot, error) {
+	if !p.wrote {
+		p.wrote = true
+		err := p.repo.SaveSummary(ctx, &model.SessionSummary{
+			UserID: input.UserID, SessionID: input.SessionID,
+			Content: "a summary", CoveredMessageID: 7,
+		}, 0)
+		if err != nil {
+			return agent.SummarySnapshot{}, err
+		}
+	}
+	return agent.SummarySnapshot{Content: "a summary", CoveredMessageID: 7}, nil
+}
+
+// fakeSummaryStore is the store behind the counting repository.
+type fakeSummaryStore struct {
+	saved []*model.SessionSummary
+	fail  error
+}
+
+func (s *fakeSummaryStore) GetSummary(context.Context, int64, string) (*model.SessionSummary, error) {
+	if len(s.saved) == 0 {
+		return nil, sessiondao.ErrSummaryNotFound
+	}
+	return s.saved[len(s.saved)-1], nil
+}
+
+func (s *fakeSummaryStore) SaveSummary(_ context.Context, summary *model.SessionSummary, _ uint64) error {
+	if s.fail != nil {
+		return s.fail
+	}
+	s.saved = append(s.saved, summary)
+	return nil
+}
+
+func TestClassifySummaryFailureReadsTheStageBeforeTheCause(t *testing.T) {
 	cases := []struct {
-		name string
-		err  error
-		want summaryFailureCause
+		name  string
+		err   error
+		stage summaryFailureStage
+		want  summaryFailureCause
 	}{
 		{
-			name: "an upstream timeout whose chain survived",
-			err:  contextDeadlineError("Post \"http://127.0.0.1:57655/v1/chat/completions\": context deadline exceeded"),
-			want: summaryCauseUpstreamTimeout,
+			name:  "a timeout of the summary model request",
+			err:   contextDeadlineError("generate rolling summary: failed to create chat completion: Post \"http://127.0.0.1:57655/v1/chat/completions\": context deadline exceeded"),
+			stage: summaryStageModelRequest,
+			want:  summaryCauseUpstreamTimeout,
 		},
 		{
-			name: "an upstream timeout whose chain was flattened into a string",
-			err: errors.New("rolling summary replay: generate rolling summary: failed to create chat completion: " +
-				"Post \"http://127.0.0.1:57655/v1/chat/completions\": context deadline exceeded"),
-			want: summaryCauseUpstreamTimeout,
+			name:  "a timeout of the store, not of the model",
+			err:   contextDeadlineError("publish rolling summary: context deadline exceeded"),
+			stage: summaryStageStorage,
+			want:  summaryCauseStorage,
 		},
 		{
-			name: "an output that was too long",
-			err:  errors.New("rolling summary exceeds output token limit"),
-			want: summaryCauseOutputOverLimit,
+			name:  "a store read that ran out of time",
+			err:   errors.New("read rolling summary: context deadline exceeded"),
+			stage: summaryStageStorage,
+			want:  summaryCauseStorage,
 		},
 		{
-			name: "a body that would not parse",
-			err:  errors.New("decode rolling summary: unexpected end of JSON input"),
-			want: summaryCauseFormatError,
+			name:  "a document that would not parse and mentions a timeout",
+			err:   errors.New("decode rolling summary: context deadline exceeded"),
+			stage: summaryStageDocument,
+			want:  summaryCauseFormatError,
 		},
 		{
-			name: "the summarizer's own input budget",
-			err:  errors.New("oldest unsummarized message exceeds summary input budget"),
-			want: summaryCauseProductOther,
+			name:  "a document the product rejects and mentions a timeout",
+			err:   errors.New("rolling summary cited non-user or unavailable message 12: context deadline exceeded"),
+			stage: summaryStageDocument,
+			want:  summaryCauseFormatError,
 		},
 		{
-			name: "a storage failure",
-			err:  errors.New("save rolling summary: sql: database is closed"),
-			want: summaryCauseStorage,
+			name:  "an output that was too long and mentions a timeout",
+			err:   errors.New("rolling summary exceeds output token limit: context deadline exceeded"),
+			stage: summaryStageBudget,
+			want:  summaryCauseOutputOverLimit,
 		},
 		{
-			name: "the cooldown, which is the failure before it",
-			err:  agent.ErrSummaryCoolingDown,
-			want: summaryCauseNone,
+			name:  "the summarizer's own input budget",
+			err:   errors.New("oldest unsummarized message exceeds summary input budget"),
+			stage: summaryStageBudget,
+			want:  summaryCauseProductOther,
 		},
 		{
-			name: "a skipped stage, which is not a failure at all",
-			err:  agent.ErrSummaryStageSkipped,
-			want: summaryCauseNone,
+			name:  "a timeout whose stage could not be read",
+			err:   errors.New("context deadline exceeded"),
+			stage: summaryStageUnknown,
+			want:  summaryCauseUnknown,
+		},
+		{
+			name:  "a model call that failed for another reason",
+			err:   errors.New("generate rolling summary: upstream refused the request"),
+			stage: summaryStageModelRequest,
+			want:  summaryCauseProductOther,
+		},
+		{
+			name:  "the cooldown, which is the failure before it",
+			err:   agent.ErrSummaryCoolingDown,
+			stage: summaryStageUnknown,
+			want:  summaryCauseNone,
+		},
+		{
+			name:  "a skipped stage, which is not a failure at all",
+			err:   agent.ErrSummaryStageSkipped,
+			stage: summaryStageUnknown,
+			want:  summaryCauseNone,
 		},
 	}
 	for _, one := range cases {
 		t.Run(one.name, func(t *testing.T) {
 			got := classifySummaryFailure(one.err)
 			if got.Cause != one.want {
-				t.Fatalf("cause = %q, want %q (reason %q, text %q)", got.Cause, one.want, got.Reason, got.Text)
+				t.Fatalf("cause = %q, want %q (stage %q, reason %q, text %q)", got.Cause, one.want, got.Stage, got.Reason, got.Text)
+			}
+			if got.Stage != one.stage {
+				t.Fatalf("stage = %q, want %q (cause %q)", got.Stage, one.stage, got.Cause)
 			}
 		})
 	}
 }
 
-// A storage failure and a parse failure are both the product's, and both must
-// stay the product's: neither is the upstream's timeout. They are also
-// different from each other, and the driver has to say which is which.
-func TestClassifySummaryFailureKeepsProductFailuresApartFromTimeouts(t *testing.T) {
-	for _, text := range []string{
-		"save rolling summary: sql: database is closed",
-		"decode rolling summary: unexpected end of JSON input",
-		"rolling summary exceeds output token limit",
-	} {
-		got := classifySummaryFailure(errors.New(text))
-		if got.Cause == summaryCauseUpstreamTimeout {
-			t.Fatalf("%q was read as an upstream timeout: %+v", text, got)
-		}
+// A timeout whose stage could not be read is not the upstream's: the driver
+// cannot prove the summary model request is where it happened.
+func TestClassifySummaryFailureDoesNotClaimAnUnconfirmedTimeout(t *testing.T) {
+	failure := classifySummaryFailure(errors.New("context deadline exceeded"))
+	if failure.Cause == summaryCauseUpstreamTimeout {
+		t.Fatalf("a timeout of an unknown stage was claimed as the model's: %+v", failure)
 	}
-	storage := classifySummaryFailure(errors.New("save rolling summary: sql: database is closed"))
-	format := classifySummaryFailure(errors.New("decode rolling summary: unexpected end of JSON input"))
-	if storage.Cause == format.Cause {
-		t.Fatalf("a storage failure and a parse failure were read as the same cause: %+v and %+v", storage, format)
+	if failure.Cause != summaryCauseUnknown {
+		t.Fatalf("cause = %q, want %q", failure.Cause, summaryCauseUnknown)
+	}
+}
+
+// The product's own reason is reported as it is; the driver's cause is the
+// driver's own reading and does not overwrite it.
+func TestClassifySummaryFailureAgreesWithTheProductsReason(t *testing.T) {
+	err := contextDeadlineError("generate rolling summary: context deadline exceeded")
+	if reason := agent.SummaryFailureReasonOf(err); reason != agent.SummaryFailureTimeout {
+		t.Fatalf("the product's reason = %q, want %q", reason, agent.SummaryFailureTimeout)
+	}
+	failure := classifySummaryFailure(err)
+	if failure.Reason != agent.SummaryFailureTimeout {
+		t.Fatalf("the driver read the reason as %q, want %q", failure.Reason, agent.SummaryFailureTimeout)
+	}
+}
+
+// The failure's text is kept short: a reader has to be able to tell two
+// failures apart, not to read the whole request back.
+func TestClassifySummaryFailureKeepsTheTextShort(t *testing.T) {
+	err := fmt.Errorf("generate rolling summary: %s", fmt.Sprintf("%0*d", maxFailureText*2, 0))
+	failure := classifySummaryFailure(err)
+	if len(failure.Text) > maxFailureText {
+		t.Fatalf("the failure text is %d bytes, want at most %d", len(failure.Text), maxFailureText)
 	}
 }
 
@@ -142,11 +250,11 @@ func TestClassifySummaryOutcomeTimeoutWithNoSummaryIsTheEnvironment(t *testing.T
 	replay := rollingReplay{
 		cooldowns:    1,
 		hasFailure:   true,
-		firstFailure: summaryFailure{Reason: agent.SummaryFailureTimeout, Cause: summaryCauseUpstreamTimeout, Text: "context deadline exceeded"},
+		firstFailure: summaryFailure{Reason: agent.SummaryFailureTimeout, Stage: summaryStageModelRequest, Cause: summaryCauseUpstreamTimeout, Text: "context deadline exceeded"},
 	}
 	outcome := classifySummaryOutcome(LayeredArmTruncated, replay, 0)
 	if outcome.EnvironmentFailure == "" {
-		t.Fatalf("a timeout that left no summary behind is not marked as an environment failure: %+v", outcome)
+		t.Fatalf("a timeout of the model request that left no summary behind is not marked as an environment failure: %+v", outcome)
 	}
 	if outcome.WriteFailure != "" {
 		t.Fatalf("an upstream timeout is not a product write failure: %+v", outcome)
@@ -164,7 +272,7 @@ func TestClassifySummaryOutcomeTimeoutWithoutACooldownIsStillTheEnvironment(t *t
 	replay := rollingReplay{
 		cooldowns:    0,
 		hasFailure:   true,
-		firstFailure: summaryFailure{Reason: agent.SummaryFailureTimeout, Cause: summaryCauseUpstreamTimeout, Text: "context deadline exceeded"},
+		firstFailure: summaryFailure{Reason: agent.SummaryFailureTimeout, Stage: summaryStageModelRequest, Cause: summaryCauseUpstreamTimeout, Text: "context deadline exceeded"},
 	}
 	outcome := classifySummaryOutcome(LayeredArmTruncated, replay, 0)
 	if outcome.EnvironmentFailure == "" {
@@ -179,17 +287,19 @@ func TestClassifySummaryOutcomeProductFailureAfterCooldownIsNotTheEnvironment(t 
 	cases := []struct {
 		name  string
 		cause summaryFailureCause
+		stage summaryFailureStage
 	}{
-		{name: "an output that was too long", cause: summaryCauseOutputOverLimit},
-		{name: "a body that would not parse", cause: summaryCauseFormatError},
-		{name: "a storage failure", cause: summaryCauseProductOther},
+		{name: "an output that was too long", cause: summaryCauseOutputOverLimit, stage: summaryStageBudget},
+		{name: "a body that would not parse", cause: summaryCauseFormatError, stage: summaryStageDocument},
+		{name: "a storage failure", cause: summaryCauseStorage, stage: summaryStageStorage},
+		{name: "the summarizer's own budget", cause: summaryCauseProductOther, stage: summaryStageBudget},
 	}
 	for _, one := range cases {
 		t.Run(one.name, func(t *testing.T) {
 			replay := rollingReplay{
 				cooldowns:    7,
 				hasFailure:   true,
-				firstFailure: summaryFailure{Reason: agent.SummaryFailureLength, Cause: one.cause, Text: "the failure"},
+				firstFailure: summaryFailure{Reason: agent.SummaryFailureLength, Stage: one.stage, Cause: one.cause, Text: "the failure"},
 			}
 			outcome := classifySummaryOutcome(LayeredArmTruncated, replay, 0)
 			if outcome.EnvironmentFailure != "" {
@@ -205,6 +315,26 @@ func TestClassifySummaryOutcomeProductFailureAfterCooldownIsNotTheEnvironment(t 
 	}
 }
 
+// A timeout whose stage could not be read is 待核: it is neither the
+// environment's nor the product's, and it is not a reason to exclude the run
+// from the statistics.
+func TestClassifySummaryOutcomeUnconfirmedTimeoutIsPendingVerification(t *testing.T) {
+	replay := rollingReplay{
+		hasFailure:   true,
+		firstFailure: summaryFailure{Reason: agent.SummaryFailureTimeout, Stage: summaryStageUnknown, Cause: summaryCauseUnknown, Text: "context deadline exceeded"},
+	}
+	outcome := classifySummaryOutcome(LayeredArmTruncated, replay, 0)
+	if outcome.EnvironmentFailure != "" {
+		t.Fatalf("a timeout of an unknown stage was marked as an environment failure: %+v", outcome)
+	}
+	if outcome.WriteFailure != "" {
+		t.Fatalf("a timeout of an unknown stage was marked as a product failure: %+v", outcome)
+	}
+	if outcome.Unknown == "" {
+		t.Fatalf("a timeout of an unknown stage was not marked 待核: %+v", outcome)
+	}
+}
+
 // A timeout that left a usable summary behind does not void the answer: the
 // arm still answered from a compression, and the write phase's failure is a
 // fact to report.
@@ -212,7 +342,7 @@ func TestClassifySummaryOutcomeTimeoutWithASummaryKeepsTheResult(t *testing.T) {
 	replay := rollingReplay{
 		cooldowns:    1,
 		hasFailure:   true,
-		firstFailure: summaryFailure{Reason: agent.SummaryFailureTimeout, Cause: summaryCauseUpstreamTimeout, Text: "context deadline exceeded"},
+		firstFailure: summaryFailure{Reason: agent.SummaryFailureTimeout, Stage: summaryStageModelRequest, Cause: summaryCauseUpstreamTimeout, Text: "context deadline exceeded"},
 	}
 	outcome := classifySummaryOutcome(LayeredArmTruncated, replay, 128)
 	if outcome.EnvironmentFailure != "" {
@@ -245,7 +375,7 @@ func TestClassifySummaryOutcomeLeavesTheLayeredArmAlone(t *testing.T) {
 	replay := rollingReplay{
 		cooldowns:    3,
 		hasFailure:   true,
-		firstFailure: summaryFailure{Reason: agent.SummaryFailureTimeout, Cause: summaryCauseUpstreamTimeout, Text: "context deadline exceeded"},
+		firstFailure: summaryFailure{Reason: agent.SummaryFailureTimeout, Stage: summaryStageModelRequest, Cause: summaryCauseUpstreamTimeout, Text: "context deadline exceeded"},
 	}
 	outcome := classifySummaryOutcome(LayeredArmOn, replay, 0)
 	if outcome != (summaryOutcome{}) {
@@ -257,7 +387,7 @@ func TestClassifySummaryOutcomeLeavesTheLayeredArmAlone(t *testing.T) {
 // caused the cooldown, and it does not let a later cooldown overwrite it.
 func TestReplayRollingSummariesKeepsTheFirstRealFailure(t *testing.T) {
 	generator := &scriptedSummaryGenerator{
-		err: contextDeadlineError("Post \"http://127.0.0.1:57655/v1/chat/completions\": context deadline exceeded"),
+		err: contextDeadlineError("generate rolling summary: failed to create chat completion: Post \"http://127.0.0.1:57655/v1/chat/completions\": context deadline exceeded"),
 	}
 	counting := &countingSummaryGenerator{inner: generator}
 	provider := &stagedSummaryProvider{inner: counting}
@@ -270,6 +400,9 @@ func TestReplayRollingSummariesKeepsTheFirstRealFailure(t *testing.T) {
 	if replay.firstFailure.Cause != summaryCauseUpstreamTimeout {
 		t.Fatalf("cause = %q, want %q", replay.firstFailure.Cause, summaryCauseUpstreamTimeout)
 	}
+	if replay.firstFailure.Stage != summaryStageModelRequest {
+		t.Fatalf("stage = %q, want %q", replay.firstFailure.Stage, summaryStageModelRequest)
+	}
 	if replay.cooldowns != 2 {
 		t.Fatalf("cooldowns = %d, want 2", replay.cooldowns)
 	}
@@ -277,9 +410,6 @@ func TestReplayRollingSummariesKeepsTheFirstRealFailure(t *testing.T) {
 	// produced nothing.
 	if replay.compactions != 1 {
 		t.Fatalf("compactions = %d, want 1", replay.compactions)
-	}
-	if replay.writes != 0 {
-		t.Fatalf("writes = %d, want 0", replay.writes)
 	}
 	outcome := classifySummaryOutcome(LayeredArmTruncated, replay, 0)
 	if outcome.EnvironmentFailure == "" {
@@ -308,48 +438,68 @@ func TestReplayRollingSummariesWithOnlyCooldownsHasNoCause(t *testing.T) {
 	}
 }
 
-// A successful compaction is a write, not only a call.
-func TestReplayRollingSummariesCountsWritesSeparatelyFromCalls(t *testing.T) {
-	provider := &writeOnlyProvider{}
-	counting := &countingSummaryGenerator{inner: &scriptedSummaryGenerator{}}
+// A summary is a write only when it reached the store.
+//
+// The provider answers without an error when the compaction was never
+// triggered, when the stored summary was read, and when the same snapshot is
+// read again. Counting those would say the arm held a compression it never
+// held.
+func TestSummaryWritesCountOnlyRealCommits(t *testing.T) {
+	t.Run("a turn that never needed to compact", func(t *testing.T) {
+		store := &fakeSummaryStore{}
+		counting := &countingSummaryRepository{inner: store}
+		provider := readingProvider{snapshot: agent.SummarySnapshot{Content: "the stored summary", CoveredMessageID: 3}}
+		replay := rollingReplay{provider: provider}
+		replayRollingSummaries(context.Background(), provider, agent.RunContext{UserID: 7001, SessionID: "s"}, 5, &replay, nil)
+
+		if got := counting.writes.Load(); got != 0 {
+			t.Fatalf("writes = %d, want 0: no compaction reached the store", got)
+		}
+		if len(store.saved) != 0 {
+			t.Fatalf("the store holds %d summaries, want 0", len(store.saved))
+		}
+	})
+
+	t.Run("the same snapshot read again", func(t *testing.T) {
+		store := &fakeSummaryStore{saved: []*model.SessionSummary{{Content: "the stored summary", CoveredMessageID: 3}}}
+		counting := &countingSummaryRepository{inner: store}
+		provider := readingProvider{snapshot: agent.SummarySnapshot{Content: "the stored summary", CoveredMessageID: 3}}
+		replay := rollingReplay{provider: provider}
+		replayRollingSummaries(context.Background(), provider, agent.RunContext{UserID: 7001, SessionID: "s"}, 4, &replay, nil)
+
+		if got := counting.writes.Load(); got != 0 {
+			t.Fatalf("writes = %d, want 0: reading a snapshot is not a write", got)
+		}
+		if len(store.saved) != 1 {
+			t.Fatalf("the store holds %d summaries, want 1 (the one that was already there)", len(store.saved))
+		}
+	})
+
+	t.Run("a compaction that really reached the store", func(t *testing.T) {
+		store := &fakeSummaryStore{}
+		counting := &countingSummaryRepository{inner: store}
+		provider := &committingProvider{repo: counting}
+		replay := rollingReplay{provider: provider}
+		replayRollingSummaries(context.Background(), provider, agent.RunContext{UserID: 7001, SessionID: "s"}, 3, &replay, nil)
+
+		if got := counting.writes.Load(); got != 1 {
+			t.Fatalf("writes = %d, want 1: one summary reached the store", got)
+		}
+		if len(store.saved) != 1 {
+			t.Fatalf("the store holds %d summaries, want 1", len(store.saved))
+		}
+	})
+}
+
+// A save that failed is not a write.
+func TestSummaryWritesDoNotCountAFailedSave(t *testing.T) {
+	store := &fakeSummaryStore{fail: errors.New("sql: database is closed")}
+	counting := &countingSummaryRepository{inner: store}
+	provider := &committingProvider{repo: counting}
 	replay := rollingReplay{provider: provider}
-	replayRollingSummaries(context.Background(), provider, agent.RunContext{UserID: 7001, SessionID: "s"}, 2, &replay, counting)
+	replayRollingSummaries(context.Background(), provider, agent.RunContext{UserID: 7001, SessionID: "s"}, 2, &replay, nil)
 
-	if replay.writes != 2 {
-		t.Fatalf("writes = %d, want 2", replay.writes)
-	}
-	if len(replay.degraded) != 0 {
-		t.Fatalf("a successful replay reported degradations: %v", replay.degraded)
-	}
-}
-
-// writeOnlyProvider succeeds without spending a model call.
-type writeOnlyProvider struct{ calls int }
-
-func (p *writeOnlyProvider) SessionSummary(context.Context, agent.RunContext) (agent.SummarySnapshot, error) {
-	p.calls++
-	return agent.SummarySnapshot{Content: "a summary"}, nil
-}
-
-// The product's own reason for a timeout is read from the error chain, and
-// the driver must not disagree with it.
-func TestClassifySummaryFailureAgreesWithTheProductsReason(t *testing.T) {
-	err := contextDeadlineError("context deadline exceeded")
-	if reason := agent.SummaryFailureReasonOf(err); reason != agent.SummaryFailureTimeout {
-		t.Fatalf("the product's reason = %q, want %q", reason, agent.SummaryFailureTimeout)
-	}
-	failure := classifySummaryFailure(err)
-	if failure.Reason != agent.SummaryFailureTimeout {
-		t.Fatalf("the driver read the reason as %q, want %q", failure.Reason, agent.SummaryFailureTimeout)
-	}
-}
-
-// The failure's text is kept short: a reader has to be able to tell two
-// failures apart, not to read the whole request back.
-func TestClassifySummaryFailureKeepsTheTextShort(t *testing.T) {
-	err := fmt.Errorf("generate rolling summary: %s", fmt.Sprintf("%0*d", maxFailureText*2, 0))
-	failure := classifySummaryFailure(err)
-	if len(failure.Text) > maxFailureText {
-		t.Fatalf("the failure text is %d bytes, want at most %d", len(failure.Text), maxFailureText)
+	if got := counting.writes.Load(); got != 0 {
+		t.Fatalf("writes = %d, want 0: the summary never reached the store", got)
 	}
 }

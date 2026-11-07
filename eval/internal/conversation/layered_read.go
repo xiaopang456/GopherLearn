@@ -241,8 +241,10 @@ type LayeredRead struct {
 	// compactions that actually produced a summary, and the two together are
 	// what say whether the arm ever held a compression.
 	SummaryCompactions int `json:"summary_compactions"`
-	// SummaryWrites is how many compactions produced a summary. A call that
-	// failed is not a write.
+	// SummaryWrites is how many compactions produced a summary that reached
+	// the store. A call that failed is not a write, and neither is a turn
+	// that only read the snapshot: the count comes from the store itself, not
+	// from the provider's answer.
 	SummaryWrites int `json:"summary_writes"`
 	// SummaryCooldowns is how many of the truncated arm's compactions the
 	// failure cooldown refused. A cooldown is not a failure of its own - it
@@ -260,6 +262,12 @@ type LayeredRead struct {
 	// product's, and it is read from the FIRST failure - the one that caused
 	// the cooldown - because the cooldown itself does not say.
 	SummaryFailureCause string `json:"summary_failure_cause,omitempty"`
+	// SummaryFailureStage is where that failure happened: model_request,
+	// storage, document, budget, or unknown. The stage is what the cause
+	// follows from: a timeout is the upstream's only when the stage is the
+	// summary model request, and a timeout in a stage that could not be read
+	// is 待核 rather than the environment's.
+	SummaryFailureStage string `json:"summary_failure_stage,omitempty"`
 	// SummaryFailureText is the first failure's message, kept short.
 	SummaryFailureText string `json:"summary_failure_text,omitempty"`
 	// WriteFailure names a run the product's own writer decided: the
@@ -470,6 +478,7 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 		if replay.hasFailure {
 			read.SummaryFailureReason = string(replay.firstFailure.Reason)
 			read.SummaryFailureCause = string(replay.firstFailure.Cause)
+			read.SummaryFailureStage = string(replay.firstFailure.Stage)
 			read.SummaryFailureText = replay.firstFailure.Text
 		}
 	}
@@ -1289,7 +1298,11 @@ func replayRollingSummaries(ctx context.Context, provider agent.SummaryProvider,
 		_, err := provider.SessionSummary(ctx, input)
 		switch {
 		case err == nil:
-			replay.writes++
+			// No error is not a write: the provider answers without one when
+			// the compaction was never triggered, when the stored summary was
+			// simply read, and when the same snapshot is read again. The
+			// count of real writes comes from the store (see
+			// countingSummaryRepository).
 		case ctx.Err() != nil:
 			return
 		default:
@@ -1331,8 +1344,13 @@ func replayProductRollingSummary(ctx context.Context, s *Sandbox, settings *entr
 		return rollingReplay{}, err
 	}
 	counting := &countingSummaryGenerator{inner: generator}
+	// The store counts the summaries that were actually written. The
+	// provider's own answer is not proof of a write: it answers without an
+	// error when the compaction was never triggered, when the stored summary
+	// was read, and when the same snapshot is read again.
+	repository := &countingSummaryRepository{inner: sessiondao.NewRepository(s.db)}
 	provider, err := agent.NewRollingSummaryProvider(
-		sessiondao.NewRepository(s.db),
+		repository,
 		historyAdapter{store: guardedStore{s}, sessionID: sessionID},
 		counting, summaryConfig)
 	if err != nil {
@@ -1341,6 +1359,7 @@ func replayProductRollingSummary(ctx context.Context, s *Sandbox, settings *entr
 	replay := rollingReplay{provider: provider}
 	replayRollingSummaries(ctx, provider, agent.RunContext{UserID: 7001, SessionID: sessionID},
 		len(messages), &replay, counting)
+	replay.writes = int(repository.writes.Load())
 	return replay, nil
 }
 
