@@ -53,7 +53,7 @@ func integratedImageJudged(dockerfile, moduleSeries, baselineDockerfile string) 
 	// All three modules must reach the context: hybrid replaces GopherAI with ../v2 and the
 	// root module with .. (hybrid/go.mod:94,96), so a build missing any one of them cannot
 	// resolve the hybrid -> V2 -> root chain.
-	for _, want := range []string{"COPY cmd ./cmd", "COPY internal ./internal", "COPY conversation ./conversation", "COPY v2 ./v2", "COPY hybrid ./hybrid"} {
+	for _, want := range []string{"COPY cmd ./cmd", "COPY internal ./internal", "COPY httpwire ./httpwire", "COPY v2 ./v2", "COPY hybrid ./hybrid"} {
 		if !strings.Contains(dockerfile, want) {
 			problems = append(problems, fmt.Sprintf("integrated build is missing %q: the hybrid -> V2 -> root chain needs every tree", want))
 		}
