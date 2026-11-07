@@ -243,6 +243,10 @@ go -C v2 run ./cmd/summaryconvert -config ../config.toml -apply   # 机械转换
 产品自己的读取器解码转换结果，通不过就不写。转不了的行（读不出来的 JSON、无法表达成消息号的引用、
 超出文档预算）一律**列出来、不改那一行**。
 
+"文档预算"取的是**这份配置里的那三个数**（`summaryGroupItemLimit` / `summaryOpenLoopsItemLimit` /
+`summaryEvidenceIDLimit`），和运行时摘要器用的是同一套判定：部署调小了就拒掉装不下的行，调大了就
+不会误拒装得下的行。
+
 `maxToolCalls` / `maxModelCalls` / `maxGraphSteps` 三个数必须**互相够得着**，否则启动报错并说明是哪一处不够：
 
 - `maxModelCalls` 至少是 `maxToolCalls + 1`：每轮工具都要一次"决定调用工具"的生成，最后还要一次生成来写答案。

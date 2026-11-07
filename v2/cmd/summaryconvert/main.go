@@ -33,7 +33,7 @@ import (
 	"GopherAI/common/mysql"
 	"GopherAI/config"
 	"GopherAI/internal/summaryconvert"
-	"GopherAI/model"
+	agentService "GopherAI/service/agent"
 
 	"github.com/gin-gonic/gin"
 )
@@ -61,16 +61,28 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
-	options := summaryconvert.Options{
-		Apply:  *apply,
-		Limit:  *limit,
-		Budget: model.DefaultSummaryBudget(),
-	}
+	options := summaryOptions(loaded, *apply, *limit)
 	report, err := summaryconvert.NewRunner(summaryconvert.NewStore(db), options).Run(ctx)
 	if err != nil {
 		fatal("convert stored summaries: %v", err)
 	}
 	printReport(report)
+}
+
+// summaryOptions carries the deployment's own summary budget into the command.
+// The converter has to judge a row the way the runtime does: a row this
+// deployment can store must not be refused here, and a row it cannot hold must
+// not be written.
+func summaryOptions(conf *config.Config, apply bool, limit int) summaryconvert.Options {
+	return summaryconvert.Options{
+		Apply: apply,
+		Limit: limit,
+		Budget: agentService.SummaryBudgetOf(
+			conf.AgentConfig.SummaryGroupItemLimit,
+			conf.AgentConfig.SummaryOpenLoopsItemLimit,
+			conf.AgentConfig.SummaryEvidenceIDLimit,
+		),
+	}
 }
 
 func printReport(report summaryconvert.Report) {
