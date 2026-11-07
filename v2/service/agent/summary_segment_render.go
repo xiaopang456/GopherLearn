@@ -110,6 +110,21 @@ func RenderedWhiteboardTokens(board model.SessionWhiteboardDocument) int {
 // segments. It is the same number the block's own loop adds.
 const segmentSeparatorTokens = 4
 
+// SummarySegmentBlockHeaderTokens is what a segment block spends on its own
+// header, before any segment is rendered.
+//
+// The renderer charges this first and then walks the segments, so it comes out
+// of the same budget the segments come out of. A preselector that measured its
+// candidates against the whole block budget, rather than against what is left
+// of it, could therefore select a segment the renderer had no room for: the
+// selection would be reported and then silently dropped.
+//
+// The number is a function rather than a constant because the header is text,
+// and the estimator is the one the block is charged in.
+func SummarySegmentBlockHeaderTokens() int {
+	return rag.EstimateTokens(summarySegmentsBlockHeader) + 4
+}
+
 // RenderedSegmentTokens is what one stored segment costs the block that
 // carries it.
 //

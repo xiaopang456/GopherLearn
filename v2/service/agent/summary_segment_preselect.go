@@ -70,6 +70,15 @@ type SummarySegmentPreselector struct {
 // fit, the ones that survive are the newest - not the ones the preselector
 // ranked highest - and the ranking it paid an embedding call for is thrown away.
 //
+// The block's own header is charged from the same budget the segments come out
+// of, so the budget the segments share is what is left after the header. A
+// preselector that measured against the whole block would select a segment the
+// renderer had no room for: the selection would be reported and then dropped
+// without a word. This is the same class of mistake as the two rulers the
+// block budgets were fixed for - a cap stated in one unit and measured in
+// another - and it is why the subtraction happens here rather than in each
+// caller.
+//
 // The count is a division, not a wish: a segment is indivisible here, and one
 // segment is the smallest useful block. A total below one segment's worth still
 // yields one, because selecting nothing is a different failure from selecting
@@ -81,11 +90,17 @@ func SummarySegmentPreselectLimits(totalTokens, segmentTokens int) (segments, pe
 	if totalTokens <= 0 {
 		totalTokens = segmentTokens
 	}
-	segments = totalTokens / segmentTokens
+	// The header comes out of the block budget first, so this is what the
+	// segments may spend between them.
+	usable := totalTokens - SummarySegmentBlockHeaderTokens()
+	if usable < 1 {
+		usable = 1
+	}
+	segments = usable / segmentTokens
 	if segments < 1 {
 		segments = 1
 	}
-	return segments, segmentTokens, totalTokens
+	return segments, segmentTokens, usable
 }
 
 // NewSummarySegmentPreselector builds a preselector.

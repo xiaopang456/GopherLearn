@@ -34,9 +34,14 @@ func TestTheLayeredBudgetsAreAllStatedOnTheRenderedBlock(t *testing.T) {
 		t.Fatalf("one segment may carry %d tokens in a block and %d when preselected",
 			DefaultSegmentTokens, perSegment)
 	}
-	if total != DefaultRetrievedSegmentTokens {
-		t.Fatalf("the preselection may spend %d on a block that carries %d",
-			total, DefaultRetrievedSegmentTokens)
+	// The block's header is part of the block's budget, and the renderer
+	// charges it before it looks at a segment. The preselection therefore
+	// spends what is left of the budget, not the budget itself: a preselector
+	// that spent the whole budget would pick a segment the renderer then
+	// drops without a word.
+	if total+SummarySegmentBlockHeaderTokens() != DefaultRetrievedSegmentTokens {
+		t.Fatalf("the preselection may spend %d on a block that carries %d (header %d)",
+			total, DefaultRetrievedSegmentTokens, SummarySegmentBlockHeaderTokens())
 	}
 	if segments < 1 || segments*perSegment > total {
 		t.Fatalf("the derivation spends %d x %d on a block of %d", segments, perSegment, total)

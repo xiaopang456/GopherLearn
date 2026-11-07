@@ -54,12 +54,17 @@ func TestThePreselectionBudgetCanRejectEveryCandidate(t *testing.T) {
 // resident block 310 tokens, which holds one 300-token segment, so the fixed
 // two asked the renderer for a segment it could never send. Both blocks now
 // divide by the same segment size.
+//
+// The block's own header comes out of its budget first, so a block that
+// carries four 300-token segments needs room for the header as well. The
+// shipped 1200-token block therefore holds three, not four.
 func TestTheResidentSetIsSizedByItsOwnBlock(t *testing.T) {
+	header := SummarySegmentBlockHeaderTokens()
 	for _, c := range []struct {
 		name                     string
 		resident, segment, count int
 	}{
-		{"shipped", DefaultResidentSegmentTokens, DefaultSegmentTokens, 4},
+		{"shipped", DefaultResidentSegmentTokens, DefaultSegmentTokens, 3},
 		{"scaled", 310, 300, 1},
 		{"below one segment", 120, 300, 1},
 		{"no resident budget", 0, 300, 1},
@@ -70,9 +75,16 @@ func TestTheResidentSetIsSizedByItsOwnBlock(t *testing.T) {
 		}
 	}
 	// The floor is a floor, not a clamp that hides a configuration mistake the
-	// other way round: a block wide enough for four asks for four.
+	// other way round: a block wide enough for five asks for five.
 	if ResidentSegmentCount(1600, 300) != 5 {
 		t.Fatal("a block of five segments asked for fewer")
+	}
+	// The count the rule derives is a count that fits: the segments it asks
+	// for and the block's own header together stay inside the block.
+	residents := ResidentSegmentCount(DefaultResidentSegmentTokens, DefaultSegmentTokens)
+	if residents*DefaultSegmentTokens+header > DefaultResidentSegmentTokens {
+		t.Fatalf("the shipped block asks for %d segments of %d tokens, which does not fit together with the %d-token header",
+			residents, DefaultSegmentTokens, header)
 	}
 }
 

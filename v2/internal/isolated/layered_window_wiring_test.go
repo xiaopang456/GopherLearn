@@ -42,9 +42,14 @@ func TestTheConfiguredBlockBudgetsMatchTheAgentDefaults(t *testing.T) {
 // Two failures are possible here and only one of them is loud. A preselector
 // that keeps its defaults with a smaller block hands the renderer more segments
 // than fit; the renderer keeps the newest, so what arrives is not what was
-// ranked, and nothing errors. The scaled configuration is exactly where that
-// shows: a 310-token block holds one 300-token segment, so the selection must be
-// one segment wide.
+// ranked, and nothing errors.
+//
+// The block's own header is part of what the block carries, so the preselector
+// spends what is left of the budget after the header. A 310-token block leaves
+// 251 tokens for segments, which is fewer than one full segment: the count
+// stays at the floor of one, but the renderer will skip a segment that does
+// not fit, and the selection will be reported and then dropped. A block that
+// has to carry a segment needs room for the header as well - 59 + 304 = 363.
 func TestTheEntrySizesThePreselectorFromTheBlockBudget(t *testing.T) {
 	s := testSettings(t)
 	s.Config.AgentConfig.ContextMaxRetrievedSegmentTokens = 310
@@ -55,9 +60,10 @@ func TestTheEntrySizesThePreselectorFromTheBlockBudget(t *testing.T) {
 		t.Fatalf("build the preselector: %v", err)
 	}
 	segments, perSegment, total := preselector.Limits()
-	if segments != 1 || perSegment != 300 || total != 310 {
-		t.Fatalf("the preselector runs with %d x %d within %d, want 1 x 300 within 310",
-			segments, perSegment, total)
+	want := 310 - agentService.SummarySegmentBlockHeaderTokens()
+	if segments != 1 || perSegment != 300 || total != want {
+		t.Fatalf("the preselector runs with %d x %d within %d, want 1 x 300 within %d",
+			segments, perSegment, total, want)
 	}
 }
 
@@ -75,9 +81,10 @@ func TestTheEntryPreselectorUsesTheShippedBudgets(t *testing.T) {
 		t.Fatalf("one segment is %d in the preselector and %d in the block",
 			perSegment, s.Config.AgentConfig.ContextMaxSegmentTokens)
 	}
-	if total != s.Config.AgentConfig.ContextMaxRetrievedSegmentTokens {
-		t.Fatalf("the set is %d in the preselector and %d in the block",
-			total, s.Config.AgentConfig.ContextMaxRetrievedSegmentTokens)
+	if total+agentService.SummarySegmentBlockHeaderTokens() != s.Config.AgentConfig.ContextMaxRetrievedSegmentTokens {
+		t.Fatalf("the set is %d plus a %d-token header, against a block of %d",
+			total, agentService.SummarySegmentBlockHeaderTokens(),
+			s.Config.AgentConfig.ContextMaxRetrievedSegmentTokens)
 	}
 	if segments != total/perSegment {
 		t.Fatalf("%d segments do not divide %d by %d", segments, total, perSegment)
