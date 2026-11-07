@@ -8,7 +8,7 @@ import (
 )
 
 func TestHTTPOriginalUserRevalidationDatabaseFailureAndUnknownStoredMode(t *testing.T) {
-	app, db, _, _, token, _ := httpFixture(t)
+	app, db, _, token, _ := httpFixture(t)
 	if err := db.Create(&model.Session{ID: "unknown-mode", UserID: 1, UserName: "learner", Mode: model.SessionMode("unexpected")}).Error; err != nil {
 		t.Fatal(err)
 	}

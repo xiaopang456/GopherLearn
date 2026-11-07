@@ -12,7 +12,6 @@ import (
 	"fmt"
 	modelcomponent "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
-	"github.com/xiaopang456/GopherLearn/conversation"
 	"gorm.io/gorm"
 	"io"
 	"net/http"
@@ -91,21 +90,20 @@ func publicStreamBody(key, q string) string {
 	b, _ := json.Marshal(map[string]any{"content": q, "requestId": key, "stream_steps": true})
 	return string(b)
 }
-func sseFixture(t *testing.T, plan func(int, []*schema.Message) streamPlan) (*Application, *gorm.DB, *fragmentAgentModel, *ordinaryModel, string, string) {
+func sseFixture(t *testing.T, plan func(int, []*schema.Message) streamPlan) (*Application, *gorm.DB, *fragmentAgentModel, string, string) {
 	t.Helper()
 	return sseFixtureWithSettings(t, testSettings(t), plan)
 }
 
-func sseFixtureWithSettings(t *testing.T, settings *entry.Settings, plan func(int, []*schema.Message) streamPlan) (*Application, *gorm.DB, *fragmentAgentModel, *ordinaryModel, string, string) {
+func sseFixtureWithSettings(t *testing.T, settings *entry.Settings, plan func(int, []*schema.Message) streamPlan) (*Application, *gorm.DB, *fragmentAgentModel, string, string) {
 	t.Helper()
 	db := sqliteDatabase(t)
-	ordinary := &ordinaryModel{}
 	base := &scriptedChatModel{}
 	m := &fragmentAgentModel{scriptedChatModel: base, plan: plan}
 	migrations := 0
 	deps := dependencies(t, db, base, &testChunks{}, &migrations)
 	deps.ChatModel = func(context.Context, *entry.Settings) (modelcomponent.ToolCallingChatModel, error) { return m, nil }
-	app, err := Assemble(context.Background(), settings, deps, ordinary, conversation.Options{})
+	app, err := Assemble(context.Background(), settings, deps)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +124,7 @@ func sseFixtureWithSettings(t *testing.T, settings *entry.Settings, plan func(in
 	if migrations != 0 {
 		t.Fatal("business migration")
 	}
-	return app, db, m, ordinary, loginHTTP(t, app.Handler, "learner@invalid.example"), loginHTTP(t, app.Handler, "other@invalid.example")
+	return app, db, m, loginHTTP(t, app.Handler, "learner@invalid.example"), loginHTTP(t, app.Handler, "other@invalid.example")
 }
 
 type wireFrame struct {
@@ -186,7 +184,7 @@ func streamAgentHTTP(t *testing.T, app *Application, token, sid, key, q string) 
 
 func TestAgentSSERealFragmentsFlushBeforeModelEnds(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
-	app, db, m, ordinary, token, _ := sseFixture(t, func(int, []*schema.Message) streamPlan {
+	app, db, m, token, _ := sseFixture(t, func(int, []*schema.Message) streamPlan {
 		return streamPlan{parts: pieces("你好", "，公开片段"), entered: entered, release: release}
 	})
 	sid := createAgentHTTP(t, app, token, "create-live-001", "Agent")
@@ -233,7 +231,7 @@ func TestAgentSSERealFragmentsFlushBeforeModelEnds(t *testing.T) {
 	delta := named(all, "agent.text.delta")
 	end := named(all, "agent.text.ended")
 	done := named(all, "message.completed")
-	if len(delta) != 2 || delta[0].data["content"] != "你好" || delta[1].data["content"] != "，公开片段" || len(done) != 1 || done[0].data["content"] != "你好，公开片段" || done[0].data["final_block_id"] != end[0].data["block_id"] || m.CallCount() != 1 || len(ordinary.all()) != 0 {
+	if len(delta) != 2 || delta[0].data["content"] != "你好" || delta[1].data["content"] != "，公开片段" || len(done) != 1 || done[0].data["content"] != "你好，公开片段" || done[0].data["final_block_id"] != end[0].data["block_id"] || m.CallCount() != 1 {
 		t.Fatalf("actual fragment/confirmation %v", all)
 	}
 	rows := agentRows(t, db, sid)
@@ -243,7 +241,7 @@ func TestAgentSSERealFragmentsFlushBeforeModelEnds(t *testing.T) {
 }
 
 func TestAgentSSEToolRoundIsProcessAndCandidateOnlyConfirmedAtCompletion(t *testing.T) {
-	app, db, m, _, token, _ := sseFixture(t, func(n int, _ []*schema.Message) streamPlan {
+	app, db, m, token, _ := sseFixture(t, func(n int, _ []*schema.Message) streamPlan {
 		if n == 1 {
 			parts := []*schema.Message{{Role: schema.Assistant, Content: "我先生成草稿。", ToolCalls: []schema.ToolCall{{ID: "PRIVATE_TOOL_CALL", Type: "function", Function: schema.FunctionCall{Name: "propose_memory", Arguments: `{"scope":"global","subject":"讲解偏好","content":"我喜欢简短讲解","durability":"stable"}`}}}}}
 			return streamPlan{parts: parts}
@@ -276,7 +274,7 @@ func TestAgentSSEToolRoundIsProcessAndCandidateOnlyConfirmedAtCompletion(t *test
 func TestAgentSSERepairRefusalReplayAndDeterministicPublication(t *testing.T) {
 	for _, scenario := range []string{"repair", "refusal", "deterministic"} {
 		t.Run(scenario, func(t *testing.T) {
-			app, db, m, _, token, _ := sseFixture(t, func(n int, _ []*schema.Message) streamPlan {
+			app, db, m, token, _ := sseFixture(t, func(n int, _ []*schema.Message) streamPlan {
 				if n == 1 {
 					return streamPlan{parts: pieces("候选 [E9]")}
 				}
@@ -324,7 +322,7 @@ func TestAgentSSERepairRefusalReplayAndDeterministicPublication(t *testing.T) {
 func TestAgentSSEFailuresNeverConfirmUnstoredOrPartialAnswer(t *testing.T) {
 	for _, fault := range []string{"model", "truncated", "user-store", "assistant-store", "write-text", "write-completed", "cancel"} {
 		t.Run(fault, func(t *testing.T) {
-			app, db, m, _, token, _ := sseFixture(t, func(int, []*schema.Message) streamPlan {
+			app, db, m, token, _ := sseFixture(t, func(int, []*schema.Message) streamPlan {
 				p := streamPlan{parts: pieces("公开片段")}
 				if fault == "model" {
 					p.failure = errors.New("synthetic stream transport fault")
@@ -401,7 +399,7 @@ func TestAgentSSEFailuresNeverConfirmUnstoredOrPartialAnswer(t *testing.T) {
 // This records a source limitation, not successful late-tool execution: the
 // frozen Eino checker chooses its branch at the first nonempty Content chunk.
 func TestAgentSSELateToolSourceLimitationMatchesNonStreaming(t *testing.T) {
-	app, db, m, _, token, _ := sseFixture(t, func(int, []*schema.Message) streamPlan {
+	app, db, m, token, _ := sseFixture(t, func(int, []*schema.Message) streamPlan {
 		parts := pieces("工具前的文字")
 		parts = append(parts, &schema.Message{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: "late-private", Type: "function", Function: schema.FunctionCall{Name: "propose_memory", Arguments: `{"scope":"global","subject":"讲解偏好","content":"我喜欢简短讲解","durability":"stable"}`}}}})
 		return streamPlan{parts: parts}
@@ -421,7 +419,7 @@ func TestAgentSSELateToolSourceLimitationMatchesNonStreaming(t *testing.T) {
 func TestAgentSSEConcurrentIdentityBusyAndConflictUseOriginalAcquisition(t *testing.T) {
 	entered := []chan struct{}{make(chan struct{}), make(chan struct{})}
 	release := []chan struct{}{make(chan struct{}), make(chan struct{})}
-	app, db, m, ordinary, token, other := sseFixture(t, func(n int, _ []*schema.Message) streamPlan {
+	app, db, m, token, other := sseFixture(t, func(n int, _ []*schema.Message) streamPlan {
 		return streamPlan{parts: pieces(fmt.Sprintf("user-public-%d", n)), entered: entered[n-1], release: release[n-1]}
 	})
 	sid := createAgentHTTP(t, app, token, "create-concurrent-001", "Agent")
@@ -483,7 +481,7 @@ func TestAgentSSEConcurrentIdentityBusyAndConflictUseOriginalAcquisition(t *test
 		}
 	}
 	otherRows, otherErr := messageDAO.NewRepository(db).ListOwnedHistoryPage(context.Background(), 2, otherSID, 0, 100)
-	if runIDs[0] == runIDs[1] || len(agentRows(t, db, sid)) != 2 || otherErr != nil || len(otherRows.Messages) != 2 || len(ordinary.all()) != 0 {
+	if runIDs[0] == runIDs[1] || len(agentRows(t, db, sid)) != 2 || otherErr != nil || len(otherRows.Messages) != 2 {
 		t.Fatal("isolation/persistence")
 	}
 	conflict := streamAgentHTTP(t, app, token, sid, "request-concurrent-001", "不同输入")
@@ -494,7 +492,7 @@ func TestAgentSSEConcurrentIdentityBusyAndConflictUseOriginalAcquisition(t *test
 }
 
 func TestAgentSSEPreflightUsesOriginalValidationAndRejectsClientIdentity(t *testing.T) {
-	app, _, m, _, token, _ := sseFixture(t, func(int, []*schema.Message) streamPlan { return streamPlan{parts: pieces("answer")} })
+	app, _, m, token, _ := sseFixture(t, func(int, []*schema.Message) streamPlan { return streamPlan{parts: pieces("answer")} })
 	sid := createAgentHTTP(t, app, token, "create-preflight-001", "Agent")
 	path := "/api/v1/sessions/" + sid + "/stream"
 	for _, item := range []struct{ path, body string }{{path, `{"content":"question"}`}, {path, `{"content":"question","requestId":"bad"}`}, {path, `{"content":"","requestId":"request-preflight-001"}`}, {path, `{"content":"question","requestId":"request-preflight-001","userID":2}`}, {path + "?userID=2", agentBody("request-preflight-001", "你好")}, {path, `{"content":"question","requestId":"request-preflight-001","knowledgePolicy":"unknown"}`}} {
@@ -521,7 +519,7 @@ type shortPublicWriter struct{ *httptest.ResponseRecorder }
 func (w *shortPublicWriter) Write(p []byte) (int, error)       { return len(p) - 1, nil }
 func (w *shortPublicWriter) WriteString(s string) (int, error) { return w.Write([]byte(s)) }
 func TestAgentSSEShortWriteCancelsWithoutCompletion(t *testing.T) {
-	app, db, m, _, token, _ := sseFixture(t, func(int, []*schema.Message) streamPlan { return streamPlan{parts: pieces("answer")} })
+	app, db, m, token, _ := sseFixture(t, func(int, []*schema.Message) streamPlan { return streamPlan{parts: pieces("answer")} })
 	sid := createAgentHTTP(t, app, token, "create-short-001", "Agent")
 	req := httptest.NewRequest("POST", "/api/v1/sessions/"+sid+"/stream", strings.NewReader(agentBody("request-short-001", "你好")))
 	req.Header.Set("Authorization", "Bearer "+token)

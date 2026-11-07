@@ -20,7 +20,7 @@ import (
 	"errors"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/xiaopang456/GopherLearn/conversation"
+	"github.com/xiaopang456/GopherLearn/httpwire"
 	"gorm.io/gorm"
 	"io"
 	"log"
@@ -32,7 +32,6 @@ import (
 
 type httpSurface struct {
 	db    *gorm.DB
-	chat  *conversation.Service
 	agent *entry.Application
 }
 type rawWriterKey struct{}
@@ -52,8 +51,8 @@ func (w *authCapture) Write(b []byte) (int, error) { w.WriteHeader(200); return 
 
 // Only Gin/native-auth writes are captured. Successful compatibility handlers
 // write directly to the actual server writer, so buffering cannot swallow SSE.
-func newHTTPHandler(db *gorm.DB, chat *conversation.Service, agent *entry.Application) http.Handler {
-	s := &httpSurface{db: db, chat: chat, agent: agent}
+func newHTTPHandler(db *gorm.DB, agent *entry.Application) http.Handler {
+	s := &httpSurface{db: db, agent: agent}
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.RedirectTrailingSlash = false
@@ -157,11 +156,18 @@ func codeError(w http.ResponseWriter, result code.Code) {
 		apiError(w, 503, "internal_error", "internal server error")
 	}
 }
+
+// errInvalidArgument marks a request this surface cannot answer: a session
+// whose mode has no frontend shape, a path segment that is not an identifier.
+// It answers 400, and it is this surface's own error because the ordinary
+// conversation path that used to carry it is gone.
+var errInvalidArgument = errors.New("invalid argument")
+
 func daoError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, sessionDAO.ErrSessionNotFound), errors.Is(err, gorm.ErrRecordNotFound):
 		apiError(w, 404, "not_found", "resource not found")
-	case errors.Is(err, conversation.ErrInvalidArgument):
+	case errors.Is(err, errInvalidArgument):
 		apiError(w, 400, "invalid_request", "request is invalid")
 	default:
 		apiError(w, 500, "internal_error", "internal server error")
@@ -188,7 +194,7 @@ func (s *httpSurface) login(w http.ResponseWriter, r *http.Request, _ int64, _ s
 		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
-	if err := conversation.DecodeRequest(w, r, &input); err != nil {
+	if err := httpwire.DecodeRequest(w, r, &input); err != nil {
 		apiError(w, 400, "invalid_request", "request body is invalid")
 		return
 	}
@@ -211,7 +217,7 @@ func (s *httpSurface) login(w http.ResponseWriter, r *http.Request, _ int64, _ s
 		daoError(w, err)
 		return
 	}
-	conversation.WriteEnvelope(w, 200, map[string]any{"token": token, "user": profile(row)})
+	httpwire.WriteEnvelope(w, 200, map[string]any{"token": token, "user": profile(row)})
 }
 func (s *httpSurface) me(w http.ResponseWriter, r *http.Request, uid int64, name string) {
 	if !method(w, r, "GET") {
@@ -222,7 +228,7 @@ func (s *httpSurface) me(w http.ResponseWriter, r *http.Request, uid int64, name
 		daoError(w, err)
 		return
 	}
-	conversation.WriteEnvelope(w, 200, profile(row))
+	httpwire.WriteEnvelope(w, 200, profile(row))
 }
 func frontendMode(mode model.SessionMode) (string, error) {
 	switch mode {
@@ -231,7 +237,7 @@ func frontendMode(mode model.SessionMode) (string, error) {
 	case model.SessionModeAgent:
 		return "learning_agent", nil
 	default:
-		return "", conversation.ErrInvalidArgument
+		return "", errInvalidArgument
 	}
 }
 func sessionView(row model.Session) (any, error) {
@@ -259,7 +265,7 @@ func (s *httpSurface) sessions(w http.ResponseWriter, r *http.Request, uid int64
 			Mode      string `json:"mode"`
 			RequestID string `json:"requestId"`
 		}
-		if err := conversation.DecodeRequest(w, r, &input); err != nil {
+		if err := httpwire.DecodeRequest(w, r, &input); err != nil {
 			apiError(w, 400, "invalid_request", "request body is invalid")
 			return
 		}
@@ -283,7 +289,7 @@ func (s *httpSurface) sessions(w http.ResponseWriter, r *http.Request, uid int64
 			daoError(w, err)
 			return
 		}
-		conversation.WriteEnvelope(w, 200, view)
+		httpwire.WriteEnvelope(w, 200, view)
 	case "GET":
 		rows, err := sessionDAO.NewRepository(s.db).ListByUserID(r.Context(), uid)
 		if err != nil {
@@ -299,7 +305,7 @@ func (s *httpSurface) sessions(w http.ResponseWriter, r *http.Request, uid int64
 			}
 			items = append(items, view)
 		}
-		conversation.WriteEnvelope(w, 200, map[string]any{"items": items})
+		httpwire.WriteEnvelope(w, 200, map[string]any{"items": items})
 	default:
 		apiError(w, 405, "invalid_request", "method is not allowed")
 	}
@@ -334,10 +340,7 @@ func (s *httpSurface) sessionItem(w http.ResponseWriter, r *http.Request, uid in
 			return
 		}
 	}
-	conversation.WriteEnvelope(w, 200, nil)
-}
-func messageView(row conversation.Message) any {
-	return map[string]any{"id": row.ID, "session_id": row.SessionID, "role": row.Role, "content": row.Content, "created_at": row.CreatedAt.UTC().Format(time.RFC3339Nano)}
+	httpwire.WriteEnvelope(w, 200, nil)
 }
 
 type messageInput struct {
@@ -351,7 +354,7 @@ type messageInput struct {
 
 func inputTurn(w http.ResponseWriter, r *http.Request) (messageInput, bool) {
 	var input messageInput
-	if err := conversation.DecodeRequest(w, r, &input); err != nil {
+	if err := httpwire.DecodeRequest(w, r, &input); err != nil {
 		apiError(w, 400, "invalid_request", "request body is invalid")
 		return input, false
 	}
@@ -373,7 +376,7 @@ func (s *httpSurface) messages(w http.ResponseWriter, r *http.Request, uid int64
 			daoError(w, err)
 			return
 		}
-		conversation.WriteEnvelope(w, 200, map[string]any{"items": items})
+		httpwire.WriteEnvelope(w, 200, map[string]any{"items": items})
 	case "POST":
 		owned, err := sessionDAO.NewRepository(s.db).GetByIDAndUserID(r.Context(), sid, uid)
 		if err != nil {
@@ -383,7 +386,7 @@ func (s *httpSurface) messages(w http.ResponseWriter, r *http.Request, uid int64
 		switch owned.Mode {
 		case model.SessionModeAgent, model.SessionModeNormal:
 		default:
-			daoError(w, conversation.ErrInvalidArgument)
+			daoError(w, errInvalidArgument)
 			return
 		}
 		// One turn path for both session kinds. Two engines here would break the
@@ -418,7 +421,7 @@ func (s *httpSurface) agentMessage(w http.ResponseWriter, r *http.Request, uid i
 		Knowledge   json.RawMessage `json:"knowledge"`
 		StreamSteps json.RawMessage `json:"stream_steps"`
 	}
-	if err := conversation.DecodeRequest(w, r, &input); err != nil {
+	if err := httpwire.DecodeRequest(w, r, &input); err != nil {
 		apiError(w, 400, "invalid_request", "request body is invalid")
 		return
 	}
@@ -451,13 +454,13 @@ func (s *httpSurface) agentMessage(w http.ResponseWriter, r *http.Request, uid i
 			// another turn's text.
 			pair, pairErr := s.runPair(r.Context(), uid, sid, result.RunID)
 			if pairErr != nil {
-				conversation.WriteError(w, pairErr, "message")
+				httpwire.WriteError(w, pairErr, "message")
 				return
 			}
-			conversation.WriteEnvelope(w, 200, pair)
+			httpwire.WriteEnvelope(w, 200, pair)
 			return
 		}
-		conversation.WriteEnvelope(w, 200, result)
+		httpwire.WriteEnvelope(w, 200, result)
 		return
 	}
 	// Native classification and Run identity survive acquisition failures.
@@ -567,7 +570,14 @@ func turnRequestKey(mode model.SessionMode, requestID string) string {
 // conversation that is opened again show the steps its turn took. A row with no run has
 // the key absent rather than empty.
 func messageRowView(row model.Message) map[string]any {
-	view := messageView(domainMessage(row)).(map[string]any)
+	role := "assistant"
+	if row.IsUser {
+		role = "user"
+	}
+	view := map[string]any{
+		"id": strconv.FormatUint(uint64(row.ID), 10), "session_id": row.SessionID, "role": role,
+		"content": row.Content, "created_at": row.CreatedAt.UTC().Format(time.RFC3339Nano),
+	}
 	if row.AgentRunID != nil && strings.TrimSpace(*row.AgentRunID) != "" {
 		view["run_id"] = *row.AgentRunID
 	}
@@ -672,7 +682,7 @@ func (s *httpSurface) stream(w http.ResponseWriter, r *http.Request, uid int64, 
 	switch owned.Mode {
 	case model.SessionModeAgent, model.SessionModeNormal:
 	default:
-		daoError(w, conversation.ErrInvalidArgument)
+		daoError(w, errInvalidArgument)
 		return
 	}
 	// The same single path as the non-streaming turn, for the same reason: two

@@ -16,7 +16,7 @@ import (
 // quietly stop a session from rising to the top when the learner uses it. This is the
 // behaviour that has to survive the move, on both endpoints.
 func TestConversationTurnKeepsItsSessionAtTheTopOfTheList(t *testing.T) {
-	app, db, _, agent, token, _ := httpFixture(t)
+	app, db, agent, token, _ := httpFixture(t)
 	older := createHTTP(t, app.Handler, token, "older")
 	newer := createHTTP(t, app.Handler, token, "newer")
 

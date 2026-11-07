@@ -42,7 +42,7 @@ func runRead(t *testing.T, app *Application, token, session string) (map[string]
 }
 
 func TestAgentRunReadAnswersTheStepsOfTheCallersOwnTurn(t *testing.T) {
-	app, _, _, _, token, _ := httpFixture(t)
+	app, _, _, token, _ := httpFixture(t)
 	session, runID := agentTurn(t, app, token, "steps-own")
 
 	envelope, raw := runRead(t, app, token, session)
@@ -74,7 +74,7 @@ func TestAgentRunReadAnswersTheStepsOfTheCallersOwnTurn(t *testing.T) {
 }
 
 func TestAgentRunReadRefusesAnotherAccountsSessionAndRun(t *testing.T) {
-	app, _, _, _, token, other := httpFixture(t)
+	app, _, _, token, other := httpFixture(t)
 	session, runID := agentTurn(t, app, token, "steps-foreign")
 
 	// Another account's session and another account's run answer exactly the
@@ -103,7 +103,7 @@ func TestAgentRunReadRefusesAnotherAccountsSessionAndRun(t *testing.T) {
 }
 
 func TestAgentRunReadAnswersARunWithoutStepsWithAnEmptyArray(t *testing.T) {
-	app, db, _, _, token, _ := httpFixture(t)
+	app, db, _, token, _ := httpFixture(t)
 	session := dataHTTP(t, app.Handler, "POST", "/api/v1/sessions",
 		`{"mode":"learning_agent","title":"空步骤","requestId":"empty-steps-session"}`, token)["id"].(string)
 	if err := db.Create(&model.AgentRun{
@@ -132,7 +132,7 @@ func TestAgentRunReadAnswersARunWithoutStepsWithAnEmptyArray(t *testing.T) {
 }
 
 func TestAgentRunReadNeverPublishesTheLeaseOrTheToolArgumentsAndResults(t *testing.T) {
-	app, db, _, _, token, _ := httpFixture(t)
+	app, db, _, token, _ := httpFixture(t)
 	session := dataHTTP(t, app.Handler, "POST", "/api/v1/sessions",
 		`{"mode":"learning_agent","title":"不外泄","requestId":"secret-steps-session"}`, token)["id"].(string)
 	if err := db.Create(&model.AgentRun{
@@ -182,7 +182,7 @@ func TestAgentRunReadNeverPublishesTheLeaseOrTheToolArgumentsAndResults(t *testi
 }
 
 func TestAgentRunReadKeepsTheNewestRunsAndSaysTheListWasCut(t *testing.T) {
-	app, db, _, _, token, _ := httpFixture(t)
+	app, db, _, token, _ := httpFixture(t)
 	session := dataHTTP(t, app.Handler, "POST", "/api/v1/sessions",
 		`{"mode":"learning_agent","title":"截断","requestId":"truncated-session"}`, token)["id"].(string)
 	base := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
@@ -225,7 +225,7 @@ func TestAgentRunReadKeepsTheNewestRunsAndSaysTheListWasCut(t *testing.T) {
 }
 
 func TestAgentRunReadAnswersTheLearningRunsOfTheSameSessionToo(t *testing.T) {
-	app, db, _, _, token, _ := httpFixture(t)
+	app, db, _, token, _ := httpFixture(t)
 	session := dataHTTP(t, app.Handler, "POST", "/api/v1/sessions",
 		`{"mode":"learning_agent","title":"学习运行","requestId":"learning-run-session"}`, token)["id"].(string)
 	if err := db.Create(&model.AgentRun{
@@ -256,7 +256,7 @@ func TestAgentRunReadAnswersTheLearningRunsOfTheSameSessionToo(t *testing.T) {
 }
 
 func TestHistoryItemsCarryTheRunThatProducedThem(t *testing.T) {
-	app, _, _, _, token, _ := httpFixture(t)
+	app, _, _, token, _ := httpFixture(t)
 	session, runID := agentTurn(t, app, token, "history-run-id")
 
 	items := dataHTTP(t, app.Handler, "GET", "/api/v1/sessions/"+session+"/messages", "", token)["items"].([]any)
@@ -276,7 +276,7 @@ func TestHistoryItemsCarryTheRunThatProducedThem(t *testing.T) {
 // depends on: a row no run produced carries no run_id key at all, not an empty one.
 // Sessions written before the change are full of those rows and have to stay readable.
 func TestHistoryOfAConversationTurnNamesOneRunAndALegacyRowNamesNone(t *testing.T) {
-	app, db, _, _, token, _ := httpFixture(t)
+	app, db, _, token, _ := httpFixture(t)
 	session := createHTTP(t, app.Handler, token, "普通对话")
 	if err := db.Create(&model.Message{SessionID: session, UserName: "learner", Content: "改线之前留下的", IsUser: true}).Error; err != nil {
 		t.Fatal(err)
@@ -313,7 +313,7 @@ func TestHistoryOfAConversationTurnNamesOneRunAndALegacyRowNamesNone(t *testing.
 }
 
 func TestAgentRunReadAnswersARunOfTheCallersOwnWithItsSteps(t *testing.T) {
-	app, db, _, _, token, _ := httpFixture(t)
+	app, db, _, token, _ := httpFixture(t)
 	session := dataHTTP(t, app.Handler, "POST", "/api/v1/sessions",
 		`{"mode":"learning_agent","title":"单轮","requestId":"single-run-session"}`, token)["id"].(string)
 	if err := db.Create(&model.AgentRun{

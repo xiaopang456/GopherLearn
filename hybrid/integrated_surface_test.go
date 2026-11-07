@@ -95,7 +95,7 @@ func nativeRouteSet(t *testing.T, handler http.Handler) map[string]bool {
 // missing row, which is a served path, while a missing registration is the
 // failure mode under test.
 func TestIntegratedRouteTablesCoverTheDefaultNavigation(t *testing.T) {
-	app, _, _, _, _, _ := httpFixture(t)
+	app, _, _, _, _ := httpFixture(t)
 	native := nativeRouteSet(t, app.Agent.Handler)
 	missing := []string{}
 	for _, row := range integratedNavRoutes {
@@ -116,7 +116,7 @@ func TestIntegratedRouteTablesCoverTheDefaultNavigation(t *testing.T) {
 // shapes. Their absence here is deliberate, not an oversight, and the front-end
 // rail must not offer them (web/test/integratedEntrySurface.test.js).
 func TestBaselineOnlySurfacesStayOutOfTheIntegratedApp(t *testing.T) {
-	app, _, _, _, token, _ := httpFixture(t)
+	app, _, _, token, _ := httpFixture(t)
 	native := nativeRouteSet(t, app.Agent.Handler)
 	for _, path := range []string{
 		"/api/v1/collections",
@@ -154,11 +154,11 @@ func TestBaselineOnlySurfacesStayOutOfTheIntegratedApp(t *testing.T) {
 // They no longer run on two engines: a conversation turn uses the Agent's tool-calling
 // model, because that is the one configuration the deployment actually carries. What has
 // to stay apart is the capability. A conversation turn binds no tools, generates exactly
-// once, and reaches the retained ordinary model not at all - and if it ever did, the two
+// once, and the second turn carries the capability the first one does not - if it ever did, the two
 // engines would be back without anyone having decided it. An Agent turn is the reverse:
 // the original ReAct graph, with the original tool surface bound.
 func TestChatAndAgentTurnsShareOneModelAndOnlyTheAgentTurnCarriesCapability(t *testing.T) {
-	app, _, ordinary, agentModel, token, _ := httpFixture(t)
+	app, _, agentModel, token, _ := httpFixture(t)
 
 	chatSession := createHTTP(t, app.Handler, token, "普通对话")
 	chatBody, _ := json.Marshal(map[string]string{"content": "解释一下索引"})
@@ -171,9 +171,6 @@ func TestChatAndAgentTurnsShareOneModelAndOnlyTheAgentTurnCarriesCapability(t *t
 	if bindings := agentModel.BoundToolCalls(); len(bindings) != 0 {
 		t.Fatalf("a conversation turn was offered tools: %v", bindings)
 	}
-	if calls := len(ordinary.requests); calls != 0 {
-		t.Fatalf("a conversation turn reached the retired ordinary model %d times", calls)
-	}
 	conversationGenerations := agentModel.CallCount()
 
 	agentSession := dataHTTP(t, app.Handler, "POST", "/api/v1/sessions", `{"mode":"learning_agent","title":"学习 Agent","requestId":"surface-agent-1"}`, token)["id"].(string)
@@ -184,9 +181,6 @@ func TestChatAndAgentTurnsShareOneModelAndOnlyTheAgentTurnCarriesCapability(t *t
 	}
 	if agentModel.CallCount() <= conversationGenerations {
 		t.Fatalf("an Agent turn reached no tool-calling model: the original Runner was bypassed (total %d, conversation %d)", agentModel.CallCount(), conversationGenerations)
-	}
-	if calls := len(ordinary.requests); calls != 0 {
-		t.Fatalf("an Agent turn reached the retired ordinary model %d times", calls)
 	}
 	if bindings := agentModel.BoundToolCalls(); len(bindings) == 0 {
 		t.Fatal("the Agent turn bound no tools, so it was not the Eino ReAct graph")
@@ -225,7 +219,4 @@ func TestChatAndAgentTurnsShareOneModelAndOnlyTheAgentTurnCarriesCapability(t *t
 			t.Fatalf("the draft tool was not bound; bindings were %v", bound)
 		}
 	}
-	// The ordinary model is asserted unused after each route above. It is not written a
-	// third time here: the same condition stated twice is two guards that cover for each
-	// other, and deleting either one would still leave the test green.
 }

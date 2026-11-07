@@ -14,7 +14,6 @@ import (
 	"fmt"
 	modelcomponent "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
-	"github.com/xiaopang456/GopherLearn/conversation"
 	"gorm.io/gorm"
 	"net/http"
 	"net/http/httptest"
@@ -232,7 +231,7 @@ func learningFixture(t *testing.T, withEvidence bool) (*Application, *gorm.DB, *
 	migrations := 0
 	deps := dependencies(t, db, script, chunks, &migrations)
 	deps.ChatModel = func(context.Context, *entry.Settings) (modelcomponent.ToolCallingChatModel, error) { return agent, nil }
-	app, err := Assemble(context.Background(), settings, deps, &ordinaryModel{}, conversation.Options{})
+	app, err := Assemble(context.Background(), settings, deps)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -28,7 +28,7 @@ func nativeMemoryHTTP(t *testing.T, h http.Handler, method, path, body, token st
 }
 
 func TestMemoryNativeHTTPOriginalLifecycleAndTombstone(t *testing.T) {
-	app, db, _, _, token, other := httpFixture(t)
+	app, db, _, token, other := httpFixture(t)
 	body := `{"scope":"topic","topic_key":"redis","subject":"个人理解","content":"我用队列类比 Redis","durability":"stable","reason":"用户明确填写","idempotency_key":"manual-memory-001"}`
 	created := nativeMemoryHTTP(t, app.Handler, "POST", nativeMemoryPath, body, token)
 	row := created["memory"].(map[string]any)
@@ -104,7 +104,7 @@ func TestMemoryNativeHTTPOriginalLifecycleAndTombstone(t *testing.T) {
 func TestMemoryNativeHTTPAgentDraftReplayAndDecision(t *testing.T) {
 	for _, action := range []string{"add", "cancel"} {
 		t.Run(action, func(t *testing.T) {
-			app, db, _, agent, token, other := httpFixture(t)
+			app, db, agent, token, other := httpFixture(t)
 			agent.respond = func(_ context.Context, n int) (*schema.Message, error) {
 				if n == 1 {
 					return &schema.Message{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: "actual-draft", Type: "function", Function: schema.FunctionCall{Name: "propose_memory", Arguments: `{"scope":"topic","topic_key":"redis","subject":"个人理解","content":"我用队列理解 Redis","durability":"stable"}`}}}}, nil
@@ -177,7 +177,7 @@ func TestMemoryNativeHTTPAgentDraftReplayAndDecision(t *testing.T) {
 }
 
 func TestMemoryNativeHTTPGlobalLockRemainsExternalBoundary(t *testing.T) {
-	app, db, _, _, token, _ := httpFixture(t)
+	app, db, _, token, _ := httpFixture(t)
 	status, _, _ := requestHTTP(t, app.Handler, "POST", nativeMemoryPath, `{"scope":"global","subject":"偏好","content":"喜欢简短讲解","durability":"stable","reason":"明确填写","idempotency_key":"global-lock-boundary"}`, token)
 	if status != 500 {
 		t.Fatalf("SQLite must not emulate native MySQL GET_LOCK: %d", status)
@@ -190,7 +190,7 @@ func TestMemoryNativeHTTPGlobalLockRemainsExternalBoundary(t *testing.T) {
 }
 
 func TestMemoryNativeFrontendAPIThroughSocket(t *testing.T) {
-	app, _, _, _, _, _ := httpFixture(t)
+	app, _, _, _, _ := httpFixture(t)
 	server := httptest.NewServer(app.Handler)
 	defer server.Close()
 	script, err := filepath.Abs("../web/test/helpers/hybridMemoryClient.mjs")
@@ -206,7 +206,7 @@ func TestMemoryNativeFrontendAPIThroughSocket(t *testing.T) {
 }
 
 func TestMemoryNativeHTTPExpiredDraftStaysPending(t *testing.T) {
-	app, db, _, agent, token, _ := httpFixture(t)
+	app, db, agent, token, _ := httpFixture(t)
 	agent.respond = func(_ context.Context, n int) (*schema.Message, error) {
 		if n == 1 {
 			return &schema.Message{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: "expiring-draft", Type: "function", Function: schema.FunctionCall{Name: "propose_memory", Arguments: `{"scope":"topic","topic_key":"redis","subject":"个人目标","content":"我计划练习 Redis 队列","durability":"time_bound","valid_until":"2030-01-01T00:00:00Z"}`}}}}, nil

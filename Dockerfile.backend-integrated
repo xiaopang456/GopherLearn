@@ -30,7 +30,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 COPY cmd ./cmd
 COPY internal ./internal
-COPY conversation ./conversation
+COPY httpwire ./httpwire
 COPY v2/go.mod v2/go.sum ./v2/
 COPY v2 ./v2
 COPY hybrid/go.mod hybrid/go.sum ./hybrid/

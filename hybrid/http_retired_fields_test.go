@@ -11,7 +11,7 @@ import (
 // must be refused rather than answered as if it had asked for nothing: the request said
 // something about the learner's notes, and the answer would pretend it did not.
 func TestRetiredNestedFieldsStayStrictOnBothEndpoints(t *testing.T) {
-	app, _, ordinary, agent, token, _ := httpFixture(t)
+	app, _, agent, token, _ := httpFixture(t)
 	session := createSession(t, app, token, "nested-strict", "chat")
 
 	for _, tc := range []struct {
@@ -62,9 +62,6 @@ func TestRetiredNestedFieldsStayStrictOnBothEndpoints(t *testing.T) {
 			}
 			if got := agent.CallCount() - before; got != tc.calls {
 				t.Fatalf("%s: the V2 model was asked %d times, want %d", tc.name, got, tc.calls)
-			}
-			if len(ordinary.all()) != 0 {
-				t.Fatalf("%s: the retired chat path answered instead", tc.name)
 			}
 		})
 	}

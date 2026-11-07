@@ -71,7 +71,7 @@ docker compose -p gopherlearn-integrated -f compose.integrated.yml --profile ini
 ```
 
 Docker 侧读数是**静态**的：`Dockerfile.backend-integrated` 的 COPY 行只覆盖 `cmd`、
-`internal`、`conversation`、`v2`、`hybrid` 与模块文件，运行阶段只拷二进制与 CA 包，
+`internal`、`httpwire`、`v2`、`hybrid` 与模块文件，运行阶段只拷二进制与 CA 包，
 因此配置文件既不在构建上下文里、也不在镜像层里。**这条结论是按匹配器对文件内容判定的，
 不是 `docker build` 实测。**
 

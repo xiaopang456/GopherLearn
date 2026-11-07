@@ -22,7 +22,7 @@ func TestAgentStreamHonoursTheRequestThinkingChoice(t *testing.T) {
 		t.Run(fmt.Sprintf("deployment_%t", deployment), func(t *testing.T) {
 			settings := testSettings(t)
 			settings.Config.AgentConfig.AgentThinkingEnabled = deployment
-			app, _, m, _, token, _ := sseFixtureWithSettings(t, settings, func(int, []*schema.Message) streamPlan {
+			app, _, m, token, _ := sseFixtureWithSettings(t, settings, func(int, []*schema.Message) streamPlan {
 				return streamPlan{parts: pieces("答案")}
 			})
 			sid := createAgentHTTP(t, app, token, fmt.Sprintf("create-thinking-%t", deployment), "Agent")
@@ -56,7 +56,7 @@ func TestAgentStreamHonoursTheRequestThinkingChoice(t *testing.T) {
 // The turn that does not stream is the same surface with the same choice, so
 // the field has to travel there too.
 func TestAgentMessageHonoursTheRequestThinkingChoice(t *testing.T) {
-	app, _, m, _, token, _ := sseFixture(t, func(int, []*schema.Message) streamPlan {
+	app, _, m, token, _ := sseFixture(t, func(int, []*schema.Message) streamPlan {
 		return streamPlan{parts: pieces("答案")}
 	})
 	sid := createAgentHTTP(t, app, token, "create-thinking-native", "Agent")
