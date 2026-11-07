@@ -934,10 +934,10 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 		knowledgePolicy:      policy, answerBasis: rag.AnswerBasisConversation,
 		knowledgeStatus: rag.KnowledgeStatusNotRequired, knowledgeReason: rag.KnowledgeReasonNone,
 		contextBudget: window.Budget, usedTopicKeys: append([]string(nil), window.UsedTopicKeys...),
-		episodeIDs:             append([]string(nil), window.EpisodeIDs...),
-		episodeSources:         append(model.EpisodeSourceRefs(nil), window.EpisodeSources...),
-		conversationReferences: conversationReferenceIDs(window),
-		memoryTrace:            memoryEvidence, perToolCalls: map[string]int{}, progress: newToolProgressLedger(),
+		episodeIDs:     append([]string(nil), window.EpisodeIDs...),
+		episodeSources: append(model.EpisodeSourceRefs(nil), window.EpisodeSources...),
+		grantSet:       toolInput.GrantSet,
+		memoryTrace:    memoryEvidence, perToolCalls: map[string]int{}, progress: newToolProgressLedger(),
 		memorySearchAvailable: memorySearchAvailable,
 		availableTools:        availableTools,
 	}
@@ -1322,16 +1322,15 @@ type runState struct {
 	progress *toolProgressLedger
 	// memoryCitations is what the final server-side check concluded.
 	memoryCitations MemoryCitationOutcome
-	// conversationReferences are the message ids this turn's conversation
-	// evidence carried: the ids the whiteboard, the summary segments, the
-	// rolling summary and the episodes cited, plus the ids the read-back
-	// tool returned.
+	// grantSet is this run's shared read-back authorisation, and with it the
+	// set of message ids the conversation evidence carried.
 	//
-	// They are what a number in an answer may legitimately point at when the
-	// answer rests on the learner's own recorded past. A number that is not
-	// one of them points at nothing - and a number that points at nothing is
-	// not a reference the conversation can account for.
-	conversationReferences map[int]struct{}
+	// The whiteboard, the summary segments, the rolling summary and the
+	// episodes all cite message ids, and a tool that opens an older segment
+	// extends the same set. So the set is exactly the numbers an answer
+	// built on the conversation may point at - and a number that is not in
+	// it points at nothing.
+	grantSet *HistoryGrantSet
 	// groundingRefusal is the evidence boundary's decision about a draft it
 	// did not deliver, kept for the same reason as memoryCitations: the
 	// refusal template alone cannot say what was refused.
@@ -1674,18 +1673,12 @@ func (s *runState) toolMiddleware() compose.InvokableToolMiddleware {
 				return nil, sendErr
 			}
 			if CapabilityOf(input.Name) == CapabilityHistoryRead && output != nil {
-				evidence, messageIDs, parseErr := parseHistoryEvidence(output.Result)
+				evidence, parseErr := parseHistoryEvidence(output.Result)
 				if parseErr != nil {
 					return nil, parseErr
 				}
 				s.mu.Lock()
 				s.historyEvidence = s.historyEvidence || evidence
-				// The messages the read-back tool returned are messages the
-				// model saw, so their ids are references the conversation can
-				// account for.
-				for _, id := range messageIDs {
-					s.conversationReferences[id] = struct{}{}
-				}
 				s.mu.Unlock()
 			}
 			if CapabilityOf(input.Name) == CapabilityMemoryDraft && output != nil {
@@ -1802,7 +1795,7 @@ func parseMemoryDraftResult(value string) (*MemoryDraftCard, bool, error) {
 	return &MemoryDraftCard{DraftID: payload.DraftID, Scope: payload.Scope, Subject: payload.Subject, Content: payload.Content, Tags: payload.Tags, TopicKey: payload.TopicKey, Durability: payload.Durability, ValidUntil: payload.ValidUntil, ConflictIDs: payload.ConflictIDs}, false, nil
 }
 
-func parseHistoryEvidence(value string) (bool, []int, error) {
+func parseHistoryEvidence(value string) (bool, error) {
 	var payload struct {
 		Messages []struct {
 			MessageID int    `json:"message_id"`
@@ -1811,19 +1804,14 @@ func parseHistoryEvidence(value string) (bool, []int, error) {
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal([]byte(value), &payload); err != nil {
-		return false, nil, fmt.Errorf("invalid history message tool result")
+		return false, fmt.Errorf("invalid history message tool result")
 	}
-	evidence := false
-	ids := make([]int, 0, len(payload.Messages))
 	for _, message := range payload.Messages {
-		if message.MessageID > 0 {
-			ids = append(ids, message.MessageID)
-		}
 		if message.MessageID > 0 && message.Role == "user" && strings.TrimSpace(message.Content) != "" {
-			evidence = true
+			return true, nil
 		}
 	}
-	return evidence, ids, nil
+	return false, nil
 }
 
 func cloneMemoryDraftCard(value *MemoryDraftCard) *MemoryDraftCard {
@@ -2535,42 +2523,25 @@ const (
 	GroundingRuleFallbackCitation = "fallback_citation"
 )
 
-// conversationReferenceIDs collects the message ids the window's compressed
-// cards carried.
-//
-// The whiteboard, the summary segments, the rolling summary and the episodes
-// all cite message ids, and those ids are what the model saw. They are the
-// numbers an answer built on the conversation may point at.
-func conversationReferenceIDs(window ContextWindow) map[int]struct{} {
-	ids := make(map[int]struct{})
-	for _, grants := range [][]HistoryMessageGrant{
-		window.SummarySegmentHistoryGrants, window.SummaryHistoryGrants, window.EpisodeHistoryGrants,
-	} {
-		for _, grant := range grants {
-			if grant.MessageID > 0 {
-				ids[int(grant.MessageID)] = struct{}{}
-			}
-		}
-	}
-	return ids
-}
-
 // citationsResolveConversation reports whether every citation the answer used
 // points at a message the conversation evidence carried.
 //
-// It is the conversation half of the citation check. A number that resolves
-// to a stored message the model was shown is a pointer at the conversation; a
-// number that resolves to nothing is a pointer at nothing, and no amount of
-// conversation evidence makes it into one. So an unrelated summary does not
-// launder an invented reference: the reference still has to exist.
+// It is the conversation half of the citation check. A number that is
+// authorised to be read back is a pointer at the conversation; a number that
+// is not points at nothing, and no amount of conversation evidence makes it
+// into one. So an unrelated summary does not launder an invented reference:
+// the reference still has to exist.
 //
 // The caller holds the state lock.
 func (s *runState) citationsResolveConversation(wanted map[int]struct{}) bool {
-	if len(wanted) == 0 || len(s.conversationReferences) == 0 {
+	if len(wanted) == 0 || s.grantSet == nil {
 		return false
 	}
 	for citation := range wanted {
-		if _, ok := s.conversationReferences[citation]; !ok {
+		if citation <= 0 {
+			return false
+		}
+		if len(s.grantSet.Grants(uint(citation))) == 0 {
 			return false
 		}
 	}

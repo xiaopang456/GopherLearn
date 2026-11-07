@@ -46,7 +46,8 @@ func (b conversationWindowBuilder) Build(ctx context.Context, input RunContext) 
 	window.Budget.Assembled += b.summary
 	for _, id := range b.grants {
 		window.SummarySegmentHistoryGrants = append(window.SummarySegmentHistoryGrants,
-			HistoryMessageGrant{MessageID: id, SourceKind: HistorySourceWhiteboard})
+			HistoryMessageGrant{MessageID: id, SourceKind: HistorySourceSummarySegment,
+				SourceSessionID: input.SessionID, SegmentSeq: 1, SegmentEndMessageID: id})
 	}
 	return window, nil
 }
