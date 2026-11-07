@@ -20,11 +20,11 @@ const choosing = ref(false)
  * one ambiguous "+", because the mode cannot be changed after creation.
  */
 const CHOICES = [
-  { mode: SessionMode.Chat, icon: 'chat', hint: '通用提问，可单轮挂知识库' },
+  { mode: SessionMode.Chat, icon: 'chat', hint: '通用提问，不读取你的资料' },
   {
     mode: SessionMode.LearningAgent,
     icon: 'learning',
-    hint: '由服务端能力决定如何处理问题',
+    hint: '可检索你的资料，由服务端决定如何回答',
   },
 ]
 

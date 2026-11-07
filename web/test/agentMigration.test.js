@@ -24,6 +24,7 @@ let chat, bodies, createBodies, handleStream, handleCreate
 beforeEach(() => {
   vi.stubEnv('VITE_API_BASE_URL', 'https://api.test')
   setTokenProvider(() => 'synthetic-test-token')
+  localStorage.clear()
   bodies = []; createBodies = []
   handleCreate = async (body) => jsonResponse({ data: { id: BIG, title: body.title, mode: body.mode } })
   handleStream = async () => sseResponse([sseFrame('message.started', { run_id: 'real-run' }),
@@ -54,7 +55,13 @@ it('creation uses its own immutable key; duplicate clicks suppressed; explicit r
   expect(createBodies[2].requestId).not.toBe(first.requestId)
   await chat.send('问题')
   expect(bodies[0].requestId).not.toBe(createBodies[2].requestId)
-  expect(bodies[0]).toEqual({ content: '问题', requestId: expect.stringMatching(/^send-/), enableThinking: false, stream_steps: true })
+  expect(bodies[0]).toEqual({
+    content: '问题',
+    requestId: expect.stringMatching(/^send-/),
+    enableThinking: false,
+    knowledgePolicy: 'knowledge_preferred',
+    stream_steps: true,
+  })
 })
 
 it('failed/busy operation retries original fields; new operation gets a fresh key with no default consent', async () => {
@@ -70,8 +77,25 @@ it('failed/busy operation retries original fields; new operation gets a fresh ke
   expect(chat.messages.value).toHaveLength(transcriptCount)
   await chat.send('新操作')
   expect(bodies[2].requestId).not.toBe(first.requestId)
-  expect(bodies[2]).not.toHaveProperty('knowledgePolicy')
+  // A new turn reads the switch; only the explicit fields of the old request
+  // are not carried over.
+  expect(bodies[2].knowledgePolicy).toBe('knowledge_preferred')
   expect(bodies[2]).not.toHaveProperty('topicConsent')
+})
+
+it('a retry keeps the knowledge policy the failed turn was sent with', async () => {
+  await chat.loadSessions(); await chat.openSession(BIG)
+  handleStream = async () => sseResponse([sseFrame('message.failed', { code: 'agent_run_busy', message: 'busy' })])
+  await chat.send('这一问要查资料')
+  const first = structuredClone(bodies[0])
+  expect(first.knowledgePolicy).toBe('knowledge_preferred')
+
+  // The learner flips the switch after the failure; a retry is still the same
+  // turn, so it must not silently become a different, library-free question.
+  chat.knowledgeEnabled.value = false
+  await chat.retrySend()
+
+  expect(bodies[1]).toEqual(first)
 })
 
 it.each([undefined, 'wrong', 'old-candidate'])('persisted replacement wins without valid matching final block (%s)', async (finalId) => {
@@ -95,11 +119,12 @@ it.each([undefined, 'wrong', 'old-candidate'])('persisted replacement wins witho
   expect(chat.messages.value[0].content).toBe(reply.content)
 })
 
-it('normal Chat keeps the original request and streaming contract', async () => {
+it('normal Chat states its own ceiling and drops the agent-only fields', async () => {
   await chat.loadSessions(); await chat.openSession('normal')
   handleStream = async () => sseResponse([sseFrame('message.delta', { delta: '普通' }), sseFrame('message.completed', { content: '普通回答' })])
   await chat.send('普通问题', null, { knowledgePolicy: { mode: 'all' }, topicConsent: { ticket: 'must-not-send' } })
-  expect(bodies).toEqual([{ content: '普通问题' }])
+  // A chat session may only hold disabled turns, whatever a caller passed in.
+  expect(bodies).toEqual([{ content: '普通问题', knowledgePolicy: 'knowledge_disabled' }])
   expect(chat.messages.value.at(-1).content).toBe('普通回答')
 })
 
@@ -254,7 +279,10 @@ it('keeps the original thinking choice for retry and uses the new choice for a n
   expect(bodies[2].requestId).not.toBe(bodies[0].requestId)
   await chat.openSession('normal')
   await chat.send('普通对话')
-  expect(bodies[3]).toEqual({ content: '普通对话' })
+  expect(bodies[3]).toEqual({
+    content: '普通对话',
+    knowledgePolicy: 'knowledge_disabled',
+  })
 })
 
 it('persists the choice and falls back to off when storage fails', () => {
