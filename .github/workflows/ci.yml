@@ -37,6 +37,11 @@ jobs:
       - run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test -count=1 ./...
+      # The reference entry carries a build tag, so the steps above never see
+      # it. Building the tag here is what keeps that file from rotting
+      # unnoticed: it used to name an AI helper factory and a router that no
+      # longer exist, and nothing noticed because nothing built it.
+      - run: go build -tags v2_entry_reference -o /dev/null .
 
   hybrid:
     name: hybrid module (integrated entry)
