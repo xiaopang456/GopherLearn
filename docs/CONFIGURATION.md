@@ -227,6 +227,26 @@ go -C v2 run ./cmd/indexaudit -config ../config.toml
 - 把 `summaryOpenLoopsItemLimit` 调大时，`summaryEvidenceIDLimit` 通常也要一起调大：每条待办至少引用一条消息，条目多了、编号上限没跟上，结果还是会被引用上限截掉。
 - 上限调小 = 少留历史、省 token；上限调大 = 多留历史，但摘要更长、更占上下文预算。
 
+**库里存着读不出来的旧摘要时**：普通对话以前把摘要写成纯散文，或写成一份引用是字符串的旧结构化
+文档。这一版读不出这两种形状，此时**不花调用、也不进失败冷却**——压缩前先看库里那一行，读不出来就
+跳过这一轮，指标里记 `previous_unreadable`。回答照常带水位线之后的原始消息，只是这个会话的摘要停在
+原地。要让它继续推进，用一条单独的命令逐行转换，**默认只预演、不自动跑**：
+
+```bash
+# 在仓库根目录执行；go -C 会把程序的工作目录切到 v2/，所以配置写成 ../config.toml
+go -C v2 run ./cmd/summaryconvert -config ../config.toml          # 只读：逐行分类并报数
+go -C v2 run ./cmd/summaryconvert -config ../config.toml -apply   # 机械转换两种旧形状，水位线不动
+```
+
+转换不调用模型，也不需要任何 Provider 配置：纯散文按段落写进 `completed_items`，超长在段落边界或
+单条上限处切开；根 JSON 的分组、文本与引用原样搬，`legacy_text` 也放进 `completed_items`。写回前用
+产品自己的读取器解码转换结果，通不过就不写。转不了的行（读不出来的 JSON、无法表达成消息号的引用、
+超出文档预算）一律**列出来、不改那一行**。
+
+"文档预算"取的是**这份配置里的那三个数**（`summaryGroupItemLimit` / `summaryOpenLoopsItemLimit` /
+`summaryEvidenceIDLimit`），和运行时摘要器用的是同一套判定：部署调小了就拒掉装不下的行，调大了就
+不会误拒装得下的行。
+
 `maxToolCalls` / `maxModelCalls` / `maxGraphSteps` 三个数必须**互相够得着**，否则启动报错并说明是哪一处不够：
 
 - `maxModelCalls` 至少是 `maxToolCalls + 1`：每轮工具都要一次"决定调用工具"的生成，最后还要一次生成来写答案。
