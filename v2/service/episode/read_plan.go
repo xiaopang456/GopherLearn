@@ -15,7 +15,7 @@ import (
 // first marker it recognised won the whole question. A question carrying a
 // time reference, a topic and an evidence type kept only the time reference:
 // "上次关于缓冲区复用的决定" became last_session and returned whichever session
-// happened to be newest. Measured on the frozen EXP-006 recall artefacts that
+// happened to be newest. Measured on the frozen recall artefacts that
 // was 14 of the 20 mixed cases; six more were rejected outright because their
 // phrasing was absent from a fixed word list.
 //

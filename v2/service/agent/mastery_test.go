@@ -88,7 +88,7 @@ func TestMasterySilentWithoutAssessment(t *testing.T) {
 	}
 }
 
-// The whole point of AGENT-017 is that a graded quiz changes how an ordinary
+// The whole point of the mastery provider is that a graded quiz changes how an ordinary
 // question is answered, with no active learning session in sight.
 func TestMasteryMatchesOrdinaryQuestionByTopic(t *testing.T) {
 	recent := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)

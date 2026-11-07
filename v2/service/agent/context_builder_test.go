@@ -447,7 +447,7 @@ func TestContextConfigValidation(t *testing.T) {
 	}
 }
 
-// AGENT-017: mastery sits between task state and long-term memory, so that a
+// Mastery sits between task state and long-term memory, so that a
 // graded topic still shapes the answer after everything below it is trimmed.
 type staticMastery string
 

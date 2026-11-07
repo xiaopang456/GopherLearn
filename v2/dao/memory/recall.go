@@ -69,7 +69,7 @@ func (r *Repository) Recall(ctx context.Context, query RecallQuery) ([]model.Lon
 	} else {
 		db = db.Where("(JSON_OVERLAPS(tags, CAST(? AS JSON)) OR topic_key = ?)", string(tagsJSON), query.TopicKey)
 	}
-	// BUG-AGENT-025: the candidate cut used to be ordered by confidence, which
+	// The candidate cut used to be ordered by confidence, which
 	// the model assigns and which clusters tightly, so at a few hundred rows it
 	// behaved like a random truncation — a genuinely relevant memory could be
 	// dropped here and the Go ranker would never see it, capping recall no
@@ -110,7 +110,7 @@ func orderByRelevance(db *gorm.DB, query RecallQuery) *gorm.DB {
 // ListAllActive returns every active memory of one type, with no relevance
 // filter at all.
 //
-// AGENT-018 uses it for `profile`, where retrieval is the wrong frame: "explain
+// The profile scope reads it this way, where retrieval is the wrong frame: "explain
 // the overall flow before the code" applies to every technical question, yet
 // its similarity to any particular one is near zero, so tag, BM25 and vector
 // search all miss it by construction. There are few of these, so they are
@@ -150,7 +150,7 @@ func (r *Repository) MarkUsed(ctx context.Context, userID int64, memoryIDs []str
 
 // LoadByIDs reloads full rows for the identifiers a similarity search returned.
 //
-// AGENT-020 keeps content out of the Redis index on purpose, so this is the
+// The Redis index keeps content out on purpose, so this is the
 // only path by which retrieved text reaches the caller. Reading from MySQL also
 // means a correction applied after indexing is visible immediately: the index
 // may be stale in what it ranks, never in what it shows.
@@ -171,7 +171,7 @@ func (r *Repository) LoadByIDs(ctx context.Context, userID int64, memoryIDs []st
 
 // ListTopicKeys reports the topics that carry notes, with how many each holds.
 //
-// AGENT-021 needs this to build the shared topic catalogue: a topic the learner
+// The shared topic catalogue needs this: a topic the learner
 // has written notes about but never been quizzed on still has to be offerable,
 // otherwise the memory side keeps minting keys the learning side has never seen
 // and the two namespaces drift apart again.
@@ -203,7 +203,7 @@ type TopicKeyRow struct {
 
 // ListByTopicKey returns every active memory filed under one topic.
 //
-// AGENT-021 made `topic_key` the retrieval unit, so this replaces ranking for
+// `topic_key` is the retrieval unit, so this replaces ranking for
 // the topic-note path: with a topic fixed there is nothing to rank. The limit
 // is a database guard against a pathological topic, not a context budget — the
 // caller trims to fit.

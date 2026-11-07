@@ -260,7 +260,7 @@ type GovernanceService struct {
 	progress   LearningProgressReader
 	config     DreamConfig
 	now        func() time.Time
-	// indexSync keeps the AGENT-020 recall index in step with what governance
+	// indexSync keeps the recall index in step with what governance
 	// writes. It is optional: without it the index only changes when the
 	// reindex command runs, which is a staleness problem, not a correctness one.
 	indexSync       MemoryIndexSync
@@ -782,7 +782,7 @@ var _ LearningProgressReader = (*learningdao.Repository)(nil)
 // out because the explanation ran a few characters long.
 //
 // Publishing the real bounds costs nothing and removes a class of failure the
-// model has no way to avoid otherwise. This mirrors what BUG-AGENT-020 did on
+// model has no way to avoid otherwise. This mirrors what the extraction side did on
 // the extraction side.
 func strictDreamParams(params map[string]*schema.ParameterInfo) *schema.ParamsOneOf {
 	converted, err := schema.NewParamsOneOfByParams(params).ToJSONSchema()

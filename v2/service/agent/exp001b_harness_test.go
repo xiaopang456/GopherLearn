@@ -119,7 +119,7 @@ func (g *exp001bGenerator) GenerateSummary(ctx context.Context, previous string,
 	case "empty":
 		output = ""
 	default:
-		output = `{"current_goal":"EXP-001B","confirmed_decisions":["keep old summary"],"completed_items":[],"open_loops":["continue"],"user_corrections":[],"key_errors":[],"references":[]}`
+		output = `{"current_goal":"KEPT-SUMMARY-78","confirmed_decisions":["keep old summary"],"completed_items":[],"open_loops":["continue"],"user_corrections":[],"key_errors":[],"references":[]}`
 	}
 	g.mu.Lock()
 	g.durationMillis += time.Since(started).Milliseconds()

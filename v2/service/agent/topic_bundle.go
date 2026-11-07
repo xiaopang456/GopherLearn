@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// TopicBundleProvider is the join that AGENT-021 exists to make possible.
+// TopicBundleProvider is the join that makes one subject readable at once.
 //
 // Before it, three stores held pieces of the same subject and nothing put them
 // together: TopicProgress knew the learner was weak at RPC framing, the attempt
@@ -32,7 +32,7 @@ type TopicBundleProvider struct {
 // TopicBundleReader returns everything filed under one topic.
 //
 // A load_topic tool once let the model ask for a topic by name. It was removed
-// with AGENT-022: the tool required the model to produce a correct topic_key,
+// when the model was asked to pick a topic by name: the tool required a correct topic_key,
 // and that it can pick the right topic is precisely what three experiments
 // refuted. Keeping a tool whose premise had been disproved would have preserved
 // the disproved assumption in code. The interface stays because the mastery
@@ -50,7 +50,7 @@ type TopicBundle struct {
 	Found bool
 	// MasteryInstruction is rendered by the provider, not here.
 	//
-	// Turning a level into teaching guidance is one rule, and AGENT-017 already
+	// Turning a level into teaching guidance is one rule, and the mastery provider already
 	// owns it in service/agent/mastery.go. A second copy in this tool would be
 	// two sources for one decision, which is the failure mode this whole
 	// redesign exists to remove — it is how the quiz side and the memory side
@@ -230,7 +230,7 @@ func (p *TopicBundleProvider) LoadTopic(ctx context.Context, userID int64, topic
 	return bundle, nil
 }
 
-// renderTopicMastery reuses the AGENT-017 bands rather than restating them.
+// renderTopicMastery reuses the mastery bands rather than restating them.
 //
 // The rule that an unreliable assessment must not change how something is
 // explained lives in one place, and this is a second caller of it, not a second

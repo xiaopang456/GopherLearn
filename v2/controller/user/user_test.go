@@ -6,9 +6,9 @@ import (
 	"testing"
 )
 
-// BUG-AGENT-001 shipped `json:password` without quotes. reflect.StructTag.Get
+// The password field once shipped as `json:password` without quotes. reflect.StructTag.Get
 // could not parse it, so `go vet ./...` failed for the whole module from
-// AGENT-001 onwards. encoding/json silently fell back to a case-insensitive
+// that point onwards. encoding/json silently fell back to a case-insensitive
 // field-name match, which is why login kept working and the defect survived.
 //
 // These tests lock both halves down: the tag must be machine-readable, and the

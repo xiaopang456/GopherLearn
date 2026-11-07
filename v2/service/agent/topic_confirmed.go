@@ -19,7 +19,7 @@ type TopicConsentVerifier interface {
 
 // ConfirmedTopicLearningState is the learning half of one confirmed topic.
 //
-// It is a rendered instruction rather than numbers because AGENT-017 already
+// It is a rendered instruction rather than numbers because the mastery provider already
 // owns the rule that turns a level into teaching guidance, and because a score
 // in a prompt invites the model to quote it back at the learner. Nothing here
 // is citable evidence: mastery is how to teach, not something the learner said.
@@ -63,7 +63,7 @@ const confirmedTopicHeader = "Topic context the learner explicitly confirmed for
 //
 // They are rendered together because a topic's assessment and the learner's own
 // notes on it are one subject and reading them as two disconnected blocks is
-// what AGENT-021 fixed. They are labelled apart because their authoritative
+// what the merged block fixed. They are labelled apart because their authoritative
 // stores are different, and because only one half is citable.
 const learningStateHeader = "Learning state (server assessment; guidance for how to pitch the answer, not a quotable statement):"
 

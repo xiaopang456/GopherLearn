@@ -15,7 +15,7 @@ import (
 // TopicResolver answers one question and only one: which of this learner's
 // topics is being asked about.
 //
-// It is deliberately not a memory retriever. AGENT-020's hybrid path injected
+// It is deliberately not a memory retriever. The earlier hybrid path injected
 // whatever the vector index ranked first, which recalled more and was measured
 // unsafe: an absolute cosine floor drifts upward as the memory pile grows (0.56
 // at a hundred memories, 0.63 at five hundred), so the same query walks out
@@ -149,7 +149,7 @@ type TopicResolveRequest struct {
 	UserID int64
 	// Question is the learner's raw text. It is never expanded: expansion costs
 	// a model call on the request path and invents subjects the learner did not
-	// mention, and EXP-005 measured its planner variant at a 1.6s P95 for a
+	// mention, and the planner variant was measured at a 1.6s P95 for a
 	// benefit that did not survive.
 	Question string
 	// AuthoritativeKeys are server-derived. They are accepted without any
@@ -379,7 +379,7 @@ func (r *TopicResolver) resolveSemantic(ctx context.Context, request TopicResolv
 	// A topic scores by the best rank any one of its notes reached. Summing
 	// would let a topic with many mediocre notes outrank one whose single note
 	// matched exactly, which is the aggregation that sank the topic-centroid
-	// method in EXP-002B.
+	// method.
 	byKey := map[string]*TopicKeyCandidate{}
 	entry := func(key string) *TopicKeyCandidate {
 		if existing, ok := byKey[key]; ok {
