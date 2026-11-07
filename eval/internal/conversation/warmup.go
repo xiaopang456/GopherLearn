@@ -39,6 +39,21 @@ func (g guardedStore) ListAfter(ctx context.Context, session string, id uint, li
 	})
 	return out, err
 }
+
+// ListRecentAfter is the newest-first fetch the context builder reads its raw
+// window through. It has to reach the repository's own newest-first query: the
+// chronological prefix below the same name returns the oldest slice above the
+// watermark, and a window assembled from it drops every message the fetch did
+// not reach - the newest ones first.
+func (g guardedStore) ListRecentAfter(ctx context.Context, session string, id uint, limit int) ([]model.Message, error) {
+	var out []model.Message
+	err := g.with(ctx, func(tx *gorm.DB) error {
+		var err error
+		out, err = messagedao.NewRepository(tx).ListRecentAfter(ctx, session, id, limit)
+		return err
+	})
+	return out, err
+}
 func (g guardedStore) GetSummary(ctx context.Context, userID int64, session string) (*model.SessionSummary, error) {
 	var out *model.SessionSummary
 	err := g.with(ctx, func(tx *gorm.DB) error {

@@ -1258,14 +1258,30 @@ func offeredTools(tools []string) []string {
 	return tools
 }
 
+// historyStore is the guarded sandbox store the conversation stack reads
+// through, with both fetch directions that stack uses: the chronological
+// prefix the summarizer counts its unsummarized tail from, and the
+// newest-first slice the context builder assembles its raw window from.
+type historyStore interface {
+	ListAfter(ctx context.Context, session string, id uint, limit int) ([]model.Message, error)
+	ListRecentAfter(ctx context.Context, session string, id uint, limit int) ([]model.Message, error)
+}
+
 // historyAdapter lets the builder read the conversation back.
 type historyAdapter struct {
-	store     guardedStore
+	store     historyStore
 	sessionID string
 }
 
+// ListRecentAfter is the builder's contract: the newest slice above the
+// watermark, oldest-first within that slice. Forwarding it to the
+// chronological prefix was a silent direction change - an unsummarized tail
+// longer than the fetch limit made the prefix end mid-conversation, and the
+// window then carried the oldest part of the tail while every message newer
+// than the fetch reached, including the turns a question was about, stayed
+// out of the prompt.
 func (h historyAdapter) ListRecentAfter(ctx context.Context, sessionID string, afterID uint, limit int) ([]model.Message, error) {
-	return h.store.ListAfter(ctx, sessionID, afterID, limit)
+	return h.store.ListRecentAfter(ctx, sessionID, afterID, limit)
 }
 
 // ListAfter is the summarizer's own view of the same conversation: it is what
