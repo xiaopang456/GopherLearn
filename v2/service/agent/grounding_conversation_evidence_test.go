@@ -156,6 +156,52 @@ func TestAnInventedReferenceIsRefusedEvenWithAnUnrelatedSummary(t *testing.T) {
 	}
 }
 
+// The same draft is refused whether or not the window carried a summary.
+//
+// This is the case that had to change: a summary in the window used to be
+// enough to let an invented reference through, so the same sentence was
+// refused with an empty window and delivered with a summary in it. The
+// window's budget says nothing about what a number points at, and the
+// number has to be checked against what the turn showed either way.
+func TestTheSameDraftIsRefusedWhetherOrNotTheWindowCarriedASummary(t *testing.T) {
+	draft := "根据你上传的笔记，排序复杂度是 O(1) [99]。"
+	fake := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {
+		return schema.AssistantMessage(draft, nil), nil
+	}}
+	cases := []struct {
+		name    string
+		builder ContextBuilder
+	}{
+		{name: "no summary in the window", builder: MinimalContextBuilder{}},
+		{name: "an unrelated summary in the window", builder: conversationWindowBuilder{summary: 1}},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			runner, err := NewRunner(fake, StaticToolRegistry{}, newMemoryStepRepository(),
+				testCase.builder, DefaultRunnerConfig())
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := runner.Run(context.Background(), testRunContext(), DiscardEvents)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Answer != UnsupportedGroundingAnswer {
+				t.Fatalf("answer = %q, want the refusal", result.Answer)
+			}
+			if result.KnowledgeReason != rag.KnowledgeReasonInvalidCitation {
+				t.Fatalf("reason = %s, want the invented reference to be named", result.KnowledgeReason)
+			}
+			if result.GroundingRefusal == nil || result.GroundingRefusal.Rule != GroundingRuleInvalidCitation {
+				t.Fatalf("refusal = %+v, want the invalid citation recorded", result.GroundingRefusal)
+			}
+			if len(result.GroundingRefusal.Citations) != 1 || result.GroundingRefusal.Citations[0] != 99 {
+				t.Fatalf("citations = %v, want [99]", result.GroundingRefusal.Citations)
+			}
+		})
+	}
+}
+
 // One reference that resolves and one that does not is still a refusal: a
 // draft may not carry a pointer at nothing, and one real id does not excuse
 // the invented one next to it.
