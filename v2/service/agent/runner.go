@@ -16,6 +16,7 @@ import (
 	"io"
 	"log"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -586,6 +587,30 @@ type RunnerResult struct {
 	// not have. They are refused as observations rather than as failures, so
 	// the turn survives them; the count is what records that they happened.
 	UnknownToolCalls int
+	// GroundingRefusal records what the evidence boundary decided about a
+	// draft it did not deliver: the rule that refused it, the reference
+	// numbers the draft carried, and the draft itself.
+	//
+	// It exists because a refusal without the draft is unreadable after the
+	// fact. The learner is handed a refusal template, and the template says
+	// nothing about what the model wrote, which numbers it pointed at, or
+	// which check turned it away - so a turn that refused a perfectly good
+	// answer looks exactly like a turn that refused a fabricated one.
+	//
+	// It is server-side diagnostics and evaluation input, like
+	// MemoryEvidence above: a refused draft is never delivered to a learner,
+	// so it is not part of any SSE event and not part of the answer.
+	GroundingRefusal *GroundingRefusal
+}
+
+// GroundingRefusal is the evidence boundary's decision about one draft.
+type GroundingRefusal struct {
+	// Rule names the check that turned the draft away.
+	Rule string `json:"rule"`
+	// Citations are the reference numbers the draft carried, in order.
+	Citations []int `json:"citations"`
+	// Draft is the answer the model wrote before the refusal replaced it.
+	Draft string `json:"draft"`
 }
 
 // runDeadline is the time budget of this turn.
@@ -1296,6 +1321,10 @@ type runState struct {
 	progress *toolProgressLedger
 	// memoryCitations is what the final server-side check concluded.
 	memoryCitations MemoryCitationOutcome
+	// groundingRefusal is the evidence boundary's decision about a draft it
+	// did not deliver, kept for the same reason as memoryCitations: the
+	// refusal template alone cannot say what was refused.
+	groundingRefusal *GroundingRefusal
 	// perToolCalls counts executions per tool name for the layered budget.
 	perToolCalls map[string]int
 	// toolBudgetClosed records that a model call was made without the tools,
@@ -1328,6 +1357,7 @@ func (s *runState) result() RunnerResult {
 		TopicMemoryReads: s.memoryTrace.TopicReads(),
 		MemoryRefs:       s.memoryTrace.Entries(),
 		MemoryCitation:   s.memoryCitations,
+		GroundingRefusal: s.groundingRefusal,
 		Closeout:         s.closeoutReason(),
 		UnknownToolCalls: s.unknownToolCalls,
 	}
@@ -2458,6 +2488,83 @@ func (s *runState) citationsResolve(wanted map[int]struct{}) bool {
 	return true
 }
 
+// The rules the evidence boundary refuses a draft by. They are a closed set
+// because a reader has to tell them apart: an invented knowledge-base
+// citation, a missing one and a knowledge base that was never searched are
+// three different faults and call for three different fixes.
+const (
+	// GroundingRuleInvalidCitation: the draft cited a reference this turn
+	// never showed the model.
+	GroundingRuleInvalidCitation = "invalid_citation"
+	// GroundingRuleMissingCitation: the turn retrieved documents and the
+	// draft cited none of them.
+	GroundingRuleMissingCitation = "missing_citation"
+	// GroundingRuleSearchRequired: the question pointed at the material and
+	// the turn never searched it.
+	GroundingRuleSearchRequired = "knowledge_search_required"
+	// GroundingRuleNoEvidence: the material was searched and had nothing to
+	// support the draft.
+	GroundingRuleNoEvidence = "no_grounding_evidence"
+	// GroundingRuleHistoryRequired: the question asked for the learner's
+	// exact words and no verifiable message was read back.
+	GroundingRuleHistoryRequired = "history_evidence_required"
+	// GroundingRuleFallbackCitation: the citation repair itself came back
+	// with a citation that did not resolve.
+	GroundingRuleFallbackCitation = "fallback_citation"
+)
+
+// conversationEvidencePresent reports whether this turn had the learner's own
+// recorded past in front of the model, beyond the raw tail of the
+// conversation.
+//
+// It is true when the window carried compressed conversation evidence - the
+// rolling summary, the whiteboard or a summary segment - and when the model
+// read a message back and was handed the learner's own words.
+//
+// The raw conversation does not count: it is in every window, so counting it
+// would make this true always, and the check it guards would never fire.
+//
+// The caller holds the state lock.
+func (s *runState) conversationEvidencePresent() bool {
+	if s.historyEvidence {
+		return true
+	}
+	return s.contextBudget.Summary > 0 || s.contextBudget.Whiteboard > 0 ||
+		s.contextBudget.ResidentSegments > 0 || s.contextBudget.RetrievedSegments > 0
+}
+
+// notesWereNeverConsulted reports whether this turn never went near the
+// learner's notes: no pre-retrieval ran and no document was shown to the
+// model.
+//
+// It is what makes a number in the answer a pointer at something other than
+// a note. A turn that searched the material and found nothing has been to the
+// material, and a number that resolves to nothing there is still an invented
+// citation.
+//
+// The caller holds the state lock.
+func (s *runState) notesWereNeverConsulted() bool {
+	return !s.preRetrievalRan() && len(s.documentSources()) == 0
+}
+
+// refuse records the evidence boundary's decision about a draft it is not
+// delivering.
+//
+// The rule name is what makes the record readable later: the refusal template
+// the learner receives is the same for several of these, and without the rule
+// and the draft, a turn that refused a good answer is indistinguishable from
+// a turn that refused a fabricated one.
+//
+// The caller holds the state lock.
+func (s *runState) refuse(rule string, wanted map[int]struct{}, draft string) {
+	citations := make([]int, 0, len(wanted))
+	for citation := range wanted {
+		citations = append(citations, citation)
+	}
+	sort.Ints(citations)
+	s.groundingRefusal = &GroundingRefusal{Rule: rule, Citations: citations, Draft: draft}
+}
+
 // finalizeGroundedAnswer is the server-side evidence boundary. A returned
 // action can grant one tool-free general-knowledge call or one citation-repair
 // call. Neither action exposes the unverified draft to the client.
@@ -2526,6 +2633,7 @@ func (s *runState) finalizeGroundedAnswer(answer string, allowRepair, allowFallb
 		if requiresExactHistoryEvidence(s.input.Question) {
 			s.sources = nil
 			s.answerBasis = rag.AnswerBasisRefused
+			s.refuse(GroundingRuleHistoryRequired, wanted, answer)
 			return UnsupportedHistoryAnswer, groundingFinalized
 		}
 		// A question about the learner's own past is answered from that past,
@@ -2558,6 +2666,7 @@ func (s *runState) finalizeGroundedAnswer(answer string, allowRepair, allowFallb
 			s.answerBasis = rag.AnswerBasisRefused
 			s.knowledgeStatus = rag.KnowledgeStatusInvalidGrounding
 			s.knowledgeReason = rag.KnowledgeReasonSearchRequired
+			s.refuse(GroundingRuleSearchRequired, wanted, answer)
 			return UnsupportedGroundingAnswer, groundingFinalized
 		}
 		// The answer cites a document this turn never retrieved.
@@ -2574,10 +2683,34 @@ func (s *runState) finalizeGroundedAnswer(answer string, allowRepair, allowFallb
 		// showed the model: the pre-retrieval's passages and the search's
 		// results. One number that resolves to nothing is enough.
 		if len(wanted) > 0 && !s.citationsResolve(wanted) {
+			// The notes were never consulted on this turn: there is no
+			// document for a number to point at. What the turn did read is
+			// the learner's own recorded past - the rolling summary, the
+			// whiteboard, a summary segment, a message read back - and the
+			// brackets in the draft point at that.
+			//
+			// This guard exists to stop an answer built out of the model's
+			// own head. Refusing an answer that rests on the learner's own
+			// recorded past, because of the shape of its citations, is the
+			// opposite of what it is for: it throws away a grounded answer
+			// and hands back a refusal template instead.
+			//
+			// The knowledge citation check keeps its teeth where they
+			// belong: a turn that showed documents still has to cite them,
+			// and a turn with no conversation evidence at all still has its
+			// invented numbers refused.
+			if s.conversationEvidencePresent() && s.notesWereNeverConsulted() {
+				s.sources = nil
+				s.answerBasis = rag.AnswerBasisConversation
+				s.knowledgeStatus = rag.KnowledgeStatusNotRequired
+				s.knowledgeReason = rag.KnowledgeReasonNone
+				return answer, groundingFinalized
+			}
 			s.sources = nil
 			s.answerBasis = rag.AnswerBasisRefused
 			s.knowledgeStatus = rag.KnowledgeStatusInvalidGrounding
 			s.knowledgeReason = rag.KnowledgeReasonInvalidCitation
+			s.refuse(GroundingRuleInvalidCitation, wanted, answer)
 			return UnsupportedGroundingAnswer, groundingFinalized
 		}
 		// The server's pre-retrieval searched the material, and the answer does
@@ -2639,6 +2772,7 @@ func (s *runState) finalizeGroundedAnswer(answer string, allowRepair, allowFallb
 			return "", groundingUseGeneralFallback
 		}
 		s.answerBasis = rag.AnswerBasisRefused
+		s.refuse(GroundingRuleNoEvidence, wanted, answer)
 		return NoGroundingEvidenceAnswer, groundingFinalized
 	}
 	if strings.TrimSpace(answer) == insufficientEvidenceMarker {
@@ -2649,6 +2783,7 @@ func (s *runState) finalizeGroundedAnswer(answer string, allowRepair, allowFallb
 			return "", groundingUseGeneralFallback
 		}
 		s.answerBasis = rag.AnswerBasisRefused
+		s.refuse(GroundingRuleNoEvidence, wanted, answer)
 		return NoGroundingEvidenceAnswer, groundingFinalized
 	}
 	known := make(map[int]struct{}, len(documentSources))
@@ -2663,6 +2798,7 @@ func (s *runState) finalizeGroundedAnswer(answer string, allowRepair, allowFallb
 			return "", groundingUseGeneralFallback
 		}
 		s.answerBasis = rag.AnswerBasisRefused
+		s.refuse(GroundingRuleMissingCitation, wanted, answer)
 		return UnsupportedGroundingAnswer, groundingFinalized
 	}
 	for citation := range wanted {
@@ -2676,6 +2812,7 @@ func (s *runState) finalizeGroundedAnswer(answer string, allowRepair, allowFallb
 			s.answerBasis = rag.AnswerBasisRefused
 			s.knowledgeStatus = rag.KnowledgeStatusInvalidGrounding
 			s.knowledgeReason = rag.KnowledgeReasonInvalidCitation
+			s.refuse(GroundingRuleInvalidCitation, wanted, answer)
 			return UnsupportedGroundingAnswer, groundingFinalized
 		}
 	}
@@ -2740,6 +2877,7 @@ func (s *runState) finalizeGeneralFallback(answer string) string {
 		s.answerBasis = rag.AnswerBasisRefused
 		s.knowledgeStatus = rag.KnowledgeStatusInvalidGrounding
 		s.knowledgeReason = rag.KnowledgeReasonFallbackCitation
+		s.refuse(GroundingRuleFallbackCitation, nil, answer)
 		return UnsupportedGroundingAnswer
 	}
 	banner := noEvidenceFallbackBanner
