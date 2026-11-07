@@ -192,11 +192,17 @@ type LayeredRead struct {
 	// state it was reading.
 	SeededSegments int `json:"seeded_segments"`
 	SeededBoard    int `json:"seeded_board_entries"`
-	// Batches is what the writer did: how many batches, how many attempts,
+	// Batches is what the segment writer did: how many batches, how many attempts,
 	// how many retries, and how many batches still failed. The last number is
 	// the one the product's own failure rate is measured on.
 	Batches batchOutcome `json:"batches"`
-	Errors  []string     `json:"errors,omitempty"`
+	// SummaryCompactions is what the rolling summary's writer did: how many
+	// compactions reached a model during the truncated arm's replay. It is
+	// zero on the layered arm, where the product writes no rolling summary at
+	// all, and zero with a non-empty degraded list on the truncated arm means
+	// the arm answered without the compression it claims to compare.
+	SummaryCompactions int      `json:"summary_compactions"`
+	Errors             []string `json:"errors,omitempty"`
 }
 
 // RunLayeredRead writes one conversation's layered state and then measures
@@ -328,13 +334,21 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 		return read, err
 	}
 
-	// The state the background would have written before this turn.
+	// The write phase, whichever compression this arm runs.
 	//
-	// The truncated arm has no writer. Its mode is off, so nothing generated a
-	// segment in the product either; calling the writer here would invent
-	// state the arm does not have and spend model calls doing it.
+	// The two arms differ only in the mode, so they differ only in which
+	// writer replays: the layered arm runs the segment batches, the truncated
+	// arm runs the rolling summary the product maintains in off mode. Both
+	// replay the same stored turns through the product's own code with real
+	// model calls, and both store what they produce, because a window that
+	// reads state nobody wrote measures the reader against a vacuum.
 	seeded := seededLayered{}
 	var batches batchOutcome
+	// summarySource is the product's own rule for the mode (wiring.go): off
+	// reads the rolling summary, the applied mode reads neither summary. It
+	// starts at the applied mode's answer and is replaced below only for the
+	// truncated arm.
+	summarySource := armSummarySource(mode, nil)
 	if mode == LayeredArmOn {
 		seeded, batches, err = seedLayeredState(ctx, s, messages, settings, segmentModel, sessionID,
 			settings.Config.AgentConfig.SummarySegmentMaxAttempts)
@@ -343,6 +357,14 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 		}
 		read.SeededSegments = len(seeded.segments)
 		read.SeededBoard = boardEntryCount(seeded.board)
+	} else {
+		replay, replayErr := replayProductRollingSummary(ctx, s, settings, wrapped, sessionID, messages)
+		if replayErr != nil {
+			return read, replayErr
+		}
+		summarySource = armSummarySource(mode, replay.provider)
+		read.SummaryCompactions = replay.compactions
+		read.Errors = append(read.Errors, replay.degraded...)
 	}
 	read.Batches = batches
 	// The batch stage stops here. It exists to measure the writer's failure
@@ -359,7 +381,7 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	}
 
 	// The read side, built the way the product builds it.
-	window, recorded, windowErr := buildLayeredReadWindow(ctx, s, repository, settings, sessionID, question, mode)
+	window, recorded, windowErr := buildLayeredReadWindow(ctx, s, repository, settings, sessionID, question, mode, summarySource)
 	if windowErr != nil {
 		read.Errors = append(read.Errors, "build window: "+windowErr.Error())
 		return read, windowErr
@@ -836,40 +858,168 @@ func (p *recordingLayeredProvider) LayeredSummary(ctx context.Context,
 	return snapshot, nil
 }
 
+// armSummarySource is the product's own rule for which summary a mode reads
+// (wiring.go): the applied mode reads neither - the segments are the
+// compression - and off reads the rolling summary.
+//
+// The rule is a function so its test can hold it against the entry's wiring:
+// an off window assembled without the rolling summary would compare the
+// layered arm against a product that does not exist.
+func armSummarySource(arm string, rolling agent.SummaryProvider) agent.SummaryProvider {
+	if arm == LayeredArmTruncated {
+		return rolling
+	}
+	return agent.EmptySummaryProvider{}
+}
+
+// rollingSummaryConfig maps the deployment's settings onto the summarizer's
+// own configuration, field for field the way the product entry does.
+//
+// The mapping is restated here because the eval module cannot import the
+// entry's internals; being a copy, it is exactly the kind of code that drifts,
+// so the test compares it against the settings it came from rather than
+// trusting the literal.
+func rollingSummaryConfig(conf *config.Config) (agent.SummaryConfig, error) {
+	summaryConfig := agent.SummaryConfig{
+		TriggerMessages: conf.AgentConfig.SummaryTriggerMessages, TriggerTokens: conf.AgentConfig.SummaryTriggerTokens,
+		RetainMessages: conf.AgentConfig.SummaryRetainMessages, MaxInputTokens: conf.AgentConfig.SummaryMaxInputTokens,
+		MaxOutputTokens: conf.AgentConfig.ContextMaxSummaryTokens, FetchLimit: conf.AgentConfig.SummaryFetchLimit,
+		Timeout:     time.Duration(conf.AgentConfig.SummaryTimeoutSeconds) * time.Second,
+		StageBudget: time.Duration(conf.AgentConfig.SummaryStageBudgetSeconds) * time.Second,
+		// The share stays a code-level invariant for the same reason it does
+		// in the product: no deployment widens it rightly.
+		MaxDeadlineShare: agent.DefaultSummaryConfig().MaxDeadlineShare,
+		FailureCooldown:  time.Duration(conf.AgentConfig.SummaryFailureCooldownSeconds) * time.Second,
+		Budget: agent.SummaryBudgetOf(conf.AgentConfig.SummaryGroupItemLimit,
+			conf.AgentConfig.SummaryOpenLoopsItemLimit, conf.AgentConfig.SummaryEvidenceIDLimit),
+	}
+	if err := summaryConfig.Validate(); err != nil {
+		return agent.SummaryConfig{}, err
+	}
+	return summaryConfig, nil
+}
+
+// windowContextConfig maps the deployment's settings onto the window's own
+// configuration, field for field.
+func windowContextConfig(settings *entry.Settings) agent.ContextConfig {
+	agentConfig := settings.Config.AgentConfig
+	return agent.ContextConfig{
+		ModelWindowTokens:         agentConfig.ContextModelWindowTokens,
+		InputTargetTokens:         agentConfig.ContextInputTargetTokens,
+		OutputReserveTokens:       agentConfig.ContextOutputReserveTokens,
+		EvidenceReserve:           agentConfig.KnowledgeMaxRunTokens,
+		MaxGlobalUserMemoryTokens: agentConfig.ContextMaxGlobalUserMemoryTokens,
+		MaxTopicUserMemoryTokens:  agentConfig.ContextMaxTopicUserMemoryTokens,
+		MaxSummaryTokens:          agentConfig.ContextMaxSummaryTokens,
+		MaxMasteryTokens:          agentConfig.ContextMaxMasteryTokens,
+		MaxEpisodeTokens:          agentConfig.ContextMaxEpisodeTokens,
+		MaxWhiteboardTokens:       agentConfig.ContextMaxWhiteboardTokens,
+		MaxResidentSegmentTokens:  agentConfig.ContextMaxResidentSegmentTokens,
+		MaxRetrievedSegmentTokens: agentConfig.ContextMaxRetrievedSegmentTokens,
+		MaxSegmentTokens:          agentConfig.ContextMaxSegmentTokens,
+		EpisodeRecallMode:         agent.EpisodeRecallMode(agentConfig.EpisodeRecallMode),
+		HistoryFetchLimit:         agentConfig.ContextHistoryFetchLimit,
+		MemoryReadMode:            memoryrecall.ReadMode(settings.Config.MemoryReadMode),
+	}
+}
+
+// countingSummaryGenerator counts the compactions that reached a model.
+type countingSummaryGenerator struct {
+	inner agent.SummaryGenerator
+	calls int
+}
+
+func (g *countingSummaryGenerator) GenerateSummary(ctx context.Context, previous string, messages []model.Message) (agent.SummaryGeneration, error) {
+	g.calls++
+	return g.inner.GenerateSummary(ctx, previous, messages)
+}
+
+// rollingReplay is what the truncated arm's write phase produced.
+type rollingReplay struct {
+	provider    agent.SummaryProvider
+	compactions int
+	degraded    []string
+}
+
+// replayRollingSummaries drives the provider once per stored message, which is
+// the cadence the product's turns call it at: every turn assembles a window,
+// every window reads the summary, and the summary compacts when the
+// unsummarized tail has crossed the trigger.
+//
+// A compaction that fails is recorded and the replay continues, which is also
+// the product's behaviour: the summary is an optimisation over history that is
+// still on disk. The count and the degradations are reported, because an arm
+// that never compacted is not the arm the comparison claims.
+func replayRollingSummaries(ctx context.Context, provider agent.SummaryProvider, input agent.RunContext,
+	messages int, replay *rollingReplay, counting *countingSummaryGenerator) {
+	for index := 0; index < messages; index++ {
+		_, err := provider.SessionSummary(ctx, input)
+		switch {
+		case err == nil:
+		case ctx.Err() != nil:
+			return
+		default:
+			// Cooldowns and skipped stages are the product's own answers, not
+			// failures of the replay; they are recorded so a run that never
+			// compacted can be seen to be one.
+			replay.degraded = append(replay.degraded, "rolling summary replay: "+err.Error())
+		}
+	}
+	if counting != nil {
+		replay.compactions = counting.calls
+	}
+}
+
+// replayProductRollingSummary runs the compression the product maintains in
+// off mode, over the turns this harness already stored.
+//
+// It uses the product's own provider, generator, thresholds and model, so the
+// summary the answer phase reads was written by the same code the product
+// would have run - not synthesized beside it.
+func replayProductRollingSummary(ctx context.Context, s *Sandbox, settings *entry.Settings,
+	chat modelcomponent.ToolCallingChatModel, sessionID string, messages []model.Message) (rollingReplay, error) {
+	summaryConfig, err := rollingSummaryConfig(settings.Config)
+	if err != nil {
+		return rollingReplay{}, err
+	}
+	generator, err := agent.NewModelSummaryGenerator(chat, summaryConfig.MaxInputTokens, summaryConfig.MaxOutputTokens, summaryConfig.Budget)
+	if err != nil {
+		return rollingReplay{}, err
+	}
+	counting := &countingSummaryGenerator{inner: generator}
+	provider, err := agent.NewRollingSummaryProvider(
+		sessiondao.NewRepository(s.db),
+		historyAdapter{store: guardedStore{s}, sessionID: sessionID},
+		counting, summaryConfig)
+	if err != nil {
+		return rollingReplay{}, err
+	}
+	replay := rollingReplay{provider: provider}
+	replayRollingSummaries(ctx, provider, agent.RunContext{UserID: 7001, SessionID: sessionID},
+		len(messages), &replay, counting)
+	return replay, nil
+}
+
 // buildLayeredReadWindow assembles the window the way the product does.
 //
 // The arm decides whether the layered summary is attached at all: off is the
-// product's own off mode, where the read side does not exist, and faking it
+// product's own off mode, where that read side does not exist, and faking it
 // with zeroed budgets would render the same empty blocks under a different
-// name.
+// name. The summary source is the arm's own answer (armSummarySource) rather
+// than a choice this function makes, so the off window cannot be assembled
+// against a summary the product would not have read.
 func buildLayeredReadWindow(ctx context.Context, s *Sandbox, repository string,
-	settings *entry.Settings, sessionID, question, arm string) (agent.ContextWindow, *recordingLayeredProvider, error) {
-	config := settings.Config.AgentConfig
-	builder, err := agent.NewContextBuilder(agent.ContextConfig{
-		ModelWindowTokens:         config.ContextModelWindowTokens,
-		InputTargetTokens:         config.ContextInputTargetTokens,
-		OutputReserveTokens:       config.ContextOutputReserveTokens,
-		EvidenceReserve:           config.KnowledgeMaxRunTokens,
-		MaxGlobalUserMemoryTokens: config.ContextMaxGlobalUserMemoryTokens,
-		MaxTopicUserMemoryTokens:  config.ContextMaxTopicUserMemoryTokens,
-		MaxSummaryTokens:          config.ContextMaxSummaryTokens,
-		MaxMasteryTokens:          config.ContextMaxMasteryTokens,
-		MaxEpisodeTokens:          config.ContextMaxEpisodeTokens,
-		MaxWhiteboardTokens:       config.ContextMaxWhiteboardTokens,
-		MaxResidentSegmentTokens:  config.ContextMaxResidentSegmentTokens,
-		MaxRetrievedSegmentTokens: config.ContextMaxRetrievedSegmentTokens,
-		MaxSegmentTokens:          config.ContextMaxSegmentTokens,
-		EpisodeRecallMode:         agent.EpisodeRecallMode(config.EpisodeRecallMode),
-		HistoryFetchLimit:         config.ContextHistoryFetchLimit,
-		MemoryReadMode:            memoryrecall.ReadMode(settings.Config.MemoryReadMode),
-	}, historyAdapter{store: guardedStore{s}, sessionID: sessionID},
-		nil, nil, nil, agent.EmptySummaryProvider{})
+	settings *entry.Settings, sessionID, question, arm string,
+	summarySource agent.SummaryProvider) (agent.ContextWindow, *recordingLayeredProvider, error) {
+	builder, err := agent.NewContextBuilder(windowContextConfig(settings),
+		historyAdapter{store: guardedStore{s}, sessionID: sessionID},
+		nil, nil, nil, summarySource)
 	if err != nil {
 		return agent.ContextWindow{}, nil, err
 	}
 	if arm == LayeredArmTruncated {
-		// No provider, no preselector, no blocks: this is the window the
-		// product sends when the mode is off.
+		// No layered provider, no preselector, no blocks: this is the window
+		// the product sends when the mode is off, rolling summary aside.
 		window, buildErr := builder.Build(ctx, agent.RunContext{UserID: 7001, SessionID: sessionID, Question: question})
 		return window, nil, buildErr
 	}
@@ -882,10 +1032,12 @@ func buildLayeredReadWindow(ctx context.Context, s *Sandbox, repository string,
 	// would hand the renderer more segments than fit, and the renderer keeps the
 	// newest rather than the highest ranked.
 	preselector.UseLimits(agent.SummarySegmentPreselectLimits(
-		config.ContextMaxRetrievedSegmentTokens, config.ContextMaxSegmentTokens))
+		settings.Config.AgentConfig.ContextMaxRetrievedSegmentTokens,
+		settings.Config.AgentConfig.ContextMaxSegmentTokens))
 	provider, err := agent.NewDatabaseLayeredSummaryProvider(
 		sessiondao.NewRepository(s.db), preselector,
-		agent.ResidentSegmentCount(config.ContextMaxResidentSegmentTokens, config.ContextMaxSegmentTokens))
+		agent.ResidentSegmentCount(settings.Config.AgentConfig.ContextMaxResidentSegmentTokens,
+			settings.Config.AgentConfig.ContextMaxSegmentTokens))
 	if err != nil {
 		return agent.ContextWindow{}, nil, err
 	}
@@ -904,6 +1056,13 @@ type historyAdapter struct {
 }
 
 func (h historyAdapter) ListRecentAfter(ctx context.Context, sessionID string, afterID uint, limit int) ([]model.Message, error) {
+	return h.store.ListAfter(ctx, sessionID, afterID, limit)
+}
+
+// ListAfter is the summarizer's own view of the same conversation: it is what
+// the rolling summary counts its unsummarized tail from, so it has to be the
+// same store the window reads or the two would disagree about what happened.
+func (h historyAdapter) ListAfter(ctx context.Context, sessionID string, afterID uint, limit int) ([]model.Message, error) {
 	return h.store.ListAfter(ctx, sessionID, afterID, limit)
 }
 
