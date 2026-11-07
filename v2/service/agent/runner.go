@@ -2524,24 +2524,29 @@ const (
 )
 
 // citationsResolveConversation reports whether every citation the answer used
-// points at a message the conversation evidence carried.
+// points at something the conversation evidence carried.
 //
-// It is the conversation half of the citation check. A number that is
-// authorised to be read back is a pointer at the conversation; a number that
-// is not points at nothing, and no amount of conversation evidence makes it
-// into one. So an unrelated summary does not launder an invented reference:
-// the reference still has to exist.
+// It is the conversation half of the citation check. A number that is one of
+// the identifiers the turn showed - a message id the evidence cited, a
+// segment's sequence number - is a pointer at the conversation; a number
+// that is not points at nothing, and no amount of conversation evidence
+// makes it into one. So an unrelated summary does not launder an invented
+// reference: the reference still has to exist.
 //
 // The caller holds the state lock.
 func (s *runState) citationsResolveConversation(wanted map[int]struct{}) bool {
 	if len(wanted) == 0 || s.grantSet == nil {
 		return false
 	}
+	known := make(map[int]struct{})
+	for _, reference := range s.grantSet.References() {
+		known[reference] = struct{}{}
+	}
 	for citation := range wanted {
 		if citation <= 0 {
 			return false
 		}
-		if len(s.grantSet.Grants(uint(citation))) == 0 {
+		if _, ok := known[citation]; !ok {
 			return false
 		}
 	}

@@ -52,6 +52,29 @@ func (b conversationWindowBuilder) Build(ctx context.Context, input RunContext) 
 	return window, nil
 }
 
+// segmentWindowBuilder is a window that carried summary segments, with the
+// numbers those segments were labelled with.
+type segmentWindowBuilder struct {
+	MinimalContextBuilder
+	summary     int
+	segmentSeqs []int
+}
+
+func (b segmentWindowBuilder) Build(ctx context.Context, input RunContext) (ContextWindow, error) {
+	window, err := b.MinimalContextBuilder.Build(ctx, input)
+	if err != nil {
+		return ContextWindow{}, err
+	}
+	window.Budget.Summary = b.summary
+	window.Budget.Assembled += b.summary
+	for seq, id := range b.segmentSeqs {
+		window.SummarySegmentHistoryGrants = append(window.SummarySegmentHistoryGrants,
+			HistoryMessageGrant{MessageID: uint(100 + id), SourceKind: HistorySourceSummarySegment,
+				SourceSessionID: input.SessionID, SegmentSeq: seq + 1, SegmentEndMessageID: uint(100 + id)})
+	}
+	return window, nil
+}
+
 // An answer that rests on the conversation, and points at a message the
 // conversation evidence carried, must not lose itself to a citation check
 // that cannot mean anything here.
@@ -82,10 +105,32 @@ func TestAnAnswerFromConversationEvidenceIsNotRefusedByTheCitationCheck(t *testi
 	}
 }
 
-// A summary in the window is not a warrant. An answer that claims it read
-// the learner's notes and points at a reference that does not exist is
-// refused, whether a summary is in the window or not - and the summary being
-// there must not turn the invented reference into a conversation one.
+// The conversation evidence labels its segments, and a model that answers
+// from those segments may point at them by the number it was shown. That
+// number is a pointer at the conversation too, and it resolves.
+func TestAnAnswerCitingASegmentNumberIsNotRefused(t *testing.T) {
+	fake := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {
+		return schema.AssistantMessage("你最初定的是每周 2 次 [1]，后来改成了每周 6 次 [2]。", nil), nil
+	}}
+	runner, err := NewRunner(fake, StaticToolRegistry{}, newMemoryStepRepository(),
+		segmentWindowBuilder{summary: 1104, segmentSeqs: []int{1, 2}}, DefaultRunnerConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := runner.Run(context.Background(), testRunContext(), DiscardEvents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Answer, "2 次") {
+		t.Fatalf("answer = %q, want the grounded answer", result.Answer)
+	}
+	if result.GroundingRefusal != nil {
+		t.Fatalf("refusal = %+v, want none", result.GroundingRefusal)
+	}
+}
+
+// A number that points at nothing is refused, whether or not the window
+// carried a summary and whether or not a real reference sits next to it.
 func TestAnInventedReferenceIsRefusedEvenWithAnUnrelatedSummary(t *testing.T) {
 	draft := "根据你上传的笔记，排序复杂度是 O(1) [99]。"
 	fake := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {

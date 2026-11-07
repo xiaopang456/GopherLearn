@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"sort"
 	"strings"
 	"sync"
 )
@@ -221,6 +222,40 @@ func (s *HistoryGrantSet) Grants(messageID uint) []HistoryMessageGrant {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.byMessage[messageID]
+}
+
+// References returns the identifiers this run's conversation evidence carried:
+// the message ids it may read back, and the sequence numbers of the summary
+// segments it showed.
+//
+// They are the numbers a model that answers from the conversation may point
+// at - the message ids the evidence cited, and the numbers the segments were
+// labelled with. A number that is neither points at nothing.
+func (s *HistoryGrantSet) References() []int {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seen := make(map[int]struct{}, len(s.byMessage))
+	out := make([]int, 0, len(s.byMessage))
+	for messageID, grants := range s.byMessage {
+		if _, ok := seen[int(messageID)]; !ok {
+			seen[int(messageID)] = struct{}{}
+			out = append(out, int(messageID))
+		}
+		for _, grant := range grants {
+			if grant.SegmentSeq <= 0 {
+				continue
+			}
+			if _, ok := seen[grant.SegmentSeq]; !ok {
+				seen[grant.SegmentSeq] = struct{}{}
+				out = append(out, grant.SegmentSeq)
+			}
+		}
+	}
+	sort.Ints(out)
+	return out
 }
 
 // Extend adds grants that a tool discovered during the turn.
