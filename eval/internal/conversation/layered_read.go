@@ -235,15 +235,48 @@ type LayeredRead struct {
 	// zero on the layered arm, where the product writes no rolling summary at
 	// all, and zero with a non-empty degraded list on the truncated arm means
 	// the arm answered without the compression it claims to compare.
+	//
+	// It is a CALL count, not a success count: a compaction that timed out
+	// was called and produced nothing. SummaryWrites below is the count of
+	// compactions that actually produced a summary, and the two together are
+	// what say whether the arm ever held a compression.
 	SummaryCompactions int `json:"summary_compactions"`
+	// SummaryWrites is how many compactions produced a summary. A call that
+	// failed is not a write.
+	SummaryWrites int `json:"summary_writes"`
 	// SummaryCooldowns is how many of the truncated arm's compactions the
 	// failure cooldown refused. A cooldown is not a failure of its own - it
 	// is the failure before it - and the two have to be told apart.
 	SummaryCooldowns int `json:"summary_cooldowns"`
+	// SummaryFailureReason is the product's own reason for the first real
+	// failure of the write phase: the stage that failed. It is the product's
+	// vocabulary, not this harness's.
+	SummaryFailureReason string `json:"summary_failure_reason,omitempty"`
+	// SummaryFailureCause is whose failure it was: upstream_timeout,
+	// output_over_limit, format_error, storage_failure, product_failure, or
+	// unknown.
+	//
+	// The cause is what decides whether a run is the environment's or the
+	// product's, and it is read from the FIRST failure - the one that caused
+	// the cooldown - because the cooldown itself does not say.
+	SummaryFailureCause string `json:"summary_failure_cause,omitempty"`
+	// SummaryFailureText is the first failure's message, kept short.
+	SummaryFailureText string `json:"summary_failure_text,omitempty"`
+	// WriteFailure names a run the product's own writer decided: the
+	// compaction failed on the product's side, so the answer stands and the
+	// report says the compression behind it was not what it should have been.
+	// It is never washed into the environment's column.
+	WriteFailure string `json:"write_failure,omitempty"`
+	// SummaryFailureUnknown names a run whose cause the evidence does not
+	// reach - a cooldown whose failure behind it was not observed, or an
+	// artifact from before this field existed. It is not an environment
+	// failure and it is not a product failure: it is 待核, and it stays in
+	// the statistics rather than being quietly excluded from them.
+	SummaryFailureUnknown string `json:"summary_failure_unknown,omitempty"`
 	// EnvironmentFailure names a run the upstream decided rather than the
-	// product: the rolling summary compaction was refused by the failure
-	// cooldown, so the window carried no summary and the arm answered without
-	// the compression it claims to measure.
+	// product: the rolling summary compaction timed out, so the window
+	// carried no summary and the arm answered without the compression it
+	// claims to measure.
 	//
 	// It is a separate field because such a run is neither a right answer nor
 	// a wrong one. Counting it as an ordinary unsuccessful answer would put
@@ -427,8 +460,18 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 		}
 		summarySource = armSummarySource(mode, replay.provider)
 		read.SummaryCompactions = replay.compactions
+		read.SummaryWrites = replay.writes
 		read.SummaryCooldowns = replay.cooldowns
 		read.Errors = append(read.Errors, replay.degraded...)
+		// The first real failure is reported with its cause, because the
+		// cooldown that follows it does not say what went wrong and a report
+		// that only carries the cooldown cannot tell an upstream timeout from
+		// the product's own failures.
+		if replay.hasFailure {
+			read.SummaryFailureReason = string(replay.firstFailure.Reason)
+			read.SummaryFailureCause = string(replay.firstFailure.Cause)
+			read.SummaryFailureText = replay.firstFailure.Text
+		}
 	}
 	read.Batches = batches
 	// The batch stage stops here. It exists to measure the writer's failure
@@ -469,16 +512,26 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	read.WindowMessages = len(window.Messages)
 	read.Budget = budgetFrom(window.Budget)
 	// The truncated arm compares the product's rolling summary against the
-	// layered arm's blocks. When the compaction was refused by the failure
-	// cooldown - the upstream timed out - the window carries no summary at
-	// all, and this run answered without the compression it claims to
-	// measure. That is the upstream's decision and not the product's, so it
-	// is marked as an environment failure rather than left to be counted as
-	// an ordinary unsuccessful answer.
-	if mode == LayeredArmTruncated && replay.cooldowns > 0 && read.Budget.Summary == 0 {
-		read.EnvironmentFailure = "the rolling summary compaction entered the failure cooldown " +
-			"and the window carried no summary"
-	}
+	// layered arm's blocks. When the compaction timed out - the upstream
+	// failed and the window carried no summary at all - this run answered
+	// without the compression it claims to measure. That is the upstream's
+	// decision and not the product's, so it is marked as an environment
+	// failure rather than left to be counted as an ordinary unsuccessful
+	// answer.
+	//
+	// The cause decides it, not the cooldown. The cooldown follows every
+	// failure of the compaction, and a run that named it as the cause would
+	// put the product's own failures - an output that was too long, a body
+	// that would not parse, a storage failure - into the environment's
+	// column. So the first failure is read at the moment it happened, and
+	// only an upstream timeout with no summary behind it is an environment
+	// failure. A product-side cause keeps the result and is listed apart; a
+	// cause the evidence does not reach is marked 待核 and stays in the
+	// statistics.
+	outcome := classifySummaryOutcome(mode, replay, read.Budget.Summary)
+	read.EnvironmentFailure = outcome.EnvironmentFailure
+	read.WriteFailure = outcome.WriteFailure
+	read.SummaryFailureUnknown = outcome.Unknown
 	inspectWindow(&read, window, seeded, messages)
 
 	// The authorization chain: an id the window authorised is readable, an id
@@ -1190,13 +1243,30 @@ func (g *countingSummaryGenerator) GenerateSummary(ctx context.Context, previous
 type rollingReplay struct {
 	provider    agent.SummaryProvider
 	compactions int
-	degraded    []string
+	// writes is how many compactions actually produced a summary. The call
+	// count above is not that: a call that timed out was made and produced
+	// nothing, and a run that reports only the calls cannot say whether the
+	// arm ever held a compression.
+	writes   int
+	degraded []string
 	// cooldowns is how many compactions the failure cooldown refused. A
 	// cooldown is not a failure of its own - it is the failure before it -
 	// and a run that cannot tell the two apart cannot say whether its window
 	// carried a summary because the upstream timed out or because there was
 	// nothing to summarise.
 	cooldowns int
+	// firstFailure is the failure that caused the cooldown: the first real
+	// failure of the replay, read at the moment it happened.
+	//
+	// It is kept because the cooldown alone does not say what went wrong. The
+	// same cooldown follows an upstream timeout, an output that was too long,
+	// a body that would not parse and a storage failure, and those are four
+	// different findings: only the first is the environment's.
+	firstFailure summaryFailure
+	// hasFailure says a real failure was seen. A cooldown with no failure
+	// behind it is a different situation from no failure at all, and the two
+	// cannot be told apart from the cooldown count.
+	hasFailure bool
 }
 
 // replayRollingSummaries drives the provider once per stored message, which is
@@ -1208,20 +1278,33 @@ type rollingReplay struct {
 // the product's behaviour: the summary is an optimisation over history that is
 // still on disk. The count and the degradations are reported, because an arm
 // that never compacted is not the arm the comparison claims.
+//
+// The first real failure is read while the error is still an error. The
+// messages that are reported are strings, and a string loses the chain that
+// tells a timeout from a parse failure, so the cause has to be decided here -
+// at the moment the product's own rule can still see it.
 func replayRollingSummaries(ctx context.Context, provider agent.SummaryProvider, input agent.RunContext,
 	messages int, replay *rollingReplay, counting *countingSummaryGenerator) {
 	for index := 0; index < messages; index++ {
 		_, err := provider.SessionSummary(ctx, input)
 		switch {
 		case err == nil:
+			replay.writes++
 		case ctx.Err() != nil:
 			return
 		default:
 			// Cooldowns and skipped stages are the product's own answers, not
 			// failures of the replay; they are recorded so a run that never
-			// compacted can be seen to be one.
-			if errors.Is(err, agent.ErrSummaryCoolingDown) {
+			// compacted can be seen to be one. A cooldown is the failure
+			// BEFORE it, so it never becomes the first failure.
+			if isCooldownError(err) {
 				replay.cooldowns++
+			} else if !replay.hasFailure {
+				failure := classifySummaryFailure(err)
+				if failure.Cause != summaryCauseNone {
+					replay.firstFailure = failure
+					replay.hasFailure = true
+				}
 			}
 			replay.degraded = append(replay.degraded, "rolling summary replay: "+err.Error())
 		}
