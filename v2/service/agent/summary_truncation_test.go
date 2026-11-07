@@ -2,6 +2,7 @@ package agent
 
 import (
 	"GopherAI/common/observability"
+	"GopherAI/common/rag"
 	"GopherAI/model"
 	"bytes"
 	"context"
@@ -327,6 +328,47 @@ func TestTheSummaryPromptIsUnchanged(t *testing.T) {
 	const frozen = "189c5ff2c15bd7584d1435062aa4856a18ad4df549a54f7306cce35d885465f7"
 	if digest != frozen {
 		t.Fatalf("the summary prompt changed:\n got %s\nwant %s", digest, frozen)
+	}
+}
+
+// A summary that is inside the item budget but outside the output cap is
+// trimmed to the cap, not refused.
+//
+// The two limits are different things: the item budget says how many items a
+// group may hold, and the output cap says how many tokens the stored document
+// may cost. A document can sit inside the first and outside the second, and
+// then the cap used to be enforced by refusing the whole summary - which is
+// the one thing the budget was written not to do: a refused summary is a
+// summary that never updates again, and the failure cooldown then holds every
+// later compaction back as well.
+func TestASummaryOverTheOutputCapIsTrimmedToIt(t *testing.T) {
+	chat := &scriptedChatModel{respond: func(_ context.Context, _ int) (*schema.Message, error) {
+		return schema.AssistantMessage(openLoopsBody(20), nil), nil
+	}}
+	const cap = 150
+	generator, err := NewModelSummaryGenerator(chat, 8000, cap, model.DefaultSummaryBudget())
+	if err != nil {
+		t.Fatal(err)
+	}
+	generation, err := generator.GenerateSummary(context.Background(), "", userSummaryMessages(40))
+	if err != nil {
+		t.Fatalf("a summary over the cap must be trimmed, not refused: %v", err)
+	}
+	if cost := rag.EstimateTokens(generation.Content); cost > cap {
+		t.Fatalf("the trimmed summary costs %d, over the %d-token cap", cost, cap)
+	}
+	if len(generation.Truncations) == 0 {
+		t.Fatal("the trim was not reported")
+	}
+	document, err := model.DecodeSessionSummaryDocument(generation.Content)
+	if err != nil {
+		t.Fatalf("the trimmed summary is not a document: %v", err)
+	}
+	if len(document.OpenLoops) == 0 {
+		t.Fatal("the trim kept nothing")
+	}
+	if len(document.OpenLoops) >= 20 {
+		t.Fatalf("the trim kept %d open loops; the cap was never applied", len(document.OpenLoops))
 	}
 }
 

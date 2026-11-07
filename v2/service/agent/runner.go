@@ -409,15 +409,30 @@ func (c RunnerConfig) Surface() ToolSurface {
 }
 
 type RunContext struct {
-	RunID                    string
-	LeaseToken               string
-	InitialStepSequence      int
-	UserID                   int64
-	UserName                 string
-	SessionID                string
-	Question                 string
-	EnableThinking           bool
-	KnowledgePolicy          rag.KnowledgePolicy
+	RunID               string
+	LeaseToken          string
+	InitialStepSequence int
+	UserID              int64
+	UserName            string
+	SessionID           string
+	Question            string
+	EnableThinking      bool
+	KnowledgePolicy     rag.KnowledgePolicy
+	// AvailableTools are the tools this turn will offer the model.
+	//
+	// The system prompt is written as the union of every rule any turn might
+	// need, and the rules for the tools a turn does not have are dropped
+	// before the prompt is sent. The window's budget is measured against the
+	// prompt that is sent, so the turn has to say what it will offer: a
+	// window measured against the longer prompt reserves room for text that
+	// is never sent, and the history pays for it - the raw conversation and
+	// the compressed blocks are then measured against a target the model
+	// never fills.
+	//
+	// A nil slice means the turn does not know its table yet, and the prompt
+	// is measured as it stands. An empty slice means the turn offers no
+	// tools at all, which is a different thing: every rule about a tool goes.
+	AvailableTools           []string
 	CurrentSessionHasHistory bool
 	EpisodeRecallReady       bool
 	// StrongTopicKeys are server-derived only (active learning, matched mastery

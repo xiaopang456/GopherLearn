@@ -311,6 +311,7 @@ func (g *ModelSummaryGenerator) GenerateSummary(ctx context.Context, previous st
 	if err != nil {
 		return SummaryGeneration{}, err
 	}
+	document, truncations = fitSummaryToOutputCap(document, truncations, g.budget, g.maxOutputTokens)
 	canonical, err := json.Marshal(document)
 	if err != nil {
 		return SummaryGeneration{}, fmt.Errorf("encode rolling summary: %w", err)
@@ -319,6 +320,88 @@ func (g *ModelSummaryGenerator) GenerateSummary(ctx context.Context, previous st
 		return SummaryGeneration{}, fmt.Errorf("rolling summary exceeds output token limit")
 	}
 	return SummaryGeneration{Content: string(canonical), Truncations: truncations}, nil
+}
+
+// fitSummaryToOutputCap trims the document until the JSON it is stored as fits
+// the output cap.
+//
+// The item budget says how many items a group may hold; the output cap says
+// how many tokens the stored document may cost. A document can sit inside the
+// first and outside the second - the items are long, and every compaction
+// keeps what the last one kept - and then the cap used to be enforced by
+// refusing the whole summary.
+//
+// Refusing it is the one thing the budget was written not to do: a rejected
+// summary is a summary that never updates again, and the failure cooldown
+// then keeps every later compaction from running either. So the document is
+// trimmed to what the cap can hold - the oldest items go first, in the same
+// order the item budget drops them - and the summary keeps updating.
+func fitSummaryToOutputCap(document summaryDocument, truncations []model.SummaryTruncation,
+	budget model.SummaryBudget, maxTokens int) (summaryDocument, []model.SummaryTruncation) {
+	if maxTokens <= 0 || summaryDocumentTokens(document) <= maxTokens {
+		return document, truncations
+	}
+	trimmed, trimmedTruncations := document, truncations
+	for limit := budget.GroupItemLimit - 1; limit >= 1; limit-- {
+		smaller := budget
+		smaller.GroupItemLimit = limit
+		if smaller.OpenLoopsItemLimit > limit {
+			smaller.OpenLoopsItemLimit = limit
+		}
+		candidate, candidateTruncations := document.Truncate(smaller)
+		if summaryDocumentTokens(candidate) <= maxTokens {
+			return candidate, mergeSummaryTruncations(truncations, candidateTruncations)
+		}
+		trimmed, trimmedTruncations = candidate, candidateTruncations
+	}
+	return trimmed, mergeSummaryTruncations(truncations, trimmedTruncations)
+}
+
+// mergeSummaryTruncations adds the second cut to the first.
+//
+// The two cuts are the same kind of cut at two limits, so the report of the
+// document that was stored is one report: the items the item budget dropped
+// and the items the output cap dropped, counted together against the body the
+// model wrote.
+func mergeSummaryTruncations(first, second []model.SummaryTruncation) []model.SummaryTruncation {
+	if len(first) == 0 {
+		return second
+	}
+	if len(second) == 0 {
+		return first
+	}
+	merged := make([]model.SummaryTruncation, 0, len(first)+len(second))
+	at := map[string]int{}
+	for _, entry := range first {
+		at[entry.Group+"/"+entry.Kind] = len(merged)
+		merged = append(merged, entry)
+	}
+	for _, entry := range second {
+		position, found := at[entry.Group+"/"+entry.Kind]
+		if !found {
+			at[entry.Group+"/"+entry.Kind] = len(merged)
+			merged = append(merged, entry)
+			continue
+		}
+		merged[position].Kept = entry.Kept
+		merged[position].Dropped += entry.Dropped
+		merged[position].DroppedMessageIDs = append(merged[position].DroppedMessageIDs,
+			entry.DroppedMessageIDs...)
+	}
+	return merged
+}
+
+// summaryDocumentTokens is what the stored document costs.
+//
+// The stored form is JSON - braces, quotes, field names, message ids - and it
+// is the stored form the output cap is about: the cap says how many tokens
+// the summary may take, and the summary is the document as it is stored.
+func summaryDocumentTokens(document summaryDocument) int {
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		return 0
+	}
+	return rag.EstimateTokens(string(encoded))
 }
 
 func renderSummaryInput(previous string, messages []model.Message, maxTokens int) string {

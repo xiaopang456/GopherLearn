@@ -882,6 +882,30 @@ func (b *DatabaseContextBuilder) UseAuthoritativeTopicMemoryProvider(provider Au
 	b.topicNow = provider
 }
 
+// systemPromptForTurn renders the prompt for the tools this turn will offer.
+//
+// The prompt is written as the union of every rule any turn might need, and
+// the rules for the tools a turn does not have are dropped before the prompt
+// is sent: a rule that names a tool the model cannot see is a rule it cannot
+// obey. The rendering has to happen before the window is measured, because
+// the measurement is what decides how much of the conversation fits.
+//
+// A window measured against the longer prompt reserves room for text that is
+// never sent, and the history pays for it: the raw conversation and the
+// compressed blocks are then measured against a target the model never fills.
+// On a turn that offers two tools the difference is hundreds of tokens, which
+// is more than the whole compressed block the turn was supposed to carry.
+//
+// A turn that does not know its table yet keeps the prompt as it stands.
+func systemPromptForTurn(prompt string, input RunContext) string {
+	if input.AvailableTools == nil {
+		return prompt
+	}
+	capabilities := CapabilitiesFromToolNames(input.AvailableTools)
+	capabilities.MemoryIntent = ExplicitMemoryIntent(input.Question)
+	return RenderSystemPrompt(prompt, capabilities)
+}
+
 func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (ContextWindow, error) {
 	if input.UserID <= 0 || strings.TrimSpace(input.SessionID) == "" || strings.TrimSpace(input.Question) == "" {
 		return ContextWindow{}, fmt.Errorf("agent context identity and question are required")
@@ -1221,6 +1245,7 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		// blocks are really there.
 		systemPrompt += layeredSummaryPrompt
 	}
+	systemPrompt = systemPromptForTurn(systemPrompt, input)
 	breakdown.System = messageTokenCost(systemPrompt)
 	breakdown.CurrentQuestion = messageTokenCost(input.Question)
 	if strings.TrimSpace(taskState) != "" {

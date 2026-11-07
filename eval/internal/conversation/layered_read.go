@@ -381,7 +381,7 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	}
 
 	// The read side, built the way the product builds it.
-	window, recorded, windowErr := buildLayeredReadWindow(ctx, s, repository, settings, sessionID, question, mode, summarySource)
+	window, recorded, windowErr := buildLayeredReadWindow(ctx, s, repository, settings, sessionID, question, mode, summarySource, tools)
 	if windowErr != nil {
 		read.Errors = append(read.Errors, "build window: "+windowErr.Error())
 		return read, windowErr
@@ -769,7 +769,10 @@ func renderWindowPromptFor(window agent.ContextWindow,
 	base := window.Messages[0].Content
 	rendered := agent.RenderSystemPrompt(base, caps)
 	if rendered == base {
-		return window, false, nil
+		// The prompt is already the one this turn's tool table needs: the
+		// builder rendered it before the window was measured, so the budget
+		// and the prompt agree.
+		return window, true, nil
 	}
 	window.Messages[0] = schema.SystemMessage(rendered)
 	// The budget describes the prompt that will be sent, not the one the
@@ -1008,19 +1011,26 @@ func replayProductRollingSummary(ctx context.Context, s *Sandbox, settings *entr
 // name. The summary source is the arm's own answer (armSummarySource) rather
 // than a choice this function makes, so the off window cannot be assembled
 // against a summary the product would not have read.
+//
+// The turn's tool table goes with the build: the window is measured against
+// the prompt that is sent, and the prompt is rendered for the tools the turn
+// offers. A window measured against the longer prompt reserves room for text
+// nobody is sent, and the history pays for it.
 func buildLayeredReadWindow(ctx context.Context, s *Sandbox, repository string,
 	settings *entry.Settings, sessionID, question, arm string,
-	summarySource agent.SummaryProvider) (agent.ContextWindow, *recordingLayeredProvider, error) {
+	summarySource agent.SummaryProvider, tools []string) (agent.ContextWindow, *recordingLayeredProvider, error) {
 	builder, err := agent.NewContextBuilder(windowContextConfig(settings),
 		historyAdapter{store: guardedStore{s}, sessionID: sessionID},
 		nil, nil, nil, summarySource)
 	if err != nil {
 		return agent.ContextWindow{}, nil, err
 	}
+	run := agent.RunContext{UserID: 7001, SessionID: sessionID, Question: question,
+		AvailableTools: offeredTools(tools)}
 	if arm == LayeredArmTruncated {
 		// No layered provider, no preselector, no blocks: this is the window
 		// the product sends when the mode is off, rolling summary aside.
-		window, buildErr := builder.Build(ctx, agent.RunContext{UserID: 7001, SessionID: sessionID, Question: question})
+		window, buildErr := builder.Build(ctx, run)
 		return window, nil, buildErr
 	}
 	preselector, err := agent.NewSummarySegmentPreselector(nil, nil)
@@ -1045,8 +1055,20 @@ func buildLayeredReadWindow(ctx context.Context, s *Sandbox, repository string,
 	if err := builder.UseLayeredSummaryProvider(recorder); err != nil {
 		return agent.ContextWindow{}, nil, err
 	}
-	window, buildErr := builder.Build(ctx, agent.RunContext{UserID: 7001, SessionID: sessionID, Question: question})
+	window, buildErr := builder.Build(ctx, run)
 	return window, recorder, buildErr
+}
+
+// offeredTools is the turn's tool table, as the builder takes it.
+//
+// The builder reads a nil slice as "this turn does not know its table yet" and
+// an empty one as "this turn offers no tools", so the names are never left
+// nil by accident: a harness that offers nothing says so.
+func offeredTools(tools []string) []string {
+	if tools == nil {
+		return []string{}
+	}
+	return tools
 }
 
 // historyAdapter lets the builder read the conversation back.
