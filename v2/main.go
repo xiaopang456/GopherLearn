@@ -820,6 +820,7 @@ func main() {
 		MaxResidentSegmentTokens:  conf.AgentConfig.ContextMaxResidentSegmentTokens,
 		MaxRetrievedSegmentTokens: conf.AgentConfig.ContextMaxRetrievedSegmentTokens,
 		MaxSegmentTokens:          conf.AgentConfig.ContextMaxSegmentTokens,
+		MinRecentMessages:         conf.AgentConfig.ContextMinRecentMessages,
 		EpisodeRecallMode:         agentService.EpisodeRecallMode(conf.AgentConfig.EpisodeRecallMode),
 		HistoryFetchLimit:         conf.AgentConfig.ContextHistoryFetchLimit,
 		MemoryReadMode:            memoryReadMode,

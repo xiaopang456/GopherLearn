@@ -37,6 +37,7 @@ type scaledAgentSection struct {
 	ContextMaxResidentSegmentTokens  *int    `toml:"contextMaxResidentSegmentTokens"`
 	ContextMaxRetrievedSegmentTokens *int    `toml:"contextMaxRetrievedSegmentTokens"`
 	ContextMaxSegmentTokens          *int    `toml:"contextMaxSegmentTokens"`
+	ContextMinRecentMessages         *int    `toml:"contextMinRecentMessages"`
 	ContextHistoryFetchLimit         *int    `toml:"contextHistoryFetchLimit"`
 	EpisodeRecallMode                *string `toml:"episodeRecallMode"`
 	SummarySegmentMode               *string `toml:"summarySegmentMode"`
@@ -92,6 +93,7 @@ func (o *scaledAgentSection) applyTo(target *config.AgentConfig) {
 	set(&target.ContextMaxResidentSegmentTokens, o.ContextMaxResidentSegmentTokens)
 	set(&target.ContextMaxRetrievedSegmentTokens, o.ContextMaxRetrievedSegmentTokens)
 	set(&target.ContextMaxSegmentTokens, o.ContextMaxSegmentTokens)
+	set(&target.ContextMinRecentMessages, o.ContextMinRecentMessages)
 	set(&target.ContextHistoryFetchLimit, o.ContextHistoryFetchLimit)
 	if value := o.EpisodeRecallMode; value != nil {
 		target.EpisodeRecallMode = *value

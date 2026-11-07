@@ -619,6 +619,58 @@ func NewRunner(
 	return &Runner{chatModel: chatModel, registry: registry, steps: steps, builder: builder, config: config}, nil
 }
 
+// preWindowToolNames is the turn's tool table, computed before the window.
+//
+// It applies the same policy the registration below applies: a turn with the
+// knowledge switch off offers no tools, and a question that cannot reach the
+// learner's documents offers no document tools. Only the names are taken -
+// the registration after the window builds the tools that actually run, with
+// the grants and the pre-injected memory the window established.
+//
+// The probe carries a throwaway evidence registry. Tools() is not guaranteed
+// free of side effects - a registry may seed the run's evidence, reserve a
+// call slot, or record a read - and the registration below must see those
+// effects exactly once. The probe therefore gets the turn's identity,
+// question and policy (everything a registry needs to decide whether a tool
+// exists at all) and none of the run's mutable state; a registry that
+// declines the probe leaves the table unknown and the window is measured as
+// it stands.
+func (r *Runner) preWindowToolNames(ctx context.Context, input RunContext) ([]string, error) {
+	if r == nil || r.registry == nil {
+		return nil, fmt.Errorf("agent tool registry is not initialized")
+	}
+	probe := input
+	probe.MemoryEvidence = NewMemoryEvidenceRegistry()
+	probe.GrantSet = nil
+	probe.HistoryGrants = nil
+	probe.PreinjectedMemory = nil
+	probe.RecallCycle = memoryrecall.New(input.Question)
+	registered, err := r.registry.Tools(ctx, probe)
+	if err != nil {
+		return nil, err
+	}
+	if input.KnowledgePolicy == rag.KnowledgeDisabled {
+		return []string{}, nil
+	}
+	if !documentKnowledgeReachable(input.Question, input.KnowledgePolicy) {
+		registered, err = withoutDocumentKnowledgeTools(ctx, registered)
+		if err != nil {
+			return nil, err
+		}
+	}
+	names := make([]string, 0, len(registered))
+	for _, registeredTool := range registered {
+		info, infoErr := registeredTool.Info(ctx)
+		if infoErr != nil {
+			return nil, infoErr
+		}
+		if info != nil && strings.TrimSpace(info.Name) != "" {
+			names = append(names, info.Name)
+		}
+	}
+	return names, nil
+}
+
 // renderWindowPrompt replaces the window's system prompt with the one this
 // turn's tool table supports.
 //
@@ -742,6 +794,29 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	// whether this question is about the learner's own material at all. It
 	// runs before the window is assembled, because its evidence belongs in it.
 	input.Relevance = r.probeRelevance(ctx, input)
+	// The turn's tool table, before the window is assembled.
+	//
+	// The prompt is written as the union of every rule any turn might need,
+	// and the rules for the tools a turn does not have are dropped before the
+	// prompt is sent. The window is measured against the prompt that is sent,
+	// so the table has to be known here: a window measured against the longer
+	// prompt reserves room for text nobody is sent, and the history pays for
+	// it - hundreds of tokens on a turn with two tools, which is more than
+	// the whole compressed block the turn was meant to carry.
+	//
+	// The pre-window pass asks the registry with the turn's own input, which
+	// carries everything a registry needs to decide whether a tool exists at
+	// all (identity, policy) and nothing the window has not yet established.
+	// The registration after the window is still the one that runs, so a
+	// registry that changes its mind with the window's grants changes only
+	// the table the model is offered, and renderWindowPrompt below keeps
+	// catching that case. A registry that cannot answer before the window
+	// leaves the table unknown, and the window is measured as it stands.
+	if len(input.AvailableTools) == 0 {
+		if names, preErr := r.preWindowToolNames(ctx, input); preErr == nil {
+			input.AvailableTools = names
+		}
+	}
 	window, err := r.builder.Build(ctx, input)
 	if err != nil {
 		return RunnerResult{}, err

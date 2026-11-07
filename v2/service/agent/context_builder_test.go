@@ -40,6 +40,12 @@ func (f *fakeHistoryReader) ListRecentAfter(_ context.Context, _ string, afterID
 			filtered = append(filtered, message)
 		}
 	}
+	// The repository returns the newest `limit` messages, oldest-first within
+	// that slice. A fake that ignored the limit would hand the builder the
+	// whole session wherever the builder asked for a newest-slice.
+	if limit > 0 && len(filtered) > limit {
+		filtered = filtered[len(filtered)-limit:]
+	}
 	return filtered, f.err
 }
 
@@ -100,7 +106,7 @@ func testContextConfig() ContextConfig {
 	return ContextConfig{
 		ModelWindowTokens: 8192, InputTargetTokens: 2048, OutputReserveTokens: 512,
 		EvidenceReserve: 500, MaxGlobalUserMemoryTokens: 90, MaxTopicUserMemoryTokens: 90, MaxSummaryTokens: 180, MaxMasteryTokens: 120,
-		HistoryFetchLimit: 64,
+		HistoryFetchLimit: 64, MinRecentMessages: DefaultMinRecentMessages,
 		// Mirrors the shipped default, so a test that does not say otherwise is
 		// exercising what production runs.
 		MemoryReadMode: memoryrecall.DefaultReadMode(),

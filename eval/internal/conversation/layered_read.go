@@ -36,10 +36,12 @@ import (
 	"GopherAI/common/memoryrecall"
 	"GopherAI/common/observability"
 	"GopherAI/config"
+	messagedao "GopherAI/dao/message"
 	sessiondao "GopherAI/dao/session"
 	"GopherAI/entry"
 	"GopherAI/model"
 	agent "GopherAI/service/agent"
+	agentTool "GopherAI/service/agent/tool"
 	"GopherAI/utils"
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	modelcomponent "github.com/cloudwego/eino/components/model"
@@ -96,24 +98,29 @@ type LayeredBudget struct {
 	ResidentSegments  int `json:"resident_segments"`
 	RetrievedSegments int `json:"retrieved_segments"`
 	RecentMessages    int `json:"recent_messages"`
-	PreRetrieval      int `json:"pre_retrieval"`
-	Assembled         int `json:"assembled"`
+	// RecentMessageFloor is what the newest raw messages were guaranteed
+	// before the compressed blocks spent anything. Reading it beside
+	// recent_messages says whether the guarantee held.
+	RecentMessageFloor int `json:"recent_message_floor,omitempty"`
+	PreRetrieval       int `json:"pre_retrieval"`
+	Assembled          int `json:"assembled"`
 }
 
 func budgetFrom(budget agent.BudgetBreakdown) LayeredBudget {
 	return LayeredBudget{
-		InputTarget:       budget.InputTarget,
-		EvidenceReserved:  budget.EvidenceReserved,
-		System:            budget.System,
-		TaskState:         budget.TaskState,
-		CurrentQuestion:   budget.CurrentQuestion,
-		Summary:           budget.Summary,
-		Whiteboard:        budget.Whiteboard,
-		ResidentSegments:  budget.ResidentSegments,
-		RetrievedSegments: budget.RetrievedSegments,
-		RecentMessages:    budget.RecentMessages,
-		PreRetrieval:      budget.PreRetrievalEvidence,
-		Assembled:         budget.Assembled,
+		InputTarget:        budget.InputTarget,
+		EvidenceReserved:   budget.EvidenceReserved,
+		System:             budget.System,
+		TaskState:          budget.TaskState,
+		CurrentQuestion:    budget.CurrentQuestion,
+		Summary:            budget.Summary,
+		Whiteboard:         budget.Whiteboard,
+		ResidentSegments:   budget.ResidentSegments,
+		RetrievedSegments:  budget.RetrievedSegments,
+		RecentMessages:     budget.RecentMessages,
+		RecentMessageFloor: budget.RecentMessageFloor,
+		PreRetrieval:       budget.PreRetrievalEvidence,
+		Assembled:          budget.Assembled,
 	}
 }
 
@@ -187,6 +194,13 @@ type LayeredRead struct {
 	Verdict          string `json:"verdict"`
 	PromptTokens     int    `json:"prompt_tokens"`
 	CompletionTokens int    `json:"completion_tokens"`
+	// AgentLoop is the product runner's own accounting of the answer phase:
+	// how many model calls it made and how many tool calls the model spent.
+	// A turn that never reached a tool is a fact about the arm, and a turn
+	// that could not is a fact about the wiring; the two read the same here.
+	AgentModelCalls int               `json:"agent_model_calls"`
+	AgentToolCalls  int               `json:"agent_tool_calls"`
+	AgentToolSteps  []LayeredToolStep `json:"agent_tool_steps,omitempty"`
 	// SeededSegments is what the writer produced for this conversation. It is
 	// reported because a read that found nothing is only readable next to the
 	// state it was reading.
@@ -381,7 +395,13 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	}
 
 	// The read side, built the way the product builds it.
-	window, recorded, windowErr := buildLayeredReadWindow(ctx, s, repository, settings, sessionID, question, mode, summarySource, tools)
+	//
+	// The measurement window is assembled with the arm's own tool table - the
+	// registry the runner will use decides it, exactly as the product's
+	// pre-window pass does - so the numbers this window reports and the
+	// window the runner actually sends are the same numbers.
+	armTable := armToolTable(mode, tools)
+	window, recorded, windowErr := buildLayeredReadWindow(ctx, s, repository, settings, sessionID, question, mode, summarySource, armTable)
 	if windowErr != nil {
 		read.Errors = append(read.Errors, "build window: "+windowErr.Error())
 		return read, windowErr
@@ -389,19 +409,13 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	if recorded != nil {
 		read.PreselectedSegments = append([]int{}, recorded.retrieved...)
 	}
-	// The window's system prompt is not what the builder assembled: the
-	// product renders it against this turn's tool table, and a rule that names
-	// a tool the model cannot see is removed. Rendering it here is not a
-	// nicety - a measurement that skipped it sent the model a knowledge-search
-	// contract for a turn with no search tool, and the model obeyed the
-	// contract and refused a question the board could answer.
-	window, rendered, renderErr := renderWindowPromptFor(window, tools, question)
+	window, rendered, renderErr := renderWindowPromptFor(window, armTable, question)
 	if renderErr != nil {
 		read.Errors = append(read.Errors, "render prompt: "+renderErr.Error())
 		return read, renderErr
 	}
 	read.PromptRendered = rendered
-	read.Tools = tools
+	read.Tools = armTable
 	read.WindowMessages = len(window.Messages)
 	read.Budget = budgetFrom(window.Budget)
 	inspectWindow(&read, window, seeded, messages)
@@ -410,19 +424,35 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	// it never showed the model is not.
 	checkToolAuthority(s, sessionID, window, seeded, &read)
 
-	// The answer, produced from the window that was built.
-	answer, err := wrapped.Generate(ctx, window.Messages)
-	if err != nil {
-		read.Errors = append(read.Errors, "answer: "+err.Error())
-		return read, err
+	// The answer, produced by the product's own runner: the window it builds,
+	// the tools it offers, the loop that runs them, and the call limits the
+	// product ships with. A measurement that generated once over a
+	// pre-assembled window measured the window, not the turn - and it could
+	// not exercise the read-back tools this design exists to justify.
+	runID := "l4-read-" + scenario
+	agentRunner, steps, runnerErr := buildLayeredReadRunner(s, settings, wrapped,
+		summarySource, sessionID, question, mode)
+	if runnerErr != nil {
+		read.Errors = append(read.Errors, "build runner: "+runnerErr.Error())
+		return read, runnerErr
 	}
-	if answer != nil {
-		read.Answer = strings.TrimSpace(answer.Content)
-		if answer.ResponseMeta != nil && answer.ResponseMeta.Usage != nil {
-			read.PromptTokens = answer.ResponseMeta.Usage.PromptTokens
-			read.CompletionTokens = answer.ResponseMeta.Usage.CompletionTokens
-		}
+	result, runErr := agentRunner.Run(ctx, agent.RunContext{
+		RunID: runID, UserID: 7001, SessionID: sessionID, Question: question,
+		CurrentSessionHasHistory: len(messages) > 0,
+	}, nil)
+	read.AgentModelCalls = result.ModelCalls
+	read.AgentToolCalls = result.ToolCalls
+	read.AgentToolSteps = steps.toolSteps()
+	if usage := lastChatUsage(ledger); usage != nil {
+		read.PromptTokens = usage.PromptTokens
+		read.CompletionTokens = usage.CompletionTokens
 	}
+	if runErr != nil {
+		read.Errors = append(read.Errors, "agent run: "+runErr.Error())
+		return read, runErr
+	}
+	answer := strings.TrimSpace(result.Answer)
+	read.Answer = answer
 	read.AcceptedSeen = mentionsAny(read.Answer, accepted)
 	read.ForbiddenSeen = mentionsAny(read.Answer, forbidList(forbidden, accepted))
 	// Naming the value that was replaced is not the same as answering with it.
@@ -920,6 +950,7 @@ func windowContextConfig(settings *entry.Settings) agent.ContextConfig {
 		MaxResidentSegmentTokens:  agentConfig.ContextMaxResidentSegmentTokens,
 		MaxRetrievedSegmentTokens: agentConfig.ContextMaxRetrievedSegmentTokens,
 		MaxSegmentTokens:          agentConfig.ContextMaxSegmentTokens,
+		MinRecentMessages:         agentConfig.ContextMinRecentMessages,
 		EpisodeRecallMode:         agent.EpisodeRecallMode(agentConfig.EpisodeRecallMode),
 		HistoryFetchLimit:         agentConfig.ContextHistoryFetchLimit,
 		MemoryReadMode:            memoryrecall.ReadMode(settings.Config.MemoryReadMode),
@@ -930,6 +961,162 @@ func windowContextConfig(settings *entry.Settings) agent.ContextConfig {
 type countingSummaryGenerator struct {
 	inner agent.SummaryGenerator
 	calls int
+}
+
+// LayeredToolStep is one tool round of the answer phase, as the product's own
+// step recorder saw it. The structured record replaces reading tool-call
+// styling out of the answer text: a turn whose answer is a tool call and a
+// turn whose answer merely looks like one are different facts, and only the
+// runner's own ledger tells them apart.
+type LayeredToolStep struct {
+	Tool      string `json:"tool"`
+	Arguments string `json:"arguments,omitempty"`
+	Result    string `json:"result,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+// layeredStepRecorder keeps the steps the runner records, in memory.
+//
+// The product's repository writes them beside the run; this harness has no
+// run store, and the steps it wants are exactly the ones this recorder sees:
+// every tool call with its arguments, its observation and its failure.
+type layeredStepRecorder struct {
+	mu    sync.Mutex
+	steps []*model.AgentStep
+}
+
+func (r *layeredStepRecorder) AppendStep(_ context.Context, _ string, step *model.AgentStep) error {
+	if step == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.steps = append(r.steps, step)
+	return nil
+}
+
+// toolSteps reads the tool rounds back out, in the order they ran.
+func (r *layeredStepRecorder) toolSteps() []LayeredToolStep {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]LayeredToolStep, 0, len(r.steps))
+	for _, step := range r.steps {
+		if step.Type != model.AgentStepTool {
+			continue
+		}
+		out = append(out, LayeredToolStep{
+			Tool: step.ToolName, Arguments: step.ArgumentsSummary,
+			Result: step.ResultSummary, Error: step.ErrorMessage,
+		})
+	}
+	return out
+}
+
+// armToolTable is the tool table one arm offers, on the product's own rule.
+//
+// The browse tool is registered only in the applied mode (wiring.go): there
+// are no segments to browse in the other two. A harness that offered it to
+// the truncated arm would measure a product that does not exist, and its
+// prompt budget with it.
+func armToolTable(mode string, tools []string) []string {
+	table := make([]string, 0, len(tools))
+	for _, name := range tools {
+		if name == "browse_summary_segments" && mode != LayeredArmOn {
+			continue
+		}
+		table = append(table, name)
+	}
+	return table
+}
+
+// runnerConfigFromSettings mirrors the entry's own mapping, field for field
+// (wiring.go, agentRunnerConfig): the model-call ceilings, the deadlines and
+// the thinking dialect the product runs with. A harness that invented its own
+// limits would measure a runner that never shipped.
+func runnerConfigFromSettings(settings *entry.Settings) agent.RunnerConfig {
+	agentConf := settings.Config.AgentConfig
+	return agent.RunnerConfig{
+		MaxToolCalls: agentConf.MaxToolCalls, MaxModelCalls: agentConf.MaxModelCalls,
+		MaxGraphSteps:      agentConf.MaxGraphSteps,
+		Deadline:           time.Duration(agentConf.DeadlineSeconds) * time.Second,
+		DeadlineThinking:   time.Duration(agentConf.DeadlineThinkingSeconds) * time.Second,
+		RelevanceThreshold: agentConf.KnowledgeRelevanceThreshold,
+	}
+}
+
+// buildLayeredReadRunner assembles the product's runner over the same sandbox
+// state the measurement window read: the same builder configuration, the same
+// summary source, the same preselector bounds, and the tools the arm's mode
+// registers in the product.
+//
+// The answer phase therefore runs the product's own loop - the window it
+// assembles, the tool table it offers, the read-back tools it authorises -
+// and the harness measures what that loop did rather than a window it
+// assembled beside it.
+func buildLayeredReadRunner(s *Sandbox, settings *entry.Settings,
+	chat modelcomponent.ToolCallingChatModel, summarySource agent.SummaryProvider,
+	sessionID, question, arm string) (*agent.Runner, *layeredStepRecorder, error) {
+	messageRepository := messagedao.NewRepository(s.db)
+	historyTools, err := agentTool.NewHistoryMessageRegistry(messageRepository)
+	if err != nil {
+		return nil, nil, fmt.Errorf("history message tool: %w", err)
+	}
+	historyTools.UseSummarySegmentEvidenceReader(agentTool.NewSummarySegmentEvidenceReader(sessiondao.NewRepository(s.db)))
+	registries := []agent.ToolRegistry{historyTools}
+	if arm == LayeredArmOn {
+		browseTools, browseErr := agentTool.NewBrowseSummarySegmentsRegistry(sessiondao.NewRepository(s.db))
+		if browseErr != nil {
+			return nil, nil, fmt.Errorf("summary segment browse tool: %w", browseErr)
+		}
+		registries = append(registries, browseTools)
+	}
+	registry := agent.CompositeToolRegistry{Registries: registries}
+
+	builder, err := agent.NewContextBuilder(windowContextConfig(settings),
+		historyAdapter{store: guardedStore{s}, sessionID: sessionID},
+		nil, nil, nil, summarySource)
+	if err != nil {
+		return nil, nil, err
+	}
+	if arm == LayeredArmOn {
+		preselector, err := agent.NewSummarySegmentPreselector(nil, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		preselector.UseLimits(agent.SummarySegmentPreselectLimits(
+			settings.Config.AgentConfig.ContextMaxRetrievedSegmentTokens,
+			settings.Config.AgentConfig.ContextMaxSegmentTokens))
+		provider, err := agent.NewDatabaseLayeredSummaryProvider(
+			sessiondao.NewRepository(s.db), preselector,
+			agent.ResidentSegmentCount(settings.Config.AgentConfig.ContextMaxResidentSegmentTokens,
+				settings.Config.AgentConfig.ContextMaxSegmentTokens))
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := builder.UseLayeredSummaryProvider(provider); err != nil {
+			return nil, nil, err
+		}
+	}
+	steps := &layeredStepRecorder{}
+	runner, err := agent.NewRunner(chat, registry, steps, builder, runnerConfigFromSettings(settings))
+	if err != nil {
+		return nil, nil, err
+	}
+	return runner, steps, nil
+}
+
+// lastChatUsage is the most recent answer-phase usage the ledger saw. The
+// runner does not surface the provider's usage counters, so the harness reads
+// them off the telemetry every model call already flows through.
+func lastChatUsage(ledger *ModelLedger) *schema.TokenUsage {
+	calls := ledger.Calls()
+	for index := len(calls) - 1; index >= 0; index-- {
+		if calls[index].Role == "answer" && calls[index].Usage != nil {
+			usage := *calls[index].Usage
+			return &usage
+		}
+	}
+	return nil
 }
 
 func (g *countingSummaryGenerator) GenerateSummary(ctx context.Context, previous string, messages []model.Message) (agent.SummaryGeneration, error) {

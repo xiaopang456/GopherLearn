@@ -349,11 +349,17 @@ type AgentConfig struct {
 	// that sends the board and the segments but could not say how much room
 	// they get. The defaults are the constants' old values, so a configuration
 	// that says nothing keeps the behaviour it had.
-	ContextMaxWhiteboardTokens       int    `toml:"contextMaxWhiteboardTokens"`
-	ContextMaxResidentSegmentTokens  int    `toml:"contextMaxResidentSegmentTokens"`
-	ContextMaxRetrievedSegmentTokens int    `toml:"contextMaxRetrievedSegmentTokens"`
-	ContextMaxSegmentTokens          int    `toml:"contextMaxSegmentTokens"`
-	EpisodeRecallMode                string `toml:"episodeRecallMode"`
+	ContextMaxWhiteboardTokens       int `toml:"contextMaxWhiteboardTokens"`
+	ContextMaxResidentSegmentTokens  int `toml:"contextMaxResidentSegmentTokens"`
+	ContextMaxRetrievedSegmentTokens int `toml:"contextMaxRetrievedSegmentTokens"`
+	ContextMaxSegmentTokens          int `toml:"contextMaxSegmentTokens"`
+	// ContextMinRecentMessages is how many of the newest raw messages every
+	// turn keeps even when the summary segments have already covered them. It
+	// defaults to the rolling summary's RetainMessages, because the two are
+	// the same guarantee on the two paths: what the learner just said stays
+	// in the learner's own words. Zero turns the floor off.
+	ContextMinRecentMessages int    `toml:"contextMinRecentMessages"`
+	EpisodeRecallMode        string `toml:"episodeRecallMode"`
 	// MemoryReadMode selects the whole long-term memory read path.
 	//
 	// STABILIZE-031: the unit of choice is a complete mode, not a component
@@ -642,9 +648,12 @@ func defaultConfig() *Config {
 		ContextMaxResidentSegmentTokens:  defaultResidentSegmentTokens,
 		ContextMaxRetrievedSegmentTokens: defaultRetrievedSegmentTokens,
 		ContextMaxSegmentTokens:          defaultSegmentTokens,
-		MemoryReadMode:                   string(memoryrecall.DefaultReadMode()),
-		ContextHistoryFetchLimit:         128,
-		SummaryTriggerMessages:           12, SummaryTriggerTokens: 6000, SummaryRetainMessages: 8,
+		// Matches SummaryRetainMessages below: the raw floor and the summary
+		// writer's retained tail are the same guarantee stated twice.
+		ContextMinRecentMessages: 8,
+		MemoryReadMode:           string(memoryrecall.DefaultReadMode()),
+		ContextHistoryFetchLimit: 128,
+		SummaryTriggerMessages:   12, SummaryTriggerTokens: 6000, SummaryRetainMessages: 8,
 		SummaryMaxInputTokens: 8000, SummaryFetchLimit: 512, SummaryTimeoutSeconds: 20,
 		SummaryStageBudgetSeconds: 8, SummaryFailureCooldownSeconds: 30,
 		SummaryGroupItemLimit: 20, SummaryOpenLoopsItemLimit: 20, SummaryEvidenceIDLimit: 64,
@@ -1067,6 +1076,7 @@ func applyAgentEnv(c *AgentConfig) error {
 		{"AGENT_CONTEXT_MAX_RESIDENT_SEGMENT_TOKENS", func(value int) { c.ContextMaxResidentSegmentTokens = value }},
 		{"AGENT_CONTEXT_MAX_RETRIEVED_SEGMENT_TOKENS", func(value int) { c.ContextMaxRetrievedSegmentTokens = value }},
 		{"AGENT_CONTEXT_MAX_SEGMENT_TOKENS", func(value int) { c.ContextMaxSegmentTokens = value }},
+		{"AGENT_CONTEXT_MIN_RECENT_MESSAGES", func(value int) { c.ContextMinRecentMessages = value }},
 		{"AGENT_CONTEXT_HISTORY_FETCH_LIMIT", func(value int) { c.ContextHistoryFetchLimit = value }},
 		{"AGENT_SUMMARY_TRIGGER_MESSAGES", func(value int) { c.SummaryTriggerMessages = value }},
 		{"AGENT_SUMMARY_TRIGGER_TOKENS", func(value int) { c.SummaryTriggerTokens = value }},
@@ -1260,6 +1270,9 @@ func (c AgentConfig) Validate() error {
 		c.ContextMaxWhiteboardTokens < 0 || c.ContextMaxResidentSegmentTokens < 0 ||
 		c.ContextMaxRetrievedSegmentTokens < 0 || c.ContextMaxSegmentTokens < 0 {
 		return fmt.Errorf("context block budgets cannot be negative")
+	}
+	if c.ContextMinRecentMessages < 0 || c.ContextMinRecentMessages > 512 {
+		return fmt.Errorf("contextMinRecentMessages must be between 0 and 512")
 	}
 	// The board and the segment blocks only reach the window in the mode that
 	// reads them back. Counting their budgets in every other mode would fail a

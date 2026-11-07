@@ -285,14 +285,46 @@ func TestTheRawConversationStartsWhereTheSegmentsStop(t *testing.T) {
 	// The segment that reaches the watermark is what carries the coverage,
 	// so the store has to hold it: a watermark with no segment behind it is
 	// a state the store cannot be in.
+	//
+	// With an uncovered tail at least as long as the raw floor, the fetch is
+	// the watermark's own: nothing below it is fetched.
+	reader := &fakeSegmentReader{
+		segments:  []model.SessionSummarySegment{testSegment(t, 1, 0, 60, "话题", nil, nil)},
+		watermark: 60,
+	}
+	tail := make([]model.Message, 0, 16)
+	for index := 61; index <= 76; index++ {
+		tail = append(tail, model.Message{ID: uint(index), IsUser: true, Content: "还在的原文"})
+	}
+	history := &fakeHistoryReader{messages: tail}
+	buildLayeredWindow(t, reader, history, nil, nil)
+	if history.afterID != 60 {
+		t.Fatalf("the raw conversation starts after %d, want 60", history.afterID)
+	}
+}
+
+// The raw floor reaches back past the watermark when the uncovered tail is
+// shorter than the floor: the newest messages travel with every turn,
+// whatever the compression covered, and the same content being both raw and
+// compressed is the accepted price.
+func TestTheRawFloorReachesPastTheWatermark(t *testing.T) {
 	reader := &fakeSegmentReader{
 		segments:  []model.SessionSummarySegment{testSegment(t, 1, 0, 60, "话题", nil, nil)},
 		watermark: 60,
 	}
 	history := &fakeHistoryReader{messages: []model.Message{{ID: 61, IsUser: true, Content: "还在的原文"}}}
-	buildLayeredWindow(t, reader, history, nil, nil)
-	if history.afterID != 60 {
-		t.Fatalf("the raw conversation starts after %d, want 60", history.afterID)
+	window := buildLayeredWindow(t, reader, history, nil, nil)
+	if history.afterID != 0 {
+		t.Fatalf("the fetch stayed after %d; a tail shorter than the floor reaches back to the newest messages", history.afterID)
+	}
+	sawRaw := false
+	for _, message := range window.Messages {
+		if strings.Contains(message.Content, "还在的原文") {
+			sawRaw = true
+		}
+	}
+	if !sawRaw {
+		t.Fatal("the message the watermark covered did not reach the window as raw text")
 	}
 }
 

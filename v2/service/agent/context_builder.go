@@ -337,6 +337,23 @@ type ContextConfig struct {
 	// stretch and leave the newest one out of the window.
 	MaxSegmentTokens  int
 	EpisodeRecallMode EpisodeRecallMode
+	// MinRecentMessages is how many of the newest raw messages a turn carries
+	// even when the compression layer has already covered them.
+	//
+	// The layered summary's watermark says how far the segments reach, and the
+	// raw conversation starts after it. A watermark that reaches the newest
+	// message therefore leaves the window with no raw conversation at all:
+	// every turn would be answered from the compressed record alone, and "what
+	// did I just say" - the one thing the learner knows they said - would be a
+	// paraphrase. The floor keeps the newest few messages in the window on
+	// every turn, the same number the rolling summary's own writer keeps
+	// unsummarized (RetainMessages). The same content being both raw and
+	// compressed is the accepted price.
+	//
+	// Zero turns the floor off. It only has effect while the layered summary
+	// is the authority over where the raw conversation starts; the rolling
+	// summary's writer already keeps its own tail.
+	MinRecentMessages int
 	HistoryFetchLimit int
 	// MemoryReadMode decides whether this turn has any consumer for a
 	// request-scoped recall cycle. Under legacy_v2 there is none, and the
@@ -364,6 +381,12 @@ const (
 	DefaultRetrievedSegmentTokens = 1000
 	// DefaultSegmentTokens bounds one segment inside either block.
 	DefaultSegmentTokens = 300
+	// DefaultMinRecentMessages is how many of the newest raw messages every
+	// turn keeps even when the segments have covered them. It matches the
+	// rolling summary's RetainMessages default, because the two are the same
+	// guarantee on the two paths: what the learner just said stays in the
+	// learner's own words.
+	DefaultMinRecentMessages = 8
 )
 
 const (
@@ -397,6 +420,7 @@ func DefaultContextConfig() ContextConfig {
 		MaxWhiteboardTokens: DefaultWhiteboardTokens, MaxResidentSegmentTokens: DefaultResidentSegmentTokens,
 		MaxRetrievedSegmentTokens: DefaultRetrievedSegmentTokens,
 		MaxSegmentTokens:          DefaultSegmentTokens,
+		MinRecentMessages:         DefaultMinRecentMessages,
 		MemoryReadMode:            memoryrecall.DefaultReadMode(),
 	}
 }
@@ -437,6 +461,9 @@ func (c ContextConfig) Validate() error {
 	if c.HistoryFetchLimit < 1 || c.HistoryFetchLimit > 512 {
 		return fmt.Errorf("history fetch limit must be between 1 and 512")
 	}
+	if c.MinRecentMessages < 0 || c.MinRecentMessages > 512 {
+		return fmt.Errorf("min recent messages must be between 0 and 512")
+	}
 	if !c.MemoryReadMode.Valid() {
 		return fmt.Errorf("memory read mode %q is not one of legacy_v2, episode_v3, episode_v3_lexical, episode_v3_semantic, model_planned_v1, agent_memory_tool_v1, agent_memory_tool_v2", c.MemoryReadMode)
 	}
@@ -456,6 +483,12 @@ type BudgetBreakdown struct {
 	EpisodeCount     int `json:"episodeCount"`
 	Summary          int `json:"summary"`
 	RecentMessages   int `json:"recentMessages"`
+	// RecentMessageFloor is what the newest raw messages were guaranteed
+	// before the compressed blocks were allowed to spend anything. It is the
+	// floor's own cost, reported so a run can see the guarantee being kept:
+	// recentMessages below it means the budget could not hold the floor, which
+	// is a different fact from the blocks taking the room.
+	RecentMessageFloor int `json:"recentMessageFloor,omitempty"`
 	// Whiteboard is the session's current state, which travels with every
 	// turn.
 	Whiteboard int `json:"whiteboard"`
@@ -1173,6 +1206,33 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		observability.Memory.ProviderDegraded("message_history")
 		return ContextWindow{}, fmt.Errorf("load recent messages: %w", err)
 	}
+	// The raw floor: the newest few messages travel with every turn, whatever
+	// the compression layer already covered.
+	//
+	// The layered watermark says how far the segments reach, and a watermark
+	// that reaches the newest message leaves this turn with no raw
+	// conversation at all. The learner's last words would be a paraphrase
+	// inside a segment, which is not what "recent messages" is for. When the
+	// uncovered tail is shorter than the floor, the newest floor-many messages
+	// are fetched regardless of the watermark - the same content being both
+	// raw and compressed is the accepted price, and the rolling summary's own
+	// writer keeps a tail of the same size for the same reason (RetainMessages).
+	//
+	// The fetch is the newest messages of the session (the repository returns
+	// them oldest-first within that newest slice), so a tail longer than the
+	// floor needs nothing here: it is already all of the history above.
+	if b.layered != nil && b.config.MinRecentMessages > 0 && len(history) < b.config.MinRecentMessages {
+		tail, tailErr := b.history.ListRecentAfter(ctx, input.SessionID, 0, b.config.MinRecentMessages)
+		if tailErr != nil {
+			// The floor is a guarantee about the window, not a reason to fail
+			// the turn: the compression still carries the content, and a
+			// degraded floor is reported by the numbers rather than by an error.
+			log.Printf("[agent-context] recent message floor unavailable: session=%s error_type=%T",
+				input.SessionID, tailErr)
+		} else if len(tail) > len(history) {
+			history = tail
+		}
+	}
 	history = dropPersistedCurrentQuestion(history, input.Question)
 
 	// The evidence reserve is the only budget line that never flexed: every
@@ -1357,12 +1417,30 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	// is left. Where they are sent is a separate question: the board and the
 	// resident segments travel in front of the raw conversation, and the
 	// segments this question selected travel behind it.
+	//
+	// The raw floor is taken out first. The blocks spend what is left after
+	// the newest few raw messages were guaranteed their place, because the
+	// blocks are the compression and the raw tail is the thing being
+	// compressed: a compression that spends the original's seat in the window
+	// has replaced it, not summarised it. The floor is a reservation, not a
+	// spend - the history selection below still pays for those messages out of
+	// the remaining budget, which still carries the reservation.
+	floorBudget := 0
+	if b.layered != nil && b.config.MinRecentMessages > 0 {
+		count := minInt(len(history), b.config.MinRecentMessages)
+		for index := len(history) - 1; index >= len(history)-count; index-- {
+			if content := strings.TrimSpace(history[index].Content); content != "" {
+				floorBudget += messageTokenCost(content)
+			}
+		}
+		breakdown.RecentMessageFloor = floorBudget
+	}
 	whiteboardText := ""
 	residentText := ""
 	retrievedText := ""
 	var segmentGrants []HistoryMessageGrant
 	if b.layered != nil {
-		board := renderWhiteboardBlock(layered.BoardDocument, minInt(remaining-4, b.config.MaxWhiteboardTokens))
+		board := renderWhiteboardBlock(layered.BoardDocument, minInt(remaining-4-floorBudget, b.config.MaxWhiteboardTokens))
 		if board.Text != "" {
 			whiteboardText = board.Text
 			breakdown.Whiteboard = messageTokenCost(board.Text)
@@ -1373,7 +1451,7 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 			segmentGrants = append(segmentGrants, whiteboardHistoryGrants(board, layered, input.SessionID)...)
 		}
 		resident := renderSummarySegments(layered.Resident, layered.BoardDocument,
-			minInt(remaining-4, b.config.MaxResidentSegmentTokens), b.config.MaxSegmentTokens)
+			minInt(remaining-4-floorBudget, b.config.MaxResidentSegmentTokens), b.config.MaxSegmentTokens)
 		if resident.Text != "" {
 			residentText = resident.Text
 			breakdown.ResidentSegments = messageTokenCost(resident.Text)
@@ -1381,7 +1459,7 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 			segmentGrants = append(segmentGrants, summarySegmentHistoryGrants(resident.Segments, input.SessionID)...)
 		}
 		retrieved := renderSummarySegments(layered.Retrieved, layered.BoardDocument,
-			minInt(remaining-4, b.config.MaxRetrievedSegmentTokens), b.config.MaxSegmentTokens)
+			minInt(remaining-4-floorBudget, b.config.MaxRetrievedSegmentTokens), b.config.MaxSegmentTokens)
 		if retrieved.Text != "" {
 			retrievedText = retrieved.Text
 			breakdown.RetrievedSegments = messageTokenCost(retrieved.Text)
