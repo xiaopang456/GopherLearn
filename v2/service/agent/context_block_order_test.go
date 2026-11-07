@@ -151,15 +151,21 @@ func TestContextBuilderSendsPerTurnBlocksBehindTheConversationHistory(t *testing
 // The budget each block receives must not move. The figures below were taken
 // from the same input built by the previous ordering, and a change in any of
 // them means this change stopped being a reordering.
+//
+// Three of them moved on 2026-11-07, and deliberately: the system prompt grew
+// by the conversation-citation rule the base text now carries, and the
+// assembled and projected totals follow it. Every other block is where it
+// was, which is the part this test is about - the reordering still moves no
+// block's own size.
 func TestContextBuilderKeepsEveryBlockTheSameSizeWhenTheOrderChanges(t *testing.T) {
 	window := orderWindow(t, "偏好举例讲解", "粘包主题笔记", "粘包是消息边界问题", orderHistory())
 	budget := window.Budget
-	if budget.System != 3889 || budget.TaskState != 11 || budget.Mastery != 10 ||
+	if budget.System != 4006 || budget.TaskState != 11 || budget.Mastery != 10 ||
 		budget.GlobalUserMemory != 38 || budget.TopicUserMemory != 38 ||
 		budget.EpisodeMemory != 146 || budget.EpisodeCount != 1 || budget.Summary != 144 ||
 		budget.RecentMessages != 21 || budget.CurrentEvidence != 0 ||
 		budget.PreRetrievalEvidence != 191 || budget.CurrentQuestion != 10 ||
-		budget.EvidenceReserved != 609 || budget.Assembled != 4498 || budget.ProjectedInput != 5107 {
+		budget.EvidenceReserved != 609 || budget.Assembled != 4615 || budget.ProjectedInput != 5224 {
 		t.Fatalf("block sizes moved: %+v", budget)
 	}
 	if budget.DroppedMessages != 0 || budget.TruncatedMessages != 0 {

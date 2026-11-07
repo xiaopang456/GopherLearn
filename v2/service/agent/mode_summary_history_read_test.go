@@ -31,7 +31,16 @@ import (
 func TestOlderModePromptsKeepTheirFrozenBytes(t *testing.T) {
 	// The five modes whose prompt is the base text and nothing else share one
 	// digest, and that is the point of listing them together.
-	const basePrompt = "74f3f62ea8518f173cc989e50803027af9e3b88d3584f2f641a79dae8b706f2b"
+	//
+	// Every digest below changed on 2026-11-07, and deliberately: the base
+	// text now carries the rule that tells the model not to write bracketed
+	// numbers when the answer rests on the conversation, and every mode's
+	// prompt is the base text plus its own rules. That is a change of method
+	// for all of them - the answer prompt each one sends is different from
+	// the one its published numbers were measured against - so the new values
+	// are recorded here rather than the test being loosened. The values were
+	// computed by the same function the table checks.
+	const basePrompt = "6f45160d3846f466e7c043f97e6343dc5b14ec7889a672f8a44d00ea2a362140"
 	for _, frozen := range []struct {
 		mode   memoryrecall.ReadMode
 		digest string
@@ -41,19 +50,19 @@ func TestOlderModePromptsKeepTheirFrozenBytes(t *testing.T) {
 		{memoryrecall.ModeEpisodeV3Lexical, basePrompt},
 		{memoryrecall.ModeEpisodeV3Semantic, basePrompt},
 		{memoryrecall.ModeModelPlannedV1, basePrompt},
-		{memoryrecall.ModeAgentMemoryToolV1, "dba774795d8b5a4285a87157a71174e89276b6c46a1641668eb8f66747cd954b"},
-		{memoryrecall.ModeAgentMemoryToolV2, "b2e1fbe88278f0782c95444b43fc8943588cddbb331130ca199aa394cabc70b3"},
-		{memoryrecall.ModeAgentMemoryToolV3, "f8659230993117be9f98b99d0b7399bd5f824327ca064a746f7640605f163496"},
-		{memoryrecall.ModeAgentMemoryToolV4, "5e513610f80f70e13c5703900e0d4b3834c9d05fdecc576cfc4d2e72e9df1109"},
-		{memoryrecall.ModeAgentMemoryUserConfirmedV1, "75aea155be6c467f57d5426b943365f4d8b16b4ebbf96486664447b88572e67a"},
-		{memoryrecall.ModeEpisodeAssertionGovernedV11, "75aea155be6c467f57d5426b943365f4d8b16b4ebbf96486664447b88572e67a"},
-		{memoryrecall.ModeAgentMemoryExplicitActionsV1, "7014d60fb6921e63e220a6e9d7aec7b662e785e373867237a4b0df20d3274c6d"},
-		{memoryrecall.ModeAgentMemoryExplicitSourcesV1, "36e6519b445a69301ac6738ad4b9c34a74e1804574c5625c9efdff57aa5d4ac8"},
-		{memoryrecall.ModeAgentMemorySourcePriorityV1, "002d2947e7a20bdde5a9655b7d7ee756fdb4a1aec958d915f55b2a2c4fbae6c8"},
-		{memoryrecall.ModeAgentMemorySourcePriorityV2, "1a846ba1018d60382ad9e2b807f90ead02c579e4c6efb27ae44ca26218d20bc6"},
+		{memoryrecall.ModeAgentMemoryToolV1, "a30ba8b983eb4cc0c5fa01841f3c80710a0c133fd9ea52187c030e285e5904d0"},
+		{memoryrecall.ModeAgentMemoryToolV2, "e4282b7928e4dfdfe979e1bc49d39cc16909dbaedb7d73f114b9b16e4943ae15"},
+		{memoryrecall.ModeAgentMemoryToolV3, "f6ce9df396fdf635d18fb2e11b4ddb0f266e46226d9f1a204117484b725994db"},
+		{memoryrecall.ModeAgentMemoryToolV4, "69f53953243ae66e6a126db9db09e871249c10a9d7442c7c9f6960e5d204b699"},
+		{memoryrecall.ModeAgentMemoryUserConfirmedV1, "bf4235a5071547c284dab703e5429cd36e5d7af982f142185273c65514f3c798"},
+		{memoryrecall.ModeEpisodeAssertionGovernedV11, "bf4235a5071547c284dab703e5429cd36e5d7af982f142185273c65514f3c798"},
+		{memoryrecall.ModeAgentMemoryExplicitActionsV1, "50203b8b401ad0c71ca1f478f210fcf9b25d24b387a7161f23058553d7ce8ee8"},
+		{memoryrecall.ModeAgentMemoryExplicitSourcesV1, "e42d0aab9e3d8e1eb6d8d91cad395fcd2b27e02c3686accc633c276948305a50"},
+		{memoryrecall.ModeAgentMemorySourcePriorityV1, "d60befcfb83512791ae4459856cb2e4542116425283a48624605fa496a2779bf"},
+		{memoryrecall.ModeAgentMemorySourcePriorityV2, "9daaaf2eb9972fe56273967b5d0af721cbf1dfb478f6348dab8fa9037c35f3f7"},
 		// v3 deliberately runs on v1's bytes: both of its arms share this prompt, and
 		// the read-back paragraph would describe a tool the baseline arm does not have.
-		{memoryrecall.ModeAgentMemorySourcePriorityV3, "002d2947e7a20bdde5a9655b7d7ee756fdb4a1aec958d915f55b2a2c4fbae6c8"},
+		{memoryrecall.ModeAgentMemorySourcePriorityV3, "d60befcfb83512791ae4459856cb2e4542116425283a48624605fa496a2779bf"},
 	} {
 		got := promptDigest(frozen.mode)
 		if os.Getenv("PRINT_PROMPT_DIGESTS") != "" {

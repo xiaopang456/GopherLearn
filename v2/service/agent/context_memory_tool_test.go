@@ -312,7 +312,10 @@ func TestSystemPromptSelectionMatchesTheMode(t *testing.T) {
 }
 
 func TestV4PromptIsIsolatedFromTheFrozenV3Prompt(t *testing.T) {
-	const frozenV3 = "f8659230993117be9f98b99d0b7399bd5f824327ca064a746f7640605f163496"
+	// The digest moved on 2026-11-07 with the base text: the base carries the
+	// rule that keeps a conversation answer from numbering its own list, and
+	// every mode's prompt is the base text plus its own rules.
+	const frozenV3 = "f6ce9df396fdf635d18fb2e11b4ddb0f266e46226d9f1a204117484b725994db"
 	v3 := SystemPromptFor(memoryrecall.ModeAgentMemoryToolV3)
 	sum := sha256.Sum256([]byte(v3))
 	if got := hex.EncodeToString(sum[:]); got != frozenV3 {
