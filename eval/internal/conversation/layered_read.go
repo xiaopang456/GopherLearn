@@ -166,6 +166,18 @@ type LayeredRead struct {
 	Grants     int                `json:"grants"`
 	GrantedIDs []uint             `json:"granted_ids"`
 	ToolChecks []LayeredToolCheck `json:"tool_checks"`
+	// GrantSources counts the authorisations by the card that produced them.
+	// A window that authorised nothing and a window that authorised only its
+	// segments are different facts, and one number cannot say which.
+	GrantSources map[string]int `json:"grant_sources,omitempty"`
+	// ReadMode is the deployment's long-term memory read path, and
+	// ReadsEvidenceBack says whether that path lets a compressed card's
+	// evidence ids be read back at all. They are reported beside the
+	// authorisation set because an empty set is only readable next to the
+	// rule that emptied it: the product refuses to widen a mode whose
+	// published measurements were taken before the widening.
+	ReadMode          string `json:"read_mode,omitempty"`
+	ReadsEvidenceBack bool   `json:"reads_evidence_back"`
 
 	// The answer.
 	Answer       string   `json:"answer"`
@@ -223,7 +235,20 @@ type LayeredRead struct {
 	// zero on the layered arm, where the product writes no rolling summary at
 	// all, and zero with a non-empty degraded list on the truncated arm means
 	// the arm answered without the compression it claims to compare.
-	SummaryCompactions int      `json:"summary_compactions"`
+	SummaryCompactions int `json:"summary_compactions"`
+	// SummaryCooldowns is how many of the truncated arm's compactions the
+	// failure cooldown refused. A cooldown is not a failure of its own - it
+	// is the failure before it - and the two have to be told apart.
+	SummaryCooldowns int `json:"summary_cooldowns"`
+	// EnvironmentFailure names a run the upstream decided rather than the
+	// product: the rolling summary compaction was refused by the failure
+	// cooldown, so the window carried no summary and the arm answered without
+	// the compression it claims to measure.
+	//
+	// It is a separate field because such a run is neither a right answer nor
+	// a wrong one. Counting it as an ordinary unsuccessful answer would put
+	// the upstream's timeout into the product's column.
+	EnvironmentFailure string   `json:"environment_failure,omitempty"`
 	Errors             []string `json:"errors,omitempty"`
 }
 
@@ -264,6 +289,16 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 		return read, armErr
 	}
 	read.Mode = mode
+	// The read path this deployment runs under, and whether that path lets a
+	// compressed card's evidence ids be read back at all.
+	//
+	// They are reported because an empty authorisation set is only readable
+	// next to the rule that emptied it: the product does not widen a mode
+	// whose published measurements were taken before the widening, so the
+	// same window can carry the summary and still refuse to let the model
+	// read the ids that summary shows.
+	read.ReadMode = strings.TrimSpace(settings.Config.MemoryReadMode)
+	read.ReadsEvidenceBack = memoryrecall.ReadMode(settings.Config.MemoryReadMode).ReadsEvidenceBack()
 	// The diagnostics carry the mode in their labels, and the recorder's
 	// default is off. The product sets this at startup; a harness that did
 	// not would label an applied run's counters "off" and a reader would
@@ -366,6 +401,12 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	// reads state nobody wrote measures the reader against a vacuum.
 	seeded := seededLayered{}
 	var batches batchOutcome
+	// replay is the truncated arm's write phase. It is declared here because
+	// the read phase has to be able to say what the write phase did: a run
+	// whose compaction was refused by the failure cooldown answered without
+	// the compression it claims to measure, and that is the upstream's
+	// decision, not the product's.
+	var replay rollingReplay
 	// summarySource is the product's own rule for the mode (wiring.go): off
 	// reads the rolling summary, the applied mode reads neither summary. It
 	// starts at the applied mode's answer and is replaced below only for the
@@ -380,12 +421,13 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 		read.SeededSegments = len(seeded.segments)
 		read.SeededBoard = boardEntryCount(seeded.board)
 	} else {
-		replay, replayErr := replayProductRollingSummary(ctx, s, settings, wrapped, sessionID, messages)
-		if replayErr != nil {
-			return read, replayErr
+		replay, err = replayProductRollingSummary(ctx, s, settings, wrapped, sessionID, messages)
+		if err != nil {
+			return read, err
 		}
 		summarySource = armSummarySource(mode, replay.provider)
 		read.SummaryCompactions = replay.compactions
+		read.SummaryCooldowns = replay.cooldowns
 		read.Errors = append(read.Errors, replay.degraded...)
 	}
 	read.Batches = batches
@@ -426,6 +468,17 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	read.Tools = armTable
 	read.WindowMessages = len(window.Messages)
 	read.Budget = budgetFrom(window.Budget)
+	// The truncated arm compares the product's rolling summary against the
+	// layered arm's blocks. When the compaction was refused by the failure
+	// cooldown - the upstream timed out - the window carries no summary at
+	// all, and this run answered without the compression it claims to
+	// measure. That is the upstream's decision and not the product's, so it
+	// is marked as an environment failure rather than left to be counted as
+	// an ordinary unsuccessful answer.
+	if mode == LayeredArmTruncated && replay.cooldowns > 0 && read.Budget.Summary == 0 {
+		read.EnvironmentFailure = "the rolling summary compaction entered the failure cooldown " +
+			"and the window carried no summary"
+	}
 	inspectWindow(&read, window, seeded, messages)
 
 	// The authorization chain: an id the window authorised is readable, an id
@@ -1138,6 +1191,12 @@ type rollingReplay struct {
 	provider    agent.SummaryProvider
 	compactions int
 	degraded    []string
+	// cooldowns is how many compactions the failure cooldown refused. A
+	// cooldown is not a failure of its own - it is the failure before it -
+	// and a run that cannot tell the two apart cannot say whether its window
+	// carried a summary because the upstream timed out or because there was
+	// nothing to summarise.
+	cooldowns int
 }
 
 // replayRollingSummaries drives the provider once per stored message, which is
@@ -1161,6 +1220,9 @@ func replayRollingSummaries(ctx context.Context, provider agent.SummaryProvider,
 			// Cooldowns and skipped stages are the product's own answers, not
 			// failures of the replay; they are recorded so a run that never
 			// compacted can be seen to be one.
+			if errors.Is(err, agent.ErrSummaryCoolingDown) {
+				replay.cooldowns++
+			}
 			replay.degraded = append(replay.degraded, "rolling summary replay: "+err.Error())
 		}
 	}
@@ -1453,11 +1515,17 @@ func evidenceSeqs(segments []model.SessionSummarySegment, messages []model.Messa
 // that reads these rows must not describe them as tool calls.
 func checkToolAuthority(s *Sandbox, sessionID string, window agent.ContextWindow,
 	seeded seededLayered, read *LayeredRead) {
-	read.Grants = len(window.SummarySegmentHistoryGrants)
-	visible := visibleMessageIDs(window)
+	// The authorisation set is the one the runner builds for the turn: the
+	// three lists the window filled, merged in the product's own order. This
+	// harness used to read the third list alone, which made the truncated arm
+	// look unauthorised whatever the window carried - the rolling summary's
+	// grants live in the second list, and the episodes' in the first.
 	run := agent.RunContext{UserID: 7001, SessionID: sessionID, Question: read.Question}
-	set := agent.NewHistoryGrantSet(run, window.SummarySegmentHistoryGrants)
-	for _, grant := range window.SummarySegmentHistoryGrants {
+	grants, set := windowGrantSet(window, run)
+	read.Grants = len(grants)
+	read.GrantSources = grantSources(grants)
+	visible := visibleMessageIDs(window)
+	for _, grant := range grants {
 		if !containsUint(read.GrantedIDs, grant.MessageID) {
 			read.GrantedIDs = append(read.GrantedIDs, grant.MessageID)
 		}
@@ -1495,6 +1563,37 @@ func checkToolAuthority(s *Sandbox, sessionID string, window agent.ContextWindow
 			Detail: browseNote(inWindow),
 		})
 	}
+}
+
+// windowGrantSet is the authorisation set the product's runner builds for a
+// turn: the three lists the window filled, merged in the product's own order,
+// and the per-run set filtered out of them.
+//
+// It is asked of the window rather than recomputed here. A harness that
+// recomputed it answers "what could this turn read" with its own version of
+// the rule, and the two drift - which is what happened when this harness read
+// the summary segments' list alone and reported an empty authorisation set
+// for an arm whose window carried grants.
+func windowGrantSet(window agent.ContextWindow, run agent.RunContext) ([]agent.HistoryMessageGrant, *agent.HistoryGrantSet) {
+	grants := agent.MergeHistoryMessageGrants(window.EpisodeHistoryGrants, window.SummaryHistoryGrants,
+		window.SummarySegmentHistoryGrants)
+	return grants, agent.NewHistoryGrantSet(run, grants)
+}
+
+// grantSources counts the authorisations by the card that produced them.
+//
+// The count is per grant rather than per message: one message cited by a
+// summary and by a segment carries two authorisations and one id, and the two
+// numbers answer different questions.
+func grantSources(grants []agent.HistoryMessageGrant) map[string]int {
+	if len(grants) == 0 {
+		return nil
+	}
+	sources := make(map[string]int, 3)
+	for _, grant := range grants {
+		sources[grant.SourceKind]++
+	}
+	return sources
 }
 
 // visibleMessageIDs collects every message id the window showed.
