@@ -3,7 +3,7 @@ import { computed, ref } from 'vue'
 import { NSwitch } from 'naive-ui'
 
 import AppIcon from './AppIcon.vue'
-import { SessionMode } from '../lib/modes.js'
+import { isKnownMode, SessionMode } from '../lib/modes.js'
 import { canSend, validateMessageContent } from '../lib/validation.js'
 
 const props = defineProps({
@@ -14,40 +14,32 @@ const props = defineProps({
   placeholder: { type: String, default: '输入你的问题…' },
   /** The server-owned mode of the open session; '' while still unknown. */
   mode: { type: String, default: '' },
-  knowledge: {
-    type: Object,
-    default: () => ({ enabled: false, selectedCollectionIds: [] }),
-  },
-  collections: { type: Array, default: () => [] },
+  /** Whether the learner wants this turn to reach their own documents. */
+  knowledgeEnabled: { type: Boolean, default: false },
+  /** The server's ceiling for this session; the switch is not offered without it. */
   canUseKnowledge: { type: Boolean, default: false },
 })
 
 const emit = defineEmits([
   'update:modelValue',
   'update:thinking',
-  'update:knowledge',
+  'update:knowledgeEnabled',
   'submit',
   'abort',
 ])
 
 const localError = ref('')
-const picking = ref(false)
 
 const sendable = computed(
   () => canSend(props.modelValue) && !props.disabled && !props.streaming,
 )
 
-// Grounding is a per-turn Chat option. A Learning Agent session picks its own
-// tools server-side, and an unrecognised mode gets no optional capability.
-//
-// The controls only appear when there is something to ground with. A switch
-// that can never be turned on — pointing at a page that cannot enable it —
-// reads as a broken screen, and the product does not serve knowledge
-// collections yet. The moment the backend offers some, they come back.
+// The server states the ceiling per session, but the composer still needs a
+// recognised mode to render a control for it. An unrecognised mode gets no
+// optional capability rather than a guess in either direction.
 const showsKnowledge = computed(
-  () => props.mode === SessionMode.Chat && props.collections.length > 0,
+  () => props.canUseKnowledge && isKnownMode(props.mode),
 )
-const selected = computed(() => (props.knowledge.selectedCollectionIds ?? []).map(String))
 
 function update(event) {
   emit('update:modelValue', event.target.value)
@@ -76,30 +68,7 @@ function submit() {
 
 function toggleKnowledge() {
   if (!props.canUseKnowledge) return
-  picking.value = false
-  const enabled = !props.knowledge.enabled
-  if (!enabled) {
-    emit('update:knowledge', { enabled: false, selectedCollectionIds: [] })
-    return
-  }
-  // Switching on pre-selects nothing it can't name: with no collections the
-  // toggle is disabled above, so an empty list here stays an empty list.
-  emit('update:knowledge', { enabled: true, selectedCollectionIds: selected.value })
-}
-
-function toggleCollection(id) {
-  const value = String(id)
-  const next = selected.value.includes(value)
-    ? selected.value.filter((item) => item !== value)
-    : [...selected.value, value]
-  emit('update:knowledge', {
-    enabled: props.knowledge.enabled,
-    selectedCollectionIds: next,
-  })
-}
-
-function onToolsKeydown(event) {
-  if (event.key === 'Escape') picking.value = false
+  emit('update:knowledgeEnabled', !props.knowledgeEnabled)
 }
 </script>
 
@@ -128,53 +97,21 @@ function onToolsKeydown(event) {
           v-if="showsKnowledge"
           class="composer__tools"
           data-test="knowledge-tools"
-          @keydown="onToolsKeydown"
         >
           <button
             type="button"
             class="tool"
-            :class="{ 'tool--on': props.knowledge.enabled }"
+            :class="{ 'tool--on': props.knowledgeEnabled }"
             data-test="knowledge-toggle"
-            :aria-pressed="String(props.knowledge.enabled)"
-            :disabled="!props.canUseKnowledge"
+            :aria-pressed="String(props.knowledgeEnabled)"
             @click="toggleKnowledge"
           >
             <AppIcon name="knowledge" :size="14" />
             <span>使用知识库</span>
           </button>
-
-          <button
-            type="button"
-            class="tool"
-            data-test="knowledge-pick"
-            :disabled="!props.knowledge.enabled"
-            :aria-expanded="String(picking)"
-            @click="picking = !picking"
-          >
-            <span>选择知识库</span>
-            <span v-if="props.knowledge.enabled" class="tool__count">{{ selected.length }}</span>
-          </button>
-
-          <ul v-if="picking && props.collections.length > 0" class="tool__list">
-            <li v-for="item in props.collections" :key="item.id">
-              <label class="tool__option">
-                <input
-                  type="checkbox"
-                  :checked="selected.includes(String(item.id))"
-                  @change="toggleCollection(item.id)"
-                />
-                <span>{{ item.title }}</span>
-              </label>
-            </li>
-          </ul>
-
-          <p
-            v-if="props.knowledge.enabled && selected.length === 0"
-            class="composer__note"
-            data-test="knowledge-no-selection"
-          >
-            已开启，但还没选择知识库；本轮不会引用资料。
-          </p>
+          <span class="composer__note">
+            {{ props.knowledgeEnabled ? '本轮可检索你上传的资料。' : '本轮不检索你的资料。' }}
+          </span>
         </div>
 
         <div class="composer__right">
@@ -288,14 +225,9 @@ function onToolsKeydown(event) {
   transition: background-color 120ms ease, color 120ms ease;
 }
 
-.tool:hover:not(:disabled) {
+.tool:hover {
   background: var(--gl-surface-soft);
   color: var(--gl-ink);
-}
-
-.tool:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
 }
 
 .tool--on {
@@ -303,63 +235,11 @@ function onToolsKeydown(event) {
   color: var(--gl-accent-ink);
 }
 
-.tool__count {
-  min-width: 1.5em;
-  padding: 0 0.35em;
-  border-radius: var(--gl-radius-pill);
-  background: var(--gl-surface);
-  color: var(--gl-accent-ink);
-  font-size: var(--gl-text-xs);
-  text-align: center;
-}
-
-.tool__list {
-  position: absolute;
-  bottom: calc(100% + 0.4rem);
-  left: 0;
-  z-index: 20;
-  list-style: none;
-  margin: 0;
-  padding: var(--gl-space-1);
-  min-width: 220px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  background: var(--gl-surface);
-  border: 1px solid var(--gl-surface-line);
-  border-radius: var(--gl-radius-sm);
-  box-shadow: var(--gl-shadow-2);
-}
-
-.tool__option {
-  display: flex;
-  align-items: center;
-  gap: var(--gl-space-2);
-  padding: 6px var(--gl-space-2);
-  border-radius: var(--gl-radius-xs);
-  font-size: var(--gl-text-sm);
-  cursor: pointer;
-}
-
-.tool__option:hover {
-  background: var(--gl-surface-soft);
-}
-
 .composer__note {
   margin: 0;
   padding-left: var(--gl-space-2);
   font-size: var(--gl-text-xs);
   color: var(--gl-ink-faint);
-}
-
-.composer__note-link {
-  padding: 0;
-  border: 0;
-  background: none;
-  font-size: inherit;
-  color: var(--gl-accent-ink);
-  text-decoration: underline;
-  text-underline-offset: 2px;
 }
 
 .composer__thinking { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: var(--gl-text-sm); color: var(--gl-ink-soft); }

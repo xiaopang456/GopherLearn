@@ -40,11 +40,6 @@ import {
   finishBlocks,
   turnTranscript,
 } from '../lib/agentTextBlocks.js'
-import { useKnowledge } from './useKnowledge.js'
-import {
-  emptyKnowledgeDraft,
-  isKnowledgeUsable,
-} from '../lib/knowledge.js'
 import {
   DEFAULT_SESSION_TITLES,
   isChatLike,
@@ -87,6 +82,16 @@ export function useChat() {
     try { localStorage.setItem('gopherlearn-thinking', String(value)) } catch { /* storage may be unavailable */ }
   }, { flush: 'sync' })
 
+  // A missing key means "on": the switch says whether this turn may reach the
+  // learner's own documents, and a first visit should not silently withhold a
+  // capability the session was granted. Only a stored "false" switches it off.
+  let savedKnowledge = true
+  try { savedKnowledge = localStorage.getItem('gopherlearn-knowledge') !== 'false' } catch { /* storage may be unavailable */ }
+  const knowledgeEnabled = ref(savedKnowledge)
+  watch(knowledgeEnabled, (value) => {
+    try { localStorage.setItem('gopherlearn-knowledge', String(value)) } catch { /* storage may be unavailable */ }
+  }, { flush: 'sync' })
+
   const sessionsLoading = ref(false)
   const sessionsError = ref('')
   const historyLoading = ref(false)
@@ -114,43 +119,6 @@ export function useChat() {
   const activeSession = computed(() =>
     sessions.value.find((item) => item.id === activeId.value) ?? null,
   )
-
-  /**
-   * Collections come from the shared knowledge store, never a local copy: the
-   * management page and this composer have to agree on which ids exist, or the
-   * composer can send one the user just deleted.
-   */
-  const { collections, collectionIds } = useKnowledge()
-
-  // Per-session, in-memory only: a half-finished toggle on session A must not
-  // follow the user into session B, and nothing here survives a reload.
-  const knowledgeDrafts = ref({})
-
-  watch(collectionIds, (ids) => {
-    // A collection the user picked may have disappeared from the list; the
-    // draft has to lose it rather than keep sending a dead id. With nothing
-    // left to choose, the toggle goes back off to match its disabled state.
-    const known = new Set(ids)
-    let changed = false
-    const next = {}
-    for (const [id, draft] of Object.entries(knowledgeDrafts.value)) {
-      const kept = draft.selectedCollectionIds.filter((value) => known.has(value))
-      if (!ids.length && !draft.enabled) {
-        next[id] = draft
-        continue
-      }
-      if (kept.length === draft.selectedCollectionIds.length && ids.length > 0) {
-        next[id] = draft
-        continue
-      }
-      changed = true
-      next[id] =
-        kept.length > 0 && draft.enabled && ids.length > 0
-          ? { enabled: true, selectedCollectionIds: kept }
-          : emptyKnowledgeDraft()
-    }
-    if (changed) knowledgeDrafts.value = next
-  })
 
   /** The server's own answer, never the button the user last pressed. */
   const activeMode = computed(() => activeSession.value?.mode ?? '')
@@ -281,60 +249,30 @@ export function useChat() {
     agentPanelOpen.value = !!open
   }
 
-  function knowledgeFor(id) {
-    const existing = id ? knowledgeDrafts.value[id] : null
-    if (!existing) return emptyKnowledgeDraft()
-    return { enabled: existing.enabled, selectedCollectionIds: [...existing.selectedCollectionIds] }
-  }
-
-  const activeKnowledge = computed(() => knowledgeFor(activeId.value))
-  const canUseKnowledge = computed(
-    () => isChatSession.value && collections.value.length > 0,
-  )
-
   function modeOf(id) {
     return sessions.value.find((item) => item.id === id)?.mode ?? ''
   }
 
-  /**
-   * The only writer of knowledge state. It re-checks the target session's mode
-   * and the server's collection list rather than trusting the caller, so an
-   * Agent session can never end up holding a grounding option.
-   *
-   * "Switched on, nothing picked yet" is a state the user can be left in on
-   * purpose — the toggle stays lit so the picker is reachable — while
-   * `toWireKnowledge` still refuses to send anything until a real id is chosen.
-   */
-  function setKnowledge(id, next) {
-    if (!id) return
-    const allowed = isChatLike(modeOf(id)) && collections.value.length > 0
-    if (!allowed) {
-      knowledgeDrafts.value = { ...knowledgeDrafts.value, [id]: emptyKnowledgeDraft() }
-      return
-    }
-    const previous = knowledgeFor(id)
-    const requested = Array.isArray(next?.selectedCollectionIds)
-      ? next.selectedCollectionIds
-      : previous.selectedCollectionIds
-    const known = new Set(collections.value.map((item) => String(item.id)))
-    const selected = [...new Set(requested.map(String))].filter((value) =>
-      known.has(value),
-    )
-    knowledgeDrafts.value = {
-      ...knowledgeDrafts.value,
-      [id]:
-        next?.enabled === true
-          ? { enabled: true, selectedCollectionIds: selected }
-          : emptyKnowledgeDraft(),
-    }
-  }
+  // The ceiling is the server's, stated on each session row. A session that may
+  // not ask for the library gets no switch, and its turns never ask.
+  const canUseKnowledge = computed(() => activeSession.value?.canUseKnowledge === true)
 
-  function forgetKnowledge(id) {
-    if (!id || !(id in knowledgeDrafts.value)) return
-    const rest = { ...knowledgeDrafts.value }
-    delete rest[id]
-    knowledgeDrafts.value = rest
-  }
+  /**
+   * Agent sessions first, then the rest, each group newest first. The order is
+   * a presentation of the list, not a stored fact: nothing is written back, and
+   * a session whose mode was not recognised sorts with ordinary conversations
+   * rather than being guessed into the agent group.
+   */
+  const orderedSessions = computed(() => {
+    const rank = (session) => (session.mode === SessionMode.LearningAgent ? 0 : 1)
+    const stamp = (session) => {
+      const parsed = Date.parse(session.updatedAt)
+      return Number.isNaN(parsed) ? 0 : parsed
+    }
+    return [...sessions.value].sort(
+      (a, b) => rank(a) - rank(b) || stamp(b) - stamp(a),
+    )
+  })
 
   /** Events are consumed by the reducer; the transcript mirrors its output. */
   function mirrorToTranscript(state) {
@@ -674,7 +612,6 @@ export function useChat() {
       return
     }
     sessions.value = sessions.value.filter((item) => item.id !== id)
-    forgetKnowledge(id)
     if (id === activeId.value) closeSession()
   }
 
@@ -707,13 +644,21 @@ export function useChat() {
     draft.value = ''
     labelSession(sessionId, content)
 
-    // Read after the session exists: the grounding option belongs to the
-    // resolved session, and an Agent session has none to read.
+    // Read after the session exists: the ceiling and the switch belong to the
+    // resolved session, not to the screen the user typed on.
     const mode = modeOf(sessionId)
-    const knowledge = isChatLike(mode) ? knowledgeFor(sessionId) : null
+    // The policy of a new turn. A retry reuses the operation stored when the
+    // turn was first sent, so the switch cannot change what was already asked.
+    const knowledgePolicy = isLearningAgent(mode)
+      ? (agentFields.knowledgePolicy !== undefined
+          ? structuredClone(agentFields.knowledgePolicy)
+          : knowledgeEnabled.value ? 'knowledge_preferred' : 'knowledge_disabled')
+      : mode === SessionMode.Chat
+        ? 'knowledge_disabled'
+        : undefined
     const operation = retryOperation || (isLearningAgent(mode) ? {
       sessionId, content, requestId: localId('send'), enableThinking: thinkingChoice,
-      ...(agentFields.knowledgePolicy !== undefined ? { knowledgePolicy: structuredClone(agentFields.knowledgePolicy) } : {}),
+      ...(knowledgePolicy !== undefined ? { knowledgePolicy } : {}),
       ...(agentFields.topicConsent !== undefined ? { topicConsent: structuredClone(agentFields.topicConsent) } : {}),
     } : null)
     if (operation) pendingSend.value = operation
@@ -768,7 +713,7 @@ export function useChat() {
 
     // Only an agent turn asks to be watched. The mode is the stored session's, read
     // above, and the server refuses `stream_steps` on a turn whose strategy has no
-    // steps — so a Chat or knowledge request keeps carrying the body it always did.
+    // steps — so a Chat turn keeps carrying the body it always did.
     const watchingSteps = isLearningAgent(mode)
 
     try {
@@ -778,8 +723,7 @@ export function useChat() {
         ...(operation ? { requestId: operation.requestId, enableThinking: operation.enableThinking,
           ...(operation.knowledgePolicy !== undefined ? { knowledgePolicy: operation.knowledgePolicy } : {}),
           ...(operation.topicConsent !== undefined ? { topicConsent: operation.topicConsent } : {}),
-        } : {}),
-        knowledge: isKnowledgeUsable(knowledge) ? knowledge : null,
+        } : (knowledgePolicy !== undefined ? { knowledgePolicy } : {})),
         signal: controller.signal,
         onEvent: createEventHandler(clientRunId),
         streamSteps: watchingSteps,
@@ -825,6 +769,7 @@ export function useChat() {
 
   return {
     sessions,
+    orderedSessions,
     sessionsLoading,
     sessionsError,
     pendingCreate,
@@ -836,20 +781,17 @@ export function useChat() {
     activeMode,
     isChatSession,
     isAgentSession,
-    collections,
     messages,
     historyLoading,
     historyError,
     draft,
     enableThinking,
+    knowledgeEnabled,
+    canUseKnowledge,
     sendError,
     run,
     streaming,
     ready,
-    activeKnowledge,
-    canUseKnowledge,
-    setKnowledge,
-    knowledgeFor,
     agentStage,
     agentSteps,
     agentPanelOpen,

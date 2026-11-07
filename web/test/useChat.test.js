@@ -374,6 +374,7 @@ describe('session and history loading', () => {
         id: 's-1',
         title: '未命名会话',
         mode: '',
+        canUseKnowledge: false,
         updatedAt: '2026-09-24T08:00:00Z',
       },
     ])

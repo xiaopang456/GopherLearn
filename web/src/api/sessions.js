@@ -70,6 +70,10 @@ export function normalizeSession(raw) {
     id: String(source.id ?? source.session_id ?? source.sessionId ?? ''),
     title: String(source.title ?? source.name ?? '') || UNTITLED_SESSION,
     mode: normalizeMode(source.mode ?? source.session_mode ?? source.sessionMode),
+    // The server's ceiling for this session, never inferred from the mode here:
+    // only an explicit `true` grants the switch.
+    canUseKnowledge:
+      (source.can_use_knowledge ?? source.canUseKnowledge) === true,
     updatedAt: String(
       source.updated_at ?? source.updatedAt ?? source.created_at ?? '',
     ),

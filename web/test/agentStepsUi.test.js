@@ -341,7 +341,10 @@ describe('an unwatched turn', () => {
 
     const stream = bodies.filter((call) => call.path.endsWith('/stream'))
     expect(stream).toHaveLength(1)
-    expect(stream[0].body).toEqual({ content: '讲讲 RDB 与 AOF' })
+    expect(stream[0].body).toEqual({
+      content: '讲讲 RDB 与 AOF',
+      knowledgePolicy: 'knowledge_disabled',
+    })
     expect(app.find('[data-test="agent-panel"]').exists()).toBe(false)
     expect(app.text()).toContain('普通回答')
     app.unmount()
