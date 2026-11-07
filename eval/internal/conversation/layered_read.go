@@ -201,6 +201,14 @@ type LayeredRead struct {
 	AgentModelCalls int               `json:"agent_model_calls"`
 	AgentToolCalls  int               `json:"agent_tool_calls"`
 	AgentToolSteps  []LayeredToolStep `json:"agent_tool_steps,omitempty"`
+	// GroundingRefusal is what the product's evidence boundary decided about
+	// a draft it refused to deliver: the rule, the reference numbers the
+	// draft carried, and the draft itself.
+	//
+	// It is here because the refusal template alone cannot be read: without
+	// the draft, a turn that refused a good answer looks exactly like a turn
+	// that refused a fabricated one.
+	GroundingRefusal *agent.GroundingRefusal `json:"grounding_refusal,omitempty"`
 	// SeededSegments is what the writer produced for this conversation. It is
 	// reported because a read that found nothing is only readable next to the
 	// state it was reading.
@@ -443,6 +451,7 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	read.AgentModelCalls = result.ModelCalls
 	read.AgentToolCalls = result.ToolCalls
 	read.AgentToolSteps = steps.toolSteps()
+	read.GroundingRefusal = result.GroundingRefusal
 	if usage := lastChatUsage(ledger); usage != nil {
 		read.PromptTokens = usage.PromptTokens
 		read.CompletionTokens = usage.CompletionTokens
