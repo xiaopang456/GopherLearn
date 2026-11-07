@@ -8,10 +8,11 @@
 // either one stops compacting: the rolling summary reports the stored summary
 // as unusable and leaves it alone forever.
 //
-// Classification and conversion are separated on purpose. Classification is
-// total - every stored row gets a shape, including one that means "I cannot
-// read this". Conversion is partial: only the shapes that can be re-expressed
-// without inventing anything are converted, and everything else is reported.
+// Conversion is mechanical and lossless. No model is called: the prose becomes
+// paragraph items of this schema's string groups, and the old structured
+// document keeps every group, item, citation and its legacy_text. A row that
+// cannot be carried over without dropping something is refused and reported,
+// never partially written.
 package summaryconvert
 
 import (
@@ -40,8 +41,7 @@ const (
 	// this schema: the same groups, but evidence ids are strings, and a
 	// legacy_text carrying the prose that came before it.
 	ShapeLegacyJSON Shape = "legacy_json"
-	// ShapeProse is the model's plain answer, stored as it came back. Its
-	// groups cannot be recovered from the text alone.
+	// ShapeProse is the model's plain answer, stored as it came back.
 	ShapeProse Shape = "prose"
 	// ShapeDamaged is text that looks like a document but is not either shape:
 	// unknown fields, trailing JSON, an unsupported schema version. Nothing
@@ -155,119 +155,199 @@ func ensureLegacyEOF(decoder *json.Decoder) error {
 
 // Conversion is one stored summary turned into this schema's document.
 type Conversion struct {
-	// Content is the canonical document to store, in the shape this build's
-	// reader accepts.
+	// Content is the canonical JSON of the document this build's reader
+	// accepted. It is produced by decoding the converted document and encoding
+	// that decoded value, so what is stored is exactly what was verified.
 	Content string
-	// ModelCalls counts the calls this conversion needed. A mechanical
-	// conversion needs none, and this is the only conversion this package
-	// performs, so it is always zero here.
-	ModelCalls int
-	// DroppedEvidenceIDs names the citations the legacy document carried that
-	// this schema cannot hold. A citation this schema cannot express is not
-	// quietly thrown away: it is listed, and the item that carried it keeps
-	// its text with no ids, which grants no read-back.
-	DroppedEvidenceIDs []string
-	// LegacyTextRunes counts the characters of legacy_text this schema has no
-	// field for. The structured groups survive; the prose copy of the summary
-	// from before them does not, and the report says so.
-	LegacyTextRunes int
+}
+
+// ConvertProse re-expresses a plain-text summary as paragraph items of this
+// schema's string groups. Nothing is rewritten and nothing is inferred: every
+// character of the prose lands in exactly one item, and only overlong text is
+// cut, at a paragraph boundary when one fits and at the item limit otherwise.
+func ConvertProse(content string, budget model.SummaryBudget) (Conversion, error) {
+	if strings.TrimSpace(content) == "" {
+		return Conversion{}, errors.New("the row holds no summary")
+	}
+	return finish(model.SessionSummaryDocument{
+		SchemaVersion:  model.SessionSummarySchemaV2,
+		CompletedItems: paragraphItems(content),
+	}, budget)
 }
 
 // ConvertLegacyDocument re-expresses a pre-schema document as a document of
 // this schema. It is mechanical: no text is rewritten and no citation is
 // invented, so it spends no model call.
 //
-// The document this produces is checked by this schema's own reader before it
-// is returned. A legacy document the reader will not accept is an error here
-// rather than a row that gets written and then skipped forever.
+// Every field has to survive: the old structured groups keep their text and
+// citations, legacy_text becomes paragraph items of completed_items, and an
+// item that would not fit is cut rather than dropped. A citation this schema
+// cannot express refuses the whole row instead of being quietly discarded,
+// because a row that loses a citation is not the row that was read.
 func ConvertLegacyDocument(content string, budget model.SummaryBudget) (Conversion, error) {
 	document, err := decodeLegacyDocument(content)
 	if err != nil {
 		return Conversion{}, fmt.Errorf("decode legacy summary: %w", err)
 	}
-	converted := model.SessionSummaryDocument{
-		SchemaVersion:      model.SessionSummarySchemaV2,
-		CurrentGoal:        strings.TrimSpace(document.CurrentGoal),
-		ConfirmedDecisions: convertEvidenceGroup(document.ConfirmedDecisions),
-		CompletedItems:     convertStrings(document.CompletedItems),
-		OpenLoops:          convertEvidenceGroup(document.OpenLoops),
-		UserCorrections:    convertEvidenceGroup(document.UserCorrections),
-		KeyErrors:          convertStrings(document.KeyErrors),
-		References:         convertStrings(document.References),
+	if len([]rune(document.CurrentGoal)) > model.SessionSummaryItemMaxRunes {
+		return Conversion{}, fmt.Errorf("the goal is longer than %d characters", model.SessionSummaryItemMaxRunes)
 	}
-	// An item whose citations cannot be expressed keeps its text with an empty
-	// id array: that is this schema's own shape for a legacy item, and it
-	// authorizes nothing on its own.
-	dropped := droppedEvidenceIDs(document)
-	canonical, err := json.Marshal(converted)
+	converted := model.SessionSummaryDocument{
+		SchemaVersion: model.SessionSummarySchemaV2,
+		CurrentGoal:   document.CurrentGoal,
+	}
+	if converted.ConfirmedDecisions, err = convertEvidence(document.ConfirmedDecisions); err != nil {
+		return Conversion{}, fmt.Errorf("confirmed_decisions: %w", err)
+	}
+	if converted.OpenLoops, err = convertEvidence(document.OpenLoops); err != nil {
+		return Conversion{}, fmt.Errorf("open_loops: %w", err)
+	}
+	if converted.UserCorrections, err = convertEvidence(document.UserCorrections); err != nil {
+		return Conversion{}, fmt.Errorf("user_corrections: %w", err)
+	}
+	converted.CompletedItems = appendStringGroup(nil, document.CompletedItems)
+	converted.KeyErrors = appendStringGroup(nil, document.KeyErrors)
+	converted.References = appendStringGroup(nil, document.References)
+	// legacy_text is the prose this structured document replaced. This schema
+	// has no field for it, so it is carried into completed_items as paragraph
+	// items: the facts it holds stay readable instead of being summarised as a
+	// count of characters nobody can read.
+	if strings.TrimSpace(document.LegacyText) != "" {
+		converted.CompletedItems = appendStringGroup(converted.CompletedItems, []string{document.LegacyText})
+	}
+	return finish(converted, budget)
+}
+
+// finish is the verification gate for every conversion: this build's own reader
+// decodes the document, the deployment's budget checks it, and the bytes that
+// are returned are the canonical encoding of that decoded value. A document the
+// reader refuses is never written.
+func finish(document model.SessionSummaryDocument, budget model.SummaryBudget) (Conversion, error) {
+	encoded, err := json.Marshal(document)
 	if err != nil {
 		return Conversion{}, fmt.Errorf("encode converted summary: %w", err)
 	}
-	read, err := model.DecodeSessionSummaryDocument(string(canonical))
+	read, err := model.DecodeSessionSummaryDocument(string(encoded))
 	if err != nil {
 		return Conversion{}, fmt.Errorf("converted summary is not readable: %w", err)
 	}
 	if err := read.Validate(budget); err != nil {
 		return Conversion{}, fmt.Errorf("converted summary exceeds the budget: %w", err)
 	}
-	return Conversion{
-		Content:            string(canonical),
-		DroppedEvidenceIDs: dropped,
-		LegacyTextRunes:    len([]rune(strings.TrimSpace(document.LegacyText))),
-	}, nil
+	canonical, err := json.Marshal(read)
+	if err != nil {
+		return Conversion{}, fmt.Errorf("encode verified summary: %w", err)
+	}
+	return Conversion{Content: string(canonical)}, nil
 }
 
-func convertEvidenceGroup(items legacyEvidenceList) model.SessionSummaryEvidenceList {
+// convertEvidence maps one evidence group. The text is preserved exactly and
+// an overlong item is cut into consecutive items that each carry the same
+// citations, so nothing is lost and nothing gains a claim the old row did not
+// make.
+func convertEvidence(items legacyEvidenceList) (model.SessionSummaryEvidenceList, error) {
 	converted := make(model.SessionSummaryEvidenceList, 0, len(items))
 	for _, item := range items {
-		converted = append(converted, model.SessionSummaryEvidence{
-			Text:               strings.TrimSpace(item.Text),
-			EvidenceMessageIDs: convertEvidenceIDs(item.EvidenceMessageIDs),
-		})
-	}
-	return converted
-}
-
-func convertStrings(items []string) []string {
-	converted := make([]string, 0, len(items))
-	for _, item := range items {
-		if trimmed := strings.TrimSpace(item); trimmed != "" {
-			converted = append(converted, trimmed)
+		if strings.TrimSpace(item.Text) == "" {
+			return nil, errors.New("an evidence item has no text")
+		}
+		ids, err := convertEvidenceIDs(item.EvidenceMessageIDs)
+		if err != nil {
+			return nil, err
+		}
+		for _, chunk := range splitLong(item.Text, model.SessionSummaryItemMaxRunes) {
+			converted = append(converted, model.SessionSummaryEvidence{
+				Text:               chunk,
+				EvidenceMessageIDs: ids,
+			})
 		}
 	}
-	return converted
+	return converted, nil
 }
 
 // convertEvidenceIDs maps the old string citations onto this schema's message
-// ids. Only a canonical positive decimal string names a message this build
-// holds; anything else is left out of the id array and reported.
-func convertEvidenceIDs(ids []string) []uint {
+// ids. A citation that does not name a message this build holds refuses the
+// row: dropping it would store a summary that cites less than the row it came
+// from, and the operator would only see a count.
+func convertEvidenceIDs(ids []string) ([]uint, error) {
 	converted := make([]uint, 0, len(ids))
+	seen := make(map[uint]struct{}, len(ids))
 	for _, id := range ids {
 		value, ok := parseMessageID(id)
 		if !ok {
-			continue
+			return nil, fmt.Errorf("evidence id %q cannot be expressed as a message id", id)
 		}
+		if _, duplicate := seen[value]; duplicate {
+			return nil, fmt.Errorf("evidence id %q appears twice", id)
+		}
+		seen[value] = struct{}{}
 		converted = append(converted, value)
 	}
 	if len(converted) == 0 {
-		return nil
+		return nil, nil
 	}
-	return converted
+	return converted, nil
 }
 
-func droppedEvidenceIDs(document legacyDocument) []string {
-	var dropped []string
-	for _, group := range []legacyEvidenceList{document.ConfirmedDecisions, document.OpenLoops, document.UserCorrections} {
-		for _, item := range group {
-			for _, id := range item.EvidenceMessageIDs {
-				if _, ok := parseMessageID(id); !ok {
-					dropped = append(dropped, id)
-				}
+// appendStringGroup adds one old string group to a string group of this schema,
+// cutting overlong items. Whether the result fits the deployment's budget is
+// decided by the reader gate in finish, once, for the whole document.
+func appendStringGroup(out, items []string) []string {
+	for _, item := range items {
+		out = append(out, splitLong(item, model.SessionSummaryItemMaxRunes)...)
+	}
+	return out
+}
+
+// paragraphItems turns prose into paragraph items. A paragraph ends at a blank
+// line; text too long for one item is cut at its last newline that fits, or at
+// the item limit when there is none. Concatenating the result returns the
+// original text.
+func paragraphItems(text string) []string {
+	var items []string
+	for _, paragraph := range strings.SplitAfter(text, "\n\n") {
+		if paragraph == "" {
+			continue
+		}
+		cuts := splitLong(paragraph, model.SessionSummaryItemMaxRunes)
+		if isBlank(cuts) && len(items) > 0 {
+			last := items[len(items)-1]
+			if len([]rune(last))+len([]rune(cuts[0])) <= model.SessionSummaryItemMaxRunes {
+				items[len(items)-1] = last + cuts[0]
+				cuts = cuts[1:]
 			}
 		}
+		items = append(items, cuts...)
 	}
-	return dropped
+	return items
+}
+
+func isBlank(items []string) bool {
+	return len(items) == 1 && strings.TrimSpace(items[0]) == ""
+}
+
+// splitLong cuts text into chunks of at most max runes. It prefers the last
+// newline inside the window so a cut lands between lines when one fits, and
+// otherwise cuts at the limit. Concatenating the chunks returns the input
+// exactly; no rune is skipped, replaced or reordered.
+func splitLong(text string, max int) []string {
+	if text == "" {
+		return nil
+	}
+	runes := []rune(text)
+	chunks := make([]string, 0, len(runes)/max+1)
+	for len(runes) > max {
+		cut := max
+		for index := max; index > 0; index-- {
+			if runes[index-1] == '\n' {
+				cut = index
+				break
+			}
+		}
+		chunks = append(chunks, string(runes[:cut]))
+		runes = runes[cut:]
+	}
+	return append(chunks, string(runes))
 }
 
 func parseMessageID(value string) (uint, bool) {

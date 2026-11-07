@@ -235,11 +235,13 @@ go -C v2 run ./cmd/indexaudit -config ../config.toml
 ```bash
 # 在仓库根目录执行；go -C 会把程序的工作目录切到 v2/，所以配置写成 ../config.toml
 go -C v2 run ./cmd/summaryconvert -config ../config.toml          # 只读：逐行分类并报数
-go -C v2 run ./cmd/summaryconvert -config ../config.toml -apply   # 只转机械可转的那些，水位线不动
+go -C v2 run ./cmd/summaryconvert -config ../config.toml -apply   # 机械转换两种旧形状，水位线不动
 ```
 
-纯散文那一种必须由模型重写成结构化，**每行一次调用**，所以要显式加 `-with-model`（凭据只从进程环境
-读，命令不打印它们）；没加时散文行只是被列出来、原样不动。转不了的行一律**列出来、不改那一行**。
+转换不调用模型，也不需要任何 Provider 配置：纯散文按段落写进 `completed_items`，超长在段落边界或
+单条上限处切开；根 JSON 的分组、文本与引用原样搬，`legacy_text` 也放进 `completed_items`。写回前用
+产品自己的读取器解码转换结果，通不过就不写。转不了的行（读不出来的 JSON、无法表达成消息号的引用、
+超出文档预算）一律**列出来、不改那一行**。
 
 `maxToolCalls` / `maxModelCalls` / `maxGraphSteps` 三个数必须**互相够得着**，否则启动报错并说明是哪一处不够：
 

@@ -11,17 +11,16 @@
 //
 // The command does nothing unless told to. With no flags it is a preview: it
 // reads, classifies, and says what a writing run would do, and it makes no
-// database write and no provider call.
+// database write. It never calls a model and needs no provider configuration.
 //
-//	preview a deployment                summaryconvert -config config/config.toml
-//	write the mechanical conversions    summaryconvert -config config/config.toml -apply
-//	also re-express prose summaries     summaryconvert -config config/config.toml -apply -with-model
+//	preview a deployment        summaryconvert -config config/config.toml
+//	write the conversions       summaryconvert -config config/config.toml -apply
 //
-// The prose arm is the one that costs something: a prose summary has no groups
-// to carry over, so it takes one model call per row to say the same thing in this
-// schema's shape. Without -with-model those rows are listed with that reason and
-// left exactly as they are. A row that cannot be converted is never rewritten and
-// never truncated: it is reported.
+// Conversion is mechanical and lossless. Prose becomes paragraph items of this
+// schema's string groups; the old structured document keeps its groups and
+// citations, and its legacy_text is carried into completed_items. A row that
+// cannot be carried over without dropping something is refused and reported,
+// never partially written.
 package main
 
 import (
@@ -31,7 +30,6 @@ import (
 	"os"
 	"time"
 
-	"GopherAI/common/aihelper"
 	"GopherAI/common/mysql"
 	"GopherAI/config"
 	"GopherAI/internal/summaryconvert"
@@ -43,10 +41,7 @@ import (
 func main() {
 	configPath := flag.String("config", "config/config.toml", "GopherAI configuration file")
 	apply := flag.Bool("apply", false, "write converted rows; without it this run only previews")
-	withModel := flag.Bool("with-model", false, "re-express prose summaries with one model call per row; needs -apply")
 	limit := flag.Int("limit", 512, "maximum summary rows to read in one run")
-	messageLimit := flag.Int("message-limit", 512, "maximum covered messages a prose conversion may read")
-	maxInputTokens := flag.Int("max-input-tokens", 8000, "maximum input tokens for one prose conversion")
 	timeout := flag.Duration("timeout", 10*time.Minute, "overall timeout")
 	flag.Parse()
 
@@ -67,27 +62,11 @@ func main() {
 	defer cancel()
 
 	options := summaryconvert.Options{
-		Apply:        *apply,
-		Limit:        *limit,
-		MessageLimit: *messageLimit,
-		Budget:       model.DefaultSummaryBudget(),
+		Apply:  *apply,
+		Limit:  *limit,
+		Budget: model.DefaultSummaryBudget(),
 	}
-	if *withModel && !*apply {
-		fmt.Println("note: -with-model without -apply spends no call; prose rows are previewed only")
-	}
-	if *withModel && *apply {
-		chatModel, err := aihelper.NewToolCallingChatModel(ctx)
-		if err != nil {
-			fatal("create the model for prose conversion: %v", err)
-		}
-		generator, err := summaryconvert.NewModelProseGenerator(chatModel, *maxInputTokens)
-		if err != nil {
-			fatal("prepare prose conversion: %v", err)
-		}
-		options.Prose = generator
-	}
-
-	report, err := summaryconvert.NewRunner(summaryconvert.NewStore(db), db, options).Run(ctx)
+	report, err := summaryconvert.NewRunner(summaryconvert.NewStore(db), options).Run(ctx)
 	if err != nil {
 		fatal("convert stored summaries: %v", err)
 	}
@@ -97,28 +76,32 @@ func main() {
 func printReport(report summaryconvert.Report) {
 	shapes := report.CountByShape()
 	actions := report.CountByAction()
-	var calls, failures int
+	var failures, refused int
 	for _, outcome := range report.Outcomes {
-		calls += outcome.ModelCalls
 		if outcome.Action == summaryconvert.ActionFailed {
 			failures++
 		}
-		fmt.Printf("row=%s user=%d mode=%q shape=%s action=%s calls=%d dropped_ids=%d legacy_text_runes=%d reason=%q\n",
-			outcome.Row.SessionID, outcome.Row.UserID, string(outcome.Row.Mode), outcome.Shape, outcome.Action,
-			outcome.ModelCalls, len(outcome.DroppedEvidenceIDs), outcome.LegacyTextRunes, outcome.Reason)
+		if outcome.Action == summaryconvert.ActionUnchanged &&
+			(outcome.Shape == summaryconvert.ShapeDamaged ||
+				outcome.Shape == summaryconvert.ShapeProse ||
+				outcome.Shape == summaryconvert.ShapeLegacyJSON) {
+			refused++
+		}
+		fmt.Printf("row=%s user=%d mode=%q shape=%s action=%s reason=%q\n",
+			outcome.Row.SessionID, outcome.Row.UserID, string(outcome.Row.Mode), outcome.Shape, outcome.Action, outcome.Reason)
 	}
 	fmt.Printf("read=%d more=%t shapes: current=%d legacy_json=%d prose=%d empty=%d damaged=%d\n",
 		report.RowsRead, report.RowsWithMore,
 		shapes[summaryconvert.ShapeCurrent], shapes[summaryconvert.ShapeLegacyJSON],
 		shapes[summaryconvert.ShapeProse], shapes[summaryconvert.ShapeEmpty], shapes[summaryconvert.ShapeDamaged])
-	fmt.Printf("actions: converted=%d would_convert=%d unchanged=%d failed=%d model_calls=%d\n",
+	fmt.Printf("actions: converted=%d would_convert=%d unchanged=%d failed=%d refused=%d\n",
 		actions[summaryconvert.ActionConverted], actions[summaryconvert.ActionWouldConvert],
-		actions[summaryconvert.ActionUnchanged], failures, calls)
+		actions[summaryconvert.ActionUnchanged], failures, refused)
 	if report.RowsWithMore {
 		fmt.Printf("warning: more rows exist than this run read; raise -limit and run again\n")
 	}
 	if failures > 0 {
-		fatal("%d rows were not converted", failures)
+		fatal("%d rows were not written", failures)
 	}
 }
 

@@ -87,21 +87,12 @@ func TestClassifySeparatesCurrentFromLegacy(t *testing.T) {
 	}
 }
 
-func TestConvertLegacyDocumentKeepsTextAndCitations(t *testing.T) {
-	content := `{"schema_version":2,"current_goal":" 复习归并排序 ","confirmed_decisions":[{"text":"用中文讲解","evidence_message_ids":["7"," 8 "]}],"completed_items":["讲完一轮",""],"open_loops":[{"text":"还要出练习题","evidence_message_ids":["9"]}],"user_corrections":[],"key_errors":["把复杂度说错了"],"references":["slides.pdf"],"legacy_text":"更早的散文"}`
+func TestConvertLegacyDocumentKeepsEveryField(t *testing.T) {
+	content := `{"schema_version":2,"current_goal":" 复习归并排序 ","confirmed_decisions":[{"text":"用中文讲解","evidence_message_ids":["7"," 8 "]}],"completed_items":["讲完一轮"],"open_loops":[{"text":"还要出练习题","evidence_message_ids":["9"]}],"user_corrections":[],"key_errors":["把复杂度说错了"],"references":["slides.pdf"],"legacy_text":"更早的散文里有一条独有事实：归并排序是稳定的。"}`
 
 	conversion, err := ConvertLegacyDocument(content, model.DefaultSummaryBudget())
 	if err != nil {
 		t.Fatalf("ConvertLegacyDocument() error: %v", err)
-	}
-	if conversion.ModelCalls != 0 {
-		t.Fatalf("a mechanical conversion spent %d model calls, want 0", conversion.ModelCalls)
-	}
-	if conversion.LegacyTextRunes != len([]rune("更早的散文")) {
-		t.Fatalf("legacy_text runes=%d, want the prose length", conversion.LegacyTextRunes)
-	}
-	if len(conversion.DroppedEvidenceIDs) != 0 {
-		t.Fatalf("no citation was unexpressible, got %v", conversion.DroppedEvidenceIDs)
 	}
 
 	// The real reader is the oracle, not this package's own encoder.
@@ -112,61 +103,101 @@ func TestConvertLegacyDocumentKeepsTextAndCitations(t *testing.T) {
 	if document.SchemaVersion != model.SessionSummarySchemaV2 {
 		t.Fatalf("schema version=%d, want %d", document.SchemaVersion, model.SessionSummarySchemaV2)
 	}
-	if document.CurrentGoal != "复习归并排序" {
-		t.Fatalf("current_goal=%q, want the prose text trimmed", document.CurrentGoal)
+	if document.CurrentGoal != " 复习归并排序 " {
+		t.Fatalf("current_goal=%q, want the stored text unchanged", document.CurrentGoal)
 	}
 	if got := document.EvidenceMessageIDs(); len(got) != 3 || got[0] != 7 || got[1] != 8 || got[2] != 9 {
 		t.Fatalf("evidence ids=%v, want the string citations mapped to 7,8,9", got)
 	}
-	if len(document.CompletedItems) != 1 || document.CompletedItems[0] != "讲完一轮" {
-		t.Fatalf("completed_items=%v, want one trimmed non-empty item", document.CompletedItems)
-	}
 	if document.ConfirmedDecisions[0].Text != "用中文讲解" {
 		t.Fatalf("the carried text changed: %q", document.ConfirmedDecisions[0].Text)
 	}
+	if len(document.KeyErrors) != 1 || document.KeyErrors[0] != "把复杂度说错了" {
+		t.Fatalf("key_errors=%v", document.KeyErrors)
+	}
+	if len(document.References) != 1 || document.References[0] != "slides.pdf" {
+		t.Fatalf("references=%v", document.References)
+	}
+	// legacy_text has no field of this schema; its content is carried into
+	// completed_items so the facts it holds stay readable.
+	joined := strings.Join(document.CompletedItems, "\n")
+	for _, want := range []string{"讲完一轮", "更早的散文里有一条独有事实：归并排序是稳定的。"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("completed_items do not carry %q: %v", want, document.CompletedItems)
+		}
+	}
 }
 
-func TestConvertLegacyDocumentReportsCitationsItCannotCarry(t *testing.T) {
-	// A citation this schema cannot express is not quietly deleted: the item
-	// keeps its text with no ids (which authorizes no read-back), and the id
-	// itself comes back in the report.
+// TestConvertWritesTheCanonicalFormOfWhatWasVerified: the bytes are produced by
+// decoding the converted document and encoding that decoded value, so what is
+// stored is exactly the document the reader accepted.
+func TestConvertWritesTheCanonicalFormOfWhatWasVerified(t *testing.T) {
+	content := `{"schema_version":2,"current_goal":"复习","confirmed_decisions":[{"text":"用中文讲解","evidence_message_ids":["7"]}],"completed_items":[],"open_loops":[],"user_corrections":[],"key_errors":[],"references":[]}`
+	conversion, err := ConvertLegacyDocument(content, model.DefaultSummaryBudget())
+	if err != nil {
+		t.Fatalf("ConvertLegacyDocument() error: %v", err)
+	}
+	decoded, err := model.DecodeSessionSummaryDocument(conversion.Content)
+	if err != nil {
+		t.Fatalf("converted content is not readable: %v", err)
+	}
+	reencoded, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatalf("re-encode: %v", err)
+	}
+	if string(reencoded) != conversion.Content {
+		t.Fatalf("written bytes are not the canonical form of the verified document:\nstored: %s\ncanon: %s", conversion.Content, reencoded)
+	}
+}
+
+func TestConvertLegacyDocumentRefusesCitationsItCannotCarry(t *testing.T) {
+	// A citation this schema cannot express refuses the row. Dropping it would
+	// store a summary that cites less than the row it came from, and the
+	// operator would only see a count.
 	content := `{"schema_version":2,"current_goal":"复习","confirmed_decisions":[{"text":"用中文讲解","evidence_message_ids":["msg-7","0","8"]}],"completed_items":[],"open_loops":[],"user_corrections":[],"key_errors":[],"references":[]}`
+
+	if _, err := ConvertLegacyDocument(content, model.DefaultSummaryBudget()); err == nil {
+		t.Fatal("a citation that cannot be expressed was accepted")
+	}
+}
+
+func TestConvertLegacyDocumentSplitsOverlongText(t *testing.T) {
+	long := strings.Repeat("归", model.SessionSummaryItemMaxRunes+250)
+	content := `{"schema_version":2,"current_goal":"复习","confirmed_decisions":[],"completed_items":["` + long + `"],"open_loops":[],"user_corrections":[],"key_errors":[],"references":[]}`
 
 	conversion, err := ConvertLegacyDocument(content, model.DefaultSummaryBudget())
 	if err != nil {
 		t.Fatalf("ConvertLegacyDocument() error: %v", err)
 	}
-	if strings.Join(conversion.DroppedEvidenceIDs, ",") != "msg-7,0" {
-		t.Fatalf("dropped ids=%v, want the two that name no message here", conversion.DroppedEvidenceIDs)
-	}
 	document, err := model.DecodeSessionSummaryDocument(conversion.Content)
 	if err != nil {
 		t.Fatalf("converted document unreadable: %v", err)
 	}
-	if len(document.ConfirmedDecisions) != 1 {
-		t.Fatalf("the item disappeared: %v", document.ConfirmedDecisions)
+	if len(document.CompletedItems) != 2 {
+		t.Fatalf("completed_items=%d, want the long item cut in two", len(document.CompletedItems))
 	}
-	if document.ConfirmedDecisions[0].Text != "用中文讲解" {
-		t.Fatalf("text lost with the citation: %q", document.ConfirmedDecisions[0].Text)
+	for _, item := range document.CompletedItems {
+		if len([]rune(item)) > model.SessionSummaryItemMaxRunes {
+			t.Fatalf("an item is longer than the schema allows: %d", len([]rune(item)))
+		}
 	}
-	if got := document.EvidenceMessageIDs(); len(got) != 1 || got[0] != 8 {
-		t.Fatalf("ids=%v, want only the citation that could be carried", got)
+	if joined := strings.Join(document.CompletedItems, ""); joined != long {
+		t.Fatalf("the split did not preserve the text: got %d runes, want %d", len([]rune(joined)), len([]rune(long)))
 	}
 }
 
 func TestConvertLegacyDocumentRefusesWhatTheReaderWouldReject(t *testing.T) {
-	// One item over the budget's item length is refused rather than written and
-	// then skipped forever.
-	long := strings.Repeat("归", model.SessionSummaryItemMaxRunes+1)
-	content := `{"schema_version":2,"current_goal":"复习","confirmed_decisions":[{"text":"` + long + `","evidence_message_ids":["7"]}],"completed_items":[],"open_loops":[],"user_corrections":[],"key_errors":[],"references":[]}`
-
-	if _, err := ConvertLegacyDocument(content, model.DefaultSummaryBudget()); err == nil {
-		t.Fatal("a document the reader refuses was accepted")
-	}
-
 	prose := `{"schema_version":2,` // not a document at all
 	if _, err := ConvertLegacyDocument(prose, model.DefaultSummaryBudget()); err == nil {
 		t.Fatal("a non-document was converted")
+	}
+
+	// A goal cannot be split: this schema has one string for it, so a goal over
+	// the item limit refuses the row.
+	longGoal := strings.Repeat("归", model.SessionSummaryItemMaxRunes+1)
+	content := `{"schema_version":2,"current_goal":"` + longGoal + `","confirmed_decisions":[],"completed_items":[],"open_loops":[],"user_corrections":[],"key_errors":[],"references":[]}`
+	if _, err := ConvertLegacyDocument(content, model.DefaultSummaryBudget()); err == nil {
+		t.Fatal("a goal the schema cannot hold was accepted")
 	}
 }
 
@@ -185,11 +216,91 @@ func TestConvertLegacyDocumentFitsTheDeploymentBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the default budget refused a document that fits: %v", err)
 	}
-	var decoded map[string]any
-	if err := json.Unmarshal([]byte(conversion.Content), &decoded); err != nil {
-		t.Fatalf("converted content is not json: %v", err)
+	document, err := model.DecodeSessionSummaryDocument(conversion.Content)
+	if err != nil {
+		t.Fatalf("converted content is not readable: %v", err)
 	}
-	if got := len(decoded["confirmed_decisions"].([]any)); got != 3 {
+	if got := len(document.ConfirmedDecisions); got != 3 {
 		t.Fatalf("confirmed_decisions kept %d items, want all 3", got)
+	}
+}
+
+func TestConvertProseKeepsEveryFact(t *testing.T) {
+	prose := "第一段：用户想复习归并排序。\n\n第二段：已经讲完递归版，下一步讲迭代版。\n\n第三段：用户说自己容易把稳定性和原地性混淆。"
+
+	conversion, err := ConvertProse(prose, model.DefaultSummaryBudget())
+	if err != nil {
+		t.Fatalf("ConvertProse() error: %v", err)
+	}
+	document, err := model.DecodeSessionSummaryDocument(conversion.Content)
+	if err != nil {
+		t.Fatalf("converted prose is not readable: %v", err)
+	}
+	joined := strings.Join(document.CompletedItems, "")
+	for _, fact := range []string{"归并排序", "递归版", "迭代版", "稳定性", "原地性"} {
+		if !strings.Contains(joined, fact) {
+			t.Fatalf("converted prose lost %q: %v", fact, document.CompletedItems)
+		}
+	}
+	if joined != prose {
+		t.Fatalf("paragraph items do not reassemble the prose:\n got: %q\nwant: %q", joined, prose)
+	}
+}
+
+func TestConvertProseSplitsOverlongText(t *testing.T) {
+	prose := strings.Repeat("归", model.SessionSummaryItemMaxRunes*2+125)
+
+	conversion, err := ConvertProse(prose, model.DefaultSummaryBudget())
+	if err != nil {
+		t.Fatalf("ConvertProse() error: %v", err)
+	}
+	document, err := model.DecodeSessionSummaryDocument(conversion.Content)
+	if err != nil {
+		t.Fatalf("converted prose is not readable: %v", err)
+	}
+	if joined := strings.Join(document.CompletedItems, ""); joined != prose {
+		t.Fatalf("the split did not preserve the prose: got %d runes, want %d", len([]rune(joined)), len([]rune(prose)))
+	}
+	for _, item := range document.CompletedItems {
+		if len([]rune(item)) > model.SessionSummaryItemMaxRunes {
+			t.Fatalf("an item is longer than the schema allows: %d", len([]rune(item)))
+		}
+	}
+}
+
+func TestConvertProseRefusesMoreItemsThanTheBudgetHolds(t *testing.T) {
+	var paragraphs []string
+	for index := 0; index < model.DefaultSummaryBudget().GroupItemLimit+1; index++ {
+		paragraphs = append(paragraphs, "一段事实")
+	}
+	if _, err := ConvertProse(strings.Join(paragraphs, "\n\n"), model.DefaultSummaryBudget()); err == nil {
+		t.Fatal("prose needing more items than the budget holds was accepted")
+	}
+}
+
+func TestConvertProseRefusesEmptyText(t *testing.T) {
+	if _, err := ConvertProse("  \n\t ", model.DefaultSummaryBudget()); err == nil {
+		t.Fatal("an empty row was converted")
+	}
+}
+
+// The two gates are separate on purpose: the reader decides whether the shape
+// is one this build can read at all, and the budget decides whether it fits
+// this deployment. Each case below is refused by exactly one of them.
+func TestFinishRefusesADocumentTheReaderCannotDecode(t *testing.T) {
+	tooNew := model.SessionSummaryDocument{SchemaVersion: model.SessionSummarySchemaV2 + 1}
+	if _, err := finish(tooNew, model.DefaultSummaryBudget()); err == nil {
+		t.Fatal("a document with an unsupported schema version passed the reader gate")
+	}
+}
+
+func TestFinishRefusesADocumentOverTheBudget(t *testing.T) {
+	items := make([]string, model.DefaultSummaryBudget().GroupItemLimit+1)
+	for index := range items {
+		items[index] = "一"
+	}
+	over := model.SessionSummaryDocument{SchemaVersion: model.SessionSummarySchemaV2, CompletedItems: items}
+	if _, err := finish(over, model.DefaultSummaryBudget()); err == nil {
+		t.Fatal("a document over the budget passed the budget gate")
 	}
 }

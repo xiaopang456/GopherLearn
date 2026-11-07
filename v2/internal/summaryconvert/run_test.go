@@ -15,11 +15,10 @@ import (
 )
 
 const (
-	currentContent  = `{"schema_version":2,"current_goal":"复习归并排序","confirmed_decisions":[{"text":"用中文讲解","evidence_message_ids":[7]}],"completed_items":["讲完一轮"],"open_loops":[],"user_corrections":[],"key_errors":[],"references":[]}`
-	legacyContent   = `{"schema_version":2,"current_goal":"复习归并排序","confirmed_decisions":[{"text":"用中文讲解","evidence_message_ids":["7"]}],"completed_items":["讲完一轮"],"open_loops":[],"user_corrections":[],"key_errors":[],"references":[],"legacy_text":"更早的散文"}`
-	proseContent    = "用户想复习归并排序，已经讲完一轮，还要出练习题。"
-	damagedContent  = `{"schema_version":2,"current_goal":"复习","mood":"good"}`
-	unreadableShape = ShapeDamaged
+	currentContent = `{"schema_version":2,"current_goal":"复习归并排序","confirmed_decisions":[{"text":"用中文讲解","evidence_message_ids":[7]}],"completed_items":["讲完一轮"],"open_loops":[],"user_corrections":[],"key_errors":[],"references":[]}`
+	legacyContent  = `{"schema_version":2,"current_goal":"复习归并排序","confirmed_decisions":[{"text":"用中文讲解","evidence_message_ids":["7"]}],"completed_items":["讲完一轮"],"open_loops":[],"user_corrections":[],"key_errors":[],"references":[],"legacy_text":"更早的散文：归并排序是稳定的。"}`
+	proseContent   = "用户想复习归并排序，已经讲完一轮。\n\n还要出练习题。"
+	damagedContent = `{"schema_version":2,"current_goal":"复习","mood":"good"}`
 )
 
 func conversionDatabase(t *testing.T) *gorm.DB {
@@ -59,67 +58,20 @@ func readRow(t *testing.T, db *gorm.DB, sessionID string) model.SessionSummary {
 	return row
 }
 
-// fakeCoveredMessages answers with a fixed covered range and records what it was
-// asked for, so a test can prove the conversion cited messages it was shown.
-type fakeCoveredMessages struct {
-	messages []model.Message
-	more     bool
-	err      error
-	askedFor []uint
-	limit    int
-}
-
-func (f *fakeCoveredMessages) Covered(_ context.Context, _ int64, _ string, watermark uint, limit int) ([]model.Message, bool, error) {
-	f.askedFor = append(f.askedFor, watermark)
-	f.limit = limit
-	return f.messages, f.more, f.err
-}
-
-// fakeProse returns a prepared answer and counts calls, so a preview run can be
-// proven to have spent nothing.
-type fakeProse struct {
-	answer string
-	err    error
-	calls  int
-	seen   []string
-}
-
-func (f *fakeProse) GenerateFromProse(_ context.Context, prose string, _ []model.Message) (string, error) {
-	f.calls++
-	f.seen = append(f.seen, prose)
-	return f.answer, f.err
-}
-
-func coveredRange() []model.Message {
-	return []model.Message{
-		{ID: 7, SessionID: "s-prose", Content: "帮我复习归并排序", IsUser: true},
-		{ID: 8, SessionID: "s-prose", Content: "用中文讲解", IsUser: true},
-		{ID: 9, SessionID: "s-prose", Content: "再出两道练习题", IsUser: true},
-	}
-}
-
-func TestRunPreviewWritesNothingAndSpendsNoCall(t *testing.T) {
+func TestRunPreviewWritesNothing(t *testing.T) {
 	db := conversionDatabase(t)
 	seedRow(t, db, "s-legacy", legacyContent, 7, 3)
 	seedRow(t, db, "s-prose", proseContent, 9, 2)
 	seedRow(t, db, "s-current", currentContent, 7, 5)
 	seedRow(t, db, "s-damaged", damagedContent, 7, 1)
 
-	prose := &fakeProse{answer: currentContent}
-	runner := NewRunnerWithMessages(NewStore(db), &fakeCoveredMessages{messages: coveredRange()}, Options{
-		Apply: false, Limit: 64, Budget: model.DefaultSummaryBudget(), Prose: prose,
-	})
-
-	report, err := runner.Run(context.Background())
+	report, err := NewRunner(NewStore(db), Options{Apply: false, Limit: 64, Budget: model.DefaultSummaryBudget()}).Run(context.Background())
 	if err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
-	if prose.calls != 0 {
-		t.Fatalf("a preview spent %d model calls, want 0", prose.calls)
-	}
 	counts := report.CountByShape()
-	if counts[ShapeLegacyJSON] != 1 || counts[ShapeProse] != 1 || counts[ShapeCurrent] != 1 || counts[unreadableShape] != 1 {
-		t.Fatalf("shape counts=%v, want one of each of the four readable shapes", counts)
+	if counts[ShapeLegacyJSON] != 1 || counts[ShapeProse] != 1 || counts[ShapeCurrent] != 1 || counts[ShapeDamaged] != 1 {
+		t.Fatalf("shape counts=%v, want one of each shape", counts)
 	}
 	for _, sessionID := range []string{"s-legacy", "s-prose", "s-current", "s-damaged"} {
 		stored := readRow(t, db, sessionID)
@@ -133,13 +85,9 @@ func TestRunPreviewWritesNothingAndSpendsNoCall(t *testing.T) {
 	}
 	for _, outcome := range report.Outcomes {
 		switch outcome.Shape {
-		case ShapeLegacyJSON:
+		case ShapeLegacyJSON, ShapeProse:
 			if outcome.Action != ActionWouldConvert {
-				t.Fatalf("legacy row action=%q, want a preview of a write", outcome.Action)
-			}
-		case ShapeProse:
-			if outcome.Action != ActionUnchanged || !strings.Contains(outcome.Reason, "model") {
-				t.Fatalf("prose row action=%q reason=%q, want it named as the arm that costs a call", outcome.Action, outcome.Reason)
+				t.Fatalf("%s row action=%q, want a preview of a write", outcome.Shape, outcome.Action)
 			}
 		default:
 			if outcome.Action != ActionUnchanged {
@@ -153,7 +101,7 @@ func TestRunApplyConvertsLegacyWithoutMovingTheWatermark(t *testing.T) {
 	db := conversionDatabase(t)
 	seedRow(t, db, "s-legacy", legacyContent, 7, 3)
 
-	runner := NewRunnerWithMessages(NewStore(db), &fakeCoveredMessages{}, Options{Apply: true, Limit: 8, Budget: model.DefaultSummaryBudget()})
+	runner := NewRunner(NewStore(db), Options{Apply: true, Limit: 8, Budget: model.DefaultSummaryBudget()})
 	if _, err := runner.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
@@ -175,6 +123,29 @@ func TestRunApplyConvertsLegacyWithoutMovingTheWatermark(t *testing.T) {
 	if stored.TokenEstimate <= 0 {
 		t.Fatalf("token estimate=%d, want the new content measured", stored.TokenEstimate)
 	}
+	if joined := strings.Join(document.CompletedItems, "\n"); !strings.Contains(joined, "更早的散文：归并排序是稳定的。") {
+		t.Fatalf("legacy_text was not carried into completed_items: %v", document.CompletedItems)
+	}
+}
+
+func TestRunApplyConvertsProseWithoutACall(t *testing.T) {
+	db := conversionDatabase(t)
+	seedRow(t, db, "s-prose", proseContent, 9, 2)
+
+	if _, err := NewRunner(NewStore(db), Options{Apply: true, Limit: 8, Budget: model.DefaultSummaryBudget()}).Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	stored := readRow(t, db, "s-prose")
+	if stored.CoveredMessageID != 9 || stored.Version != 3 {
+		t.Fatalf("row moved wrongly: watermark=%d version=%d", stored.CoveredMessageID, stored.Version)
+	}
+	document, err := model.DecodeSessionSummaryDocument(stored.Content)
+	if err != nil {
+		t.Fatalf("converted prose is not readable: %v", err)
+	}
+	if joined := strings.Join(document.CompletedItems, ""); joined != proseContent {
+		t.Fatalf("the prose was not carried over:\n got: %q\nwant: %q", joined, proseContent)
+	}
 }
 
 func TestRunApplyLeavesReadableAndUnreadableRowsAlone(t *testing.T) {
@@ -183,7 +154,7 @@ func TestRunApplyLeavesReadableAndUnreadableRowsAlone(t *testing.T) {
 	seedRow(t, db, "s-damaged", damagedContent, 7, 1)
 	seedRow(t, db, "s-empty", "", 0, 1)
 
-	runner := NewRunnerWithMessages(NewStore(db), &fakeCoveredMessages{}, Options{Apply: true, Limit: 8, Budget: model.DefaultSummaryBudget()})
+	runner := NewRunner(NewStore(db), Options{Apply: true, Limit: 8, Budget: model.DefaultSummaryBudget()})
 	report, err := runner.Run(context.Background())
 	if err != nil {
 		t.Fatalf("Run() error: %v", err)
@@ -199,130 +170,46 @@ func TestRunApplyLeavesReadableAndUnreadableRowsAlone(t *testing.T) {
 	}
 }
 
-func TestProseArmCitesOnlyWhatItWasShown(t *testing.T) {
+// TestRunRefusesAnUnexpressibleCitationAndKeepsTheRow: a citation this schema
+// cannot carry refuses the conversion, and the row keeps its old bytes. The
+// refusal is in the report, with the id named.
+func TestRunRefusesAnUnexpressibleCitationAndKeepsTheRow(t *testing.T) {
 	db := conversionDatabase(t)
-	seedRow(t, db, "s-prose", proseContent, 9, 2)
-	// The model cites message 8, which is inside the covered range.
-	answer := `{"schema_version":2,"current_goal":"复习归并排序","confirmed_decisions":[{"text":"用中文讲解","evidence_message_ids":[8]}],"completed_items":[],"open_loops":[{"text":"再出两道练习题","evidence_message_ids":[9]}],"user_corrections":[],"key_errors":[],"references":[]}`
-	prose := &fakeProse{answer: answer}
-	messages := fakeCoveredMessages{messages: coveredRange()}
+	content := `{"schema_version":2,"current_goal":"复习","confirmed_decisions":[{"text":"用中文讲解","evidence_message_ids":["msg-7"]}],"completed_items":[],"open_loops":[],"user_corrections":[],"key_errors":[],"references":[]}`
+	seedRow(t, db, "s-legacy", content, 7, 2)
 
-	runner := NewRunnerWithMessages(NewStore(db), &messages, Options{Apply: true, Limit: 8, MessageLimit: 512, Budget: model.DefaultSummaryBudget(), Prose: prose})
-	if _, err := runner.Run(context.Background()); err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if prose.calls != 1 {
-		t.Fatalf("calls=%d, want one per prose row", prose.calls)
-	}
-	if prose.seen[0] != proseContent {
-		t.Fatalf("the model was given %q, want the stored prose itself", prose.seen[0])
-	}
-	if messages.askedFor[0] != 9 {
-		t.Fatalf("the covered read was asked for watermark %d, want the row's own watermark", messages.askedFor[0])
-	}
-	stored := readRow(t, db, "s-prose")
-	if stored.CoveredMessageID != 9 || stored.Version != 3 {
-		t.Fatalf("row moved wrongly: watermark=%d version=%d", stored.CoveredMessageID, stored.Version)
-	}
-	if _, err := model.DecodeSessionSummaryDocument(stored.Content); err != nil {
-		t.Fatalf("converted prose is not readable: %v", err)
-	}
-}
-
-func TestProseArmRefusesAFabricatedCitation(t *testing.T) {
-	db := conversionDatabase(t)
-	seedRow(t, db, "s-prose", proseContent, 9, 2)
-	// Message 42 was not supplied: the citation names a message this covered
-	// range does not hold.
-	answer := `{"schema_version":2,"current_goal":"复习","confirmed_decisions":[{"text":"用中文讲解","evidence_message_ids":[42]}],"completed_items":[],"open_loops":[],"user_corrections":[],"key_errors":[],"references":[]}`
-	prose := &fakeProse{answer: answer}
-
-	report, err := NewRunnerWithMessages(NewStore(db), &fakeCoveredMessages{messages: coveredRange()}, Options{
-		Apply: true, Limit: 8, Budget: model.DefaultSummaryBudget(), Prose: prose,
-	}).Run(context.Background())
+	report, err := NewRunner(NewStore(db), Options{Apply: true, Limit: 8, Budget: model.DefaultSummaryBudget()}).Run(context.Background())
 	if err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
 	if report.CountByAction()[ActionConverted] != 0 {
-		t.Fatalf("a fabricated citation was stored: %#v", report.Outcomes)
+		t.Fatalf("a row with an unexpressible citation was converted: %#v", report.Outcomes)
 	}
-	if stored := readRow(t, db, "s-prose"); stored.Content != proseContent || stored.Version != 2 {
+	if len(report.Outcomes) != 1 || !strings.Contains(report.Outcomes[0].Reason, "msg-7") {
+		t.Fatalf("the report does not name the citation: %#v", report.Outcomes)
+	}
+	if stored := readRow(t, db, "s-legacy"); stored.Content != content || stored.Version != 2 {
 		t.Fatalf("the refused row was modified: version=%d", stored.Version)
 	}
-	if prose.calls != 1 {
-		t.Fatalf("calls=%d, want the call to have been made and its answer rejected", prose.calls)
-	}
 }
 
-func TestProseArmRefusesAnUnbackedItemButKeepsProseText(t *testing.T) {
+// TestRunRefusesADocumentOverTheBudget: a narrowed budget refuses the row
+// rather than trimming the user's summary.
+func TestRunRefusesADocumentOverTheBudget(t *testing.T) {
 	db := conversionDatabase(t)
-	seedRow(t, db, "s-prose", proseContent, 9, 2)
-	// An item with no citations that is not the prose's own wording: nothing in
-	// this row backs it, so the whole answer is refused.
-	answer := `{"schema_version":2,"current_goal":"复习","confirmed_decisions":[{"text":"用户已经学会","evidence_message_ids":[]}],"completed_items":[],"open_loops":[],"user_corrections":[],"key_errors":[],"references":[]}`
+	content := `{"schema_version":2,"current_goal":"复习","confirmed_decisions":[{"text":"一","evidence_message_ids":["7"]},{"text":"二","evidence_message_ids":["8"]},{"text":"三","evidence_message_ids":["9"]}],"completed_items":[],"open_loops":[],"user_corrections":[],"key_errors":[],"references":[]}`
+	seedRow(t, db, "s-legacy", content, 9, 1)
 
-	report, err := NewRunnerWithMessages(NewStore(db), &fakeCoveredMessages{messages: coveredRange()}, Options{
-		Apply: true, Limit: 8, Budget: model.DefaultSummaryBudget(), Prose: &fakeProse{answer: answer},
-	}).Run(context.Background())
+	tight := model.SummaryBudget{GroupItemLimit: 2, OpenLoopsItemLimit: 2, ItemEvidenceLimit: model.SessionSummaryEvidenceLimit, EvidenceIDLimit: 64}
+	report, err := NewRunner(NewStore(db), Options{Apply: true, Limit: 8, Budget: tight}).Run(context.Background())
 	if err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
 	if report.CountByAction()[ActionConverted] != 0 {
-		t.Fatalf("an item backed by nothing was stored")
+		t.Fatalf("a document over the budget was written")
 	}
-	if stored := readRow(t, db, "s-prose"); stored.Content != proseContent {
-		t.Fatalf("the prose was replaced: %q", stored.Content)
-	}
-}
-
-func TestProseArmCarriesAnIdLessItemThatIsTheProseOwnText(t *testing.T) {
-	db := conversionDatabase(t)
-	seedRow(t, db, "s-prose", proseContent, 9, 2)
-	// The prose says 还要出练习题; an item with no citations may carry that
-	// wording because the stored row is itself the evidence for it.
-	answer := `{"schema_version":2,"current_goal":"复习归并排序","confirmed_decisions":[{"text":"还要出练习题","evidence_message_ids":[]}],"completed_items":[],"open_loops":[],"user_corrections":[],"key_errors":[],"references":[]}`
-
-	if _, err := NewRunnerWithMessages(NewStore(db), &fakeCoveredMessages{messages: coveredRange()}, Options{
-		Apply: true, Limit: 8, Budget: model.DefaultSummaryBudget(), Prose: &fakeProse{answer: answer},
-	}).Run(context.Background()); err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	stored := readRow(t, db, "s-prose")
-	if stored.Version != 3 {
-		t.Fatalf("version=%d, want the row converted", stored.Version)
-	}
-	document, err := model.DecodeSessionSummaryDocument(stored.Content)
-	if err != nil {
-		t.Fatalf("converted row unreadable: %v", err)
-	}
-	if len(document.ConfirmedDecisions) != 1 || len(document.ConfirmedDecisions[0].EvidenceMessageIDs) != 0 {
-		t.Fatalf("the carried item changed shape: %v", document.ConfirmedDecisions)
-	}
-}
-
-func TestProseArmStopsWhenTheCoveredRangeIsTooLong(t *testing.T) {
-	db := conversionDatabase(t)
-	seedRow(t, db, "s-prose", proseContent, 9, 2)
-	prose := &fakeProse{answer: currentContent}
-	messages := &fakeCoveredMessages{messages: coveredRange(), more: true}
-
-	report, err := NewRunnerWithMessages(NewStore(db), messages, Options{
-		Apply: true, Limit: 8, MessageLimit: 2, Budget: model.DefaultSummaryBudget(), Prose: prose,
-	}).Run(context.Background())
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if messages.limit != 2 {
-		t.Fatalf("the covered read was asked for %d messages, want the configured limit", messages.limit)
-	}
-	if prose.calls != 0 {
-		t.Fatalf("a half-read covered range still cost a model call: %d", prose.calls)
-	}
-	if report.CountByAction()[ActionConverted] != 0 {
-		t.Fatalf("a partly-read session was converted")
-	}
-	if stored := readRow(t, db, "s-prose"); stored.Content != proseContent {
-		t.Fatalf("the row was rewritten: %q", stored.Content)
+	if stored := readRow(t, db, "s-legacy"); stored.Content != content {
+		t.Fatalf("the refused row was rewritten: %q", stored.Content)
 	}
 }
 
@@ -375,7 +262,7 @@ func TestRunReportsRowsWhoseSessionIsGone(t *testing.T) {
 		t.Fatalf("mode=%q, want no mode for a row whose session is gone", rows[0].Mode)
 	}
 
-	report, err := NewRunnerWithMessages(NewStore(db), &fakeCoveredMessages{}, Options{Apply: true, Limit: 8, Budget: model.DefaultSummaryBudget()}).Run(context.Background())
+	report, err := NewRunner(NewStore(db), Options{Apply: true, Limit: 8, Budget: model.DefaultSummaryBudget()}).Run(context.Background())
 	if err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
@@ -392,7 +279,7 @@ func TestRunReportsRowsLeftBeyondTheLimit(t *testing.T) {
 	seedRow(t, db, "s-a", legacyContent, 7, 1)
 	seedRow(t, db, "s-b", legacyContent, 7, 1)
 
-	report, err := NewRunnerWithMessages(NewStore(db), &fakeCoveredMessages{}, Options{Apply: false, Limit: 1, Budget: model.DefaultSummaryBudget()}).Run(context.Background())
+	report, err := NewRunner(NewStore(db), Options{Apply: false, Limit: 1, Budget: model.DefaultSummaryBudget()}).Run(context.Background())
 	if err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
