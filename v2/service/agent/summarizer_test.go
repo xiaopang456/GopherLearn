@@ -403,7 +403,7 @@ func TestSummaryV2PreservesPreviouslyValidatedEvidenceExactly(t *testing.T) {
 	}
 }
 
-// BUG-AGENT-102. Compaction runs inside the Runner's 45s deadline, so its cost
+// Compaction runs inside the Runner's 45s deadline, so its cost
 // is taken from the agent's own budget rather than added to it. These three
 // tests pin the stage that bounds it.
 

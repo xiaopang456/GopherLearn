@@ -25,7 +25,7 @@ func TestCaptchaReservationAndAtomicConsumption(t *testing.T) {
 	if err := Rdb.Ping(ctx).Err(); err != nil {
 		t.Fatal(err)
 	}
-	email := "stabilize006-captcha@example.invalid"
+	email := "captcha@example.invalid"
 	t.Cleanup(func() {
 		_ = Rdb.Del(context.Background(), GenerateCaptcha(email), GenerateCaptchaCooldown(email)).Err()
 	})

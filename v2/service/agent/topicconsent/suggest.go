@@ -38,7 +38,7 @@ func (f TopicListerFunc) ListTopics(ctx context.Context, userID int64) ([]Topic,
 // Suggester proposes candidate topics for one question.
 //
 // It is deterministic by construction: catalogue rows plus lexical overlap, no
-// embedding, no vector index and no model call. STABILIZE-049 spent its whole
+// embedding, no vector index and no model call. An earlier round spent its whole
 // budget proving a model cannot make this decision reliably, so this stage does
 // not try to make it at all - it offers a short list and lets the user decide.
 type Suggester struct {

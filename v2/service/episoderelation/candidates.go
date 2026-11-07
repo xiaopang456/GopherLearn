@@ -4,7 +4,7 @@
 // recorded, and records the answer.
 //
 // It is a write-side concern, not a read-side one. The read side already knows
-// how to present a replaced decision honestly - STABILIZE-063 proved that - but
+// how to present a replaced decision honestly - an earlier round proved that - but
 // only if somebody wrote the relation down. Until now nobody did: the eight
 // replacements the 064 corpus carried were seeded by hand into the fixture, so
 // the governed read path had been validated against relations no part of the

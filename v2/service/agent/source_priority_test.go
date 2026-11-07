@@ -9,7 +9,7 @@ import (
 	"GopherAI/common/memoryrecall"
 )
 
-// STABILIZE-063 source-priority contract: the three halves that must move
+// The source-priority contract: the three halves that must move
 // together are pinned here - the prompt states the priority at runtime, the
 // server defers the non-save first tool choice through the config field, and
 // the tool names stay source-specific. The prompt assertions deliberately read
@@ -66,7 +66,7 @@ func TestSourcePrioritySurfaceKeepsSourceSpecificNames(t *testing.T) {
 	}
 }
 
-// sourcePriorityOnlyFragments are the sentences the STABILIZE-063 contract
+// sourcePriorityOnlyFragments are the sentences the contract
 // adds. They must be present in the source-priority prompt and absent from the
 // explicit-sources prompt, which is the byte-visible difference between the
 // two. The explicit prompt is a rename of the same memory-tool base, so
@@ -150,7 +150,7 @@ func TestSourcePriorityConfigDefersKnowledgeForcing(t *testing.T) {
 	if config.ToolSurface != SurfaceSourcePriority {
 		t.Fatalf("surface = %q, want source_priority", config.ToolSurface)
 	}
-	// The envelope's fuse values are inherited unchanged from STABILIZE-061.
+	// The envelope's fuse values are inherited unchanged from the explicit-actions surface.
 	base := AgentMemoryExplicitSourcesV1RunnerConfig()
 	if config.MaxModelCalls != base.MaxModelCalls || config.MaxToolCalls != base.MaxToolCalls ||
 		config.PerTool != base.PerTool {

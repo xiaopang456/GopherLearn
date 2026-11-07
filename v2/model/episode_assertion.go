@@ -7,7 +7,7 @@ import (
 
 // Assertion-level time governance for Episode memory.
 //
-// STABILIZE-057 established that Episode retrieval works: recall@6 of 97.2%,
+// The earlier evaluation established that Episode retrieval works: recall@6 of 97.2%,
 // zero cross-user, archived, expired, deleted-source or current-session leaks.
 // What it also established is that the system has no way to say "this decision
 // was later replaced by that one". A reversed decision stays active and is,
@@ -143,7 +143,7 @@ func (s AssertionState) Valid() bool {
 func (s AssertionState) CanEstablishPresent() bool { return s == AssertionCurrent }
 
 // CanEstablishHistory reports whether it may be used to describe what happened.
-// Every state can: that is the correction STABILIZE-057's materials needed.
+// Every state can: that is the correction the earlier evaluation's materials needed.
 func (s AssertionState) CanEstablishHistory() bool { return s.Valid() }
 
 // SlotOrdinal is the per-turn position of a slot inside its kind.

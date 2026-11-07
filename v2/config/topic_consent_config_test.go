@@ -7,7 +7,7 @@ import (
 	"GopherAI/common/memoryrecall"
 )
 
-const validConsentSecret = "stabilize050-config-test-secret-0123456789"
+const validConsentSecret = "config-test-secret-0123456789abcd"
 
 func confirmedAgentConfig() AgentConfig {
 	config := defaultConfig().AgentConfig

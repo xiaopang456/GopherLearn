@@ -10,7 +10,7 @@
 // and every one of those bindings is re-checked before any personal record is
 // read.
 //
-// It is deliberately not a database row. STABILIZE-050 v1 grants "this answer"
+// It is deliberately not a database row. The grant covers "this answer"
 // and nothing more, so the grant needs no lifecycle, no revocation path and no
 // migration: the next question simply has no ticket. A persistent grant is a
 // permissions table, and a permissions table is a much larger promise than this
@@ -36,7 +36,7 @@ import (
 // MaxSelectableTopics is the hard ceiling on how much personal state one answer
 // may draw on.
 //
-// Two is the same bound STABILIZE-049 put on its multi shape: a genuine
+// Two is the same bound the earlier round put on its multi shape: a genuine
 // two-subject comparison exists and forcing every question to a single topic
 // would structurally lose half the personalisation, while a third topic has no
 // observed case behind it and would just be budget nobody asked for.

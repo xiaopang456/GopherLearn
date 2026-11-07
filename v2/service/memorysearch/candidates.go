@@ -4,7 +4,7 @@
 // It is a new package rather than a function on the existing readers because
 // the two are answering different questions. SimilarityRecall decides what may
 // be injected into a System prompt without anybody asking for it, so its
-// abstention gate trades recall for silence — and STABILIZE-031 measured what
+// abstention gate trades recall for silence — and an earlier round measured what
 // that trade costs in both directions. This layer decides what may be *shown to
 // the Agent that asked for it*, which is a weaker claim: a card the Agent reads
 // and ignores costs a few hundred tokens, while a memory that was never
@@ -387,7 +387,7 @@ func (s *Searcher) searchSemantic(ctx context.Context, request Request, vector [
 	}
 	// A lexical channel on its own is not a semantic search. BM25 over a
 	// personal note collection returns the neighbouring subject as readily as
-	// the right one, and STABILIZE-031 spent a blind run establishing that
+	// the right one, and an earlier round spent a blind run establishing that
 	// widening recall while losing the vector's discrimination trades silence
 	// for noise. Without the vector this path returns nothing rather than
 	// something.

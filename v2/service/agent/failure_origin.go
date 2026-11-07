@@ -10,7 +10,7 @@ import (
 
 // Giving an error its type where it is produced.
 //
-// STABILIZE-062 v1.3 classified by errors.Is against the Runner's sentinels,
+// Classified by errors.Is against the Runner's sentinels,
 // which stopped the keyword guessing and was the right shape. What it could not
 // do is say anything about a failure that never became one of those sentinels.
 // A provider transport fault, a Redis or MySQL fault, a tool that failed while
@@ -225,7 +225,7 @@ func TypeRetrievalFailure(err error) error {
 
 // FailureComponent says which component inside a tool failed.
 //
-// STABILIZE-062 v1.4.1 lost its round to two tool_infrastructure turns and the
+// Lost its round to two tool_infrastructure turns and the
 // artefact could not say which component of the second Episode search had
 // failed - the same turn runs an embedding purchase, an index search, a
 // governed expansion and a render, and the single kind covered them all. The

@@ -17,7 +17,7 @@ import (
 	"GopherAI/model"
 )
 
-// STABILIZE-065 Phase 2-C1: the tier-1 remediation, T1 to T16.
+// The tier-1 remediation, T1 to T16.
 //
 // Every behavioural case enters through worker.Start and the job queue against a
 // disposable MySQL, with the production evidence loader, the production job

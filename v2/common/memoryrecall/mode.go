@@ -5,8 +5,8 @@ import "fmt"
 // ReadMode selects the whole long-term memory read path, not one component of
 // it.
 //
-// STABILIZE-031 makes the unit of choice a complete mode because STABILIZE-030
-// introduced three coupled things at once — the multi-axis ReadPlan and Episode
+// The unit of choice is a complete mode because an earlier
+// round introduced three coupled things at once — the multi-axis ReadPlan and Episode
 // recall, the TopicResolver's early resolution whose keys feed the Episode
 // exact channel, and the semantic layer. A switch on only the last of them
 // would leave the first two on by default and would leave the middle one
@@ -15,7 +15,7 @@ import "fmt"
 // The first four modes are strictly nested: each adds exactly one thing to the
 // one above it. That nesting is what makes a four-arm comparison attributable.
 //
-// STABILIZE-032 adds a fifth that is not part of that nesting. model_planned_v1
+// One earlier change adds a fifth that is not part of that nesting. model_planned_v1
 // is a complete alternative read path, not another layer on the v3 stack: it
 // runs no Intent router, no TopicResolver and no v3 Episode plan, because
 // stacking it on top of them would leave the old trigger rules deciding what it
@@ -23,7 +23,7 @@ import "fmt"
 type ReadMode string
 
 const (
-	// ModeLegacyV2 is the complete pre-STABILIZE-030 read path: a single
+	// ModeLegacyV2 is the complete earlier read path: a single
 	// mutually exclusive Intent router, the old Episode recall, no
 	// TopicResolver and no request-scoped vector sharing.
 	//
@@ -42,12 +42,12 @@ const (
 	// ModeEpisodeV3Semantic adds the semantic layer, including its safety
 	// revisions.
 	ModeEpisodeV3Semantic ReadMode = "episode_v3_semantic"
-	// ModeModelPlannedV1 is the STABILIZE-032 read path: a small model plans
+	// ModeModelPlannedV1 is the read path: a small model plans
 	// which of the learner's own topics and episodes the question needs, the
 	// server rebuilds and re-checks those candidates from MySQL, and a second
 	// model call decides which of them actually support the question.
 	//
-	// It exists because STABILIZE-031 ended with owner, status, version and
+	// It exists because an earlier round ended with owner, status, version and
 	// source closure all correct and the safety result still worse than the
 	// baseline: every added false-premise injection was a record of the
 	// learner's own, in force, on the subject, and unsupporting. That is a
@@ -57,12 +57,12 @@ const (
 	// It is not the default and does not become the default by passing. This
 	// task can award it candidacy and nothing more.
 	ModeModelPlannedV1 ReadMode = "model_planned_v1"
-	// ModeAgentMemoryToolV1 is the STABILIZE-033 read path: nothing but global
+	// ModeAgentMemoryToolV1 is the read path: nothing but global
 	// semantic memory is injected, and topic semantic memory and Episodes are
 	// reachable only through a memory_search tool the answering Agent may call
 	// inside its existing ReAct loop.
 	//
-	// It exists because STABILIZE-032 measured both halves of the same
+	// It exists because an earlier round measured both halves of the same
 	// sentence. A model deciding what the question needs raised complete recall
 	// from 13/39 to 27/39, so the semantic decision is worth making; putting
 	// two extra model stages in front of the answer cost a P50 of 5.07s and a
@@ -74,7 +74,7 @@ const (
 	// Like every mode before it, passing does not make it the default. This
 	// task can award it candidacy and nothing more.
 	ModeAgentMemoryToolV1 ReadMode = "agent_memory_tool_v1"
-	// ModeAgentMemoryToolV2 is the STABILIZE-039 read path: everything
+	// ModeAgentMemoryToolV2 is the read path: everything
 	// agent_memory_tool_v1 does, plus one thing the server already knew and was
 	// throwing away.
 	//
@@ -82,7 +82,7 @@ const (
 	// server holds an authoritative TopicKey before the first model call. v1
 	// still made the Agent re-decide that topic, spend an embedding and a
 	// hybrid retrieval on it, and let those records compete with Episodes for
-	// the per-kind and final window slots — STABILIZE-035/036 measured three of
+	// the per-kind and final window slots — an earlier round measured three of
 	// the ten missing evidence groups dying in exactly that final merge.
 	//
 	// So this mode reads topic semantic memory by exact key straight from
@@ -94,11 +94,11 @@ const (
 	// It is not the default and passing does not make it one. Like every mode
 	// before it, this task can award it candidacy and nothing more.
 	ModeAgentMemoryToolV2 ReadMode = "agent_memory_tool_v2"
-	// ModeAgentMemoryToolV3 is the STABILIZE-040 read path: v1's window, plus a
+	// ModeAgentMemoryToolV3 is the read path: v1's window, plus a
 	// second tool the Agent may call when the question is about how this
 	// learner understands the subject the server has them working on now.
 	//
-	// It exists because STABILIZE-039C measured both halves of v2's sentence.
+	// It exists because an earlier round measured both halves of v2's sentence.
 	// Reading topic memory by exact key is worth doing - on the eighteen
 	// ordinary topic cases it took embeddings from 18 to 1, Redis queries from
 	// 48 to 2 and recall from 17/18 to 18/18. Doing it whenever a learning
@@ -121,7 +121,7 @@ const (
 	//
 	// It is not the default and passing does not make it one.
 	ModeAgentMemoryToolV3 ReadMode = "agent_memory_tool_v3"
-	// ModeAgentMemoryToolV4 is the STABILIZE-041 read path. It keeps v3's two
+	// ModeAgentMemoryToolV4 is the read path. It keeps v3's two
 	// tools and budgets, but the narrow read exposes two facts v3 hid: which
 	// server-held topic it read and whether its bounded window omitted records.
 	// The Agent can therefore continue with memory_search after observing a
@@ -130,14 +130,14 @@ const (
 	//
 	// It is an experimental identity, never a production default.
 	ModeAgentMemoryToolV4 ReadMode = "agent_memory_tool_v4"
-	// ModeAgentMemoryUserConfirmedV1 is the STABILIZE-050 read path: the user,
+	// ModeAgentMemoryUserConfirmedV1 is the read path: the user,
 	// not a model, authorises which topic's personal state this answer may use.
 	// A live quiz is not itself a read grant: it proves a TopicKey exists, not
 	// that an arbitrary chat question is about that topic. Until a dedicated
 	// learning-turn identity exists, this mode requires the same confirmation
 	// for every Topic learning-state and Topic-memory read.
 	//
-	// It exists because STABILIZE-049 measured the ceiling of the alternative.
+	// It exists because an earlier round measured the ceiling of the alternative.
 	// The candidate pool covered the gold Primary 40/40, so recall was never
 	// the problem; the small model's final authorisation still landed at 36,
 	// 36 and 35 of 40, injecting the wrong topic's personal state on three or
@@ -161,7 +161,7 @@ const (
 	//
 	// It is not the default and implementing it does not make it one.
 	ModeAgentMemoryUserConfirmedV1 ReadMode = "agent_memory_user_confirmed_v1"
-	// ModeEpisodeAssertionGovernedV11 is the STABILIZE-058 v1.1 read path.
+	// ModeEpisodeAssertionGovernedV11 is the v1.1 read path.
 	//
 	// It is everything agent_memory_user_confirmed_v1 does, plus one thing that
 	// mode could not express: which of an Episode's assertions still represents
@@ -176,7 +176,7 @@ const (
 	//
 	// It is not the default and implementing it does not make it one.
 	ModeEpisodeAssertionGovernedV11 ReadMode = "episode_assertion_governed_v1_1"
-	// ModeAgentMemoryExplicitActionsV1 is the STABILIZE-061 read path.
+	// ModeAgentMemoryExplicitActionsV1 is the read path.
 	//
 	// It changes one thing: what the two memory tools are called and what their
 	// descriptions say they can do. The retrieval chain, the embedding model,
@@ -184,7 +184,7 @@ const (
 	// user-confirmation chain and the draft confirmation chain are the
 	// assertion-governed mode's, unchanged and uncopied.
 	//
-	// It exists because STABILIZE-060 measured a failure with one shape. Twenty
+	// It exists because an earlier round measured a failure with one shape. Twenty
 	// negative questions, seventeen correctly not searched, and all three
 	// failures in the same layer: every way of saying "remember this" first
 	// called memory_search. Nothing about permissions, parameters, indexes or
@@ -208,12 +208,12 @@ const (
 	//
 	// It is not the default and implementing it does not make it one.
 	ModeAgentMemoryExplicitActionsV1 ReadMode = "agent_memory_explicit_actions_v1"
-	// ModeAgentMemoryExplicitSourcesV1 is the STABILIZE-062 read path. It keeps
-	// the explicit write and Episode-read actions from STABILIZE-061 and gives
+	// ModeAgentMemoryExplicitSourcesV1 is the read path. It keeps
+	// the explicit write and Episode-read actions from the explicit-actions surface and gives
 	// uploaded-document retrieval an equally source-specific name. No
 	// retriever, permission rule, budget or ordering rule changes.
 	ModeAgentMemoryExplicitSourcesV1 ReadMode = "agent_memory_explicit_sources_v1"
-	// ModeAgentMemorySourcePriorityV1 is the STABILIZE-063 read path. v1.4.3's
+	// ModeAgentMemorySourcePriorityV1 is the read path. v1.4.3's
 	// valid run showed four questions about the learner's own past answered
 	// from uploaded documents only: the base prompt's technical-first boundary,
 	// the tool description's "technical or note content", and the server's
@@ -228,7 +228,7 @@ const (
 	// read-back authority: the Session Summary's own evidence ids.
 	//
 	// It is a separate identity rather than an edit to the mode above because
-	// STABILIZE-063 published numbers describe v1's prompt bytes, tool schema and
+	// The published numbers describe v1's prompt bytes, tool schema and
 	// budgets, and a digest of that prompt is recorded in a run seal. Widening
 	// read_history_message there would change what those measurements are about
 	// without changing anything measurable about the comparison.
@@ -243,7 +243,7 @@ const (
 	//
 	// It is not the default and implementing it does not make it one.
 	ModeAgentMemorySourcePriorityV2 ReadMode = "agent_memory_source_priority_v2"
-	// ModeAgentMemorySourcePriorityV3 is the STABILIZE-064 read path: the same
+	// ModeAgentMemorySourcePriorityV3 is the read path: the same
 	// read_history_message tool reaching BOTH compressed memories at once.
 	//
 	// v2 measures one source. The summary's evidence ids become grants, and that
@@ -279,7 +279,7 @@ const (
 	ModeAgentMemorySourcePriorityV3 ReadMode = "agent_memory_source_priority_v3"
 )
 
-// sourcePriorityFamily reports whether a mode runs the STABILIZE-063 source
+// sourcePriorityFamily reports whether a mode runs the source
 // priority contract.
 //
 // The family is stated once because the whole claim about v2 is that it changes
@@ -290,7 +290,7 @@ func (m ReadMode) sourcePriorityFamily() bool {
 	return m == ModeAgentMemorySourcePriorityV1 || m == ModeAgentMemorySourcePriorityV2
 }
 
-// The limits of the STABILIZE-050 read-side confirmation live here rather than
+// The limits of the read-side confirmation live here rather than
 // beside its implementation because configuration validation has to enforce
 // them, and config is imported by packages the implementation itself imports.
 // Putting them in the leaf package the mode already lives in keeps one
@@ -375,7 +375,7 @@ func (m ReadMode) UsesUserConfirmedTopicContext() bool {
 //
 // It exists because "this mode registers memory_search" and "this mode studies
 // how a model picks its first tool" were the same condition until
-// STABILIZE-056, and they are not the same claim. The four agent_memory_tool
+// the two conditions were separated, and they are not the same claim. The four
 // identities exist to measure exactly that choice: forcing knowledge_search
 // ahead of it would answer the question they were built to ask, and would spend
 // one of their six slots on a knowledge base a personal question has no use
@@ -388,7 +388,7 @@ func (m ReadMode) UsesUserConfirmedTopicContext() bool {
 // model's first tool choice is not a measurement here, it is just a choice. Let
 // it suppress knowledge retrieval and an ordinary technical question can be
 // answered with no document evidence at all, which the grounding gate then
-// refuses. That is STABILIZE-055 scenarios 1-3.
+// refuses. That is what the first three scenarios showed.
 func (m ReadMode) DefersFirstToolChoiceToModel() bool {
 	return m == ModeAgentMemoryToolV1 || m == ModeAgentMemoryToolV2 || m == ModeAgentMemoryToolV3 ||
 		m == ModeAgentMemoryToolV4
@@ -441,7 +441,7 @@ func (m ReadMode) UsesExplicitKnowledgeSourceName() bool {
 }
 
 // UsesSourcePrioritySurface reports whether the mode names its tools under the
-// STABILIZE-063 source-priority surface.
+// source-priority surface.
 //
 // It is exported because anything that wires a mode's tools - production, or an
 // offline evaluator that must not invent its own contract - has to answer this
@@ -540,14 +540,14 @@ func (m ReadMode) SharesIssuedRecordsAcrossMemoryTools() bool {
 // must never do.
 // v3 answers no. It reads exactly the same records by exactly the same key, and
 // it does so only when the Agent asks - which is the entire difference between
-// the two modes and the only thing STABILIZE-040 is testing.
+// the two modes and the only thing this round is testing.
 func (m ReadMode) UsesAuthoritativeTopicBootstrap() bool { return m == ModeAgentMemoryToolV2 }
 
 // AutoInjectsTopicAndEpisodeMemory reports whether the ContextBuilder puts
 // topic semantic memory and Episodes into the window on its own.
 //
 // Every mode but one does, and the one that does not is the whole point of
-// STABILIZE-033: those two blocks arrive only if the Agent asks for them, so
+// Those two blocks arrive only if the Agent asks for them, so
 // that "was this evidence needed" is a decision with a record rather than a
 // side effect of a trigger rule.
 // v2 answers no as well, and for the same reason plus one more. It does inject

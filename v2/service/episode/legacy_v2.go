@@ -13,10 +13,10 @@ import (
 	"time"
 )
 
-// This file is the pre-STABILIZE-030 Episode read path, kept as its own code
+// This file is the earlier Episode read path, kept as its own code
 // rather than as a configuration of the new one.
 //
-// STABILIZE-031 requires `legacy_v2` to be *proved* equivalent to the frozen v2
+// The design requires `legacy_v2` to be *proved* equivalent to the frozen v2
 // artefact, not argued equivalent (design 3.4). Candidate ordering and the exact
 // `reason` strings are internal details of the old router; reproducing them by
 // configuring the new router would be an argument, and every difference would
@@ -186,7 +186,7 @@ func (r *LegacyRetriever) Recall(ctx context.Context, request RecallRequest) (re
 }
 
 // legacyExplicitTopicTailPatterns is the pre-030 list. It is a copy rather than
-// a reference because STABILIZE-030 added two patterns to the live one, and
+// a reference because the live path gained two patterns, and
 // `legacy_v2` must keep producing the old keys.
 var legacyExplicitTopicTailPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?:最终|最后|当时)?(?:选择|选|采用|采取)(?:的|了|的是|了的是)?(?:什么|哪(?:个|种)?)(?:方案|做法|方式)?$`),

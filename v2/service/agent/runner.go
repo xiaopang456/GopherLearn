@@ -119,20 +119,20 @@ type RunnerConfig struct {
 	// where a model that keeps rephrasing one search can consume the entire
 	// budget and still reach the answer with nothing the second tool would have
 	// found. A zero leaves that capability bounded only by MaxToolCalls, which
-	// is what every mode before STABILIZE-033 relies on.
+	// is what every earlier mode relies on.
 	PerTool ToolCallLimits
 	// ForcesKnowledgeSearchWithMemoryTool re-enables the server's
 	// knowledge-first rule in a mode that registers memory_search.
 	//
 	// It is stated in the negative-by-default direction on purpose: false is
-	// what every mode did before STABILIZE-056, so every frozen config literal
+	// what every earlier mode did, so every frozen config literal
 	// and every published measurement keeps the behaviour it was taken under,
 	// and only a mode that opts in changes. See
 	// memoryrecall.ReadMode.DefersFirstToolChoiceToModel for which modes may.
 	ForcesKnowledgeSearchWithMemoryTool bool
 	// ToolSurface selects which names the model is shown for the capabilities
 	// this run registers. The zero value is SurfaceLegacy, so every mode that
-	// existed before STABILIZE-061 keeps the names its measurements describe
+	// existed before the explicit-actions surface keeps the names its measurements describe
 	// without naming the field.
 	ToolSurface ToolSurface
 	// ForcesMemoryDraftBeforeMemoryRead makes the draft tool the first tool of
@@ -198,7 +198,7 @@ type ToolCallLimits struct {
 }
 
 // limitFor charges a call to the capability behind the name rather than to the
-// name itself. STABILIZE-061 exposes the same two memory implementations under
+// name itself. One earlier change exposes the same two memory implementations under
 // a second pair of names; without this indirection those names would fall into
 // the default branch and be budgeted at zero, which registers as "the model
 // never called the tool" rather than as a misconfiguration.
@@ -259,7 +259,7 @@ func AgentMemoryToolRunnerConfig() RunnerConfig {
 // It is v1's budget with one addition and no relaxation: the same six tool
 // calls, the same seven model calls, the same sixteen graph steps and the same
 // forty-five seconds, plus a per-capability limit of one on the new tool. That
-// is the point of stating it as its own function. STABILIZE-040 buys back a
+// is the point of stating it as its own function. The next round buys back a
 // tool round trip that v2 had removed, and a mode that also widened the fuse
 // would leave "did the extra round trip fit" unanswerable.
 func AgentMemoryToolV3RunnerConfig() RunnerConfig {
@@ -273,7 +273,7 @@ func AgentMemoryToolV3RunnerConfig() RunnerConfig {
 // model gets to call tools or regenerate.
 func AgentMemoryToolV4RunnerConfig() RunnerConfig { return AgentMemoryToolV3RunnerConfig() }
 
-// AgentMemoryExplicitActionsV1RunnerConfig is the STABILIZE-061 run envelope.
+// AgentMemoryExplicitActionsV1RunnerConfig is the run envelope.
 //
 // It is the user-confirmed mode's envelope with two fields added and no number
 // changed. That is the whole design: this round varies what the model reads in
@@ -288,16 +288,16 @@ func AgentMemoryExplicitActionsV1RunnerConfig() RunnerConfig {
 }
 
 // AgentMemoryExplicitSourcesV1RunnerConfig changes only the tool surface. The
-// complete run envelope remains the STABILIZE-061 envelope.
+// complete run envelope remains the envelope.
 func AgentMemoryExplicitSourcesV1RunnerConfig() RunnerConfig {
 	config := AgentMemoryExplicitActionsV1RunnerConfig()
 	config.ToolSurface = SurfaceExplicitSources
 	return config
 }
 
-// AgentMemorySourcePriorityV1RunnerConfig is the STABILIZE-063 envelope.
+// AgentMemorySourcePriorityV1RunnerConfig is the envelope.
 //
-// It inherits the whole STABILIZE-061 envelope - same fuses, same draft-first
+// It inherits the whole explicit-actions envelope - same fuses, same draft-first
 // rule, same explicit-sources tool table - and turns off exactly one server
 // behaviour: the knowledge-first forcing. v1.4.3's valid run showed four
 // questions about the learner's own past answered from uploaded documents
@@ -1172,7 +1172,7 @@ type runState struct {
 	historyReadAvailable     bool
 	memorySearchAvailable    bool
 	// memoryDraftAvailable records that the draft tool passed its own
-	// permission gate and is in front of the model. STABILIZE-061 uses it to
+	// permission gate and is in front of the model. One earlier change uses it to
 	// order the two memory actions: the gate has already decided this message
 	// contains something to save, so saving it is not a decision to defer until
 	// after a search that cannot help make it.
@@ -2886,7 +2886,7 @@ func (s *runState) forcedToolName() string {
 	// Episodes only, so nothing here is being measured; suppressing the
 	// knowledge-first rule only let an ordinary technical question be answered
 	// with no document evidence, and the grounding gate then refused it.
-	// STABILIZE-061 orders the two explicit memory actions, and does it before
+	// One earlier change orders the two explicit memory actions, and does it before
 	// the clause below that hands the first choice to the model.
 	//
 	// The condition is deliberately narrow. It is "the learner asked for

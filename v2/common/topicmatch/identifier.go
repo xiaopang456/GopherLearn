@@ -7,7 +7,7 @@ import (
 
 // StrongIdentifiers pulls the code-shaped tokens out of a question.
 //
-// The rule lived inside the episode router until STABILIZE-031 needed it in two
+// The rule lived inside the episode router until an earlier round needed it in two
 // places: the Episode exact channel, which searches on them, and the semantic
 // topic gate, which refuses a candidate topic that contains none of them. Two
 // copies of "what counts as an identifier" would drift, and the drift would be

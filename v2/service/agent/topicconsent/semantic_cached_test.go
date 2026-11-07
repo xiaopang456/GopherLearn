@@ -249,7 +249,7 @@ func TestWarmRefusesAWrongDimension(t *testing.T) {
 }
 
 // A measurement run must fail rather than quietly report lexical candidates as
-// if the semantic stage had run. This is the STABILIZE-051 void-run lesson.
+// if the semantic stage had run. This is the void-run lesson.
 func TestStrictModeRefusesToDegradeSilently(t *testing.T) {
 	topics := cachedTopics(3)
 	cache := warmedCache(t, topics, &countingEmbedder{}, DescriptorWithLearningExamples, 20)

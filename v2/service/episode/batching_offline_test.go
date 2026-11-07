@@ -1,6 +1,6 @@
 package episode
 
-// STABILIZE-065 C3-A.3.3: offline batching measurement.
+// Offline batching measurement.
 //
 // Uses the PRODUCTION ModelGenerator with a counting fake chat model to
 // measure real generator batch counts for the 7 Stage S sessions. The batching

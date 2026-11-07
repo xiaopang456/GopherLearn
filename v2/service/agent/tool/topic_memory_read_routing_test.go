@@ -22,7 +22,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-// This file is the routing half of STABILIZE-040, and it is an end-to-end test
+// This file is the routing half of the topic-bootstrap round, and it is an end-to-end test
 // on purpose. The question the experiment asks - "does the Agent reach for the
 // narrow tool when the question is about the current topic, and leave it alone
 // otherwise" - spans the mastery read, the window, the runner's tool wiring and
@@ -577,7 +577,7 @@ func TestWithoutAnActiveQuizTheTopicToolProducesNoEvidence(t *testing.T) {
 }
 
 // Case 5. The lifecycle rules are the mastery provider's, and they are the same
-// two gates STABILIZE-039 installed. A finished, expired or foreign-session quiz
+// two gates the earlier round installed. A finished, expired or foreign-session quiz
 // is a fine reason to keep pitching an explanation at that topic and never a
 // reason to read the learner's private notes.
 func TestNonAuthoritativeQuizzesNeverReachTheTopicTool(t *testing.T) {

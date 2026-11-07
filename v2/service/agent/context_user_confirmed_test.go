@@ -13,7 +13,7 @@ import (
 	"GopherAI/service/agent/topicconsent"
 )
 
-const confirmedTestSecret = "stabilize050-context-test-secret-0123456789"
+const confirmedTestSecret = "context-test-secret-0123456789abcd"
 
 func userConfirmedContextConfig() ContextConfig {
 	config := DefaultContextConfig()
@@ -438,7 +438,7 @@ func TestOtherModesAreUnchanged(t *testing.T) {
 		// The v1.1 assertion identity is the confirmed mode plus assertion
 		// governance, so it carries the same two consent properties by
 		// construction. Every mode measured before it must not.
-		// STABILIZE-061's identity is v1.1 with the two memory tools renamed,
+		// The explicit-actions identity is v1.1 with the two memory tools renamed,
 		// so it carries them for the same reason. Renaming a tool must not be
 		// able to loosen the consent chain, which is what this list checks by
 		// requiring the property to be declared rather than inferred.

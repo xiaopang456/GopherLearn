@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// The three STABILIZE-054 acceptance failures all had the same shape: a
+// The three acceptance failures all had the same shape: a
 // capability refusal, then a malformed argument, then a corrected call that was
 // refused because the first two had already spent the budget. These tests pin
 // each link of that chain.

@@ -307,7 +307,7 @@ func TestTopicMemoryReadSkipsRecordsThisRunAlreadyIssued(t *testing.T) {
 
 // Every hit already issued is "nothing new", not "nothing recorded". Reporting
 // the second would tell the model a negative it has no basis for, which is the
-// shape of BUG-AGENT-152.
+// shape the evidence kinds were written to prevent.
 func TestTopicMemoryReadSaysNothingNewRatherThanNothingRecorded(t *testing.T) {
 	provider := &recordingTopicProvider{records: []serviceagent.TopicMemoryRecord{
 		topicRow("m-1", "rpc-粘包", "粘包", "把 TCP 当成没有刻度的水管", 1730000000, 1),

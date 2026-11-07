@@ -52,7 +52,7 @@ func NewAssertionID() (string, error) {
 // Production issues random identities; nothing here weakens that, because a
 // seed is not something a model can supply.
 func DeterministicAssertionID(seed string) string {
-	sum := sha256.Sum256([]byte("stabilize058-fixture|" + seed))
+	sum := sha256.Sum256([]byte("gopherlearn-episode-assertion-kernel|" + seed))
 	return assertionIDPrefix + hex.EncodeToString(sum[:])[:24]
 }
 

@@ -71,7 +71,7 @@ const (
 	// It exists because the alternative is a lie with consequences. Reporting
 	// no_candidate here would tell the model that this learner's memory holds
 	// nothing on the subject, in a turn where the window is carrying their
-	// notes on exactly that subject - and BUG-AGENT-152 is the record of what
+	// notes on exactly that subject - and the evidence kinds are the record of what
 	// a model does when it is told a negative it has no basis for.
 	reasonAlreadyProvided = "already_in_context"
 )
@@ -249,7 +249,7 @@ type MemorySearchOutput struct {
 	// could change the answer.
 	//
 	// Without it every refusal reads the same as an empty result, and the
-	// STABILIZE-054 records show what that costs: the model met
+	// earlier records show what that costs: the model met
 	// semantic_not_permitted, learned nothing from it, and spent its remaining
 	// attempts rephrasing. A refusal has to say that it is a refusal.
 	Retryable bool `json:"retryable"`
@@ -318,13 +318,13 @@ type MemorySearchRegistry struct {
 	// state.
 	episodicOnly bool
 	// explicitNames exposes the same episodic-only tool under the
-	// STABILIZE-061 name and description. It is only meaningful together with
+	// explicit-actions name and description. It is only meaningful together with
 	// episodicOnly: the explicit read contract is the Episode contract, and
 	// naming a general memory search "search_past_sessions" would be a claim
 	// the implementation does not keep.
 	explicitNames bool
 	// sourcePriorityNames switches the explicit past-session tool to the
-	// STABILIZE-063 source-priority description. It is only meaningful together
+	// source-priority description. It is only meaningful together
 	// with explicitNames; a different label under the old description would be
 	// a claim the tool does not keep.
 	sourcePriorityNames bool
@@ -375,11 +375,11 @@ func (r *MemorySearchRegistry) UseSharedIssuedRecords(enabled bool) { r.sharedIs
 // difference between them remains the mode itself.
 func (r *MemorySearchRegistry) UseEpisodicOnly(enabled bool) { r.episodicOnly = enabled }
 
-// UseExplicitActionNames switches this registry to the STABILIZE-061 surface.
+// UseExplicitActionNames switches this registry to the surface.
 func (r *MemorySearchRegistry) UseExplicitActionNames(enabled bool) { r.explicitNames = enabled }
 
 // UseSourcePriorityNames switches the explicit past-session tool to the
-// STABILIZE-063 source-priority description. The setter shape is deliberate,
+// source-priority description. The setter shape is deliberate,
 // like the others: the frozen MemorySearchConfig stays byte-identical and the
 // difference between modes remains the mode itself.
 func (r *MemorySearchRegistry) UseSourcePriorityNames(enabled bool) { r.sourcePriorityNames = enabled }
@@ -455,7 +455,7 @@ func (r *MemorySearchRegistry) Tools(ctx context.Context, run serviceagent.RunCo
 	// A mode that will not serve semantic memory does not offer a kinds field.
 	// The enforcement below is unchanged either way; this only stops the model
 	// being invited to ask for something this mode refuses, which cost
-	// STABILIZE-058 v1.8.1 seven of its fourteen questions.
+	// Seven of its fourteen questions.
 	if r.episodicOnly {
 		build := buildEpisodeSearchTool
 		if r.explicitNames {
@@ -782,7 +782,7 @@ func (s *memorySearchState) governCards(ctx context.Context, episodeIDs []string
 		return nil, fmt.Errorf("assertion governance unavailable: %w", err)
 	}
 
-	// BUG-AGENT-217: the governor numbers its cards by this one search's
+	// the governor numbers its cards by this one search's
 	// candidate order, and a second search that reorders the episodes would
 	// re-issue E1 for an episode the turn already carries as E2 - a rebinding
 	// the turn registry refuses, and one ordinary re-ranking voided two
@@ -1281,7 +1281,7 @@ func trimToTokens(value string, maxTokens int) (string, bool) {
 //
 // It was written to cover the parameter schema as well, and it does not:
 // schema.ToolInfo embeds *ParamsOneOf, whose fields are unexported, so
-// marshalling a ToolInfo drops the parameters entirely (BUG-EVAL-034). A
+// marshalling a ToolInfo drops the parameters entirely. A
 // renamed field or a changed bound passes this digest unchanged.
 //
 // It is left exactly as it is, wrong comment corrected rather than behaviour

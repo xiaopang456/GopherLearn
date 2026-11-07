@@ -95,7 +95,7 @@ func TestTheModelPlannedModeRefusesToStartWithoutItsKey(t *testing.T) {
 	}
 }
 
-// The mirror rule, and the one BUG-AGENT-140 is actually about: settings for a
+// The mirror rule, and the one this check is actually about: settings for a
 // mode that is not selected must not sit there live for the day someone flips a
 // string. Under every lower mode the planner is not configured, so it cannot be
 // constructed and cannot read a key.

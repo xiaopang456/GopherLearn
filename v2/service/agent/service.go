@@ -558,7 +558,7 @@ func (s *Service) finishLeaseLostRun(
 // It reads ClassifyRunFailure rather than repeating its switch, so the
 // evaluator and this path cannot drift into disagreeing about what an error
 // was. The reason strings and statuses below are unchanged and deliberately so:
-// they reach users and persisted rows, and STABILIZE-062 has no business
+// they reach users and persisted rows, and the failure classification has no business
 // moving them.
 func classifyRunError(parent context.Context, err error) (string, model.AgentRunStatus) {
 	switch ClassifyRunFailure(parent, err) {

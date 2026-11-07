@@ -15,7 +15,7 @@ import (
 	toolutils "github.com/cloudwego/eino/components/tool/utils"
 )
 
-// STABILIZE-061, the mapping layer.
+// The explicit-actions surface, the mapping layer.
 //
 // These tests are about one property: that renaming a tool cannot make it lose
 // its budget, its duplicate check, its confirmation card or its step summary.
@@ -237,7 +237,7 @@ func TestExplicitActionsModeIsCompleteAndNotDefault(t *testing.T) {
 		t.Fatal("the mode suppressed the server's knowledge-first rule")
 	}
 	if mode.UsesTopicMemoryReadTool() {
-		t.Fatal("the mode registered topic_memory_read, which STABILIZE-060 did not")
+		t.Fatal("the mode registered topic_memory_read, which the earlier round did not")
 	}
 }
 

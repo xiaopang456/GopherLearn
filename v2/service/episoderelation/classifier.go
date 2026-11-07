@@ -19,7 +19,7 @@ import (
 // that answered about a different pair, invented an id, or returned a word
 // outside the set is refused rather than interpreted.
 //
-// That separation is the point. STABILIZE-062 spent three versions learning
+// That separation is the point. An earlier round spent three versions learning
 // that a component which reads free text must return a closed value, and that
 // the closed value must be checked by something that did not take the model's
 // word for what it was looking at.

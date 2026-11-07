@@ -9,8 +9,8 @@ func TestValidateMySQLDSN(t *testing.T) {
 		dsn     string
 		wantErr bool
 	}{
-		{name: "suffix token", dsn: "root:secret@tcp(127.0.0.1:3306)/GopherAI_stabilize_test?parseTime=true"},
-		{name: "middle token", dsn: "root:secret@tcp(127.0.0.1:3306)/GopherAI_test_stabilize?parseTime=true"},
+		{name: "suffix token", dsn: "root:secret@tcp(127.0.0.1:3306)/GopherAI_demo_test?parseTime=true"},
+		{name: "middle token", dsn: "root:secret@tcp(127.0.0.1:3306)/GopherAI_test_demo?parseTime=true"},
 		{name: "production", dsn: "root:secret@tcp(127.0.0.1:3306)/GopherAI?parseTime=true", wantErr: true},
 		{name: "embedded letters", dsn: "root:secret@tcp(127.0.0.1:3306)/GopherAI_contest?parseTime=true", wantErr: true},
 		{name: "missing database", dsn: "root:secret@tcp(127.0.0.1:3306)/?parseTime=true", wantErr: true},

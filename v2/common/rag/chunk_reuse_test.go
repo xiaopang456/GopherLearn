@@ -15,7 +15,7 @@ import (
 const reuseTestModel = "test-embedding-model"
 
 // TestChunkReuseSingleChunkEditEmbedsOnce is the acceptance measurement for
-// STABILIZE-028: with stable chunk boundaries, editing one paragraph must cost
+// With stable chunk boundaries, editing one paragraph must cost
 // one embedding call worth of vectors instead of N.
 func TestChunkReuseSingleChunkEditEmbedsOnce(t *testing.T) {
 	t.Parallel()

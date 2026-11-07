@@ -17,7 +17,7 @@ import (
 
 // The production support verifier.
 //
-// STABILIZE-065 Phase 2-C1.1. It is a separate component making a separate
+// It is a separate component making a separate
 // request with a separate prompt, and that separateness is the whole design.
 //
 // The generator already saw the assistant turns, the retrieved knowledge, the

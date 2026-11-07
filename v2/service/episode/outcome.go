@@ -8,7 +8,7 @@ import (
 
 // The typed projection outcome, and the support verifier seam.
 //
-// STABILIZE-065 Phase 2-C1. Both exist because of the same defect: the chain
+// Both exist because of the same defect: the chain
 // had exactly one way to finish - produce a document - so "this session holds
 // nothing worth remembering" could not be said, and "this sentence is not
 // something the learner said" could not be checked.
