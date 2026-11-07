@@ -934,9 +934,10 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 		knowledgePolicy:      policy, answerBasis: rag.AnswerBasisConversation,
 		knowledgeStatus: rag.KnowledgeStatusNotRequired, knowledgeReason: rag.KnowledgeReasonNone,
 		contextBudget: window.Budget, usedTopicKeys: append([]string(nil), window.UsedTopicKeys...),
-		episodeIDs:     append([]string(nil), window.EpisodeIDs...),
-		episodeSources: append(model.EpisodeSourceRefs(nil), window.EpisodeSources...),
-		memoryTrace:    memoryEvidence, perToolCalls: map[string]int{}, progress: newToolProgressLedger(),
+		episodeIDs:             append([]string(nil), window.EpisodeIDs...),
+		episodeSources:         append(model.EpisodeSourceRefs(nil), window.EpisodeSources...),
+		conversationReferences: conversationReferenceIDs(window),
+		memoryTrace:            memoryEvidence, perToolCalls: map[string]int{}, progress: newToolProgressLedger(),
 		memorySearchAvailable: memorySearchAvailable,
 		availableTools:        availableTools,
 	}
@@ -1321,6 +1322,16 @@ type runState struct {
 	progress *toolProgressLedger
 	// memoryCitations is what the final server-side check concluded.
 	memoryCitations MemoryCitationOutcome
+	// conversationReferences are the message ids this turn's conversation
+	// evidence carried: the ids the whiteboard, the summary segments, the
+	// rolling summary and the episodes cited, plus the ids the read-back
+	// tool returned.
+	//
+	// They are what a number in an answer may legitimately point at when the
+	// answer rests on the learner's own recorded past. A number that is not
+	// one of them points at nothing - and a number that points at nothing is
+	// not a reference the conversation can account for.
+	conversationReferences map[int]struct{}
 	// groundingRefusal is the evidence boundary's decision about a draft it
 	// did not deliver, kept for the same reason as memoryCitations: the
 	// refusal template alone cannot say what was refused.
@@ -1663,12 +1674,18 @@ func (s *runState) toolMiddleware() compose.InvokableToolMiddleware {
 				return nil, sendErr
 			}
 			if CapabilityOf(input.Name) == CapabilityHistoryRead && output != nil {
-				evidence, parseErr := parseHistoryEvidence(output.Result)
+				evidence, messageIDs, parseErr := parseHistoryEvidence(output.Result)
 				if parseErr != nil {
 					return nil, parseErr
 				}
 				s.mu.Lock()
 				s.historyEvidence = s.historyEvidence || evidence
+				// The messages the read-back tool returned are messages the
+				// model saw, so their ids are references the conversation can
+				// account for.
+				for _, id := range messageIDs {
+					s.conversationReferences[id] = struct{}{}
+				}
 				s.mu.Unlock()
 			}
 			if CapabilityOf(input.Name) == CapabilityMemoryDraft && output != nil {
@@ -1785,7 +1802,7 @@ func parseMemoryDraftResult(value string) (*MemoryDraftCard, bool, error) {
 	return &MemoryDraftCard{DraftID: payload.DraftID, Scope: payload.Scope, Subject: payload.Subject, Content: payload.Content, Tags: payload.Tags, TopicKey: payload.TopicKey, Durability: payload.Durability, ValidUntil: payload.ValidUntil, ConflictIDs: payload.ConflictIDs}, false, nil
 }
 
-func parseHistoryEvidence(value string) (bool, error) {
+func parseHistoryEvidence(value string) (bool, []int, error) {
 	var payload struct {
 		Messages []struct {
 			MessageID int    `json:"message_id"`
@@ -1794,14 +1811,19 @@ func parseHistoryEvidence(value string) (bool, error) {
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal([]byte(value), &payload); err != nil {
-		return false, fmt.Errorf("invalid history message tool result")
+		return false, nil, fmt.Errorf("invalid history message tool result")
 	}
+	evidence := false
+	ids := make([]int, 0, len(payload.Messages))
 	for _, message := range payload.Messages {
+		if message.MessageID > 0 {
+			ids = append(ids, message.MessageID)
+		}
 		if message.MessageID > 0 && message.Role == "user" && strings.TrimSpace(message.Content) != "" {
-			return true, nil
+			evidence = true
 		}
 	}
-	return false, nil
+	return evidence, ids, nil
 }
 
 func cloneMemoryDraftCard(value *MemoryDraftCard) *MemoryDraftCard {
@@ -2513,24 +2535,46 @@ const (
 	GroundingRuleFallbackCitation = "fallback_citation"
 )
 
-// conversationEvidencePresent reports whether this turn had the learner's own
-// recorded past in front of the model, beyond the raw tail of the
-// conversation.
+// conversationReferenceIDs collects the message ids the window's compressed
+// cards carried.
 //
-// It is true when the window carried compressed conversation evidence - the
-// rolling summary, the whiteboard or a summary segment - and when the model
-// read a message back and was handed the learner's own words.
+// The whiteboard, the summary segments, the rolling summary and the episodes
+// all cite message ids, and those ids are what the model saw. They are the
+// numbers an answer built on the conversation may point at.
+func conversationReferenceIDs(window ContextWindow) map[int]struct{} {
+	ids := make(map[int]struct{})
+	for _, grants := range [][]HistoryMessageGrant{
+		window.SummarySegmentHistoryGrants, window.SummaryHistoryGrants, window.EpisodeHistoryGrants,
+	} {
+		for _, grant := range grants {
+			if grant.MessageID > 0 {
+				ids[int(grant.MessageID)] = struct{}{}
+			}
+		}
+	}
+	return ids
+}
+
+// citationsResolveConversation reports whether every citation the answer used
+// points at a message the conversation evidence carried.
 //
-// The raw conversation does not count: it is in every window, so counting it
-// would make this true always, and the check it guards would never fire.
+// It is the conversation half of the citation check. A number that resolves
+// to a stored message the model was shown is a pointer at the conversation; a
+// number that resolves to nothing is a pointer at nothing, and no amount of
+// conversation evidence makes it into one. So an unrelated summary does not
+// launder an invented reference: the reference still has to exist.
 //
 // The caller holds the state lock.
-func (s *runState) conversationEvidencePresent() bool {
-	if s.historyEvidence {
-		return true
+func (s *runState) citationsResolveConversation(wanted map[int]struct{}) bool {
+	if len(wanted) == 0 || len(s.conversationReferences) == 0 {
+		return false
 	}
-	return s.contextBudget.Summary > 0 || s.contextBudget.Whiteboard > 0 ||
-		s.contextBudget.ResidentSegments > 0 || s.contextBudget.RetrievedSegments > 0
+	for citation := range wanted {
+		if _, ok := s.conversationReferences[citation]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // notesWereNeverConsulted reports whether this turn never went near the
@@ -2689,6 +2733,13 @@ func (s *runState) finalizeGroundedAnswer(answer string, allowRepair, allowFallb
 			// whiteboard, a summary segment, a message read back - and the
 			// brackets in the draft point at that.
 			//
+			// A number only counts as pointing at the conversation when the
+			// conversation evidence carried that id. An unrelated summary
+			// does not launder an invented reference: "[99]" points at
+			// nothing whether a summary is in the window or not, and an
+			// answer that says it read the learner's notes has still
+			// invented the note it points at.
+			//
 			// This guard exists to stop an answer built out of the model's
 			// own head. Refusing an answer that rests on the learner's own
 			// recorded past, because of the shape of its citations, is the
@@ -2697,9 +2748,9 @@ func (s *runState) finalizeGroundedAnswer(answer string, allowRepair, allowFallb
 			//
 			// The knowledge citation check keeps its teeth where they
 			// belong: a turn that showed documents still has to cite them,
-			// and a turn with no conversation evidence at all still has its
-			// invented numbers refused.
-			if s.conversationEvidencePresent() && s.notesWereNeverConsulted() {
+			// and a turn whose number points at nothing is refused whether
+			// the window carried a summary or not.
+			if s.notesWereNeverConsulted() && s.citationsResolveConversation(wanted) {
 				s.sources = nil
 				s.answerBasis = rag.AnswerBasisConversation
 				s.knowledgeStatus = rag.KnowledgeStatusNotRequired

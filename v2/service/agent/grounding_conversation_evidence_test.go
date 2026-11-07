@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"GopherAI/common/rag"
-	modelcomponent "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 )
@@ -18,20 +17,24 @@ import (
 // "[1]" is the document citation syntax - the prompt teaches it - so the
 // check reads it as a claim about the learner's notes. When the turn showed
 // documents, the claim is checkable and a number that resolves to nothing is
-// refused. When the turn never consulted the notes at all, the same number
-// is not a claim about the notes: the turn's evidence was the learner's own
-// recorded past, and the number points at that.
+// refused.
 //
-// The two tests below are the two halves of that rule. Neither passes alone:
-// the first fails if the escape is missing, the second fails if the escape is
-// too wide.
+// When the turn never consulted the notes, the same number can point at the
+// conversation instead: the whiteboard, the summary segments, the rolling
+// summary and the read-back tool all carry message ids, and the model may
+// cite those ids. But only those ids. A number that resolves to nothing is
+// a pointer at nothing whether a summary is in the window or not, and an
+// unrelated summary does not launder an invented reference.
+//
+// The tests below are the sides of that rule. None passes alone: the first
+// fails if the escape is missing, the second fails if it is too wide.
 
-// conversationWindowBuilder is a window that carries one block of compressed
-// conversation evidence, which is what the rolling summary, the whiteboard
-// and the summary segments are.
+// conversationWindowBuilder is a window that carries compressed conversation
+// evidence and the message ids that evidence cited.
 type conversationWindowBuilder struct {
 	MinimalContextBuilder
 	summary int
+	grants  []uint
 }
 
 func (b conversationWindowBuilder) Build(ctx context.Context, input RunContext) (ContextWindow, error) {
@@ -41,17 +44,22 @@ func (b conversationWindowBuilder) Build(ctx context.Context, input RunContext) 
 	}
 	window.Budget.Summary = b.summary
 	window.Budget.Assembled += b.summary
+	for _, id := range b.grants {
+		window.SummarySegmentHistoryGrants = append(window.SummarySegmentHistoryGrants,
+			HistoryMessageGrant{MessageID: id, SourceKind: HistorySourceWhiteboard})
+	}
 	return window, nil
 }
 
-// A turn whose evidence was the learner's own recorded past must not lose its
-// answer to a citation check that cannot mean anything here.
+// An answer that rests on the conversation, and points at a message the
+// conversation evidence carried, must not lose itself to a citation check
+// that cannot mean anything here.
 func TestAnAnswerFromConversationEvidenceIsNotRefusedByTheCitationCheck(t *testing.T) {
 	fake := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {
 		return schema.AssistantMessage("你最初定的是每次读 15 页 [1]。", nil), nil
 	}}
 	runner, err := NewRunner(fake, StaticToolRegistry{}, newMemoryStepRepository(),
-		conversationWindowBuilder{summary: 1104}, DefaultRunnerConfig())
+		conversationWindowBuilder{summary: 1104, grants: []uint{1}}, DefaultRunnerConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,6 +78,56 @@ func TestAnAnswerFromConversationEvidenceIsNotRefusedByTheCitationCheck(t *testi
 	}
 	if result.GroundingRefusal != nil {
 		t.Fatalf("refusal = %+v, want none", result.GroundingRefusal)
+	}
+}
+
+// A summary in the window is not a warrant. An answer that claims it read
+// the learner's notes and points at a reference that does not exist is
+// refused, whether a summary is in the window or not - and the summary being
+// there must not turn the invented reference into a conversation one.
+func TestAnInventedReferenceIsRefusedEvenWithAnUnrelatedSummary(t *testing.T) {
+	draft := "根据你上传的笔记，排序复杂度是 O(1) [99]。"
+	fake := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {
+		return schema.AssistantMessage(draft, nil), nil
+	}}
+	runner, err := NewRunner(fake, StaticToolRegistry{}, newMemoryStepRepository(),
+		conversationWindowBuilder{summary: 1}, DefaultRunnerConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := runner.Run(context.Background(), testRunContext(), DiscardEvents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Answer != UnsupportedGroundingAnswer {
+		t.Fatalf("answer = %q, want the refusal", result.Answer)
+	}
+	if result.KnowledgeReason != rag.KnowledgeReasonInvalidCitation {
+		t.Fatalf("reason = %s, want the invented reference to be named", result.KnowledgeReason)
+	}
+	if result.GroundingRefusal == nil || result.GroundingRefusal.Rule != GroundingRuleInvalidCitation {
+		t.Fatalf("refusal = %+v, want the invalid citation recorded", result.GroundingRefusal)
+	}
+}
+
+// One reference that resolves and one that does not is still a refusal: a
+// draft may not carry a pointer at nothing, and one real id does not excuse
+// the invented one next to it.
+func TestOneUnresolvedReferenceRefusesTheWholeAnswer(t *testing.T) {
+	fake := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {
+		return schema.AssistantMessage("你最初定的是每次读 15 页 [1]，后来改成了 30 页 [99]。", nil), nil
+	}}
+	runner, err := NewRunner(fake, StaticToolRegistry{}, newMemoryStepRepository(),
+		conversationWindowBuilder{summary: 1104, grants: []uint{1}}, DefaultRunnerConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := runner.Run(context.Background(), testRunContext(), DiscardEvents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Answer != UnsupportedGroundingAnswer {
+		t.Fatalf("answer = %q, want the refusal", result.Answer)
 	}
 }
 
@@ -122,7 +180,7 @@ func TestAnInventedCitationIsStillRefusedWhenDocumentsWereShown(t *testing.T) {
 	registry := &proberRegistry{StaticToolRegistry: StaticToolRegistry{Registered: []tool.BaseTool{knowledgeTool}},
 		outcome: RelevanceOutcome{Status: RelevanceBelowThreshold, Threshold: DefaultRelevanceThreshold}}
 	runner, err := NewRunner(fake, registry, newMemoryStepRepository(),
-		conversationWindowBuilder{summary: 1104}, DefaultRunnerConfig())
+		conversationWindowBuilder{summary: 1104, grants: []uint{7}}, DefaultRunnerConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,5 +195,3 @@ func TestAnInventedCitationIsStillRefusedWhenDocumentsWereShown(t *testing.T) {
 		t.Fatalf("reason = %s, want the invented citation to be named", result.KnowledgeReason)
 	}
 }
-
-var _ modelcomponent.ToolCallingChatModel = (*scriptedChatModel)(nil)
