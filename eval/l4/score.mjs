@@ -95,14 +95,42 @@ function stripStandardFallbackBanners(text) {
   }
   return out
 }
-// hasSoftPast reports whether a clause really reads as "this value belongs to
-// the past". "你之前定的/说的/叫的…" attributes the value to an earlier turn:
-// it says where the value came from, not that it has been superseded, so that
-// phrasing does not count as a soft past marker.
-const ATTRIBUTIONAL_PAST = /[你您]之前(?:说|定|叫|选|起|取|约定|规定|要求|讲)/u
-function hasSoftPast(clause) {
+// A soft marker says the value belongs to the past. It does not deny the
+// value, and it is not confident enough to call either: such an answer stays
+// pending instead of being decided.
+//
+// A marker can also sit inside an attribution: "你之前定的名字是北砚",
+// "这是你在之前定下时说的". Such a marker says where the value came from
+// instead of putting the value in the past, but only when the phrase the
+// attribution opens does not cover the value. When the phrase does cover it
+// ("这是你之前叫的北砚"), the marker modifies the value itself, so the
+// mention stays historical and the answer stays pending.
+const SOFT_ATTRIBUTION = /[你您](?:在|于)?(?:之前|原来|原先|此前|以前|先前)/u
+// A copula closes the phrase that an attribution opens.
+const PHRASE_CLOSE = /(?:是|为|叫做|叫作|即)/u
+// phraseEnd returns where the phrase an attribution opens ends: at the next
+// copula or at the end of the sentence.
+function phraseEnd(text, from) {
+  const rest = text.slice(from)
+  const close = PHRASE_CLOSE.exec(rest)
+  const stop = rest.search(STRONG_BREAK)
+  if (close && (stop < 0 || close.index < stop)) return from + close.index
+  if (stop >= 0) return from + stop
+  return text.length
+}
+// softPastScopes reports whether a soft marker in the given clause puts the
+// mention in the past. A plain marker always does. A marker inside an
+// attribution only does when the phrase that the attribution opens covers the
+// mention: "这是你之前叫的北砚" puts the mention in the past, while
+// "你之前定的名字是北砚" does not.
+function softPastScopes(text, clauseStart, clauseEnd, span) {
+  const clause = text.slice(clauseStart, clauseEnd)
   if (!hasMarker(clause, SOFT_MARKER)) return false
-  return !ATTRIBUTIONAL_PAST.test(clause)
+  const attribution = SOFT_ATTRIBUTION.exec(clause)
+  if (!attribution) return true
+  const start = clauseStart + attribution.index
+  const end = phraseEnd(text, clauseStart + attribution.index + attribution[0].length)
+  return span.start >= start && span.end <= end
 }
 // A weak break separates clauses inside one sentence; a strong break ends the
 // sentence or the thought. A denial or a withdrawal binds only inside the
@@ -229,12 +257,11 @@ function mentionState(text, span, spans) {
     if (hasMarker(clause, HARD_NEGATION)) return 'negated'
   }
   if (before) {
-    const clause = text.slice(before[0], before[1])
-    if (!holdsAnotherValue(before, span, spans) && hasSoftPast(clause)) return 'uncertain'
+    if (!holdsAnotherValue(before, span, spans) && softPastScopes(text, before[0], before[1], span)) return 'uncertain'
   }
   for (const range of forward) {
     if (holdsAnotherValue(range, span, spans)) continue
-    if (hasSoftPast(text.slice(range[0], range[1]))) return 'uncertain'
+    if (softPastScopes(text, range[0], range[1], span)) return 'uncertain'
   }
   return 'present'
 }
