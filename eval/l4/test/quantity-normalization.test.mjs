@@ -67,6 +67,7 @@ test('a malformed Chinese numeral is not read at all', () => {
     '千',        // a thousand without the digit in front of it
     '一百零',    // a zero in the middle that never gets its digit
     '一百二零三', // a zero on top of a digit that is still waiting for its unit
+    '一万二',    // ten thousand and two here, twelve thousand in speech
     '亿',        // a unit this parser does not know
     '',
   ]
@@ -117,6 +118,17 @@ test('a zero may only fill a place that is empty', () => {
   // "一百二零三" writes a two that has no place of its own, so it is not a number.
   assert.ok(Number.isNaN(chineseNumber('一百二零三')))
   assert.notEqual(normalizeValue('一百二零三次'), normalizeValue('103次'))
+})
+
+test('the part below the ten-thousands has to say what it is', () => {
+  // "两万五千" is twenty-five thousand, and "一万零二" is ten thousand and two.
+  assert.equal(chineseNumber('两万五千'), 25000)
+  assert.equal(chineseNumber('一万零二'), 10002)
+  assert.equal(chineseNumber('一万二千'), 12000)
+  // "一万二" is ten thousand and two on paper and twelve thousand in speech, so it is
+  // not read as either.
+  assert.ok(Number.isNaN(chineseNumber('一万二')))
+  assert.notEqual(normalizeValue('一万二次'), normalizeValue('10002次'))
 })
 
 test('a quantity with a large numeral is the same value however it is written', () => {

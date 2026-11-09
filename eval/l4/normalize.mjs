@@ -171,7 +171,13 @@ export function chineseNumber(s) {
   if (!high) return NaN
   const highValue = parseSection(high)
   if (highValue === null) return NaN
-  const lowValue = low === '' ? 0 : parseSection(low)
+  if (low === '') return highValue * 10000
+  // The part below the ten-thousands has to say what it is: a unit ("两万五千"), or a
+  // zero that shows the place is empty ("一万零二"). A bare digit right after the
+  // ten-thousands ("一万二") is left out, because it is read as ten thousand and two
+  // here and as twelve thousand in speech - two values for one writing.
+  if (!/[十百千]/.test(low) && !/^[零〇]/.test(low)) return NaN
+  const lowValue = parseSection(low)
   if (lowValue === null) return NaN
   return highValue * 10000 + lowValue
 }
