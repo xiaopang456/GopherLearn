@@ -239,5 +239,13 @@ FT._LIST = gopherai_episode_v2_idx, gopherai_memory_v2_idx,
 
 ## 用完的清理
 
-演练容器与卷在演练结束后全部删除：`gl-rehearsal-*` 容器、`gl-rehearsal-mysql-data`、
-`gl-rehearsal-redis-data`、`gl-rehearsal-knowledge-data` 三个卷，以及演练用的 v0.2.1 worktree。
+演练结束后删净：
+
+- 容器：`gl-rehearsal-mysql` / `-redis` / `-provider` / `-backend` / `-frontend`（`docker compose down -v --remove-orphans`）；
+- 卷：`gl-rehearsal-mysql-data`、`gl-rehearsal-redis-data`、`gl-rehearsal-knowledge-data`；
+- 网络：`gl-rehearsal-data`、`gl-rehearsal-web`；
+- 镜像：`gl-rehearsal-backend:v021`、`gl-rehearsal-backend:head`；
+- v0.2.1 的 worktree（`wt-rehearsal-v021`）；
+- 演练目录（`rehearsal/`）与临时脚本。
+
+演练全程没有碰正式整合栈的任何资源：没有用 `gopherlearn-integrated-*` 的容器名、网络名、卷名或宿主端口。
