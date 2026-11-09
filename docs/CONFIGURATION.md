@@ -265,6 +265,12 @@ go -C v2 run ./cmd/summaryconvert -config ../config.toml -apply   # 机械转换
 - **白板**（表 `session_whiteboards`）：当前还成立的事实——目标、计划、每个计划项现在的值。被改过的值会标出「已改为」，没标的那个才是现在的值。
 - **摘要分段**（表 `session_summary_segments`）：早先那些轮次的压缩记录，按主题分段，每条都带消息编号作为出处。分段既可以常驻在窗口里，也可以按当前问题检索出来再放进去；模型还能用 `browse_summary_segments` 工具自己翻这个会话更早的分段。
 
+窗口里同时带这三样东西：**最近的消息**、**当前状态（白板）**、**摘要分段**。三样不一致时按这个顺序定夺：
+
+**最近的消息 > 当前状态（白板）> 摘要分段**
+
+学习者刚说的话最算数；白板是服务端记下的当前事实；分段说的是"当时是这样"。所以分段和当前状态不一致时以当前状态为准，分段和最近的消息不一致时以最近的消息为准。
+
 两种块各有自己的预算：`contextMaxWhiteboardTokens`（白板）、`contextMaxResidentSegmentTokens`（常驻分段）、`contextMaxRetrievedSegmentTokens`（检索出来的分段）、`contextMaxSegmentTokens`（单条分段）。在 `on` 模式下，前三个数加上摘要、掌握度、情景记忆这些预算，必须比 `contextInputTargetTokens` 减掉 `knowledgeMaxRunTokens` 小，否则启动报错说明哪一处装不下。
 
 三种模式：

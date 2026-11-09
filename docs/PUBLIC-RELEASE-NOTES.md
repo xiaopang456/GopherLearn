@@ -8,7 +8,8 @@
 
 ### 升级步骤（先做这几件）
 
-从 v0.2.1 升级到这一版，要做下面六件事，按顺序做。前三件是配置或数据，第四件是客户端，后两件是重新部署。
+从 v0.2.1 升级到这一版，按下面的顺序做。顺序是有讲究的：配置改在前，备份紧随其后，然后才是换后端、
+跑转换、重启和重建前端。
 
 **1. 改配置：模型配置收拢成一处一个。** 嵌入服务的密钥挪到 `[ragModelConfig]`，那条没人用的地址删掉：
 
@@ -66,7 +67,70 @@ chatBaseURL = "https://provider.invalid/v1"          # Agent 与普通对话共�
 
 `[ordinaryChat]` 里的上下文预算与摘要触发项**没有替代品**：一轮对话带多少历史、什么时候生成摘要，由程序自己的装配决定，配置文件里不再有第二套要填的值。
 
-**3. 数据：旧的普通对话摘要要跑一次 `summaryconvert`。** 普通对话以前把摘要写成两种旧形状（纯散文、引用是字符串的结构化文档），这一版的摘要器读不出来，这些会话的摘要会停在原地不再推进。转换不调用模型，也不需要任何 Provider 配置：
+**3. 改配置：Redis 加上 AOF。** 在 `redis.integrated.conf.local` 里补上这三行（示例文件
+`redis.integrated.conf.example` 里已经带上了，复制时不要删）：
+
+```ini
+appendonly yes
+appendfsync everysec
+save 3600 1 300 100 60 10000
+```
+
+**但这一步不能只改完就重启**——原因见下面第 5 步的实测。
+
+**4. 备份：先把 Redis 的快照落下来并留一份副本。** 这一步在改 AOF 之前做，也在做别的任何
+改动之前做：
+
+```bash
+docker compose -f compose.integrated.yml exec redis redis-cli -a "$REDIS_PASSWORD" SAVE
+docker compose -f compose.integrated.yml exec redis redis-cli -a "$REDIS_PASSWORD" --rdb /data/dump.rdb
+# 把数据卷里的 dump.rdb 复制一份到卷外面：它就是出问题时的最后一道退路
+docker compose -f compose.integrated.yml cp redis:/data/dump.rdb ./dump.rdb.$(date +%Y%m%d).backup
+```
+
+**5. Redis 运行中开启 AOF，等重写完成，再改配置重启。** 这一步的顺序是实测出来的，不是推测。
+用整合栈同款镜像（`redis/redis-stack-server`，digest 固定）在一次性容器里跑过两种做法，结论如下。
+
+**先说不能做的那种**：把 `appendonly yes` 写进配置、然后直接重启，**服务器会带着一个空的索引起来**。
+实测：容器里先有 500 个键（只写了 `dump.rdb`，没有 AOF 文件），把 `appendonly yes` 加进配置再重启，
+`DBSIZE` 变成 **0**——Redis 启动时读的是那个刚建出来的空 AOF 文件，不是 `dump.rdb`。
+此刻 `dump.rdb` **还没有被改**（大小和时间戳都没变，那 500 个键还在文件里），但服务器已经是空的了；
+再下一次快照（`save` 策略会自己做）就会把 `dump.rdb` 写成那份空数据——实测从 18417 字节 500 个键变成
+189 字节 1 个键，**原来那份数据就没了**。而升级前备份的那一份另起一个容器读，仍然是 500 个键。
+
+**能做的做法**：在 Redis **运行中**开启 AOF，等重写完成，再改配置重启：
+
+```bash
+# ① 运行中开启 AOF
+docker compose -f compose.integrated.yml exec redis redis-cli -a "$REDIS_PASSWORD" CONFIG SET appendonly yes
+
+# ② 等重写完成：aof_rewrite_in_progress 变成 0 且 aof_last_bgrewrite_status 是 ok 才算完
+docker compose -f compose.integrated.yml exec redis redis-cli -a "$REDIS_PASSWORD" INFO persistence
+#    aof_enabled:1
+#    aof_rewrite_in_progress:0
+#    aof_last_bgrewrite_status:ok
+```
+
+重写完成之后再把 `appendonly yes` 写进配置文件（第 3 步已经写好了），然后按第 8 步重启。
+**实测**：同样 500 个键，走这条流程重启之后 `DBSIZE` 是 **501**（500 个原有键，加上重写完成后新写的那个），
+原来那个键和重写后新写的键都在。
+
+**6. 换后端：构建新版后端（或拉取新镜像），替换并重启。** 这一版的后端带了两件新东西，
+**旧的镜像里都没有**：
+
+- **分层摘要**（白板与摘要分段）——旧后端不写也不读，配置里的 `summarySegmentMode` 对它没有意义。
+- **旧摘要的自动转换**——`summaryconvert` 是新后端里的命令，旧镜像里没有这个命令。
+
+所以这两件事都要等后端换成新的才生效；只改配置不换后端，升级等于没做。
+
+```bash
+# 从源码起：用这一版的代码构建
+docker compose -f compose.integrated.yml build backend
+docker compose -f compose.integrated.yml up -d backend
+# 或用发布的镜像：把 compose 文件里的 backend 镜像换成新版本，再 up -d backend
+```
+
+**7. 跑一次 `summaryconvert`。** 用**新后端**里的命令，把旧的普通对话摘要转成这一版读得懂的形状：
 
 | 命令 | 做什么 |
 |---|---|
@@ -75,25 +139,36 @@ chatBaseURL = "https://provider.invalid/v1"          # Agent 与普通对话共�
 
 **默认只预演，不自动跑，也不在启动时跑**——跑之前那些会话照常工作，只是摘要停在原地。转不了的行（读不出来的 JSON、引用不是消息号因而无法无损搬运、超出当前文档预算）一律**列出来、不改那一行**。
 
-**4. 客户端：流式回答的帧换了字段名。** 最要改的是 `delta` 变成 `content`：`content` 不是新到的一段，而是截至此刻的**整段回答**，所以客户端要用它**替换**已经显示的内容，不能再往后**追加**——追加会把回答显示两遍。完整对照见下面「流式回答的帧换了字段名」一节。仓库里的界面客户端已同步改好；直接对接 `/stream` 的第三方客户端要按那张表改字段名。
+**8. 重启：换成新的入口（exec）和新配置。** 这一版的后端不再用 shell 包一层，而是自己就是 1 号进程
+（`exec`），这样停止信号直接到服务手里，停止时才来得及写最后那张快照。整合栈的启动方式不用改：
+新的启动脚本由 `compose.integrated.yml` 自己引用。
 
-**5. Redis：补上 AOF 配置并重启一次。** 检索索引在 Redis 里，Redis 停止或崩溃时的落盘方式决定了「重启之后索引还在不在、还全不全」。用 `compose.integrated.yml` 起的整合栈：在 `redis.integrated.conf.local` 里补上这三行（示例文件 `redis.integrated.conf.example` 里已经带上了，复制时不要删）：
+按 README §6 步骤 1 手工 `docker run` 起的：把那条命令换成 README 里的新版——要**多挂一个数据目录**
+（`/data`）、**多挂 `deploy/redis-stack-start.sh`**，并用它当入口。
 
-```ini
-appendonly yes
-appendfsync everysec
-save 3600 1 300 100 60 10000
+**9. 重启后核对 Redis 的键数。** 这一步是上面那套流程的验收：
+
+```bash
+docker compose -f compose.integrated.yml exec redis redis-cli -a "$REDIS_PASSWORD" DBSIZE
 ```
 
-然后重启一次 Redis 容器（`docker compose -f compose.integrated.yml up -d redis`）。**重启前写入的内容不会丢**，AOF 会把它补上。整合栈的启动方式不用改：新的启动脚本由 `compose.integrated.yml` 自己引用。
+**核对的是"重启前后键数没有变少"**，不是某个固定的数字——每个部署的索引大小不同。少了就是有问题，
+按下面这段处理。
 
-按 README §6 步骤 1 手工 `docker run` 起的：把那条命令换成 README 里的新版——要**多挂一个数据目录**（`/data`）、**多挂 `deploy/redis-stack-start.sh`**，并用它当入口。
+**10. 重新构建并重启前端。** 界面这一版有变化（知识库开关改成按轮选择、会话列表里 Agent 会话置顶）。`web/package.json` 与 `web/package-lock.json` 未改动，不需要重新执行 `npm --prefix web ci`，**重新构建一次前端**即可。
 
-**6. 重新构建并重启前端。** 界面这一版有变化（知识库开关改成按轮选择、会话列表里 Agent 会话置顶）。`web/package.json` 与 `web/package-lock.json` 未改动，不需要重新执行 `npm --prefix web ci`，**重新构建一次前端**即可。
+**万一索引真的空了怎么办：Redis 里存的是检索索引，不是数据。** 索引可以**从 MySQL 重建**——
+MySQL 里存着每一个文档的原文与它该有多少个块，Redis 里只是这些块的可检索副本。所以索引空了
+不等于资料没了：服务**启动时的索引校验**会把这种情况**报告出来**（`knowledge_index_audit`：
+比过了几个文档版本、索引里少了几个、多出来几个、有没有索引本身的问题），默认只报告不改东西；
+把 `[startupIndexAudit].mode` 配成 `rebuild`，还会把缺索引的文档**重新送去索引**
+（`rebuildLimit` 限着一次最多送多少个回去，默认 20）。这个校验**从不拒绝启动**，也从不删东西。
 
 **不需要数据库迁移**：白板、分段、分段任务三张新表由服务启动时的自动迁移建好；`messages.user_name` 的列宽也由自动迁移就地改宽。都不需要手工写 DDL。
 
 **分层摘要没有新增必填项**：不写 `summarySegmentMode` 就是 `on`（默认开启）。想留在旧的滚动摘要上，就在 `[agentConfig]` 里显式写 `summarySegmentMode = "off"`，重启即可。
+
+**客户端还有一处要改**：流式回答的帧换了字段名。最要改的是 `delta` 变成 `content`：`content` 不是新到的一段，而是截至此刻的**整段回答**，所以客户端要用它**替换**已经显示的内容，不能再往后**追加**——追加会把回答显示两遍。完整对照见下面「流式回答的帧换了字段名」一节。仓库里的界面客户端已同步改好；直接对接 `/stream` 的第三方客户端要按那张表改字段名。
 
 ### 分层摘要
 
@@ -142,7 +217,7 @@ save 3600 1 300 100 60 10000
 
 ### Redis 停止时的落盘与默认开启 AOF
 
-这一项没有面向学习者的新功能，改的是**部署**：检索索引在 Redis 里，Redis 停止或崩溃时的落盘方式决定了「重启之后索引还在不在、还全不全」。已有部署需要更新一次 Redis 配置并重启（步骤见上面第 5 步），还要改**两处模型配置项**——旧写法会被指名拒绝，服务不会带着没人用的配置启动。
+这一项没有面向学习者的新功能，改的是**部署**：检索索引在 Redis 里，Redis 停止或崩溃时的落盘方式决定了「重启之后索引还在不在、还全不全」。已有部署需要更新一次 Redis 配置并重启（步骤见上面第 3、4、5 步），还要改**两处模型配置项**——旧写法会被指名拒绝，服务不会带着没人用的配置启动。
 
 #### 改了什么
 
@@ -213,7 +288,7 @@ retired configuration setting: [ordinaryChat] was removed. A conversation turn i
 
 读不出来时不再花冤枉钱：到点要压缩时先读库里那一行，读不出来就**跳过这一轮**——一次模型调用都不发，也**不进失败冷却**（旧内容不会在两次对话之间自己变可读）。指标里记 `summary_outcome{reason="previous_unreadable"}`，回答照常带着水位线之后的原始消息，学习者只是拿不到"压缩过的更早历史"。这类会话的摘要会一直停在旧那一行，直到有人转换它。
 
-转换由上面升级步骤第 3 步那条 `summaryconvert` 命令做，**默认只预演**，不自动跑，也不在启动时跑：
+转换由上面升级步骤第 7 步那条 `summaryconvert` 命令做，**默认只预演**，不自动跑，也不在启动时跑：
 
 | 命令 | 做什么 |
 |---|---|
