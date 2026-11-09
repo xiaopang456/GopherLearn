@@ -66,6 +66,7 @@ test('a malformed Chinese numeral is not read at all', () => {
     '百',        // a hundred without the digit in front of it
     '千',        // a thousand without the digit in front of it
     '一百零',    // a zero in the middle that never gets its digit
+    '一百二零三', // a zero on top of a digit that is still waiting for its unit
     '亿',        // a unit this parser does not know
     '',
   ]
@@ -96,11 +97,26 @@ test('a malformed numeral in the key keeps its text and is matched literally', (
     ['万万次', '答案是0次。', 'needs_judge'],
     ['一百百次', '答案是一百百次。', 'pass'],
     ['一百百次', '答案是200次。', 'needs_judge'],
+    // The digit before the zero must not be dropped: "一百二零三" is not a hundred
+    // and three.
+    ['一百二零三次', '答案是一百二零三次。', 'pass'],
+    ['一百二零三次', '答案是103次。', 'needs_judge'],
   ]
   for (const [keyValue, answer, expected] of rows) {
     const scenario = { answer: { accepted: [keyValue], forbidden: [], aliases: [] } }
     assert.equal(judgeFact(answer, scenario).verdict, expected, `${keyValue} / ${answer}`)
   }
+})
+
+test('a zero may only fill a place that is empty', () => {
+  // "一百零三" is a hundred and three, and the zero fills the tens place.
+  assert.equal(chineseNumber('一百零三'), 103)
+  assert.equal(chineseNumber('二百零三'), 203)
+  // "一百二十三" has no zero at all and is a hundred and twenty-three.
+  assert.equal(chineseNumber('一百二十三'), 123)
+  // "一百二零三" writes a two that has no place of its own, so it is not a number.
+  assert.ok(Number.isNaN(chineseNumber('一百二零三')))
+  assert.notEqual(normalizeValue('一百二零三次'), normalizeValue('103次'))
 })
 
 test('a quantity with a large numeral is the same value however it is written', () => {

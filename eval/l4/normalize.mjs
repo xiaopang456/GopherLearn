@@ -104,7 +104,12 @@ function parseSection(text) {
       }
       // A zero in the middle fills the place of a digit that is not written, and the
       // digit it stands for has to follow it.
-      if (zeroPending) return null
+      //
+      // It may only fill a place that is empty: a digit that was written before it
+      // and not attached to a unit yet is still waiting for its unit, and a zero on
+      // top of it would drop that digit. "一百二零三" is therefore not read (as a
+      // hundred and three, which would lose the two), and "一百零三" is.
+      if (zeroPending || digit !== null) return null
       zeroPending = true
       continue
     }
