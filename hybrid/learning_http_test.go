@@ -103,8 +103,26 @@ func TestLearningNativeHTTPGenerationFailureAndDeadline(t *testing.T) {
 			agent.state.generateErr = !deadline
 			agent.state.waitForDeadline = deadline
 			agent.state.mu.Unlock()
-			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			// The deadline case is about the generation being cut short, and
+			// the model waits for the context to be done. A wall-clock
+			// deadline would also have to survive the work before the model
+			// is reached - the history and the evidence - and a machine that
+			// spends the budget there fails the test for the wrong reason:
+			// the failure it reports is the preparation that ran out of
+			// time, not the generation.
+			//
+			// The context is cancelled the moment the model reports that it
+			// is waiting, so the cut short happens where the case is about
+			// and not where the machine happens to be slow.
+			//
+			// The failure case needs no cut short at all: the model fails at
+			// once and the request must still come back with the failure
+			// code.
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
+			if deadline {
+				go cancelWhenTheModelWaits(agent, cancel)
+			}
 			request := httptest.NewRequest("POST", learningPath+"start", strings.NewReader(learningJSON(map[string]string{"sessionId": sid, "topic": "Redis"}))).WithContext(ctx)
 			request.Header.Set("Authorization", "Bearer "+token)
 			request.Header.Set("Content-Type", "application/json")
@@ -124,6 +142,25 @@ func TestLearningNativeHTTPGenerationFailureAndDeadline(t *testing.T) {
 				t.Fatal("failed generation persisted questions")
 			}
 		})
+	}
+}
+
+// cancelWhenTheModelWaits cancels the request once the model reports that it
+// has been reached and is waiting for the context to be done.
+//
+// The wait for the model is bounded, so a request that never reaches it is
+// cancelled rather than left to hang.
+func cancelWhenTheModelWaits(agent *learningHTTPModel, cancel context.CancelFunc) {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		agent.state.mu.Lock()
+		calls := agent.state.generationCalls
+		agent.state.mu.Unlock()
+		if calls > 0 || time.Now().After(deadline) {
+			cancel()
+			return
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
