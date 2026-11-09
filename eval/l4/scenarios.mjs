@@ -1,14 +1,16 @@
 import crypto from 'node:crypto'
+import { normalizeValue } from './normalize.mjs'
 
 export const categories = new Set(['early_fact', 'constraint', 'stale', 'no_fabrication', 'irrelevant'])
 export function splitForId(id) {
   const n = crypto.createHash('sha256').update(id, 'utf8').digest().readBigUInt64BE()
   return n * 5n < 3n * (1n << 64n) ? 'dev' : 'sealed'
 }
-// factValueKey is how the answer key compares its own values: the same
-// presentation folding the scorer applies before it looks for a mention.
+// factValueKey is how the answer key compares its own values: the same normalization
+// the scorer applies before it looks for a mention. So "9道" and "九道" are one value
+// here as well, and a key that accepts one of them cannot forbid the other.
 function factValueKey(value) {
-  return String(value ?? '').normalize('NFKC').replace(/\s+/gu, '').toLowerCase()
+  return normalizeValue(value)
 }
 export function checkScenario(s) {
   const errors = []

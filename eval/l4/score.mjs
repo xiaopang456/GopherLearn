@@ -1,60 +1,20 @@
 import { checkScenario } from './scenarios.mjs'
+import { MENTION_EXPRESSION, canonicalExpression, chineseNumber, compoundMention, normalizeValue } from './normalize.mjs'
+
 // Normalize presentation differences centrally, keeping answer keys semantic.
 // Only a complete quantity is converted; numbers inside narrative answers still
 // require judgment, including negations and comparisons of old/new values.
-export function normalizeFact(s) {
-  const text = s.normalize('NFKC').replace(/\s+/gu, '').replace(/[。.!！]$/u, '').toLowerCase()
-  const quantity = /^(\d+(?:\.\d+)?)(分钟|分鐘|分|mins?|minutes?|小时|小時|时|時|h|hrs?|hours?|秒钟|秒鐘|秒|s|secs?|seconds?)$/u.exec(text)
-  if (!quantity) return text
-  const [, value, unit] = quantity
-  const factor = /^(分钟|分鐘|分|mins?|minutes?)$/u.test(unit) ? 60n : /^(小时|小時|时|時|h|hrs?|hours?)$/u.test(unit) ? 3600n : 1n
-  const [integer, fraction = ''] = value.split('.')
-  let numerator = BigInt(integer + fraction) * factor, denominator = 10n ** BigInt(fraction.length)
-  let a = numerator, b = denominator
-  while (b) [a, b] = [b, a % b]
-  numerator /= a; denominator /= a
-  return `seconds:${numerator}/${denominator}`
-}
+//
+// The measure words and the normalization itself live in normalize.mjs, which the
+// answer key's own comparison calls too: one table, one function, so "9道" and "九道"
+// are the same value everywhere.
+export { normalizeFact } from './normalize.mjs'
 
 // Normalize numeric expressions without touching surrounding prose. Match spans
 // in the original string so negation handling retains its original offsets.
-const DIGITS = {零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9}
-function chineseNumber(s) {
-  if (/^\d+(?:\.\d+)?$/.test(s)) return Number(s)
-  let total = 0, digit = 0
-  for (const c of s) {
-    if (c === '十') { total += (digit || 1) * 10; digit = 0 }
-    else if (c === '百') { total += (digit || 1) * 100; digit = 0 }
-    else if (Object.hasOwn(DIGITS, c)) digit = digit * 10 + DIGITS[c]
-    else return NaN
-  }
-  return total + digit
-}
-const NUM = '(?:[0-9]+(?:\\.[0-9]+)?|[零〇一二两兩三四五六七八九十百]+)'
-const FACT_EXPR = new RegExp(`(?:凌晨|早上|上午|中午|下午|晚上|傍晚)?(?:${NUM})(?:[:：]\\d{1,2}|点(?:半|一刻|三刻|${NUM}分?)?)|(?:${NUM})(?:分钟|分鐘|minutes?|mins?|hours?|hrs?|小时|小時|时|時|秒钟|秒鐘|seconds?|secs?|秒|分|页|頁|次|天|h|s)`, 'giu')
-function canonicalExpression(s) {
-  const t = s.normalize('NFKC').replace(/\s+/gu, '').toLowerCase()
-  const time = new RegExp(`^(凌晨|早上|上午|中午|下午|晚上|傍晚)?(${NUM})(?:[:](\\d{1,2})|点(半|一刻|三刻|${NUM}分?)?)$`, 'u').exec(t)
-  if (time) {
-    let h = chineseNumber(time[2]); let m = time[3] === undefined ? (time[4] === '半' ? 30 : time[4] === '一刻' ? 15 : time[4] === '三刻' ? 45 : time[4] ? chineseNumber(time[4].replace(/分$/, '')) : 0) : Number(time[3])
-    const period = time[1]
-    if (period && (h < 1 || h > 12)) return null
-    if (['下午', '晚上', '傍晚'].includes(period) && h < 12) h += 12
-    if (['凌晨', '早上', '上午'].includes(period) && h === 12) h = 0
-    if (period === '中午' && h < 11) h += 12
-    if (h > 23 || m > 59) return null
-    return `clock:${h}:${m}`
-  }
-  const quantity = new RegExp(`^(${NUM})(分钟|分鐘|minutes?|mins?|hours?|hrs?|小时|小時|时|時|秒钟|秒鐘|seconds?|secs?|秒|分|页|頁|次|天|h|s)$`, 'iu').exec(t)
-  if (!quantity) return null
-  const n = chineseNumber(quantity[1]); const unit = quantity[2]
-  const duration = normalizeFact(`${n}${unit}`)
-  if (duration.startsWith('seconds:')) return duration
-  if (/^(分钟|分鐘|分|minutes?|mins?)$/i.test(unit)) return `seconds:${n * 60}/1`
-  if (/^(小时|小時|时|時)$/i.test(unit)) return `seconds:${n * 3600}/1`
-  if (/^(秒钟|秒鐘|秒|seconds?|secs?)$/i.test(unit)) return `seconds:${n}/1`
-  return `quantity:${n}:${unit === '頁' ? '页' : unit}`
-}
+// The expression scanner, the canonical form and the measure-word table all come
+// from normalize.mjs.
+const FACT_EXPR = MENTION_EXPRESSION
 
 // A fact answer is judged by what the answer says, not by whether it says it
 // in one word. The answer mentions a value or it does not; a value that the
@@ -149,6 +109,23 @@ function compact(text) {
   return { text: out, map }
 }
 
+// compactFolded is the haystack the mentions are looked for in: the same folding the
+// answer key's values get, so that a value and the answer that states it are written
+// the same way. Every character keeps the index it had in the original text, so a
+// mention can still be pointed at in the original.
+function compactFolded(text) {
+  let out = ''
+  const map = []
+  for (let i = 0; i < text.length; i += 1) {
+    if (/\s/u.test(text[i])) continue
+    for (const character of text[i].toLowerCase()) {
+      out += character
+      map.push(i)
+    }
+  }
+  return { text: out, map }
+}
+
 function hasMarker(window, markers) {
   return markers.some(marker => (typeof marker === 'string' ? window.includes(marker) : marker.test(window)))
 }
@@ -188,10 +165,12 @@ function clauseRanges(text, from, to) {
 // mentionsOf returns every place the answer states the value.
 function mentionsOf(text, value) {
   const found = []
-  const normalized = normalizeFact(value)
-  const canonical = canonicalExpression(normalized) ?? (normalized.startsWith('seconds:') ? normalized : null)
-  const haystack = compact(text)
-  if (canonical) {
+  // The value and the answer go through the same normalization: the value becomes its
+  // canonical form, and every mention the answer contains is put into the same form
+  // before the two are compared.
+  const canonical = normalizeValue(value)
+  const haystack = compactFolded(text)
+  if (!canonical.startsWith('text:')) {
     FACT_EXPR.lastIndex = 0
     for (let match = FACT_EXPR.exec(haystack.text); match; match = FACT_EXPR.exec(haystack.text)) {
       if (canonicalExpression(match[0]) !== canonical) continue
@@ -206,13 +185,15 @@ function mentionsOf(text, value) {
       const hasPeriod = /^(?:凌晨|早上|上午|中午|下午|晚上|傍晚)/u.test(expression)
       const hour = spokenClock ? chineseNumber(expression.replace(/^(?:凌晨|早上|上午|中午|下午|晚上|傍晚)/u, '').split('点')[0]) : 0
       const ambiguousClock = spokenClock && ((!hasPeriod && hour <= 12) || /[这那哪每]/u.test(before.slice(-1)) || /^(?:建议|意见|原因|问题|内容|要求|理由|好处|区别|方面|注意|重要)/u.test(after))
-      const ambiguousCompound = /次$/u.test(expression) && /^(?:元|方|数|數)/u.test(after) || /天$/u.test(expression) && /^(?:气|氣|然|赋|賦|线|線)/u.test(after) || /[a-z]$/iu.test(expression) && /^[a-z]/iu.test(after)
-      const embedded = /[a-z0-9零〇一二两兩三四五六七八九十百.]/iu.test(text[haystack.map[start] - 1] ?? '')
+      const ambiguousCompound = compoundMention(expression, after) || /[a-z]$/iu.test(expression) && /^[a-z]/iu.test(after)
+      const embedded = /[a-z0-9零〇一二两兩三四五六七八九十百千万萬.]/iu.test(text[haystack.map[start] - 1] ?? '')
       found.push({ start: haystack.map[start], end: haystack.map[end - 1] + 1, value, ambiguous: ambiguousClock || ambiguousCompound || embedded })
     }
     return found
   }
-  const needle = compact(value).text
+  // A value that is not an expression is matched literally, in the same folded form
+  // the answer key's own comparison uses.
+  const needle = canonical.slice('text:'.length)
   if (!needle) return found
   let at = haystack.text.indexOf(needle)
   while (at >= 0) {
