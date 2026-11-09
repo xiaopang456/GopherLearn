@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"GopherAI/entry"
-	"github.com/xiaopang456/GopherLearn/conversation"
 )
 
 // readmeExampleTOML extracts the copy-and-paste TOML block that README §5.1
@@ -33,7 +32,7 @@ func readmeExampleTOML(t *testing.T) string {
 		t.Fatal("README §5.1 example block is not closed")
 	}
 	block := rest[:end]
-	for _, want := range []string{"[isolatedEntry]", "[ragModelConfig]", "[ordinaryChat]", "[mysqlConfig]", "[redisConfig]", "[jwtConfig]", "[knowledgeConfig]", "[mainConfig]"} {
+	for _, want := range []string{"[isolatedEntry]", "[ragModelConfig]", "[mysqlConfig]", "[redisConfig]", "[jwtConfig]", "[knowledgeConfig]", "[mainConfig]"} {
 		if !strings.Contains(block, want) {
 			t.Fatalf("README §5.1 example is missing section %s", want)
 		}
@@ -57,15 +56,7 @@ func TestReadmeExampleConfigurationStartsWithStubbedProviders(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runtime, _, _, _, _ := entryRuntimeFixture(t, &ordinaryModel{})
-	// The fixture asserts the tutorial configuration's ordinary model; this
-	// test asserts the README's own values instead.
-	runtime.client = func(c conversation.ClientConfig) (conversation.Model, error) {
-		if c.Model != "deepseek-flash" || c.Timeout != 30*time.Second || c.MaxOutputTokens != 1024 {
-			t.Errorf("ordinary client did not resolve from the README example: %+v", c)
-		}
-		return &ordinaryModel{}, nil
-	}
+	runtime, _, _, _, _ := entryRuntimeFixture(t)
 	listening := make(chan string, 1)
 	runtime.listen = func(network, address string) (net.Listener, error) {
 		listener, err := net.Listen(network, "127.0.0.1:0")

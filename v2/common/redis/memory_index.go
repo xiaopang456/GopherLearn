@@ -12,8 +12,8 @@ import (
 	redisCli "github.com/redis/go-redis/v9"
 )
 
-// AGENT-020 gives long-term memory the retrieval path the knowledge base has
-// had since RAG-010. The schema mirrors the chunk index deliberately: one
+// Long-term memory gets the retrieval path the knowledge base has
+// has always had. The schema mirrors the chunk index deliberately: one
 // versioned index shared by every user, isolation enforced by a TAG filter at
 // query time, and the same COSINE metric, so the two sides fail and are
 // operated the same way.
@@ -71,7 +71,7 @@ func EnsureMemoryIndex(ctx context.Context, client *redisCli.Client, dimension i
 		{FieldName: MemoryFieldStatus, FieldType: redisCli.SearchFieldTypeTag},
 		{FieldName: MemoryFieldConfidence, FieldType: redisCli.SearchFieldTypeNumeric},
 		{FieldName: MemoryFieldUserConfirmed, FieldType: redisCli.SearchFieldTypeNumeric},
-		// EXP-002B B1 measured that a hit in the subject is worth far more than a
+		// A hit in the subject was measured to be worth far more than a
 		// hit somewhere in the body, which is why the two are separate fields
 		// with different weights rather than one concatenated blob.
 		{FieldName: MemoryFieldSubject, FieldType: redisCli.SearchFieldTypeText, Weight: 3, NoStem: true},

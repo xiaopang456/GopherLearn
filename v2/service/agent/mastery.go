@@ -15,7 +15,7 @@ import (
 	"unicode/utf8"
 )
 
-// AGENT-017: mastery is L1b cross-session structured state, not long-term
+// Mastery is cross-session structured state, not long-term
 // memory. It is recomputed from graded attempts by TopicProgress, so this
 // provider reads it live instead of storing a natural-language snapshot that
 // would silently go stale after the next quiz.
@@ -41,7 +41,7 @@ type MasteryTopicKeyProvider interface {
 
 // MasteryTopics separates the two things the returned key slice used to mix.
 //
-// STABILIZE-039 needs the distinction because it spends the keys differently.
+// One earlier change needs the distinction because it spends the keys differently.
 // Matched keys pick which assessment shapes the explanation: a wrong one makes
 // the answer badly pitched. Authoritative keys decide which of the learner own
 // private notes are put in front of the model before it has read anything, with
@@ -273,7 +273,7 @@ func (p *TopicProgressMasteryProvider) CurrentMasteryWithTopicSources(ctx contex
 	return rendered + p.renderDetail(ctx, input.UserID, matched), topics, nil
 }
 
-// authoritativeTopicKey is the whole trust boundary of STABILIZE-039, in one
+// authoritativeTopicKey is the whole trust boundary of the topic bootstrap, in one
 // place so there is exactly one thing to read when asking what the server is
 // willing to vouch for.
 //
@@ -377,7 +377,7 @@ const minTopicCoverage = 0.5
 
 // matchTopics is deliberately lexical and deterministic. TopicKey is derived
 // from whatever topic name the learner typed when starting a quiz, so it is
-// not a controlled vocabulary; semantic matching is deferred to the EXP-002B
+// not a controlled vocabulary; semantic matching is deferred to the
 // recall selection rather than guessed at here.
 func matchTopics(candidates []model.TopicProgress, question, activeKey string, userID int64, config MasteryConfig, terms *topicTerms) []matchedTopic {
 	prepared := topicmatch.NewQuestion(question)

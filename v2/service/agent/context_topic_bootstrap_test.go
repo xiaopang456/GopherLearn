@@ -407,7 +407,7 @@ func TestV2PromptIsV1PlusTheBootstrapBoundary(t *testing.T) {
 	}
 }
 
-// The clause STABILIZE-039 added to SearchedAndFoundNothing must be an identity
+// The clause a later round added to SearchedAndFoundNothing must be an identity
 // under every earlier mode: there, S and E are issued only by memory_search and
 // never without landing in that call's Refs.
 func TestSearchedAndFoundNothingIsUnchangedWhenOnlyTheToolIssuesEvidence(t *testing.T) {

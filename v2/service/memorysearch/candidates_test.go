@@ -534,7 +534,7 @@ func TestSearchRefusesWithoutTrustedIdentity(t *testing.T) {
 
 // The reserve is what the final merge dropped, and it is never part of the
 // window. A caller that ignores it must see exactly the candidates this layer
-// has always returned, which is what makes STABILIZE-036 an added policy rather
+// has always returned, which is what makes the bounded window an added policy rather
 // than a changed candidate layer.
 func TestReserveHoldsWhatTheMergeDroppedAndNeverEntersTheWindow(t *testing.T) {
 	semantic := []Candidate{

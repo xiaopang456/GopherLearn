@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// BUG-AGENT-217 concurrency regression. Two governed searches in one turn can
+// Concurrency regression: two governed searches in one turn can
 // return [A,B] and [B,A] concurrently. The registry's atomic Episode card
 // operation must still return one card prefix per Episode and must never
 // overwrite a label. The two barriers force both goroutines through the first

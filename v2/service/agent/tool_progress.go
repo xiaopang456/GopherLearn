@@ -7,7 +7,7 @@ import (
 	"sync"
 )
 
-// The progress ledger exists because STABILIZE-054's acceptance found three
+// The progress ledger exists because the acceptance run found three
 // runs failing on tool_call_limit after three memory_search calls, and the
 // records show why. Every one of them went:
 //

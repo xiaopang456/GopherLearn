@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/cloudwego/eino/schema"
-	"github.com/xiaopang456/GopherLearn/conversation"
 	"gorm.io/gorm"
 	"net/http"
 	"net/http/httptest"
@@ -58,26 +57,21 @@ func createHTTP(t *testing.T, h http.Handler, token, title string) string {
 	body, _ := json.Marshal(map[string]string{"mode": "chat", "title": title})
 	return dataHTTP(t, h, "POST", "/api/v1/sessions", string(body), token)["id"].(string)
 }
-func httpFixture(t *testing.T) (*Application, *gorm.DB, *ordinaryModel, *scriptedChatModel, string, string) {
-	return httpFixtureWithModel(t, nil)
+func httpFixture(t *testing.T) (*Application, *gorm.DB, *scriptedChatModel, string, string) {
+	return httpFixtureWithTransport(t)
 }
-func httpFixtureWithModel(t *testing.T, factory func(*ordinaryModel) conversation.Model, transport ...*httpRedisTransport) (*Application, *gorm.DB, *ordinaryModel, *scriptedChatModel, string, string) {
+func httpFixtureWithTransport(t *testing.T, transport ...*httpRedisTransport) (*Application, *gorm.DB, *scriptedChatModel, string, string) {
 	t.Helper()
 	db := sqliteDatabase(t)
-	m := &ordinaryModel{}
 	agent := &scriptedChatModel{respond: func(context.Context, int) (*schema.Message, error) {
 		return schema.AssistantMessage("agent response", nil), nil
 	}}
-	var chat conversation.Model = m
-	if factory != nil {
-		chat = factory(m)
-	}
 	migrations := 0
 	deps := dependencies(t, db, agent, &testChunks{}, &migrations)
 	if len(transport) > 0 {
 		deps.Infrastructure.OpenRedis = transport[0].open
 	}
-	app, err := Assemble(context.Background(), testSettings(t), deps, chat, conversation.Options{})
+	app, err := Assemble(context.Background(), testSettings(t), deps)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,11 +92,35 @@ func httpFixtureWithModel(t *testing.T, factory func(*ordinaryModel) conversatio
 			t.Fatal(err)
 		}
 	}
-	return app, db, m, agent, loginHTTP(t, app.Handler, "learner@invalid.example"), loginHTTP(t, app.Handler, "other@invalid.example")
+	return app, db, agent, loginHTTP(t, app.Handler, "learner@invalid.example"), loginHTTP(t, app.Handler, "other@invalid.example")
+}
+
+// checkAgentHistory reads the messages the model was actually given: the earlier
+// question is still in the prompt, and the current one appears exactly once. A turn
+// that answered from a prompt without its history would pass every persistence check
+// and still be wrong.
+func checkAgentHistory(t *testing.T, messages []*schema.Message, prior, current string) {
+	t.Helper()
+	count := 0
+	found := false
+	for _, m := range messages {
+		if m.Role != schema.User {
+			continue
+		}
+		if m.Content == current {
+			count++
+		}
+		if m.Content == prior {
+			found = true
+		}
+	}
+	if !found || count != 1 {
+		t.Fatalf("actual shared-path history: prior found=%v current count=%d messages=%+v", found, count, messages)
+	}
 }
 
 func TestHTTPLoginMeOrdinarySendStreamAndOriginalRecords(t *testing.T) {
-	app, db, m, agent, token, _ := httpFixture(t)
+	app, db, agent, token, _ := httpFixture(t)
 	me := dataHTTP(t, app.Handler, "GET", "/api/v1/me", "", token)
 	if me["id"] != "1" || me["email"] != "learner@invalid.example" {
 		t.Fatalf("original identity %v", me)
@@ -117,7 +135,24 @@ func TestHTTPLoginMeOrdinarySendStreamAndOriginalRecords(t *testing.T) {
 	if status != 200 || !strings.Contains(stream, "event: message.completed\n") || strings.Contains(stream, "final_block_id") {
 		t.Fatalf("ordinary SSE %d %s", status, stream)
 	}
-	checkHistory(t, m.all()[1], "第一问", "第二问")
+	// Both turns ran on the shared path, so what the model was given is read back from
+	// the model that answered. That is the half of "ordinary chat moved" a reader can
+	// check from here.
+	requests := agent.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("two conversation turns generated %d times", len(requests))
+	}
+	checkAgentHistory(t, requests[1], "第一问", "第二问")
+	if bound := agent.BoundToolCalls(); len(bound) != 0 {
+		t.Fatalf("a conversation turn was offered tools: %v", bound)
+	}
+	for _, messages := range requests {
+		for _, msg := range messages {
+			if strings.Contains(msg.Content, "跨会话经历") || strings.Contains(msg.Content, "已确认记忆") {
+				t.Fatal("Agent memory injected into a conversation turn")
+			}
+		}
+	}
 	page, err := messageDAO.NewRepository(db).ListOwnedHistoryPage(context.Background(), 1, sid, 0, 100)
 	if err != nil || len(page.Messages) != 4 {
 		t.Fatalf("original messages %v %v", page, err)
@@ -130,19 +165,6 @@ func TestHTTPLoginMeOrdinarySendStreamAndOriginalRecords(t *testing.T) {
 		row := item.(map[string]any)
 		if row["id"] != fmt.Sprint(page.Messages[i].ID) || row["content"] != page.Messages[i].Content {
 			t.Fatalf("HTTP history differs %v", row)
-		}
-	}
-	if agent.CallCount() != 0 {
-		t.Fatal("ordinary HTTP reached Runner")
-	}
-	for _, r := range m.all() {
-		if len(r.Tools) != 0 {
-			t.Fatal("ordinary HTTP tools")
-		}
-		for _, msg := range r.Messages {
-			if strings.Contains(msg.Content, "跨会话经历") || strings.Contains(msg.Content, "已确认记忆") {
-				t.Fatal("Agent memory injected")
-			}
 		}
 	}
 	listed := dataHTTP(t, app.Handler, "GET", "/api/v1/sessions", "", token)["items"].([]any)
@@ -170,7 +192,7 @@ func TestHTTPLoginMeOrdinarySendStreamAndOriginalRecords(t *testing.T) {
 }
 
 func TestHTTPRejectsUntrustedIdentityTokenModeAndUnconnectedCapabilities(t *testing.T) {
-	app, db, m, _, token, other := httpFixture(t)
+	app, db, agent, token, other := httpFixture(t)
 	sid := createHTTP(t, app.Handler, token, "protected")
 	for _, tc := range []struct {
 		method, path, body, token string
@@ -211,7 +233,7 @@ func TestHTTPRejectsUntrustedIdentityTokenModeAndUnconnectedCapabilities(t *test
 			t.Fatalf("stored mode bypass %d %v", status, e)
 		}
 	}
-	if len(m.all()) != 0 {
+	if agent.CallCount() != 0 {
 		t.Fatal("invalid input reached model")
 	}
 	var count int64
@@ -247,7 +269,7 @@ func TestHTTPRejectsUntrustedIdentityTokenModeAndUnconnectedCapabilities(t *test
 }
 
 func TestHTTPFullNumericHistoryReferencesAndLargeIdentity(t *testing.T) {
-	app, db, _, _, token, _ := httpFixture(t)
+	app, db, _, token, _ := httpFixture(t)
 	sid := createHTTP(t, app.Handler, token, "all pages")
 	for i := 0; i < 51; i++ {
 		dataHTTP(t, app.Handler, "POST", "/api/v1/sessions/"+sid+"/messages", fmt.Sprintf(`{"content":"q%d"}`, i), token)
@@ -269,7 +291,10 @@ func TestHTTPFullNumericHistoryReferencesAndLargeIdentity(t *testing.T) {
 		row := item.(map[string]any)
 		want := fmt.Sprintf("q%d", i/2)
 		if i%2 == 1 {
-			want = "回答：" + want
+			// The shared path's model answers every turn with the same text. What this
+			// case is about is that all 102 rows come back, in order, each with its own
+			// id - not what the answer says.
+			want = "agent response"
 		}
 		if row["content"] != want {
 			t.Fatalf("numeric history %d: %v", i, row)

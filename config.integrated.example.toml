@@ -8,13 +8,13 @@
 # 各段对应的读取位置：
 #   [isolatedEntry]  v2/internal/isolated/settings.go 的 EntrySettings；migrate 由 hybrid/entry.go:27-29 拒绝
 #   其余 V2 段        v2/config/config.go 的段名与 toml 键名
-#   [ordinaryChat]   conversation/client.go 的保留键白名单；白名单外的键在装载期被拒
+#   [ordinaryChat]   已废弃：普通对话与学习 Agent 共用 [isolatedEntry] 的 chat 模型，本模板不再出现这一段
 #
 # 三类约束要分清（详见 docs/INTEGRATED-DEPLOYMENT.md 的措辞表）：
 #   入口会**拒绝**的：缺 -config、非法 TOML、缺强制字段、isolated=false、migrate=true、
 #                     ordinaryChat 未知键、普通客户端不是 openai_compatible、密钥短于 32 字节，
-#                     以及**已经废弃的配置项**（ragModelConfig.baseUrl、isolatedEntry.embeddingKey
-#                     ——它们被指名拒绝并说明改到哪里，而不是被宽容地忽略掉）。
+#                     以及**已经废弃的配置项**（ragModelConfig.baseUrl、isolatedEntry.embeddingKey、
+#                     ordinaryChat 整段——它们被指名拒绝并说明改到哪里，而不是被宽容地忽略掉）。
 #   模板给的**默认值**：下面的库名/库号/目录/端口都是本整合栈的取值，不是入口的强制检查。
 #   **操作人员**必须保证：这些取值指向的是整合栈自己的 schema、Redis 实例与目录，
 #                     不与基线入口共用——入口无法识别"这是旧库"，它只能识别"没显式写"。
@@ -77,6 +77,25 @@ storageDir = "data/gopherlearn-integrated/knowledge"
 # 文档处理状态由文档所有者自己的接口查看：
 # GET /api/v1/knowledge/documents/:id/processing —— 回答 {"mode":"legacy","status":<index_status>}。
 # 这个接口只回答文档所有者自己的文档状态。
+
+# 启动时校验知识索引，问两个问题：每个文档在 Redis 里的块数是否等于记录里的块数；
+# 搜索索引本身是否存在、它自报的文档数是否等于这些键的个数。只比块数看不见
+# "索引没了但块都还在"，而那种情况下检索一条证据也返回不了。
+#
+# mode 三选一：
+#   off     —— 不比对；
+#   audit   —— 只比对，把结果写进日志和指标（默认）；
+#   rebuild —— 比对之后，把缺块的文档退回 pending，交给索引 worker 重建。
+#
+# 校验永远不阻止启动：索引缺块是"检索少给证据"，不是"服务起不来"。
+# rebuild 每次启动最多退回 rebuildLimit 个文档，超出的只告警，等下一次启动；
+# 重建会重新调用 embedding 接口，是要花钱的，所以默认档是只比对。
+# 索引本身的问题只报告、不退回文档：块都在的文档不算缺块。只有"索引没了"会被自动补回
+# （装配检索服务时、下一次索引任何文档时都会自己创建索引）；num_docs 与键数不符、schema
+# 不符、仍在索引中、有索引失败这些不会自动修复，要运维处理。
+[knowledgeConfig.startupIndexAudit]
+mode = "audit"
+rebuildLimit = 20
 
 [ragModelConfig]
 embeddingModel = "REPLACE_WITH_EMBEDDING_MODEL_NAME"
@@ -156,29 +175,3 @@ email = "REPLACE_WITH_THE_SENDER_ADDRESS"
 authcode = "REPLACE_WITH_THE_SMTP_AUTHORIZATION_CODE"
 host = "smtp.qq.com"
 port = 587
-
-[ordinaryChat]
-# 保留的普通聊天：只走 GopherLearn 的 DirectChat，不经 Agent 循环、不接 MQ。
-# 键名沿用原实现的常量名（conversation/client.go:13-19 白名单），值不读环境变量。
-GOPHERLEARN_AI_PROVIDER = "openai_compatible"
-GOPHERLEARN_OPENAI_BASE_URL = "https://provider.invalid/v1"
-GOPHERLEARN_OPENAI_API_KEY = "REPLACE_WITH_ORDINARY_CHAT_PROVIDER_KEY"
-GOPHERLEARN_OPENAI_MODEL = "REPLACE_WITH_ORDINARY_CHAT_MODEL_NAME"
-# 可选项留空即沿用 internal/openai/config.go 与 internal/app/app.go 的原默认值；
-# 需要覆写时取消注释，取值范围由原校验把关（temperature 0..2、timeout 为正 Go duration）。
-# GOPHERLEARN_OPENAI_ENABLE_THINKING = "false"
-# 思考开关的方言（可选，默认 "qwen"）：qwen / deepseek / none。
-# GOPHERLEARN_OPENAI_THINKING_DIALECT = "qwen"
-# GOPHERLEARN_OPENAI_TEMPERATURE = "0.7"
-# GOPHERLEARN_OPENAI_MAX_OUTPUT_TOKENS = "1024"
-# GOPHERLEARN_OPENAI_TIMEOUT = "60s"
-# GOPHERLEARN_CONTEXT_MAX_MESSAGES = "20"
-# GOPHERLEARN_CONTEXT_MAX_RUNES = "12000"
-# GOPHERLEARN_SUMMARY_TRIGGER_MESSAGES = "12"
-# GOPHERLEARN_SUMMARY_TRIGGER_TOKENS = "6000"
-# GOPHERLEARN_SUMMARY_KEEP_RECENT_MESSAGES = "8"
-# GOPHERLEARN_SUMMARY_MAX_INPUT_TOKENS = "8000"
-# GOPHERLEARN_SUMMARY_MAX_OUTPUT_TOKENS = "800"
-# GOPHERLEARN_SUMMARY_TIMEOUT = "20s"
-# GOPHERLEARN_SUMMARY_STAGE_BUDGET = "8s"
-# GOPHERLEARN_SUMMARY_FAILURE_COOLDOWN = "30s"

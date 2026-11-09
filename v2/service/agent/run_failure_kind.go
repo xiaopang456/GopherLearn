@@ -7,7 +7,7 @@ import (
 
 // Classifying a run failure by what it is.
 //
-// STABILIZE-062 v1.2 spent a real run learning why this has to be structural.
+// Spent a real run learning why this has to be structural.
 // Its evaluator matched keywords over the runner's error text, and the text of
 // ErrRepeatedToolCall is "agent repeated the same tool call" - which contains
 // "tool call". So a model that repeated a search was filed as a protocol error,

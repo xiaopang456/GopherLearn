@@ -84,7 +84,7 @@ var explicitTopicBoundaries = concatMarkers(
 	},
 )
 
-// Route is the pre-STABILIZE-030 entry point, kept only for the diagnostic
+// Route is the earlier entry point, kept only for the diagnostic
 // command and the tests that were written against it.
 //
 // It is a lossy projection and must not be used to drive recall: TemporalMode,

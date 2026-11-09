@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// STABILIZE-065 Phase 1.1 red lights.
+// Red lights.
 //
 // Phase 1 built a component and called it done. These state the ten things
 // that were missing between "a package exists" and "production uses it", and
@@ -45,11 +45,13 @@ func TestRedNoProductionRelationSeam(t *testing.T) {
 	if !strings.Contains(worker, "RelationWriter") {
 		t.Error("RED: the episode worker has no relation seam")
 	}
-	main := readRepoFile(t, "main.go")
-	if !strings.Contains(main, "episoderelation") {
-		t.Error("RED: main.go assembles no relation writer, source, store or classifier")
+	// The entry's own assembly lives in the isolated package: the tagged entry
+	// file is a thin wrapper around it, so the wiring is read where it is.
+	assembly := readRepoFile(t, "internal/isolated/wiring.go")
+	if !strings.Contains(assembly, "episoderelation") {
+		t.Error("RED: the entry assembles no relation writer, source, store or classifier")
 	}
-	if !strings.Contains(main, "EpisodeRelationMode") {
+	if !strings.Contains(assembly, "EpisodeRelationMode") {
 		t.Error("RED: there is no configuration selecting off, shadow or apply")
 	}
 }

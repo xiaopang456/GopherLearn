@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/cloudwego/eino/schema"
-	"github.com/xiaopang456/GopherLearn/conversation"
 	"gorm.io/gorm"
 	"net/http/httptest"
 	"strings"
@@ -48,7 +47,7 @@ func agentRows(t *testing.T, db *gorm.DB, sid string) []model.Message {
 }
 
 func TestHTTPAgentCreationOriginalIdempotencyTitleAndQuota(t *testing.T) {
-	app, db, _, agent, token, other := httpFixture(t)
+	app, db, agent, token, other := httpFixture(t)
 	title := "  " + strings.Repeat("学", 105) + "  "
 	sid := createAgentHTTP(t, app, token, "create-agent-001", title)
 	if replay := createAgentHTTP(t, app, token, "create-agent-001", title); replay != sid {
@@ -93,12 +92,12 @@ func TestHTTPAgentCreationOriginalIdempotencyTitleAndQuota(t *testing.T) {
 }
 
 func TestHTTPAgentRunOriginalMessagesResultAndReplay(t *testing.T) {
-	app, db, ordinary, agent, token, _ := httpFixture(t)
+	app, db, agent, token, _ := httpFixture(t)
 	sid := createAgentHTTP(t, app, token, "create-run-001", "Agent")
 	path := "/api/v1/sessions/" + sid + "/messages"
 	body := agentBody("request-run-001", "你好")
 	result := dataHTTP(t, app.Handler, "POST", path, body, token)
-	if result["runId"] == "" || result["answer"] != "agent response" || agent.CallCount() == 0 || len(ordinary.all()) != 0 {
+	if result["runId"] == "" || result["answer"] != "agent response" || agent.CallCount() == 0 {
 		t.Fatalf("actual Runner %v calls=%d", result, agent.CallCount())
 	}
 	run, err := agentDAO.NewRepository(db).GetRun(context.Background(), 1, sid, result["runId"].(string))
@@ -153,7 +152,7 @@ func TestHTTPAgentRunOriginalMessagesResultAndReplay(t *testing.T) {
 }
 
 func TestHTTPAgentRunRejectsIdentityModeRequestAndKnowledgePolicy(t *testing.T) {
-	app, db, ordinary, agent, token, other := httpFixture(t)
+	app, db, agent, token, other := httpFixture(t)
 	sid := createAgentHTTP(t, app, token, "create-reject-001", "Agent")
 	path := "/api/v1/sessions/" + sid + "/messages"
 	for _, tc := range []struct {
@@ -179,11 +178,34 @@ func TestHTTPAgentRunRejectsIdentityModeRequestAndKnowledgePolicy(t *testing.T) 
 	}
 	status, e, _ := requestHTTP(t, app.Handler, "POST", "/api/v1/sessions/agent-unknown-mode/messages", agentBody("request-mode-002", "你好"), token)
 	assertAgentError(t, status, e, 400, "invalid_request", 0)
-	chat := createHTTP(t, app.Handler, token, "Chat")
-	status, e, _ = requestHTTP(t, app.Handler, "POST", "/api/v1/sessions/"+chat+"/messages", agentBody("request-agent-in-chat", "你好"), token)
-	assertAgentError(t, status, e, 400, "invalid_request", 0)
-	if agent.CallCount() != 0 || len(ordinary.all()) != 0 || len(agentRows(t, db, sid)) != 0 {
+	if agent.CallCount() != 0 || len(agentRows(t, db, sid)) != 0 {
 		t.Fatal("rejected request effects")
+	}
+	// A chat session is no longer barred from this path: it runs a turn that carries no
+	// capability. What it may not do is ask for the library. The session's mode is the
+	// ceiling, and a request body is not how a client raises it.
+	chat := createHTTP(t, app.Handler, token, "Chat")
+	for _, policy := range []string{"knowledge_preferred", "knowledge_only"} {
+		status, e, _ = requestHTTP(t, app.Handler, "POST", "/api/v1/sessions/"+chat+"/messages", `{"content":"你好","knowledgePolicy":"`+policy+`"}`, token)
+		assertAgentError(t, status, e, 400, "invalid_request", 0)
+	}
+	if agent.CallCount() != 0 || len(agentRows(t, db, chat)) != 0 {
+		t.Fatal("a chat session asking for the library reached a model or stored a message")
+	}
+	pair := dataHTTP(t, app.Handler, "POST", "/api/v1/sessions/"+chat+"/messages", agentBody("request-agent-in-chat", "你好"), token)
+	if agent.CallCount() != 1 {
+		t.Fatalf("a conversation turn generated agent=%d generations, want one on the shared path", agent.CallCount())
+	}
+	runID, _ := pair["assistant_message"].(map[string]any)["run_id"].(string)
+	if runID == "" || pair["user_message"].(map[string]any)["run_id"] != runID {
+		t.Fatalf("a conversation turn did not publish one run for both rows: %v", pair)
+	}
+	var toolSteps int64
+	if err := db.Model(&model.AgentStep{}).Where("run_id = ? AND tool_name <> ''", runID).Count(&toolSteps).Error; err != nil {
+		t.Fatal(err)
+	}
+	if toolSteps != 0 {
+		t.Fatalf("a capability-free turn recorded %d tool steps", toolSteps)
 	}
 	// Original optional invalid consent degrades to no personalization, not a new error.
 	result := dataHTTP(t, app.Handler, "POST", path, `{"content":"你好","requestId":"request-consent-001","knowledgePolicy":"knowledge_preferred","topicConsent":{"ticket":"invalid-ticket","selectedTopicKeys":["foreign"]}}`, token)
@@ -195,7 +217,7 @@ func TestHTTPAgentRunRejectsIdentityModeRequestAndKnowledgePolicy(t *testing.T) 
 }
 
 func TestHTTPAgentRunInProgressUsesOriginalAcquisition(t *testing.T) {
-	app, db, _, agent, token, _ := httpFixture(t)
+	app, db, agent, token, _ := httpFixture(t)
 	sid := createAgentHTTP(t, app, token, "create-busy-001", "Agent")
 	path := "/api/v1/sessions/" + sid + "/messages"
 	body := agentBody("request-busy-001", "你好")
@@ -242,7 +264,7 @@ func TestHTTPAgentRunInProgressUsesOriginalAcquisition(t *testing.T) {
 func TestHTTPAgentFailureTerminalAndPersistenceRemainOriginal(t *testing.T) {
 	for _, fault := range []string{"model", "run-create", "user-message", "assistant-message"} {
 		t.Run(fault, func(t *testing.T) {
-			app, db, ordinary, agent, token, _ := httpFixture(t)
+			app, db, agent, token, _ := httpFixture(t)
 			sid := createAgentHTTP(t, app, token, "create-failure-001", "Agent")
 			path := "/api/v1/sessions/" + sid + "/messages"
 			body := agentBody("request-failure-001", "你好")
@@ -274,7 +296,7 @@ func TestHTTPAgentFailureTerminalAndPersistenceRemainOriginal(t *testing.T) {
 			if fault == "user-message" || fault == "run-create" {
 				wantMessages = 0
 			}
-			if len(rows) != wantMessages || len(ordinary.all()) != 0 {
+			if len(rows) != wantMessages {
 				t.Fatalf("fault persistence %s %v", fault, rows)
 			}
 			if fault == "run-create" {
@@ -309,7 +331,7 @@ func TestHTTPAgentFailureTerminalAndPersistenceRemainOriginal(t *testing.T) {
 }
 
 func TestHTTPAgentDraftResultAndReplayKeepOriginalGovernance(t *testing.T) {
-	app, db, ordinary, agent, token, _ := httpFixture(t)
+	app, db, agent, token, _ := httpFixture(t)
 	agent.respond = func(_ context.Context, n int) (*schema.Message, error) {
 		if n == 1 {
 			return &schema.Message{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: "draft-call-001", Type: "function", Function: schema.FunctionCall{Name: "propose_memory", Arguments: `{"scope":"global","subject":"讲解偏好","content":"我喜欢简短讲解","durability":"stable"}`}}}}, nil
@@ -320,7 +342,7 @@ func TestHTTPAgentDraftResultAndReplayKeepOriginalGovernance(t *testing.T) {
 	path := "/api/v1/sessions/" + sid + "/messages"
 	body := agentBody("request-draft-001", "请记住我喜欢简短讲解")
 	result := dataHTTP(t, app.Handler, "POST", path, body, token)
-	if result["memoryDraft"] == nil || result["toolCalls"].(float64) < 1 || len(ordinary.all()) != 0 {
+	if result["memoryDraft"] == nil || result["toolCalls"].(float64) < 1 {
 		t.Fatalf("original draft result lost %v", result)
 	}
 	var drafts []model.MemoryDraft
@@ -360,9 +382,8 @@ func TestHTTPAgentConsentFromOriginalIssuerReachesOriginalContext(t *testing.T) 
 	agent := &scriptedChatModel{respond: func(context.Context, int) (*schema.Message, error) {
 		return schema.AssistantMessage("你好", nil), nil
 	}}
-	ordinary := &ordinaryModel{}
 	migrations := 0
-	app, err := Assemble(context.Background(), s, dependencies(t, db, agent, &testChunks{}, &migrations), ordinary, conversation.Options{})
+	app, err := Assemble(context.Background(), s, dependencies(t, db, agent, &testChunks{}, &migrations))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,7 +419,7 @@ func TestHTTPAgentConsentFromOriginalIssuerReachesOriginalContext(t *testing.T) 
 	body, _ := json.Marshal(map[string]any{"content": "你好", "requestId": "request-consented-001", "topicConsent": map[string]any{"ticket": native["ticket"], "selectedTopicKeys": []string{"jwt-auth"}}})
 	with := dataHTTP(t, app.Handler, "POST", path, string(body), token)
 	keys, ok := with["usedTopicKeys"].([]any)
-	if !ok || len(keys) != 1 || keys[0] != "jwt-auth" || len(ordinary.all()) != 0 || migrations != 0 {
+	if !ok || len(keys) != 1 || keys[0] != "jwt-auth" || migrations != 0 {
 		t.Fatalf("original consent lost in HTTP translation %v", with)
 	}
 	// A new request cannot reuse the ticket bound to the prior question/request.

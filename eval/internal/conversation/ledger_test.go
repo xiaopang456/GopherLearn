@@ -2,6 +2,7 @@ package conversation
 
 import (
 	"GopherAI/common/memoryrecall"
+	agent "GopherAI/service/agent"
 	"context"
 	"errors"
 	modelcomponent "github.com/cloudwego/eino/components/model"
@@ -89,7 +90,58 @@ func TestRolePromptsLoadCheckout(t *testing.T) {
 	for _, role := range roles {
 		counts[role]++
 	}
-	if counts["answer"] != 4 || counts["summary"] != 1 || counts["background"] != 5 {
+	if counts["summary"] != 1 || counts["background"] != 5 {
 		t.Fatal(counts)
+	}
+	if counts["answer"] < 4 {
+		t.Fatal(counts)
+	}
+}
+
+// The product trims the answer prompt to the turn's tool table, so the prompt
+// that reaches the model is a variant of the base prompt. A role table that
+// held only the base prompt refused the product's own request as unclassified,
+// which ended the turn before the answer existed.
+//
+// The test uses the product's own renderer to build the variant, so it states
+// the same claim the product makes: the trimmed prompt is the same prompt.
+func TestRolePromptsHoldTheTrimmedVariantsOfTheBasePrompt(t *testing.T) {
+	roles, err := LoadRolePrompts(filepath.Join("..", "..", ".."), memoryrecall.ReadMode("legacy_v2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := agent.SystemPromptFor(memoryrecall.ModeLegacyV2)
+	trimmed := agent.RenderSystemPrompt(base, agent.PromptCapabilities{
+		Available: map[agent.MemoryToolCapability]bool{
+			agent.CapabilityKnowledgeSearch: true,
+			agent.CapabilityDocumentRead:    true,
+		},
+	})
+	if trimmed == base {
+		t.Fatal("the fixture did not trim the prompt, so it proves nothing")
+	}
+	if role, ok := roles[trimmed]; !ok || role != "answer" {
+		t.Fatalf("the trimmed prompt is not classified as an answer prompt: %q", role)
+	}
+	if role, ok := roles[base]; !ok || role != "answer" {
+		t.Fatalf("the base prompt is not classified as an answer prompt: %q", role)
+	}
+}
+
+// The trimming must not turn the role table into an open door. A prompt that
+// the product's renderer cannot produce is still refused.
+func TestRolePromptsStillRefuseAPromptTheProductCannotProduce(t *testing.T) {
+	roles, err := LoadRolePrompts(filepath.Join("..", "..", ".."), memoryrecall.ReadMode("legacy_v2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, prompt := range []string{
+		"",
+		"you are a helpful assistant",
+		agent.SystemPromptFor(memoryrecall.ModeLegacyV2) + "\nan extra line the product never sends",
+	} {
+		if role, ok := roles[prompt]; ok {
+			t.Fatalf("a prompt the product cannot produce was classified as %q", role)
+		}
 	}
 }

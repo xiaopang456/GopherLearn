@@ -116,7 +116,7 @@ func TestMemoryToolBoundsAreEnforced(t *testing.T) {
 	}
 }
 
-// The STABILIZE-036 window is an experiment behind an explicit setting. Absent
+// The bounded window is an experiment behind an explicit setting. Absent
 // means the shipped window, an unknown value stops startup rather than falling
 // back to it, and no other mode may carry it.
 func TestWindowPolicyIsExperimentalAndFailsClosed(t *testing.T) {

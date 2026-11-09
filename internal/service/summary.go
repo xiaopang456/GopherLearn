@@ -126,9 +126,6 @@ func (s *MessageService) openTurn(ctx context.Context, userID, sessionID, conten
 func (s *MessageService) conversationFor(ctx context.Context, userID, sessionID string, turn storedTurn,
 	strategy domain.AnswerStrategy,
 ) (string, []responder.Turn, SummaryOutcome, SummaryDetail, error) {
-	if s.frozenOrdinarySummary && strategy == domain.AnswerStrategyDirectChat {
-		return s.ordinaryConversationFor(ctx, userID, sessionID, turn)
-	}
 	boundary := ""
 	if turn.stored != nil {
 		boundary = turn.stored.CoveredMessageID

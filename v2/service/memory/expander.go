@@ -11,7 +11,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-// EXP-002B B1 tried four ways to improve candidate generation without a model
+// Four ways to improve candidate generation without a model
 // call — character n-grams, field weighting, identifier splitting, and topic-key
 // boosting. All were null: nine of the twelve paired comparisons did not even
 // move in the right direction. Only expansion helped, and the reason is visible

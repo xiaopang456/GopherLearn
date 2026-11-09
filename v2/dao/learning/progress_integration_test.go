@@ -12,10 +12,10 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-// AGENT-017 reads TopicProgress on every agent turn, so the isolation and
+// The agent turn reads TopicProgress every time, so the isolation and
 // ordering guarantees have to hold against real MySQL rather than a fake.
 //
-// Each run uses a unique owner id, following the AGENT-012A finding that a
+// Each run uses a unique owner id: a
 // fixed test owner lets rows from an earlier run pollute the next one.
 func TestRepositoryListTopicProgressIsolationAndOrdering(t *testing.T) {
 	dsn := testdb.RequireMySQLDSN(t)
@@ -72,7 +72,7 @@ func TestRepositoryListTopicProgressIsolationAndOrdering(t *testing.T) {
 		t.Fatalf("unexpected ordering: %s, %s, %s", listed[0].TopicKey, listed[1].TopicKey, listed[2].TopicKey)
 	}
 	// WeakPoints round-trips through the JSON serializer, which is where
-	// BUG-AGENT-008 previously bit on a different table.
+	// The JSON serializer was where the same defect once bit on a different table.
 	if len(listed[1].WeakPoints) != 1 || listed[1].WeakPoints[0] != "缓存击穿与穿透的区别" {
 		t.Errorf("weak points did not round-trip: %#v", listed[1].WeakPoints)
 	}

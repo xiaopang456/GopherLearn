@@ -11,6 +11,7 @@ import (
 	myemail "GopherAI/common/email"
 	"GopherAI/common/memoryrecall"
 	"GopherAI/common/mysql"
+	"GopherAI/common/observability"
 	"GopherAI/common/rag"
 	"GopherAI/common/redis"
 	"GopherAI/config"
@@ -23,6 +24,7 @@ import (
 	memoryDAO "GopherAI/dao/memory"
 	"GopherAI/dao/message"
 	sessionDAO "GopherAI/dao/session"
+	"GopherAI/internal/indexaudit"
 	"GopherAI/model"
 	agentService "GopherAI/service/agent"
 	agentTool "GopherAI/service/agent/tool"
@@ -53,7 +55,7 @@ type knowledgeRuntime struct {
 	cleanup   *knowledgeService.CleanupWorkerPool
 	retrieval knowledgeRetriever
 	documents *knowledgeService.DocumentService
-	// embedder is shared with long-term memory. AGENT-020 calibrated its
+	// embedder is shared with long-term memory. The recall index calibrated its
 	// cosine floor against vectors from this model, so memory must not build
 	// its own embedder: two models would put the two sides in different spaces
 	// and make the threshold meaningless.
@@ -96,6 +98,7 @@ func buildKnowledgeRuntime(ctx context.Context, conf *config.Config, deps Depend
 	}
 	documentRepository := knowledgeDAO.NewRepository(mysql.DB)
 	documentService := knowledgeService.NewDocumentService(documentRepository, storage, conf.KnowledgeConfig)
+	runStartupIndexAudit(ctx, conf, documentRepository)
 	workerConfig := knowledgeService.WorkerConfig{
 		WorkerCount:  conf.KnowledgeConfig.WorkerCount,
 		QueueSize:    conf.KnowledgeConfig.QueueSize,
@@ -156,8 +159,64 @@ func buildKnowledgeRuntime(ctx context.Context, conf *config.Config, deps Depend
 	return &knowledgeRuntime{index: indexWorker, cleanup: cleanupWorker, retrieval: retrievalService, documents: documentService, embedder: embedder}, nil
 }
 
+// startupIndexAuditTimeout bounds the startup comparison.
+//
+// The comparison walks the knowledge prefix three times: once to count the
+// blocks each document holds, and twice more for the number the search index
+// reports for itself, so it can take a while on a large corpus. The bound
+// keeps a slow comparison from turning into a slow start: an audit that did
+// not finish is logged and recorded as failed, and the service starts anyway.
+const startupIndexAuditTimeout = 2 * time.Minute
+
+// runStartupIndexAudit compares the knowledge record with the knowledge index
+// and reports what it finds.
+//
+// The audit never refuses the start. An index that holds fewer blocks than
+// the record says is a retrieval that answers less, not a service that cannot
+// run, so the outcome is a report in the log and in the metrics. Only the
+// documents that are short are worth an operator's attention, and each of them
+// is listed with the command that rebuilds it.
+//
+// In rebuild mode the documents that are short go back to the indexer, at most
+// rebuildLimit of them; the rest are reported and wait for the next start.
+//
+// Two questions are asked, because they can have different answers: whether
+// each document holds the blocks the record counts, and whether the search
+// index over those blocks exists and agrees with them. A dropped index keeps
+// every block, so the first question alone would call it consistent while
+// retrieval returns nothing. The second is reported and not requeued: creating
+// the index is what repairs it, and the retrieval service does that while it
+// is being assembled, without re-embedding anything.
+func runStartupIndexAudit(ctx context.Context, conf *config.Config, documentRepository *knowledgeDAO.Repository) {
+	mode, err := indexaudit.ParseMode(conf.KnowledgeConfig.StartupIndexAudit.Mode)
+	if err != nil {
+		log.Printf("startup index audit skipped: %v", err)
+		observability.Memory.KnowledgeIndexAudit(string(indexaudit.ModeOff), "failed", 0, 0, 0, 0, 0, 0)
+		return
+	}
+	if mode == indexaudit.ModeOff {
+		return
+	}
+	auditCtx, cancel := context.WithTimeout(ctx, startupIndexAuditTimeout)
+	defer cancel()
+	auditor := indexaudit.NewAuditor(
+		indexaudit.MySQLSource{DB: mysql.DB, ExcludeInFlight: true},
+		indexaudit.RedisCounter{Client: redis.Rdb},
+		indexaudit.KnowledgeIndexChecker{Client: redis.Rdb},
+		documentRepository,
+		log.Printf,
+	)
+	result, auditErr := auditor.Run(auditCtx, mode, conf.KnowledgeConfig.StartupIndexAudit.StartupIndexAuditRebuildLimit())
+	if auditErr != nil {
+		log.Printf("startup index audit failed: %v", auditErr)
+		observability.Memory.KnowledgeIndexAudit(string(mode), "failed", 0, 0, 0, 0, 0, 0)
+		return
+	}
+	observability.Memory.KnowledgeIndexAudit(string(mode), result.Status(), result.Compared, len(result.Missing), len(result.Extra), result.Rebuilt, result.Skipped, result.Failed)
+}
+
 // buildMemoryIndex keeps the old re-buildable topic index synchronized for
-// diagnostics and rollback. AGENT-027 deliberately does not attach it to the
+// diagnostics and rollback. It is deliberately not attached to the
 // production Retriever: Topic UserMemory requires a strong server-derived key,
 // so Query Expansion and vector-only selection are outside the read path.
 func buildMemoryIndex(repository *memoryDAO.Repository, embedder embedding.Embedder) *memoryService.Indexer {
@@ -188,7 +247,7 @@ func buildMemoryIndex(repository *memoryDAO.Repository, embedder embedding.Embed
 // working registry or an error. There is no degraded form: this mode injects no
 // topic memory and no episode of its own, so a tool that failed to build would
 // leave every turn with global memory alone while the mode's name still claimed
-// otherwise — the silent-wrong-mode failure STABILIZE-031 spent a blind run
+// otherwise — the silent-wrong-mode failure an earlier round spent a blind run
 // discovering.
 // agentRunnerConfig is the run budget for one mode.
 //
@@ -209,13 +268,18 @@ func agentRunnerConfig(mode memoryrecall.ReadMode, agentConf config.AgentConfig,
 		// reranker's scores move with the corpus and with the reranker itself,
 		// and the comparison run is what should move this number.
 		RelevanceThreshold: agentConf.KnowledgeRelevanceThreshold,
+		// The window keeps this much for the reply, and every generation of the
+		// turn is sent with it as the output limit. It is the same number the
+		// window's arithmetic rests on, so the request and the budget that
+		// measured it cannot drift apart.
+		OutputReserveTokens: agentConf.ContextOutputReserveTokens,
 	}
 	if mode.UsesMemorySearchTool() {
 		runnerConfig.PerTool = agentService.AgentMemoryToolRunnerConfig().PerTool
 		runnerConfig.PerTool.MemorySearch = agentConf.MemoryToolMaxCalls
 		// A mode that registers memory_search but is not studying the model's
-		// first tool choice keeps the server's knowledge-first rule
-		// (STABILIZE-056). The four agent_memory_tool identities are studying
+		// first tool choice keeps the server's knowledge-first rule.
+		// The four agent_memory_tool identities are studying
 		// exactly that, so they keep deciding it themselves.
 		runnerConfig.ForcesKnowledgeSearchWithMemoryTool = !mode.DefersFirstToolChoiceToModel()
 	}
@@ -238,7 +302,7 @@ func agentRunnerConfig(mode memoryrecall.ReadMode, agentConf config.AgentConfig,
 	if mode.ReadsEvidenceBack() {
 		runnerConfig.PerTool.HistoryRead = min(agentService.DefaultHistoryReadCalls, runnerConfig.MaxToolCalls)
 	}
-	// STABILIZE-061. The surface and the ordering rule travel together with the
+	// The explicit-actions surface. The surface and the ordering rule travel together with the
 	// mode rather than with the deployment's tuning knobs: a config file that
 	// could rename the model's tools without changing the mode would make the
 	// mode's identity stop describing what the model saw.
@@ -255,7 +319,7 @@ func agentRunnerConfig(mode memoryrecall.ReadMode, agentConf config.AgentConfig,
 }
 
 // buildTopicMemoryReadRegistry keeps the application wiring under the same
-// mode predicate the ContextBuilder and runner budget use. STABILIZE-040's
+// mode predicate the ContextBuilder and runner budget use. The earlier round's
 // evaluator constructed this registry directly; without the application-side
 // branch a configured v3/v4 process would advertise the tool in its prompt
 // while never registering it.
@@ -475,7 +539,7 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		return nil, fmt.Errorf("initialize memory retriever: %v", err)
 	}
 	memoryIndexer := buildMemoryIndex(memoryRepository, runtime.embedder)
-	// STABILIZE-031: the read path is chosen as one complete mode, and the
+	// The read path is chosen as one complete mode, and the
 	// default is legacy_v2 until a brand-new blind set says otherwise.
 	memoryReadMode, err := memoryrecall.ParseReadMode(conf.AgentConfig.MemoryReadMode)
 	if err != nil {
@@ -579,7 +643,7 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		if deps.Clock != nil {
 			memoryDraftTools.UseClock(deps.Clock)
 		}
-		// STABILIZE-061 renames the two memory actions together or not at all.
+		// One earlier change renames the two memory actions together or not at all.
 		// Renaming one of them would produce a tool table where a model reading
 		// "save_memory_draft" beside "memory_search" still has to guess, which
 		// is the arrangement this round exists to replace.
@@ -671,7 +735,7 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	if err != nil {
 		return nil, fmt.Errorf("initialize agent summary provider: %v", err)
 	}
-	// AGENT-017: mastery comes straight from TopicProgress on every turn, so a
+	// Mastery comes straight from TopicProgress on every turn, so a
 	// newly graded quiz changes the next explanation without any extraction,
 	// governance or staleness window in between.
 	masteryProvider, err := agentService.NewMasteryProvider(
@@ -682,7 +746,7 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	if err != nil {
 		return nil, fmt.Errorf("initialize agent mastery provider: %v", err)
 	}
-	// AGENT-021: the band alone tells the model how deep to go; the questions
+	// The band alone tells the model how deep to go; the questions
 	// already asked and the points the grader found missing tell it what to
 	// cover. Both come from one topic key. A failure here leaves the band in
 	// place rather than removing mastery.
@@ -1019,7 +1083,7 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		// Fail closed at startup rather than at the first learner question. A
 		// mode that cannot build its own read path must not run: silently
 		// serving turns with no long-term memory under a mode chosen for its
-		// memory behaviour is the failure STABILIZE-031 spent a blind run on.
+		// memory behaviour is the failure an earlier round spent a blind run on.
 		return nil, fmt.Errorf("initialize model-planned memory recall: the mode is %s but its read path could not be built", memoryReadMode)
 	}
 	if inventory, inventoryErr := redis.InspectManagedSearchIndexInventory(appCtx, redis.Rdb); inventoryErr != nil {

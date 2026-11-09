@@ -265,7 +265,7 @@ func (s *DocumentService) ReindexDocument(ctx context.Context, userID int64, doc
 
 // CreatePending saves the source before creating metadata. Therefore a file
 // failure cannot leave a database row, and a database failure triggers file
-// cleanup. Validation of product limits belongs to the upload task (RAG-004).
+// cleanup. Validation of product limits belongs to the upload task.
 func (s *DocumentService) CreatePending(
 	ctx context.Context,
 	userID int64,

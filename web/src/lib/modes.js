@@ -1,9 +1,11 @@
 import { recordDevIssue } from './devlog.js'
 
 /**
- * The product has exactly two user-facing session modes. "Knowledge Q&A" is a
- * per-turn option inside Chat, not a third mode, so nothing here may grow a
- * `knowledge_qa` mode value.
+ * The product has exactly two user-facing session modes. Whether a turn may
+ * read the learner's own documents is a per-turn option inside a Learning
+ * Agent session, not a third mode, so nothing here may grow a `knowledge_qa`
+ * mode value. A Chat session has no such option: the server states that
+ * ceiling on each session row.
  *
  * The mode is a server-owned, immutable session fact; the client reads it back
  * and never infers it from which button the user last pressed.

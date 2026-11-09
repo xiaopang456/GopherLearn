@@ -164,7 +164,7 @@ func indexable(memory model.LongTermMemory) bool {
 		memory.UserID > 0
 }
 
-// embeddingText matches what EXP-002B embedded, subject then content. The
+// embeddingText matches what the index embedded, subject then content. The
 // cosine floor of 0.535 was calibrated against vectors built this way; changing
 // the composition invalidates the threshold.
 func embeddingText(memory model.LongTermMemory) string {

@@ -117,6 +117,100 @@ func summaryMessages(count int) []model.Message {
 	return messages
 }
 
+// readablePreviousSummary is a stored summary this schema can build on. Fixtures used to
+// put the bare word "old-valid" here, which is plain prose - and prose is precisely what
+// compaction now refuses before spending a call, so a fixture that wanted a usable
+// previous row has to carry a document.
+const readablePreviousSummary = `{"schema_version":2,"current_goal":"old-valid","confirmed_decisions":[],"completed_items":[],"open_loops":[],"user_corrections":[],"key_errors":[],"references":[]}`
+
+// The generator merges the stored document with the increment and refuses a previous it
+// cannot parse. That happened after the call was already paid for, and the parse failure
+// then opened a cooldown, so a session whose summary row was written as prose spent a
+// model call every cooldown period and never compacted once. Compaction now reads the
+// stored row first and skips when it cannot be used - no call, no write, no cooldown.
+func TestRollingSummarySkipsCompactionBeforeAnyCallWhenTheStoredSummaryIsProse(t *testing.T) {
+	for _, reason := range []struct {
+		name    string
+		content string
+	}{
+		{name: "plain prose", content: "用户：甲\n助手：回答：甲"},
+		{name: "damaged document", content: `{"current_goal":"甲",`},
+		{name: "a JSON value that is not an object", content: `[1,2,3]`},
+		{name: "a document with fields this schema does not have", content: `{"current_goal":"甲","notes":"free text"}`},
+	} {
+		t.Run(reason.name, func(t *testing.T) {
+			repository := &fakeSummaryRepository{current: &model.SessionSummary{
+				UserID: 1, SessionID: "s", Content: reason.content, CoveredMessageID: 1, Version: 4,
+			}}
+			generator := &recordingSummaryGenerator{}
+			config := DefaultSummaryConfig()
+			config.FailureCooldown = time.Minute
+			provider, err := NewRollingSummaryProvider(repository, fakeSummaryMessages{messages: summaryMessages(15)}, generator, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot, err := provider.SessionSummary(context.Background(), RunContext{UserID: 1, SessionID: "s"})
+			if !errors.Is(err, ErrSummaryPreviousUnusable) {
+				t.Fatalf("error = %v, want the previous summary refused before the call", err)
+			}
+			if generator.calls != 0 {
+				t.Fatalf("a model call was spent on a summary that cannot be merged: calls=%d", generator.calls)
+			}
+			if snapshot.Content != reason.content || snapshot.CoveredMessageID != 1 || snapshot.Version != 4 {
+				t.Fatalf("skipping changed the summary a turn reads: %+v", snapshot)
+			}
+			if repository.current.Version != 4 {
+				t.Fatalf("skipping wrote a summary row: %+v", repository.current)
+			}
+			if got := SummaryFailureReasonOf(err); got != SummaryFailurePreviousUnreadable {
+				t.Fatalf("reason = %s, want previous_unreadable", got)
+			}
+			// A second turn must report the same cause. A cooldown would rename a
+			// standing condition into a transient one and hide it.
+			if _, err := provider.SessionSummary(context.Background(), RunContext{UserID: 1, SessionID: "s"}); !errors.Is(err, ErrSummaryPreviousUnusable) {
+				t.Fatalf("second turn = %v, want the same reason rather than a cooldown", err)
+			}
+			if generator.calls != 0 {
+				t.Fatalf("the second turn spent a call: %d", generator.calls)
+			}
+		})
+	}
+	// Positive control, so the case above is not "compaction never runs": the same
+	// fixture with a readable row does reach the generator exactly once.
+	t.Run("a readable row still compacts", func(t *testing.T) {
+		repository := &fakeSummaryRepository{current: &model.SessionSummary{
+			UserID: 1, SessionID: "s", Content: readablePreviousSummary, CoveredMessageID: 1, Version: 4,
+		}}
+		generator := &recordingSummaryGenerator{}
+		provider, err := NewRollingSummaryProvider(repository, fakeSummaryMessages{messages: summaryMessages(15)}, generator, DefaultSummaryConfig())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := provider.SessionSummary(context.Background(), RunContext{UserID: 1, SessionID: "s"}); err != nil {
+			t.Fatalf("a usable previous summary was not compacted: %v", err)
+		}
+		if generator.calls != 1 {
+			t.Fatalf("generator calls = %d, want 1", generator.calls)
+		}
+	})
+	// An empty stored row is not an unreadable one: the first compaction of a session
+	// has no previous at all, and the generator builds the document from the increment.
+	t.Run("an empty stored row still compacts", func(t *testing.T) {
+		repository := &fakeSummaryRepository{}
+		generator := &recordingSummaryGenerator{}
+		provider, err := NewRollingSummaryProvider(repository, fakeSummaryMessages{messages: summaryMessages(15)}, generator, DefaultSummaryConfig())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := provider.SessionSummary(context.Background(), RunContext{UserID: 1, SessionID: "s"}); err != nil {
+			t.Fatalf("a session with no summary yet was not compacted: %v", err)
+		}
+		if generator.calls != 1 {
+			t.Fatalf("generator calls = %d, want 1", generator.calls)
+		}
+	})
+}
+
 func TestRollingSummaryIsIncrementalAndDoesNotRepeatCoveredMessages(t *testing.T) {
 	repository := &fakeSummaryRepository{current: &model.SessionSummary{UserID: 7, SessionID: "s", Content: `{"current_goal":"old"}`, CoveredMessageID: 2, Version: 3}}
 	generator := &recordingSummaryGenerator{}
@@ -148,7 +242,7 @@ func TestRollingSummaryIsIncrementalAndDoesNotRepeatCoveredMessages(t *testing.T
 }
 
 func TestRollingSummaryFailureReturnsLastValidSnapshot(t *testing.T) {
-	repository := &fakeSummaryRepository{current: &model.SessionSummary{UserID: 1, SessionID: "s", Content: "old-valid", CoveredMessageID: 1, Version: 1}}
+	repository := &fakeSummaryRepository{current: &model.SessionSummary{UserID: 1, SessionID: "s", Content: readablePreviousSummary, CoveredMessageID: 1, Version: 1}}
 	provider, err := NewRollingSummaryProvider(repository, fakeSummaryMessages{messages: summaryMessages(15)}, &recordingSummaryGenerator{err: context.DeadlineExceeded}, DefaultSummaryConfig())
 	if err != nil {
 		t.Fatal(err)
@@ -157,13 +251,13 @@ func TestRollingSummaryFailureReturnsLastValidSnapshot(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("error = %v", err)
 	}
-	if snapshot.Content != "old-valid" || snapshot.CoveredMessageID != 1 || repository.current.Version != 1 {
+	if snapshot.Content != readablePreviousSummary || snapshot.CoveredMessageID != 1 || repository.current.Version != 1 {
 		t.Fatalf("last valid summary changed on failure: %+v", snapshot)
 	}
 }
 
 func TestRollingSummaryFailureCooldownSkipsRepeatedGeneration(t *testing.T) {
-	repository := &fakeSummaryRepository{current: &model.SessionSummary{UserID: 1, SessionID: "s", Content: "old-valid", CoveredMessageID: 1, Version: 1}}
+	repository := &fakeSummaryRepository{current: &model.SessionSummary{UserID: 1, SessionID: "s", Content: readablePreviousSummary, CoveredMessageID: 1, Version: 1}}
 	generator := &recordingSummaryGenerator{err: context.DeadlineExceeded}
 	config := DefaultSummaryConfig()
 	config.FailureCooldown = time.Minute
@@ -201,13 +295,13 @@ func TestSummaryInputOmitsAssistantBodyButKeepsSourceHandles(t *testing.T) {
 func TestRollingSummaryTimeoutReturnsLastValidSnapshot(t *testing.T) {
 	config := DefaultSummaryConfig()
 	config.Timeout, config.StageBudget = 5*time.Millisecond, 5*time.Millisecond
-	repository := &fakeSummaryRepository{current: &model.SessionSummary{UserID: 1, SessionID: "s", Content: "old-valid", CoveredMessageID: 1, Version: 1}}
+	repository := &fakeSummaryRepository{current: &model.SessionSummary{UserID: 1, SessionID: "s", Content: readablePreviousSummary, CoveredMessageID: 1, Version: 1}}
 	provider, err := NewRollingSummaryProvider(repository, fakeSummaryMessages{messages: summaryMessages(15)}, &recordingSummaryGenerator{barrier: make(chan struct{})}, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := provider.SessionSummary(context.Background(), RunContext{UserID: 1, SessionID: "s"})
-	if !errors.Is(err, context.DeadlineExceeded) || snapshot.Content != "old-valid" || snapshot.CoveredMessageID != 1 {
+	if !errors.Is(err, context.DeadlineExceeded) || snapshot.Content != readablePreviousSummary || snapshot.CoveredMessageID != 1 {
 		t.Fatalf("timeout did not preserve snapshot: snapshot=%+v err=%v", snapshot, err)
 	}
 }
@@ -309,7 +403,7 @@ func TestSummaryV2PreservesPreviouslyValidatedEvidenceExactly(t *testing.T) {
 	}
 }
 
-// BUG-AGENT-102. Compaction runs inside the Runner's 45s deadline, so its cost
+// Compaction runs inside the Runner's 45s deadline, so its cost
 // is taken from the agent's own budget rather than added to it. These three
 // tests pin the stage that bounds it.
 
@@ -319,7 +413,7 @@ func TestSummaryStageBudgetCapsTheModelCallWellInsideTheRequestDeadline(t *testi
 	config.StageBudget = 80 * time.Millisecond
 
 	repository := &fakeSummaryRepository{current: &model.SessionSummary{
-		UserID: 1, SessionID: "s", Content: "old-valid", CoveredMessageID: 1, Version: 1}}
+		UserID: 1, SessionID: "s", Content: readablePreviousSummary, CoveredMessageID: 1, Version: 1}}
 	// A generator that never returns: without the stage budget this call would
 	// run until the 20s Timeout, spending most of a 45s request.
 	generator := &recordingSummaryGenerator{barrier: make(chan struct{})}
@@ -348,10 +442,10 @@ func TestSummaryStageBudgetCapsTheModelCallWellInsideTheRequestDeadline(t *testi
 	}
 	// The last good summary is intact, and its watermark still points at
 	// message 1 — everything after it is raw history the builder will load.
-	if snapshot.Content != "old-valid" || snapshot.CoveredMessageID != 1 || snapshot.Version != 1 {
+	if snapshot.Content != readablePreviousSummary || snapshot.CoveredMessageID != 1 || snapshot.Version != 1 {
 		t.Errorf("stage timeout did not preserve the last good summary: %+v", snapshot)
 	}
-	if repository.current.Version != 1 || repository.current.Content != "old-valid" {
+	if repository.current.Version != 1 || repository.current.Content != readablePreviousSummary {
 		t.Errorf("stage timeout changed the stored summary: %+v", repository.current)
 	}
 	if generator.calls != 1 {
@@ -361,7 +455,7 @@ func TestSummaryStageBudgetCapsTheModelCallWellInsideTheRequestDeadline(t *testi
 
 func TestSummaryStageIsSkippedWhenTheRequestHasTooLittleLeft(t *testing.T) {
 	repository := &fakeSummaryRepository{current: &model.SessionSummary{
-		UserID: 1, SessionID: "s", Content: "old-valid", CoveredMessageID: 1, Version: 1}}
+		UserID: 1, SessionID: "s", Content: readablePreviousSummary, CoveredMessageID: 1, Version: 1}}
 	generator := &recordingSummaryGenerator{}
 	config := DefaultSummaryConfig()
 	provider, err := NewRollingSummaryProvider(repository,
@@ -382,7 +476,7 @@ func TestSummaryStageIsSkippedWhenTheRequestHasTooLittleLeft(t *testing.T) {
 	if generator.calls != 0 {
 		t.Errorf("generator calls = %d, want 0; a skipped stage must not reach the model", generator.calls)
 	}
-	if snapshot.Content != "old-valid" || snapshot.CoveredMessageID != 1 {
+	if snapshot.Content != readablePreviousSummary || snapshot.CoveredMessageID != 1 {
 		t.Errorf("skipping compaction lost the last good summary: %+v", snapshot)
 	}
 

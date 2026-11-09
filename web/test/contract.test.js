@@ -123,7 +123,7 @@ describe('toStreamEvent', () => {
 
   it('maps the four contract events', () => {
     expect(parseOne('event: message.started\ndata: {"message_id":"a"}\n\n')[0].kind).toBe('started')
-    expect(parseOne('event: message.delta\ndata: {"delta":"x"}\n\n')[0].kind).toBe('delta')
+    expect(parseOne('event: message.delta\ndata: {"content":"x"}\n\n')[0].kind).toBe('delta')
     expect(parseOne('event: message.completed\ndata: {}\n\n')[0].kind).toBe('completed')
     expect(parseOne('event: message.failed\ndata: {"code":"x"}\n\n')[0].kind).toBe('failed')
   })
@@ -147,7 +147,7 @@ describe('toStreamEvent', () => {
 
   it('degrades a malformed JSON body instead of throwing', () => {
     const [event] = parseOne('event: message.delta\ndata: {oops\n\n')
-    expect(event).toMatchObject({ kind: 'delta', delta: '' })
+    expect(event).toMatchObject({ kind: 'delta', content: '' })
   })
 
   it('treats a non-object body as an empty payload', () => {

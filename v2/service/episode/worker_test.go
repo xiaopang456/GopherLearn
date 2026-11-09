@@ -213,7 +213,7 @@ func TestPublisherUsesQuietWindow(t *testing.T) {
 	}
 }
 
-// BUG-AGENT-104. Recovery used to run only at Start, so a job stranded by a
+// Recovery used to run only at Start, so a job stranded by a
 // rolled-back completion — the deadlock this fix is about produced exactly that
 // — stayed in processing until the process restarted. It must now be reclaimed
 // by a running worker.

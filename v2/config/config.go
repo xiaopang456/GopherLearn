@@ -208,6 +208,73 @@ type KnowledgeConfig struct {
 	// earlier build fails loudly instead of being silently downgraded to
 	// local processing.
 	ExecutionMode string `toml:"executionMode"`
+	// StartupIndexAudit selects what the service does when it starts and finds
+	// that the knowledge index holds fewer blocks than the record says.
+	StartupIndexAudit StartupIndexAuditConfig `toml:"startupIndexAudit"`
+}
+
+// Startup index audit modes.
+const (
+	// StartupIndexAuditModeOff does not compare the index with the record.
+	StartupIndexAuditModeOff = "off"
+	// StartupIndexAuditModeAudit compares them and only reports the result.
+	StartupIndexAuditModeAudit = "audit"
+	// StartupIndexAuditModeRebuild compares them and sends the documents that
+	// are short back to the indexer.
+	StartupIndexAuditModeRebuild = "rebuild"
+)
+
+// DefaultStartupIndexAuditRebuildLimit is the number of documents one start
+// may send back to the indexer when the configuration does not say.
+//
+// A rebuild is not free: every document that goes back is parsed, chunked and
+// embedded again, so the limit keeps a single start from spending an unbounded
+// number of embeddings.
+const DefaultStartupIndexAuditRebuildLimit = 20
+
+// StartupIndexAuditConfig configures the startup comparison between the
+// knowledge record and the knowledge index.
+//
+// The comparison never refuses the start: an index that is thinner than the
+// record says is a retrieval that answers less, not a service that cannot run.
+// What the mode selects is how much the service does about it.
+type StartupIndexAuditConfig struct {
+	// Mode is "off", "audit" or "rebuild". An empty value means "audit".
+	Mode string `toml:"mode"`
+	// RebuildLimit is the largest number of documents one start may send back
+	// to the indexer in rebuild mode. Zero means the default.
+	RebuildLimit int `toml:"rebuildLimit"`
+}
+
+// StartupIndexAuditMode returns the configured mode with the default applied.
+func (c StartupIndexAuditConfig) StartupIndexAuditMode() string {
+	mode := strings.ToLower(strings.TrimSpace(c.Mode))
+	if mode == "" {
+		return StartupIndexAuditModeAudit
+	}
+	return mode
+}
+
+// StartupIndexAuditRebuildLimit returns the configured rebuild limit with the
+// default applied.
+func (c StartupIndexAuditConfig) StartupIndexAuditRebuildLimit() int {
+	if c.RebuildLimit <= 0 {
+		return DefaultStartupIndexAuditRebuildLimit
+	}
+	return c.RebuildLimit
+}
+
+// Validate checks the startup index audit settings.
+func (c StartupIndexAuditConfig) Validate() error {
+	switch c.StartupIndexAuditMode() {
+	case StartupIndexAuditModeOff, StartupIndexAuditModeAudit, StartupIndexAuditModeRebuild:
+	default:
+		return fmt.Errorf("startupIndexAudit.mode must be %q, %q or %q", StartupIndexAuditModeOff, StartupIndexAuditModeAudit, StartupIndexAuditModeRebuild)
+	}
+	if c.RebuildLimit < 0 {
+		return fmt.Errorf("startupIndexAudit.rebuildLimit must not be negative")
+	}
+	return nil
 }
 
 // Execution modes accepted by KnowledgeConfig.ExecutionMode.
@@ -280,7 +347,7 @@ type AgentConfig struct {
 	EpisodeRecallMode                string `toml:"episodeRecallMode"`
 	// MemoryReadMode selects the whole long-term memory read path.
 	//
-	// STABILIZE-031: the unit of choice is a complete mode, not a component
+	// The unit of choice is a complete mode, not a component
 	// switch, and the default is legacy_v2 until a brand-new blind set says
 	// otherwise. A development gate that did not pass is not a reason to ship.
 	MemoryReadMode string `toml:"memoryReadMode"`
@@ -289,7 +356,7 @@ type AgentConfig struct {
 	// They have no production default on purpose. Enabling
 	// episode_v3_semantic without supplying both is a startup failure, because
 	// a number that stays in a Default*Config() is a production default no
-	// matter what the comment above it says (BUG-AGENT-140).
+	// matter what the comment above it says.
 	MemoryTopicStandout float64 `toml:"memoryTopicStandout"`
 	MemoryTopicMargin   float64 `toml:"memoryTopicMargin"`
 	// TopicConsentSecret signs the read-side confirmation ticket of
@@ -323,8 +390,8 @@ type AgentConfig struct {
 	//
 	// Like the semantic gate above, these have no production default and must be
 	// absent unless the mode that uses them is selected. A number that stays in a
-	// Default*Config() is a production default whatever the comment says
-	// (BUG-AGENT-140), and here it would also be a credential read by a mode
+	// Default*Config() is a production default whatever the comment says, and here it
+	// would also be a credential read by a mode
 	// nobody chose.
 	MemoryPlannerModel          string `toml:"memoryPlannerModel"`
 	MemoryPlannerBaseURL        string `toml:"memoryPlannerBaseURL"`
@@ -336,7 +403,7 @@ type AgentConfig struct {
 	// else.
 	//
 	// They have no production default for the same reason the planner fields do
-	// not (BUG-AGENT-140): a number that survives in a Default*Config() is a
+	// not: a number that survives in a Default*Config() is a
 	// production default whatever the comment above it says, and these numbers
 	// decide how much of a learner's personal history one tool call may reach.
 	// Under any other mode they must be absent, so that flipping one string
@@ -346,7 +413,7 @@ type AgentConfig struct {
 	MemoryToolCandidateDepth int     `toml:"memoryToolCandidateDepth"`
 	MemoryToolMinConfidence  float64 `toml:"memoryToolMinConfidence"`
 	MemoryToolTimeoutMS      int     `toml:"memoryToolTimeoutMs"`
-	// MemoryToolWindowPolicy selects the STABILIZE-036 experiment. Empty means
+	// MemoryToolWindowPolicy selects the experiment. Empty means
 	// the shipped window. It is a separate setting rather than a mode of its
 	// own because it changes only how much of an already-selected candidate set
 	// one observation carries, and a mode would have implied a second read path
@@ -461,6 +528,10 @@ func defaultConfig() *Config {
 		QueueSize:           100,
 		ScanIntervalSeconds: 5,
 		IndexTimeoutSeconds: 300,
+		StartupIndexAudit: StartupIndexAuditConfig{
+			Mode:         StartupIndexAuditModeAudit,
+			RebuildLimit: DefaultStartupIndexAuditRebuildLimit,
+		},
 	}, AgentConfig: AgentConfig{
 		MaxToolCalls: 3, MaxModelCalls: 4, MaxGraphSteps: 10, DeadlineSeconds: 45,
 		// A thinking turn writes its answer after the thinking, and the
@@ -1195,6 +1266,9 @@ func (c KnowledgeConfig) Validate() error {
 	if c.IndexTimeoutSeconds <= 0 {
 		return fmt.Errorf("indexTimeoutSeconds must be greater than zero")
 	}
+	if err := c.StartupIndexAudit.Validate(); err != nil {
+		return err
+	}
 	return c.ValidateExecutionMode()
 }
 
@@ -1303,7 +1377,7 @@ func (c AgentConfig) validateMemoryTool(mode memoryrecall.ReadMode) error {
 //
 // Both directions matter. An incomplete configuration must stop startup rather
 // than silently fall back to another mode, because a mode nobody selected
-// running in production is exactly what STABILIZE-031 found. And a complete
+// running in production is exactly what an earlier round found. And a complete
 // configuration under a mode that cannot use it is a credential and an endpoint
 // sitting live for the day someone flips a string.
 // validateTopicConsent keeps the signing key out of every mode that cannot use

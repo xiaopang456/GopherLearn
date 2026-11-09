@@ -119,20 +119,20 @@ type RunnerConfig struct {
 	// where a model that keeps rephrasing one search can consume the entire
 	// budget and still reach the answer with nothing the second tool would have
 	// found. A zero leaves that capability bounded only by MaxToolCalls, which
-	// is what every mode before STABILIZE-033 relies on.
+	// is what every earlier mode relies on.
 	PerTool ToolCallLimits
 	// ForcesKnowledgeSearchWithMemoryTool re-enables the server's
 	// knowledge-first rule in a mode that registers memory_search.
 	//
 	// It is stated in the negative-by-default direction on purpose: false is
-	// what every mode did before STABILIZE-056, so every frozen config literal
+	// what every earlier mode did, so every frozen config literal
 	// and every published measurement keeps the behaviour it was taken under,
 	// and only a mode that opts in changes. See
 	// memoryrecall.ReadMode.DefersFirstToolChoiceToModel for which modes may.
 	ForcesKnowledgeSearchWithMemoryTool bool
 	// ToolSurface selects which names the model is shown for the capabilities
 	// this run registers. The zero value is SurfaceLegacy, so every mode that
-	// existed before STABILIZE-061 keeps the names its measurements describe
+	// existed before the explicit-actions surface keeps the names its measurements describe
 	// without naming the field.
 	ToolSurface ToolSurface
 	// ForcesMemoryDraftBeforeMemoryRead makes the draft tool the first tool of
@@ -158,6 +158,18 @@ type RunnerConfig struct {
 	// a deployment without a reranker never produces one and the
 	// pre-retrieval stays off there too.
 	RelevanceThreshold float64
+	// OutputReserveTokens is what the window keeps for the reply, and it is the
+	// output limit every generation of the turn is sent with.
+	//
+	// The window's arithmetic already rests on this number: the input target
+	// and the reserve together have to fit inside the declared window. A
+	// request that names no limit of its own leaves the reply length to the
+	// provider's default, which is not a budget this deployment holds itself
+	// to - the default is the provider's, and it changes without notice.
+	//
+	// Zero means the runner was built without a reserve, and no limit is sent.
+	// A negative number is a configuration fault and is refused.
+	OutputReserveTokens int
 }
 
 // ToolCallLimits is the per-capability half of the tool budget.
@@ -186,7 +198,7 @@ type ToolCallLimits struct {
 }
 
 // limitFor charges a call to the capability behind the name rather than to the
-// name itself. STABILIZE-061 exposes the same two memory implementations under
+// name itself. One earlier change exposes the same two memory implementations under
 // a second pair of names; without this indirection those names would fall into
 // the default branch and be budgeted at zero, which registers as "the model
 // never called the tool" rather than as a misconfiguration.
@@ -247,7 +259,7 @@ func AgentMemoryToolRunnerConfig() RunnerConfig {
 // It is v1's budget with one addition and no relaxation: the same six tool
 // calls, the same seven model calls, the same sixteen graph steps and the same
 // forty-five seconds, plus a per-capability limit of one on the new tool. That
-// is the point of stating it as its own function. STABILIZE-040 buys back a
+// is the point of stating it as its own function. The next round buys back a
 // tool round trip that v2 had removed, and a mode that also widened the fuse
 // would leave "did the extra round trip fit" unanswerable.
 func AgentMemoryToolV3RunnerConfig() RunnerConfig {
@@ -261,7 +273,7 @@ func AgentMemoryToolV3RunnerConfig() RunnerConfig {
 // model gets to call tools or regenerate.
 func AgentMemoryToolV4RunnerConfig() RunnerConfig { return AgentMemoryToolV3RunnerConfig() }
 
-// AgentMemoryExplicitActionsV1RunnerConfig is the STABILIZE-061 run envelope.
+// AgentMemoryExplicitActionsV1RunnerConfig is the run envelope.
 //
 // It is the user-confirmed mode's envelope with two fields added and no number
 // changed. That is the whole design: this round varies what the model reads in
@@ -276,16 +288,16 @@ func AgentMemoryExplicitActionsV1RunnerConfig() RunnerConfig {
 }
 
 // AgentMemoryExplicitSourcesV1RunnerConfig changes only the tool surface. The
-// complete run envelope remains the STABILIZE-061 envelope.
+// complete run envelope remains the envelope.
 func AgentMemoryExplicitSourcesV1RunnerConfig() RunnerConfig {
 	config := AgentMemoryExplicitActionsV1RunnerConfig()
 	config.ToolSurface = SurfaceExplicitSources
 	return config
 }
 
-// AgentMemorySourcePriorityV1RunnerConfig is the STABILIZE-063 envelope.
+// AgentMemorySourcePriorityV1RunnerConfig is the envelope.
 //
-// It inherits the whole STABILIZE-061 envelope - same fuses, same draft-first
+// It inherits the whole explicit-actions envelope - same fuses, same draft-first
 // rule, same explicit-sources tool table - and turns off exactly one server
 // behaviour: the knowledge-first forcing. v1.4.3's valid run showed four
 // questions about the learner's own past answered from uploaded documents
@@ -382,6 +394,9 @@ func (c RunnerConfig) Validate() error {
 	}
 	if c.RelevanceThreshold < 0 || c.RelevanceThreshold > 1 {
 		return fmt.Errorf("relevance threshold must be between 0 and 1")
+	}
+	if c.OutputReserveTokens < 0 {
+		return fmt.Errorf("output reserve must not be negative")
 	}
 	return nil
 }
@@ -688,9 +703,9 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	// window builder and the runner must agree about it: one decides whether
 	// the notes can be reached at all, the other decides what happens when
 	// they were not.
-	policy := rag.NormalizeKnowledgePolicy(input.KnowledgePolicy, rag.KnowledgePreferred)
-	if requiresKnowledgeOnly(input.Question) {
-		policy = rag.KnowledgeOnly
+	policy, err := resolveKnowledgePolicy(input.KnowledgePolicy, input.Question)
+	if err != nil {
+		return RunnerResult{}, err
 	}
 	input.KnowledgePolicy = policy
 	// The server-side pre-retrieval answers the one question the model cannot:
@@ -718,7 +733,15 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	if err != nil {
 		return RunnerResult{}, fmt.Errorf("load agent tools: %w", err)
 	}
-	if !documentKnowledgeReachable(input.Question, input.KnowledgePolicy) {
+	if input.KnowledgePolicy == rag.KnowledgeDisabled {
+		// The switch off selects the ordinary conversation shape: one generation
+		// over the history and nothing else. With an empty tool table the run
+		// takes the single-call path the assembly already uses, so this is not a
+		// second engine - it is the same engine with its capabilities taken away,
+		// which is why no prompt text, evidence reserve or finalisation rule has
+		// to be duplicated for it.
+		registered = nil
+	} else if !documentKnowledgeReachable(input.Question, input.KnowledgePolicy) {
 		registered, err = withoutDocumentKnowledgeTools(ctx, registered)
 		if err != nil {
 			return RunnerResult{}, err
@@ -782,7 +805,7 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 		memorySearchAvailable: memorySearchAvailable,
 		availableTools:        availableTools,
 	}
-	bounded := &boundedModel{inner: r.chatModel, state: state, thinkingDialect: r.config.ThinkingDialect}
+	bounded := &boundedModel{inner: r.chatModel, state: state, thinkingDialect: r.config.ThinkingDialect, outputReserveTokens: r.config.OutputReserveTokens}
 
 	// The server-side pre-retrieval is a search of the learner's material, so
 	// it is a step and it costs a tool slot. Recording it is what keeps the
@@ -852,6 +875,20 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	}
 	if !knowledgeTerminal {
 		finalAnswer = strings.TrimSpace(answer.String())
+		if finalAnswer == "" && !policy.CarriesAnyCapability() {
+			// The learner switched this turn's capabilities off; they did not
+			// cancel their question. A model that answers with a tool call under a
+			// request that carries no tool definitions has said nothing usable, and
+			// the call is dropped rather than ending the turn: one more generation
+			// asked for the answer plainly - still with no tools bound and
+			// tool_choice forbidding them - and if that cannot be spent or still
+			// brings nothing, the turn answers honestly that there was nothing to
+			// give instead of failing.
+			finalAnswer = state.answerPlainlyAfterToolCall(ctx, bounded, messages, input.Question)
+			if finalAnswer == "" {
+				finalAnswer = CapabilityFreeEmptyAnswer
+			}
+		}
 		if finalAnswer == "" {
 			return state.result(), ErrEmptyAgentAnswer
 		}
@@ -1135,7 +1172,7 @@ type runState struct {
 	historyReadAvailable     bool
 	memorySearchAvailable    bool
 	// memoryDraftAvailable records that the draft tool passed its own
-	// permission gate and is in front of the model. STABILIZE-061 uses it to
+	// permission gate and is in front of the model. One earlier change uses it to
 	// order the two memory actions: the gate has already decided this message
 	// contains something to save, so saving it is not a decision to defer until
 	// after a search that cannot help make it.
@@ -1714,6 +1751,10 @@ type boundedModel struct {
 	// written in. It rides with the model because the option that carries the
 	// switch is applied per call.
 	thinkingDialect string
+	// outputReserveTokens is the reply budget the window kept back, and it is
+	// the output limit every generation of the turn carries. Zero leaves the
+	// request without a limit of its own.
+	outputReserveTokens int
 }
 
 func (m *boundedModel) before(ctx context.Context, attempt int, reason string) error {
@@ -1765,7 +1806,14 @@ func (m *boundedModel) plan(opts []modelcomponent.Option) (generation, error) {
 	callModel := m.inner
 	forcedTool := ""
 	answers := false
-	if m.state.toolBudgetExhausted() || m.state.isLastModelCall() {
+	if !m.state.knowledgePolicy.CarriesAnyCapability() {
+		// A capability-free turn asks for no tool definitions at all - the model
+		// it calls is the unbound one - and tool_choice says so as well, because a
+		// provider that reads the switch may otherwise still answer with a call to
+		// a tool it was never shown.
+		callOpts = append(callOpts, modelcomponent.WithToolChoice(schema.ToolChoiceForbidden))
+		answers = true
+	} else if m.state.toolBudgetExhausted() || m.state.isLastModelCall() {
 		// MaxToolCalls bounds executions, not the Agent's ability to synthesize
 		// a final answer from evidence already collected. The finalizer still
 		// enforces citations, while a provider that violates tool_choice=none
@@ -1789,6 +1837,12 @@ func (m *boundedModel) plan(opts []modelcomponent.Option) (generation, error) {
 		callOpts = append(callOpts, modelcomponent.WithToolChoice(schema.ToolChoiceForced))
 	}
 	callOpts = append(callOpts, aihelper.ThinkingModelOptions(m.thinkingDialect, thinkingEnabledForModelCall(m.state.input.EnableThinking, forcedTool))...)
+	if m.outputReserveTokens > 0 {
+		// The reply budget travels with every generation, including the ones that
+		// call a tool: a tool call is an answer too, and the provider's own
+		// default is not the budget this window was measured against.
+		callOpts = append(callOpts, modelcomponent.WithMaxTokens(m.outputReserveTokens))
+	}
 	return generation{model: callModel, forcedTool: forcedTool, answers: answers, opts: callOpts}, nil
 }
 
@@ -1966,7 +2020,42 @@ func (m *boundedModel) WithTools(tools []*schema.ToolInfo) (modelcomponent.ToolC
 	if err != nil {
 		return nil, err
 	}
-	return &boundedModel{inner: bound, state: m.state, tools: append([]*schema.ToolInfo(nil), tools...), thinkingDialect: m.thinkingDialect}, nil
+	return &boundedModel{inner: bound, state: m.state, tools: append([]*schema.ToolInfo(nil), tools...), thinkingDialect: m.thinkingDialect, outputReserveTokens: m.outputReserveTokens}, nil
+}
+
+// CapabilityFreeEmptyAnswer is what a turn with no capabilities falls back to when
+// the model answered with a tool call and no plain answer could be obtained for it.
+// It is text the learner can read rather than a failed run.
+//
+// It names what actually happened - there was no usable content - and nothing more.
+// It deliberately does not suggest turning capabilities back on: the fault is that
+// the provider returned no text, and switching the library back on neither fixes
+// that nor is something this message should be nudging the learner toward.
+const CapabilityFreeEmptyAnswer = "这一轮我没能拿到可用的回答内容；请再说一次你的问题。"
+
+// answerPlainlyAfterToolCall is the recovery a capability-free turn makes when the
+// model reaches for a tool it was never given: one more generation, asked for the
+// answer plainly, still with no tool definitions bound and tool_choice forbidding
+// them. It returns "" when the turn has no generation left to spend or the second
+// generation brings no text either; the caller then uses the honest fallback text.
+func (s *runState) answerPlainlyAfterToolCall(ctx context.Context, bounded *boundedModel, messages []*schema.Message, question string) string {
+	if !s.canSpendModelCall() {
+		log.Printf("[agent-turn] capability-free turn had no generation left for the plain retry: session=%s", s.input.SessionID)
+		return ""
+	}
+	requested := append([]*schema.Message(nil), messages...)
+	requested = append(requested, schema.UserMessage("这一轮不使用任何工具、不查阅任何资料，请就上面的问题直接回答。"))
+	stream, err := bounded.Stream(ctx, requested)
+	if err != nil {
+		log.Printf("[agent-turn] capability-free plain retry failed: session=%s error_type=%T", s.input.SessionID, err)
+		return ""
+	}
+	answer, err := readAnswerStream(stream)
+	if err != nil {
+		log.Printf("[agent-turn] capability-free plain retry stream failed: session=%s error_type=%T", s.input.SessionID, err)
+		return ""
+	}
+	return strings.TrimSpace(answer)
 }
 
 func bindOnlyTool(chatModel modelcomponent.ToolCallingChatModel, tools []*schema.ToolInfo, name string) (modelcomponent.ToolCallingChatModel, error) {
@@ -2618,6 +2707,36 @@ var directConversationQuestions = map[string]struct{}{
 	"help": {}, "帮助": {},
 }
 
+// resolveKnowledgePolicy turns what the request said into the one value this run
+// uses, and refuses to guess.
+//
+// Nothing said falls back to knowledge preferred, which is what every client that
+// predates the per-turn switch expects. A value that is neither empty nor known is
+// an error rather than a folded default: folding turned a turn that meant to switch
+// the library off into a turn that read the learner's documents anyway, and the
+// direction of that mistake is the one that costs someone their privacy.
+//
+// An explicit switch-off outranks the question-text tightening. The phrases that
+// force knowledge-only are a reading of how something was worded, while the switch
+// is a decision the learner made with their hand on this turn; one sentence must
+// not overrule the other, and a turn cannot both forbid the library and require it.
+func resolveKnowledgePolicy(value rag.KnowledgePolicy, question string) (rag.KnowledgePolicy, error) {
+	resolved, err := rag.ResolveKnowledgePolicy(value)
+	if err != nil {
+		return "", err
+	}
+	if resolved == "" {
+		return rag.KnowledgePreferred, nil
+	}
+	if resolved == rag.KnowledgeDisabled {
+		return rag.KnowledgeDisabled, nil
+	}
+	if requiresKnowledgeOnly(question) {
+		return rag.KnowledgeOnly, nil
+	}
+	return resolved, nil
+}
+
 // requiresKnowledgeOnly can only tighten a server/request policy. The narrow
 // phrases avoid treating ordinary mentions of notes as a refusal to use a
 // clearly labelled general-knowledge fallback; the UI enum remains primary.
@@ -2706,8 +2825,13 @@ func isSessionContextQuestion(question string) bool {
 //
 // The knowledge-only policy wins over a question that says "do not look in my
 // notes": the request asked for answers from the notes and nothing else, and
-// a turn that cannot reach the notes could not honour it.
+// a turn that cannot reach the notes could not honour it. A turn that switched
+// the library off wins over everything else, because that value is not a reading
+// of the wording - it is the learner's decision about this turn, made by hand.
 func documentKnowledgeReachable(question string, policy rag.KnowledgePolicy) bool {
+	if policy == rag.KnowledgeDisabled {
+		return false
+	}
 	if isSessionContextQuestion(question) {
 		return false
 	}
@@ -2762,7 +2886,7 @@ func (s *runState) forcedToolName() string {
 	// Episodes only, so nothing here is being measured; suppressing the
 	// knowledge-first rule only let an ordinary technical question be answered
 	// with no document evidence, and the grounding gate then refused it.
-	// STABILIZE-061 orders the two explicit memory actions, and does it before
+	// One earlier change orders the two explicit memory actions, and does it before
 	// the clause below that hands the first choice to the model.
 	//
 	// The condition is deliberately narrow. It is "the learner asked for

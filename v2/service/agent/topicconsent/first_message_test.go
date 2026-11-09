@@ -14,7 +14,7 @@ import (
 
 func firstMessageSigner(t *testing.T) *Signer {
 	t.Helper()
-	signer, err := NewSigner("stabilize055-first-message-secret-0123456789", 10*time.Minute)
+	signer, err := NewSigner("first-message-secret-0123456789abcd", 10*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}

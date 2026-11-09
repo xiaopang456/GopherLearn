@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const testSecret = "stabilize050-test-signing-secret-0123456789"
+const testSecret = "test-signing-secret-0123456789abcd"
 
 func testSigner(t *testing.T) *Signer {
 	t.Helper()

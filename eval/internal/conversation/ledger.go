@@ -125,7 +125,10 @@ func (l *ModelLedger) Complete() bool {
 type RolePrompts map[string]string
 
 func LoadRolePrompts(repository string, mode memoryrecall.ReadMode) (RolePrompts, error) {
-	result := RolePrompts{agent.SystemPromptFor(mode): "answer"}
+	result := RolePrompts{}
+	for prompt, role := range renderedRolePrompts(agent.SystemPromptFor(mode)) {
+		result[prompt] = role
+	}
 	specs := []struct{ path, name, role string }{
 		{"agent/summarizer.go", "summarySystemPrompt", "summary"},
 		{"agent/runner.go", "generalKnowledgeSystemPrompt", "answer"},
@@ -169,6 +172,54 @@ func LoadRolePrompts(repository string, mode memoryrecall.ReadMode) (RolePrompts
 		}
 	}
 	return result, nil
+}
+
+// renderedRolePrompts returns the base prompt and every variant the product's
+// own renderer can produce from it.
+//
+// The product renders the answer prompt per turn: a rule that names a tool
+// this turn does not have is dropped, and what is left says only what the
+// model can act on. So the prompt that reaches the model is rarely the base
+// prompt byte for byte, and a role table that held only the base prompt
+// refused the product's own request as unclassified.
+//
+// The variants are enumerated with the product's own renderer rather than
+// with a copy of its trimming rule. The evaluator cannot hold a second
+// implementation of "which paragraphs survive this turn's tool table": a copy
+// would drift from the product the moment the markers change, and the drift
+// would show up as a refused request in the middle of a measurement.
+//
+// The enumeration is over the capability sets the product can build. Every
+// capability the product knows is named here, so a capability the product
+// adds later is missing from this list until it is added here too - and the
+// miss is loud, because the turn that needs the new capability produces a
+// prompt that is not in the table and is refused.
+func renderedRolePrompts(base string) map[string]string {
+	capabilities := []agent.MemoryToolCapability{
+		agent.CapabilityKnowledgeSearch,
+		agent.CapabilityDocumentRead,
+		agent.CapabilityHistoryRead,
+		agent.CapabilityEpisodeSearch,
+		agent.CapabilityTopicMemoryRead,
+		agent.CapabilityMemoryDraft,
+	}
+	result := map[string]string{}
+	for mask := 0; mask < 1<<len(capabilities); mask++ {
+		available := map[agent.MemoryToolCapability]bool{}
+		for i, capability := range capabilities {
+			if mask&(1<<i) != 0 {
+				available[capability] = true
+			}
+		}
+		// The draft rule is the one place where the prompt depends on the
+		// question rather than on the tool table, so both answers are
+		// enumerated for every tool table.
+		for _, intent := range []bool{false, true} {
+			rendered := agent.RenderSystemPrompt(base, agent.PromptCapabilities{Available: available, MemoryIntent: intent})
+			result[rendered] = "answer"
+		}
+	}
+	return result
 }
 
 type ledgerModel struct {

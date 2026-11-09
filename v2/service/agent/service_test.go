@@ -544,7 +544,8 @@ func TestServiceRejectsNonAgentAndCrossUserSession(t *testing.T) {
 		request RunRequest
 		want    error
 	}{
-		{name: "non-agent", session: func() model.Session { s := agentTestSession(); s.Mode = model.SessionModeRAG; return s }(), request: agentTestRequest(), want: ErrAgentSessionRequired},
+		{name: "legacy session asking for the library", session: func() model.Session { s := agentTestSession(); s.Mode = model.SessionModeRAG; return s }(), request: func() RunRequest { r := agentTestRequest(); r.KnowledgePolicy = rag.KnowledgePreferred; return r }(), want: ErrInvalidRunRequest},
+		{name: "unknown policy value", session: agentTestSession(), request: func() RunRequest { r := agentTestRequest(); r.KnowledgePolicy = "knowledge_force"; return r }(), want: ErrInvalidRunRequest},
 		{name: "cross-user", session: agentTestSession(), request: func() RunRequest { r := agentTestRequest(); r.UserID = 999; return r }(), want: sessiondao.ErrSessionNotFound},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -562,6 +563,117 @@ func TestServiceRejectsNonAgentAndCrossUserSession(t *testing.T) {
 				t.Fatal("rejected request must not create a run")
 			}
 		})
+	}
+}
+
+// The switch off is one generation over the conversation with its capabilities
+// taken away - not a second engine, and not the Agent loop that simply declined
+// to call anything. Two observable things have to hold: exactly one model call and
+// no tool executed, and the prompt must not offer a tool this turn cannot use,
+// because a rule naming a tool the model does not have is how a fabricated tool
+// call starts.
+func TestServiceConversationTurnCallsTheModelOnceAndRunsNoTool(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mode   model.SessionMode
+		policy rag.KnowledgePolicy
+	}{
+		{name: "agent session with the switch off", mode: model.SessionModeAgent, policy: rag.KnowledgeDisabled},
+		{name: "legacy session with nothing said", mode: model.SessionModeRAG, policy: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var executions atomic.Int32
+			session := agentTestSession()
+			session.Mode = tc.mode
+			repository := newMemoryRunRepository(session)
+			chatModel := &scriptedChatModel{respond: func(_ context.Context, _ int) (*schema.Message, error) {
+				return schema.AssistantMessage("好的，我们继续聊。", nil), nil
+			}}
+			registry := StaticToolRegistry{Registered: []tool.BaseTool{mustFakeTool(t, &executions)}}
+			runner := mustRunner(t, chatModel, registry, repository, DefaultRunnerConfig())
+			service, err := NewService(repository, repository, &memoryMessageStore{}, runner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := agentTestRequest()
+			request.KnowledgePolicy = tc.policy
+			result, err := service.Run(context.Background(), request, DiscardEvents)
+			if err != nil {
+				t.Fatalf("a conversation turn was refused: %v", err)
+			}
+			if result.ModelCalls != 1 || chatModel.CallCount() != 1 {
+				t.Fatalf("result calls=%d model calls=%d, want one generation", result.ModelCalls, chatModel.CallCount())
+			}
+			if result.ToolCalls != 0 || executions.Load() != 0 {
+				t.Fatalf("a capability-free turn executed something: result=%d tool=%d", result.ToolCalls, executions.Load())
+			}
+			// A turn still writes its own ledger rows (it started, it answered),
+			// so the claim here is narrower and is the one that matters: nothing
+			// in the record names a capability this turn was not given.
+			for _, step := range repository.steps {
+				if strings.TrimSpace(step.ToolName) != "" {
+					t.Fatalf("a capability-free turn recorded a tool step: tool=%s type=%s", step.ToolName, step.Type)
+				}
+			}
+			if repository.run == nil {
+				t.Fatal("a conversation turn must still be a run: it has to be auditable and replayable like any other")
+			}
+			if repository.run.InputHash == "" {
+				t.Fatal("the run carries no identity")
+			}
+			prompt := chatModel.ReceivedMessages(0)
+			if len(prompt) == 0 {
+				t.Fatal("the model was called with no messages")
+			}
+			if shown := renderMessageText(prompt); strings.Contains(shown, "lookup") {
+				t.Fatalf("the prompt offers a tool this turn does not have: %q", shown)
+			}
+		})
+	}
+}
+
+// The identity half, which is the part that can be silently wrong. A turn that
+// forbade the library and a turn that used it must not share a run identity, or
+// the second question is answered with the first one's reply - and the shape a
+// legacy session reaches by having no library must be the same shape an Agent
+// session reaches by switching it off, because they do the same thing.
+func TestServiceGivesAConversationTurnItsOwnRunIdentity(t *testing.T) {
+	question := "随便聊聊，不用查资料"
+	hashFor := func(mode model.SessionMode, policy rag.KnowledgePolicy) string {
+		t.Helper()
+		session := agentTestSession()
+		session.Mode = mode
+		repository := newMemoryRunRepository(session)
+		chatModel := &scriptedChatModel{respond: func(_ context.Context, _ int) (*schema.Message, error) {
+			return schema.AssistantMessage("好", nil), nil
+		}}
+		runner := mustRunner(t, chatModel, StaticToolRegistry{}, repository, DefaultRunnerConfig())
+		service, err := NewService(repository, repository, &memoryMessageStore{}, runner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := agentTestRequest()
+		request.Question = question
+		request.KnowledgePolicy = policy
+		if _, err := service.Run(context.Background(), request, DiscardEvents); err != nil {
+			t.Fatalf("%s/%s: %v", mode, policy, err)
+		}
+		if repository.run == nil {
+			t.Fatalf("%s/%s: no run row", mode, policy)
+		}
+		return repository.run.InputHash
+	}
+	off := hashFor(model.SessionModeAgent, rag.KnowledgeDisabled)
+	on := hashFor(model.SessionModeAgent, rag.KnowledgePreferred)
+	legacy := hashFor(model.SessionModeRAG, "")
+	if off == "" || on == "" {
+		t.Fatal("a turn identity came back empty")
+	}
+	if off == on {
+		t.Fatal("a turn that forbade the library and a turn that allowed it share one identity: the second would be answered by replaying the first")
+	}
+	if legacy != off {
+		t.Fatalf("the same conversation shape got two identities: legacy=%s off=%s", legacy, off)
 	}
 }
 
@@ -762,7 +874,7 @@ func (c *eventCollector) ordered(types ...EventType) bool {
 	return position == len(types)
 }
 
-// BUG-AGENT-103. A run whose lease ends must still end visibly: a terminal row
+// A run whose lease ends must still end visibly: a terminal row
 // and a run_failed event. Before the fix the service returned the lease error
 // directly, so the row was left for the reaper to mark lease_expired and the
 // client saw a stream that simply stopped.

@@ -235,7 +235,7 @@ func TestMigrateBackfillsLegacySessionOwnershipAndMode(t *testing.T) {
 	}
 	for _, table := range []string{"memory_candidates", "long_term_memories"} {
 		if !db.Migrator().HasColumn(table, "memory_scope") || !db.Migrator().HasColumn(table, "valid_until") {
-			t.Fatalf("empty-schema migration missed AGENT-027 columns on %s", table)
+			t.Fatalf("empty-schema migration missed the memory scope columns on %s", table)
 		}
 	}
 	if err := db.Exec(`DROP INDEX uidx_users_email_normalized ON users`).Error; err != nil {

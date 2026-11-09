@@ -144,7 +144,7 @@ Boundary 3 above is amended because this learner decides for themselves which su
 // renamed, and with nothing else changed.
 //
 // It is a mechanical substitution rather than a rewritten prompt, and that is
-// the point of the round. STABILIZE-061 varies what the two memory actions are
+// the point of the round. One earlier change varies what the two memory actions are
 // called; a prompt rewritten at the same time would add guidance, and a result
 // could then be attributed to the new sentences rather than to the contract.
 // The substitution is verified in both directions by a test - replacing the new
@@ -164,14 +164,14 @@ var explicitMemoryActionPrompt = strings.NewReplacer(
 ).Replace(agentMemoryUserConfirmedV1SystemPrompt)
 
 // explicitMemorySourcePrompt makes all three competing actions source
-// specific. It is a mechanical substitution of the STABILIZE-061 prompt so
+// specific. It is a mechanical substitution of the prompt so
 // the new round changes no routing advice beyond the tool contract itself.
 var explicitMemorySourcePrompt = strings.NewReplacer(
 	MustToolNameFor(CapabilityKnowledgeSearch, SurfaceExplicitActions),
 	MustToolNameFor(CapabilityKnowledgeSearch, SurfaceExplicitSources),
 ).Replace(explicitMemoryActionPrompt)
 
-// sourcePriorityPrompt is the STABILIZE-063 prompt. It is the explicit-source
+// sourcePriorityPrompt is the prompt. It is the explicit-source
 // prompt with the base prompt's technical-first boundary replaced by a
 // source-priority rule, and nothing else changed.
 //
@@ -266,7 +266,7 @@ type ContextConfig struct {
 	InputTargetTokens   int
 	OutputReserveTokens int
 	EvidenceReserve     int
-	// AGENT-019 split the single memory budget in two. Profile always applies
+	// The memory budget is split in two. Profile always applies
 	// and is injected whole; topic notes are query-relevant and retrieved. One
 	// shared budget meant whichever block came first starved the other, and the
 	// profile block came first, so thirty preferences could consume the whole
@@ -274,7 +274,7 @@ type ContextConfig struct {
 	MaxGlobalUserMemoryTokens int
 	// MaxTopicUserMemoryTokens bounds the topic payload the mastery path injects.
 	//
-	// AGENT-021 merged this with the old mastery budget: a topic's assessment
+	// This is merged with the old mastery budget: a topic's assessment
 	// and its notes come from one key and read as one thing, and splitting them
 	// into two prompt blocks showed the model two disconnected halves of the
 	// same subject. The combined figure is the sum of the two it replaces, so
@@ -314,7 +314,7 @@ func DefaultContextConfig() ContextConfig {
 		// InputTargetTokens stays at 20000 while the shipped config runs at
 		// 28000. This is not drift: main.go never calls this function, it
 		// builds ContextConfig from AgentConfig. The only callers are tests,
-		// and exp001b_harness_test.go records a frozen EXP-001B baseline whose
+		// and exp001b_harness_test.go records a frozen baseline whose
 		// saturation assertions ("projected_15k_to_20k", plus the dropped and
 		// truncated branches its pressure messages exercise) are defined
 		// against 20000. Raising it here would silently move an experiment
@@ -482,7 +482,7 @@ func (f GlobalMemoryProviderFunc) GlobalMemories(ctx context.Context, input RunC
 // from separate readers: the planner decides the topic and episode halves in one
 // pass, and the global half is read by the same call so that the builder has one
 // provider to consult rather than a mixture of old and new ones. A mixture is
-// what would let the pre-STABILIZE-032 trigger rules keep deciding what the new
+// what would let the earlier trigger rules keep deciding what the new
 // path ever gets to see.
 type PlannedMemoryRecall struct {
 	Global   []string
@@ -681,7 +681,7 @@ func (b *DatabaseContextBuilder) UseEpisodeProvider(provider EpisodeProvider) {
 }
 
 // UseTopicKeyResolver attaches the shared topic resolution step. Without it the
-// builder behaves exactly as it did before STABILIZE-030.
+// builder behaves exactly as it did before the planned read path.
 func (b *DatabaseContextBuilder) UseTopicKeyResolver(resolver TopicKeyResolver) {
 	b.topics = resolver
 }
@@ -743,17 +743,40 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	// supposed to be the pre-030 path, and a cycle sitting there unused is an
 	// invitation for a later branch to start using it.
 	var cycle *memoryrecall.Cycle
-	if b.config.MemoryReadMode.UsesRecallCycle() {
+	// capabilityFree is the whole turn's answer to "what may this turn look at",
+	// decided once here and read by every block below. Listing the reads it
+	// closes: the recall cycle (whose only purpose is to embed a query), the
+	// active learning task, the mastery text and topic keys, the topic resolver
+	// (which under a semantic mode embeds the question before it proposes
+	// anything), and the episode and long-term memory readers.
+	//
+	// The empty providers are the same ones an unconfigured assembly gets, so no
+	// block has to learn a new shape and no ordering or budget rule changes.
+	//
+	// This is the ceiling the learner set with the switch, not a degradation:
+	// nothing here is logged as a provider failure, because nothing failed.
+	capabilityFree := !input.KnowledgePolicy.CarriesAnyCapability()
+	if !capabilityFree && b.config.MemoryReadMode.UsesRecallCycle() {
 		cycle = memoryrecall.New(input.Question)
 		input.RecallCycle = cycle
 	}
-	taskState, err := b.tasks.CurrentTaskState(ctx, input)
+	taskProvider := b.tasks
+	if capabilityFree {
+		taskProvider = EmptyTaskStateProvider{}
+	}
+	taskState, err := taskProvider.CurrentTaskState(ctx, input)
 	if err != nil {
 		return ContextWindow{}, err
 	}
 	var masteryText string
 	var masteryTopics MasteryTopics
-	if !b.config.MemoryReadMode.UsesUserConfirmedTopicContext() {
+	if capabilityFree {
+		// Mastery is learning state, and it reaches the wording of an answer.
+		// A turn that switched its capabilities off does not get to be told how
+		// far along it is in a topic it did not ask about.
+		masteryText = ""
+		masteryTopics = MasteryTopics{}
+	} else if !b.config.MemoryReadMode.UsesUserConfirmedTopicContext() {
 		// One call, whichever interface the provider satisfies. The sourced form
 		// is preferred because it costs nothing extra: it is the same read,
 		// returning both halves of what it already computed instead of the
@@ -794,7 +817,7 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	// authoritative half is new and reaches nothing but the v2 bootstrap.
 	input.StrongTopicKeys = appendTopicKeys(input.StrongTopicKeys, masteryTopics.Matched)
 	input.AuthoritativeTopicKeys = appendTopicKeys(input.AuthoritativeTopicKeys, masteryTopics.Authoritative)
-	if b.topics != nil && b.config.MemoryReadMode.UsesTopicResolver() {
+	if !capabilityFree && b.topics != nil && b.config.MemoryReadMode.UsesTopicResolver() {
 		proposed, topicErr := b.topics.ProposeTopicKeys(ctx, input)
 		if topicErr != nil {
 			// Topic resolution is an enhancement to recall, never the answer.
@@ -811,7 +834,18 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	var confirmedKeys []string
 	var confirmedStates []ConfirmedTopicLearningState
 	var confirmedRecords []TopicMemoryRecord
-	if !b.config.MemoryReadMode.AutoInjectsTopicAndEpisodeMemory() {
+	if capabilityFree {
+		// The episode and long-term memory readers stay shut. This is the shape
+		// the ceiling decides, not a degraded read: nothing is logged as a
+		// provider failure and no budget is spent, and every block downstream
+		// already knows how to render an empty result.
+		//
+		// Reading them anyway was the mistake this branch closes: the episode
+		// retriever issues an embedding before fusion can reject the candidate,
+		// so a turn that was told to touch nothing could still pay for a query
+		// vector and pull in a long-term memory line. An empty tool ledger would
+		// not have shown any of it.
+	} else if !b.config.MemoryReadMode.AutoInjectsTopicAndEpisodeMemory() {
 		// Global only. Topic notes and Episodes are not read here at all: under
 		// this mode they exist for the Agent to ask for, and a builder that
 		// fetched them anyway would pay for a retrieval it then discards while
@@ -872,7 +906,7 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	} else if b.config.MemoryReadMode.UsesModelPlanner() {
 		// The planned path replaces both readers rather than wrapping them.
 		// Calling the old ones first and letting a model re-rank what they
-		// returned would leave the pre-STABILIZE-032 trigger rules deciding
+		// returned would leave the earlier trigger rules deciding
 		// what the new path can ever see, which is the arrangement this mode
 		// exists to get out from under.
 		if b.planned == nil {
@@ -1028,7 +1062,7 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	if len(confirmedStates) > 0 || len(confirmedRecords) > 0 {
 		// One block, two provenances. The learner's confirmation bought both
 		// halves of one subject, and splitting them into two prompt blocks is
-		// what AGENT-021 removed.
+		// what the merged block removed.
 		topicText, preinjected = renderConfirmedTopicContext(input.MemoryEvidence, confirmedStates,
 			confirmedRecords, topicBudget)
 	} else if len(bootstrapTopics) > 0 {
@@ -1058,7 +1092,7 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		breakdown.TopicUserMemory = cost
 		remaining -= cost
 	}
-	// Build the pre-AGENT-026 tail first. Episode is optional derived context,
+	// Build the tail first. Episode is optional derived context,
 	// so it may use only capacity that would otherwise be unused; it never
 	// removes SessionSummary or Recent Messages that the same run had without
 	// Episode injection.

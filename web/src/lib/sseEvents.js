@@ -40,7 +40,7 @@ function parsePayload(raw) {
 
 /**
  * @param {import('./sseParser.js').SSEFrame} frame
- * @returns {{kind: string, runId: string, messageId: string, delta: string,
+ * @returns {{kind: string, runId: string, messageId: string,
  *   content: string, code: string, message: string, sources: object[],
  *   finalBlockId: string}}
  */
@@ -57,7 +57,11 @@ export function toStreamEvent(frame) {
       payload.messageId,
       payload.assistant_message_id,
     ),
-    delta: typeof payload.delta === 'string' ? payload.delta : '',
+    // One text field for every text-bearing frame. `message.delta` and
+    // `agent.text.delta` both carry `content`, and in both cases it is the whole text of
+    // that block or answer as it currently stands, not the piece that just arrived - so
+    // there is no separate increment field left to read, and a client that appended one
+    // would double the answer.
     content: typeof payload.content === 'string' ? payload.content : '',
     code: firstString(payload.code, errorField(payload, 'code')),
     message: firstString(payload.message, errorField(payload, 'message')),

@@ -1,5 +1,12 @@
 import { categories, materialize } from './scenarios.mjs'
 
+// draftCategories are the long-conversation categories of the draft schema, which
+// scenarios.mjs accepts by schema version rather than by name. The judge needs
+// them by name because a category decides which attempts are asked about, so the
+// guard here has to know both lists; it stays a local list so this file does not
+// silently diverge from the schema the validator enforces.
+export const draftCategories = new Set(['R1', 'R2', 'R3', 'R4', 'R5', 'R6'])
+
 // The statistics of one comparison between two rolling-summary policies.
 //
 // The comparison has two questions that the ordinary report cannot answer.
@@ -131,7 +138,7 @@ export function attemptKey(item_id, arm, condition, rep) {
 export function judgeInput(scenarios, records, { selected = judgeCategories(), pending = null } = {}) {
   if (!(scenarios instanceof Map) || !Array.isArray(records)) throw new Error('invalid judge input')
   const wanted = new Set(selected)
-  for (const category of wanted) if (!categories.has(category)) throw new Error('unknown category')
+  for (const category of wanted) if (!categories.has(category) && !draftCategories.has(category)) throw new Error('unknown category')
   const rows = []
   for (const record of records) {
     const scenario = scenarios.get(record?.qid)
@@ -169,8 +176,16 @@ export function judgeInput(scenarios, records, { selected = judgeCategories(), p
 
 // judgeCategories are the categories whose answers are not decided by the
 // structure and are therefore judged.
+//
+// R5 states a standing constraint, so it is judged the way 'constraint' is, one
+// check point per required item. R2 and R3 are scored by the structure like
+// 'stale', but an attempt can still come back undecided - the answer mixes the two
+// values, or names neither - and then it needs the same single question a 'stale'
+// attempt gets. R1, R4 and R6 are left out as 'early_fact' is: their outcome is
+// whatever the value lists already decide, and an attempt that names no value at
+// all stays pending rather than being talked into a verdict.
 export function judgeCategories() {
-  return ['constraint', 'irrelevant', 'no_fabrication', 'stale']
+  return ['constraint', 'irrelevant', 'no_fabrication', 'stale', 'R5', 'R2', 'R3']
 }
 
 // quotedName is the name the question quotes, when it quotes exactly one.
@@ -227,10 +242,18 @@ export function evidenceFor(scenario, condition = 'main') {
 // A scenario that asks for a current answer and names no required gets one
 // synthetic checkpoint, because there is still one question to answer: is the
 // current answer right and is no old value passed off as the current one.
+//
+// The two update categories need the same treatment, but the value they ask for
+// differs: R2 asks for the value that replaced the old one, R3 asks for the value
+// that was replaced. Reading the wrong side as the right one is exactly what each
+// question is about, so the check point names the direction instead of saying
+// "current".
 export function checkPointsFor(scenario) {
   const required = scenario.answer?.required
   if (Array.isArray(required) && required.length) return { points: required }
   if (scenario.category === 'stale') return { points: ['当前答案正确且无旧值冒充当前值'] }
+  if (scenario.category === 'R2') return { points: ['当前值正确，且没有拿被取代的旧值冒充当前值'] }
+  if (scenario.category === 'R3') return { points: ['最初值正确，且没有拿后来的新值冒充最初值'] }
   return { error: 'the scenario names no check point' }
 }
 
@@ -345,7 +368,12 @@ export function categoryReport(outcomes, scenarios, { left, right, judgments = [
     return present
   }
   const rows = []
-  for (const category of [...categories].sort()) {
+  // Every category that is known is reported even when nothing ran, and every
+  // category that ran is reported even when it is new: iterating only the known
+  // list would leave a fresh category out of the comparison altogether, and its
+  // absence would read as "nothing to compare" rather than as data present.
+  const listed = new Set([...categories, ...withCategory.map(row => row.category).filter(Boolean)])
+  for (const category of [...listed].sort()) {
     const conditions = conditionsOf(category)
     const a = categoryRate(withCategory.filter(row => row.arm === left.arm && conditions.includes(row.condition)), category)
     const b = categoryRate(withCategory.filter(row => row.arm === right.arm && conditions.includes(row.condition)), category)

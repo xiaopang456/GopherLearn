@@ -19,7 +19,7 @@ func compatUnauthorizedHandler(t *testing.T) http.Handler {
 	if err := config.Use(settings.Config); err != nil {
 		t.Fatal(err)
 	}
-	return newHTTPHandler(nil, nil, nil)
+	return newHTTPHandler(nil, nil)
 }
 
 // TestCompatUnauthorizedAnswersStandardEnvelope locks the compatibility

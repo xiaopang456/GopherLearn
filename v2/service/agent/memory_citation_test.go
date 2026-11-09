@@ -403,7 +403,7 @@ func TestInjectedEvidenceIsLabelledAndResolvable(t *testing.T) {
 	}
 }
 
-// BUG-AGENT-152, and the honest boundary of what a server can check.
+// The citation contract, and the honest boundary of what a server can check.
 //
 // v1.1 answered "what did we conclude last time" out of the learner's stated
 // goals. Under the citation contract that answer can take two shapes. If it
@@ -486,7 +486,7 @@ func TestTwoSearchesAndAnAnswerCostThreeModelCalls(t *testing.T) {
 	}
 }
 
-// STABILIZE-062 v1.4, BUG-AGENT-215.
+// The second search of one turn.
 //
 // The bug the failure matrix found by accident. Two searches of earlier
 // sessions in one turn usually return some of the same episodes, and the second

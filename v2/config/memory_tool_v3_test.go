@@ -53,7 +53,7 @@ func TestAgentMemoryToolV3ObeysTheSameConfigurationRulesAsV1(t *testing.T) {
 	narrow := complete
 	narrow.MaxToolCalls, narrow.MaxModelCalls, narrow.MaxGraphSteps = 3, 4, 10
 	if err := narrow.Validate(); err == nil {
-		t.Fatal("agent_memory_tool_v3 accepted the pre-STABILIZE-033 budget")
+		t.Fatal("agent_memory_tool_v3 accepted the earlier budget")
 	}
 	wide := complete
 	wide.MaxToolCalls, wide.MaxModelCalls, wide.MaxGraphSteps = 8, 9, 20

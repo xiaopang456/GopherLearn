@@ -112,7 +112,7 @@ func dreamClaim(memoryType model.MemoryScope, event model.MemoryEventType) *memo
 			ID: "candidate", JobID: "job", UserID: 7, Scope: memoryType, Subject: "GopherAI deployment",
 			ProposedContent: content, ContentHash: model.MemoryContentHash(content), StructuredJSON: `{}`,
 			Tags: model.StringList{"docker", "gopherai", "deployment"},
-			// AGENT-018 shape: a topic note is bound to a topic, a profile is not.
+			// The current shape: a topic note is bound to a topic, a profile is not.
 			TopicKey:   topicKeyFor(memoryType),
 			Durability: durabilityFor(memoryType),
 			SourceRefs: model.StringList{"agent_run:r"},
@@ -218,7 +218,7 @@ func TestExplicitRememberCanSupersedeAndRemainsUserConfirmed(t *testing.T) {
 	}
 }
 
-// AGENT-018 removed mastery from long-term memory entirely. It is structured
+// Mastery was removed from long-term memory entirely. It is structured
 // state in TopicProgress, read live by the agent, so Dream has nothing to
 // promote and nothing to keep in sync. The previous test asserted that a
 // learning candidate was rebuilt from authoritative progress; the guarantee is

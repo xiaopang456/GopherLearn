@@ -1,7 +1,7 @@
 // Package episodeassert governs the time relation between Episode assertions.
 //
 // It answers one question the rest of the system could not: given two things a
-// learner said at different times, which one still stands. STABILIZE-057 showed
+// learner said at different times, which one still stands. An earlier round showed
 // the cost of not being able to answer it - a reversed decision and the decision
 // that reversed it are, to every reader, the same kind of record.
 //

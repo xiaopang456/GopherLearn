@@ -1,6 +1,7 @@
 package hybrid
 
 import (
+	"GopherAI/config"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -52,7 +53,7 @@ func integratedImageJudged(dockerfile, moduleSeries, baselineDockerfile string) 
 	// All three modules must reach the context: hybrid replaces GopherAI with ../v2 and the
 	// root module with .. (hybrid/go.mod:94,96), so a build missing any one of them cannot
 	// resolve the hybrid -> V2 -> root chain.
-	for _, want := range []string{"COPY cmd ./cmd", "COPY internal ./internal", "COPY conversation ./conversation", "COPY v2 ./v2", "COPY hybrid ./hybrid"} {
+	for _, want := range []string{"COPY cmd ./cmd", "COPY internal ./internal", "COPY httpwire ./httpwire", "COPY v2 ./v2", "COPY hybrid ./hybrid"} {
 		if !strings.Contains(dockerfile, want) {
 			problems = append(problems, fmt.Sprintf("integrated build is missing %q: the hybrid -> V2 -> root chain needs every tree", want))
 		}
@@ -205,18 +206,25 @@ func TestIntegratedConfigTemplateLoadsAndRefusesCrossings(t *testing.T) {
 	if db := settings.v2.Config.MysqlDatabaseName; db == "" {
 		t.Fatal("mysqlConfig.databaseName must be written explicitly or the entry refuses to start")
 	}
-	if settings.client.BaseURL == "" || settings.client.Model == "" || settings.client.APIKey == "" {
-		t.Fatal("the ordinary client must be explicitly configured, not defaulted")
-	}
-	if settings.chat.Budget.MaxMessages <= 0 || settings.chat.SummaryPolicy.TriggerMessages <= 0 {
-		t.Fatalf("ordinary Chat lost its budget or summary policy: %+v", settings.chat)
-	}
-
 	raw, err := os.ReadFile(name)
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(raw)
+
+	// The shipped template must not declare the retired section. Loading it above already
+	// proves the entry would refuse it; what is checked here is the other half - the
+	// template no longer tells an operator to write it. A comment naming the section to
+	// explain that it is gone is what the template should do, so only a section header
+	// line counts.
+	for _, line := range strings.Split(text, "\n") {
+		if strings.TrimSpace(line) == "[ordinaryChat]" {
+			t.Fatal("the shipped template still declares [ordinaryChat], which this build refuses at startup")
+		}
+	}
+	if !strings.Contains(text, "[ordinaryChat]") {
+		t.Fatal("the shipped template no longer says the section was retired, so an operator with an old file gets no hint here")
+	}
 
 	// A template carrying a real value would be a leak by construction.
 	for _, key := range []string{"chatKey", "embeddingApiKey", "password", "key", "GOPHERLEARN_OPENAI_API_KEY"} {
@@ -245,13 +253,19 @@ func TestIntegratedConfigTemplateLoadsAndRefusesCrossings(t *testing.T) {
 		t.Fatalf("migrate = true was not refused with the named reason: %v", err)
 	}
 
-	// An Agent budget cannot be smuggled into the ordinary Chat section.
-	path = filepath.Join(t.TempDir(), "smuggled.toml")
-	if err := os.WriteFile(path, []byte(text+"\nGOPHERLEARN_AGENT_MAX_STEPS = \"3\"\n"), 0600); err != nil {
+	// A file written for the previous release carries [ordinaryChat]. It is refused by
+	// name, in a sentence the operator can act on, rather than started with a section that
+	// configures a client nobody builds any more.
+	path = filepath.Join(t.TempDir(), "upgrade.toml")
+	if err := os.WriteFile(path, []byte(text+"\n[ordinaryChat]\nGOPHERLEARN_OPENAI_MODEL = \"ordinary-model\"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadEntry(path); err == nil || !strings.Contains(err.Error(), "unsupported ordinaryChat setting") {
-		t.Fatalf("an Agent budget in [ordinaryChat] was not refused: %v", err)
+	_, refusal := loadEntry(path)
+	if refusal == nil || !strings.Contains(refusal.Error(), "retired configuration setting: [ordinaryChat] was removed") {
+		t.Fatalf("the retired [ordinaryChat] section was not refused with the named reason: %v", refusal)
+	}
+	if printed := config.SafeRefusalMessage(refusal); printed == "" || !strings.Contains(printed, "[ordinaryChat]") {
+		t.Fatalf("the retirement reason is not printable: %q", printed)
 	}
 
 	// A deployment upgrading over an older file is refused by name rather than
@@ -284,19 +298,11 @@ func TestIntegratedConfigTemplateLoadsAndRefusesCrossings(t *testing.T) {
 		t.Fatalf("the retired embedding key was not refused with the new location named: %v", err)
 	}
 
-	// Ordinary Chat may not fall back to the placeholder provider: an echo client answers
-	// without a model, which would look like a working turn.
-	echoed := strings.Replace(text, `GOPHERLEARN_AI_PROVIDER = "openai_compatible"`, `GOPHERLEARN_AI_PROVIDER = "echo"`, 1)
-	if echoed == text {
-		t.Fatal("the template no longer names the retained provider")
-	}
-	path = filepath.Join(t.TempDir(), "echo.toml")
-	if err := os.WriteFile(path, []byte(echoed), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := loadEntry(path); err == nil || !strings.Contains(err.Error(), "openai_compatible") {
-		t.Fatalf("an echo ordinary client was accepted: %v", err)
-	}
+	// The old case here rewrote `GOPHERLEARN_AI_PROVIDER` in [ordinaryChat] to "echo" and
+	// expected the entry to refuse a placeholder provider. That check is gone with the
+	// section: no ordinary client is constructed, so there is no provider name to get
+	// wrong and nothing to fall back to an echo answer. The refusal this file now has to
+	// earn is the named retirement above.
 
 	// Missing a forced field is a refusal, and it happens before any resource is opened.
 	dropped := strings.Replace(text, "databaseName = \"gopherlearn_v2_integration\"", "", 1)

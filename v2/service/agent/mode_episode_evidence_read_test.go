@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// STABILIZE-064. v3 exists because a read-only audit of the seam found that v1 and
+// v3 exists because a read-only audit of the seam found that v1 and
 // v2 never received an Episode card at all: both identities register memory_search,
 // AutoInjectsTopicAndEpisodeMemory is !UsesMemorySearchTool, and the builder then
 // takes its "global only" branch. So the episode half of HistoryMessageGrant was

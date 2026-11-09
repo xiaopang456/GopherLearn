@@ -119,7 +119,7 @@ func List(c *gin.Context) {
 		return
 	}
 	scopeValue := strings.TrimSpace(c.Query("scope"))
-	if scopeValue == "" { // compatibility for pre-AGENT-027 clients
+	if scopeValue == "" { // compatibility for clients that still send the old parameter
 		scopeValue = strings.TrimSpace(c.Query("type"))
 	}
 	switch scopeValue {

@@ -69,7 +69,7 @@ func (r *fakeLeaseRenewer) Calls() int {
 	return r.calls
 }
 
-// BUG-AGENT-103. A renewal is a database write, so it can fail for reasons that
+// A renewal is a database write, so it can fail for reasons that
 // have nothing to do with ownership. These four tests pin what the keeper does
 // with each kind of failure — the difference between them is the whole fix.
 

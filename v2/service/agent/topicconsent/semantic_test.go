@@ -260,7 +260,7 @@ func TestDefaultPolicyIsTheMinimalOne(t *testing.T) {
 	}
 }
 
-// BUG-AGENT-201 regression. The provider rejects a batch over twenty inputs, so
+// Batch-limit regression: the provider rejects a batch over twenty inputs, so
 // a suggester that sent the question plus every descriptor in one request
 // failed outright for any learner with twenty or more topics - which is the
 // ordinary case. All forty calls of the first authorised run returned HTTP 400

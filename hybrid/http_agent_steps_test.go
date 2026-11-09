@@ -42,7 +42,7 @@ func runRead(t *testing.T, app *Application, token, session string) (map[string]
 }
 
 func TestAgentRunReadAnswersTheStepsOfTheCallersOwnTurn(t *testing.T) {
-	app, _, _, _, token, _ := httpFixture(t)
+	app, _, _, token, _ := httpFixture(t)
 	session, runID := agentTurn(t, app, token, "steps-own")
 
 	envelope, raw := runRead(t, app, token, session)
@@ -74,7 +74,7 @@ func TestAgentRunReadAnswersTheStepsOfTheCallersOwnTurn(t *testing.T) {
 }
 
 func TestAgentRunReadRefusesAnotherAccountsSessionAndRun(t *testing.T) {
-	app, _, _, _, token, other := httpFixture(t)
+	app, _, _, token, other := httpFixture(t)
 	session, runID := agentTurn(t, app, token, "steps-foreign")
 
 	// Another account's session and another account's run answer exactly the
@@ -103,7 +103,7 @@ func TestAgentRunReadRefusesAnotherAccountsSessionAndRun(t *testing.T) {
 }
 
 func TestAgentRunReadAnswersARunWithoutStepsWithAnEmptyArray(t *testing.T) {
-	app, db, _, _, token, _ := httpFixture(t)
+	app, db, _, token, _ := httpFixture(t)
 	session := dataHTTP(t, app.Handler, "POST", "/api/v1/sessions",
 		`{"mode":"learning_agent","title":"空步骤","requestId":"empty-steps-session"}`, token)["id"].(string)
 	if err := db.Create(&model.AgentRun{
@@ -132,7 +132,7 @@ func TestAgentRunReadAnswersARunWithoutStepsWithAnEmptyArray(t *testing.T) {
 }
 
 func TestAgentRunReadNeverPublishesTheLeaseOrTheToolArgumentsAndResults(t *testing.T) {
-	app, db, _, _, token, _ := httpFixture(t)
+	app, db, _, token, _ := httpFixture(t)
 	session := dataHTTP(t, app.Handler, "POST", "/api/v1/sessions",
 		`{"mode":"learning_agent","title":"不外泄","requestId":"secret-steps-session"}`, token)["id"].(string)
 	if err := db.Create(&model.AgentRun{
@@ -182,7 +182,7 @@ func TestAgentRunReadNeverPublishesTheLeaseOrTheToolArgumentsAndResults(t *testi
 }
 
 func TestAgentRunReadKeepsTheNewestRunsAndSaysTheListWasCut(t *testing.T) {
-	app, db, _, _, token, _ := httpFixture(t)
+	app, db, _, token, _ := httpFixture(t)
 	session := dataHTTP(t, app.Handler, "POST", "/api/v1/sessions",
 		`{"mode":"learning_agent","title":"截断","requestId":"truncated-session"}`, token)["id"].(string)
 	base := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
@@ -225,7 +225,7 @@ func TestAgentRunReadKeepsTheNewestRunsAndSaysTheListWasCut(t *testing.T) {
 }
 
 func TestAgentRunReadAnswersTheLearningRunsOfTheSameSessionToo(t *testing.T) {
-	app, db, _, _, token, _ := httpFixture(t)
+	app, db, _, token, _ := httpFixture(t)
 	session := dataHTTP(t, app.Handler, "POST", "/api/v1/sessions",
 		`{"mode":"learning_agent","title":"学习运行","requestId":"learning-run-session"}`, token)["id"].(string)
 	if err := db.Create(&model.AgentRun{
@@ -256,7 +256,7 @@ func TestAgentRunReadAnswersTheLearningRunsOfTheSameSessionToo(t *testing.T) {
 }
 
 func TestHistoryItemsCarryTheRunThatProducedThem(t *testing.T) {
-	app, _, _, _, token, _ := httpFixture(t)
+	app, _, _, token, _ := httpFixture(t)
 	session, runID := agentTurn(t, app, token, "history-run-id")
 
 	items := dataHTTP(t, app.Handler, "GET", "/api/v1/sessions/"+session+"/messages", "", token)["items"].([]any)
@@ -271,28 +271,49 @@ func TestHistoryItemsCarryTheRunThatProducedThem(t *testing.T) {
 	}
 }
 
-// TestHistoryItemsOfAnOrdinaryChatCarryNoRun pins the other half of the
-// contract: the run id is the run's own fact, so a message that no run
-// produced has none, and the key is absent rather than empty.
-func TestHistoryItemsOfAnOrdinaryChatCarryNoRun(t *testing.T) {
-	app, _, _, _, token, _ := httpFixture(t)
+// A conversation turn is a run now, so both of its messages name it, and they name the
+// same one. The other half of the old contract still holds and is the half a migration
+// depends on: a row no run produced carries no run_id key at all, not an empty one.
+// Sessions written before the change are full of those rows and have to stay readable.
+func TestHistoryOfAConversationTurnNamesOneRunAndALegacyRowNamesNone(t *testing.T) {
+	app, db, _, token, _ := httpFixture(t)
 	session := createHTTP(t, app.Handler, token, "普通对话")
-	dataHTTP(t, app.Handler, "POST", "/api/v1/sessions/"+session+"/messages", `{"content":"你好"}`, token)
-
-	items := dataHTTP(t, app.Handler, "GET", "/api/v1/sessions/"+session+"/messages", "", token)["items"].([]any)
-	if len(items) == 0 {
-		t.Fatal("no history items")
+	if err := db.Create(&model.Message{SessionID: session, UserName: "learner", Content: "改线之前留下的", IsUser: true}).Error; err != nil {
+		t.Fatal(err)
 	}
-	for _, item := range items {
-		row := item.(map[string]any)
-		if _, present := row["run_id"]; present {
-			t.Fatalf("a message of an ordinary chat named a run: %v", row)
+	sent := dataHTTP(t, app.Handler, "POST", "/api/v1/sessions/"+session+"/messages", `{"content":"你好"}`, token)
+	runID, _ := sent["assistant_message"].(map[string]any)["run_id"].(string)
+	if runID == "" {
+		t.Fatalf("a conversation turn published no run: %v", sent)
+	}
+	if sent["user_message"].(map[string]any)["run_id"] != runID {
+		t.Fatalf("the two rows of one turn name different runs: %v", sent)
+	}
+	// The id has to be a run that exists and belongs to this session and this user,
+	// not a string the serializer made up.
+	var run model.AgentRun
+	if err := db.Where("id = ?", runID).First(&run).Error; err != nil {
+		t.Fatalf("history names a run that is not stored: %v", err)
+	}
+	if run.SessionID != session || run.UserID != 1 {
+		t.Fatalf("history names another session's or user's run: %+v", run)
+	}
+	items := dataHTTP(t, app.Handler, "GET", "/api/v1/sessions/"+session+"/messages", "", token)["items"].([]any)
+	if len(items) != 3 {
+		t.Fatalf("history items %v", items)
+	}
+	if _, present := items[0].(map[string]any)["run_id"]; present {
+		t.Fatalf("a row no run produced named a run: %v", items[0])
+	}
+	for _, item := range items[1:] {
+		if row := item.(map[string]any); row["run_id"] != runID {
+			t.Fatalf("a message of this turn does not name its run: %v", row)
 		}
 	}
 }
 
 func TestAgentRunReadAnswersARunOfTheCallersOwnWithItsSteps(t *testing.T) {
-	app, db, _, _, token, _ := httpFixture(t)
+	app, db, _, token, _ := httpFixture(t)
 	session := dataHTTP(t, app.Handler, "POST", "/api/v1/sessions",
 		`{"mode":"learning_agent","title":"单轮","requestId":"single-run-session"}`, token)["id"].(string)
 	if err := db.Create(&model.AgentRun{

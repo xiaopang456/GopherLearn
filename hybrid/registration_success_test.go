@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"github.com/cloudwego/eino/schema"
 	"github.com/golang-jwt/jwt/v4"
-	"github.com/xiaopang456/GopherLearn/conversation"
 	"gorm.io/gorm"
 	"net/http"
 	"net/http/httptest"
@@ -101,7 +100,7 @@ func registrationFixture(t *testing.T, b *registrationBoundary) (*Application, *
 	migrations := 0
 	deps := dependencies(t, db, m, &testChunks{}, &migrations)
 	deps.Registration = b.external()
-	app, err := Assemble(context.Background(), testSettings(t), deps, &ordinaryModel{}, conversation.Options{})
+	app, err := Assemble(context.Background(), testSettings(t), deps)
 	if err != nil {
 		t.Fatal(err)
 	}

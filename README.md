@@ -125,15 +125,13 @@ Copy-Item config.integrated.example.toml config.integrated.toml.local   # PowerS
 | `[mainConfig]` | `host`、`port` | 后端监听地址 |
 | `[knowledgeConfig]` | `storageDir` | 上传原文件的存放目录，需要可写 |
 | `[jwtConfig]` | `key` | 令牌签名密钥，**至少 32 字节**；换掉它会让所有已签发令牌失效 |
-| `[ordinaryChat]` | `GOPHERLEARN_AI_PROVIDER`、`GOPHERLEARN_OPENAI_BASE_URL`、`GOPHERLEARN_OPENAI_API_KEY`、`GOPHERLEARN_OPENAI_MODEL` | 普通聊天的模型；provider 必须是 `openai_compatible` |
 
-**模型相关的三段配置分别管什么**——这是最容易填错的地方：
+**模型相关的两段配置分别管什么**——这是最容易填错的地方：
 
-- `[isolatedEntry]` —— **学习 Agent** 的 chat 模型（地址、模型名、密钥）；
-- `[ragModelConfig]` —— **embedding 服务**的模型名、地址、密钥与向量维度（四件都在这一段），情景关系分类器**身份标签**里的模型名（它不决定答题用哪个模型，但请写成和上面 `chatModel` 一样的值），以及**思考开关的方言**；
-- `[ordinaryChat]` —— **普通聊天**的模型（地址、模型名、密钥）。
+- `[isolatedEntry]` —— **chat 模型**（地址、模型名、密钥）。学习 Agent 与普通对话现在共用这一个模型：一轮普通对话就是同一个回路上不开能力的一轮，所以不再单独配第二个 chat 客户端；
+- `[ragModelConfig]` —— **embedding 服务**的模型名、地址、密钥与向量维度（四件都在这一段），情景关系分类器**身份标签**里的模型名（它不决定答题用哪个模型，但请写成和上面 `chatModel` 一样的值），以及**思考开关的方言**。
 
-**同一个 chat 模型要写两遍**：学习 Agent 与普通聊天各自独立配置，所以大多数部署会把 `chatModel` / `chatBaseURL` / 密钥在 `[isolatedEntry]` 与 `[ordinaryChat]` 里填成同样的值。让普通聊天继承 Agent 的配置是"把普通对话整合进 v2"那一步的内容，现在还没有。
+原来的 `[ordinaryChat]` 一段已经废弃：写它会被指名拒绝并说明原因，而不是被忽略掉。
 
 下面是一个**可以直接抄**的例子（DeepSeek 聊天 + 百炼 embedding）：只有密钥和口令要换成你自己的，其余值照抄即可。
 
@@ -156,12 +154,6 @@ dimension = 1024
 chatModelName = "deepseek-flash"
 # 思考开关的方言：DeepSeek 用 deepseek（默认的 qwen 写法它不认）
 chatThinkingDialect = "deepseek"
-
-[ordinaryChat]
-GOPHERLEARN_AI_PROVIDER = "openai_compatible"
-GOPHERLEARN_OPENAI_BASE_URL = "https://api.deepseek.com/v1"
-GOPHERLEARN_OPENAI_API_KEY = "<你的 DeepSeek API Key>"
-GOPHERLEARN_OPENAI_MODEL = "deepseek-flash"
 
 [mysqlConfig]
 host = "127.0.0.1"
@@ -191,7 +183,7 @@ host = "127.0.0.1"
 port = 18082
 ```
 
-> 换 chat provider 要改**两处**：`[isolatedEntry]` 的 `chatKey` / `chatModel` / `chatBaseURL`（学习 Agent 用）和 `[ordinaryChat]` 的三个值（普通聊天用）——大多数部署把这两处填成同一个模型。`chatModelName` 是关系分类器的身份标签，**照抄 `chatModel`**；`chatThinkingDialect` 改成对方认的写法（默认 `qwen`）。
+> 换 chat provider 只改**一处**：`[isolatedEntry]` 的 `chatKey` / `chatModel` / `chatBaseURL`。学习 Agent 与普通对话共用这一个模型，所以过去要重复填的第二处（`[ordinaryChat]`）已经没有。`chatModelName` 是关系分类器的身份标签，**照抄 `chatModel`**；`chatThinkingDialect` 改成对方认的写法（默认 `qwen`）。
 > 换 embedding 服务只改一段：`[ragModelConfig]` 的 `embeddingModel` / `embeddingBaseUrl` / `embeddingApiKey`，外加 `dimension` 要与新模型的实际输出维度一致。
 > 完整字段表、每个字段的默认值与校验规则见 [配置参考](docs/CONFIGURATION.md)。
 
@@ -256,6 +248,17 @@ docker run -d --name gopherlearn-redis -p 127.0.0.1:16360:6379 \
 > 直接写绝对路径最省事）。其余命令两边一致。
 >
 > `redis.integrated.conf.local` 里的 `requirepass` 必须是**一个未加引号的词**、长度 ≥ 32 字节。
+
+Redis 里存的是**可重建的检索索引**，不是业务数据。索引比记录少块时，检索只会少给证据，不会报错——所以后端启动时会自己比一次（`[knowledgeConfig].startupIndexAudit.mode`，默认 `audit`，只把结果写进日志和指标）。比的是两件事，因为它们会各自出问题：**每个文档**在 Redis 里的块数对不对得上记录，以及**搜索索引本身**还在不在、它自报的文档数和这些键的个数是否一致。搜索索引被删掉时每个块都还在，只比块数会把它报成"一致"，而此时检索一条证据也返回不了。
+
+搜索索引本身不一致时**不会**批量退回文档：块都在的文档不算缺块。其中只有"索引没了"会被自动补回——装配检索服务时、以及下一次索引任何文档时都会自己把索引创建出来；而 `num_docs` 与键数不符、schema 不符、仍在索引中、有索引失败这几类**不会自动修复**，要运维按报出来的内容处理。随时也可以手工查一次，**只读，不删键、不建索引、不重建文档**：
+
+```bash
+# 在仓库根目录执行；go -C 会把程序的工作目录切到 v2/，所以配置写成 ../config.integrated.toml.local
+go -C v2 run ./cmd/indexaudit -config ../config.integrated.toml.local
+```
+
+输出里每个缺块的文档都带一条重建命令：`POST /api/v1/knowledge/documents/<id>/reindex`；索引本身的问题逐条写成 `index_problem="……"`，其中 `current index "gopherai_knowledge_chunks_v3_idx" does not exist` 就是"块都在、索引没了"。
 
 #### Redis 持久化
 
@@ -501,7 +504,7 @@ Redis 必须是**带 RediSearch 模块的 Redis Stack**（普通 Redis 没有 `F
 | 目录 | 模块 | 作用 |
 |---|---|---|
 | `v2/` | `GopherAI` | 应用内核：会话、文档、记忆、学习、测验 |
-| `hybrid/` | `gopherlearn-v2-hybrid` | **正式入口** `cmd/gopherlearn-integrated`：把内核、Agent 与普通聊天装配起来 |
+| `hybrid/` | `gopherlearn-v2-hybrid` | **正式入口** `cmd/gopherlearn-integrated`：装配内核，Agent 回合与普通对话回合共用同一条回路 |
 | 根目录 | `github.com/xiaopang456/GopherLearn` | 历史基线入口 `cmd/gopherlearn`（不是默认启动入口，说明见 [历史基线开发参考](docs/LEGACY-DEVELOPMENT-REFERENCE.md)） |
 | `web/` | npm 包 | Vue 3 客户端 |
 
@@ -509,8 +512,8 @@ Redis 必须是**带 RediSearch 模块的 Redis Stack**（普通 Redis 没有 `F
 
 ```bash
 # 根模块（历史基线）
-go vet ./cmd/... ./internal/... ./conversation/...
-go test -count=1 ./cmd/... ./internal/... ./conversation/...
+go vet ./cmd/... ./internal/... ./httpwire/...
+go test -count=1 ./cmd/... ./internal/... ./httpwire/...
 
 # v2 模块
 go -C v2 vet ./...

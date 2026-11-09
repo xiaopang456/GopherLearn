@@ -15,11 +15,6 @@ import {
   SessionMode,
   UNKNOWN_MODE_LABEL,
 } from '../src/lib/modes.js'
-import {
-  emptyKnowledgeDraft,
-  isKnowledgeUsable,
-  toWireKnowledge,
-} from '../src/lib/knowledge.js'
 import { clearDevIssues, devIssues } from '../src/lib/devlog.js'
 import { useChat } from '../src/composables/useChat.js'
 import { jsonResponse, sseFrame, sseResponse } from './helpers/transport.js'
@@ -103,6 +98,7 @@ describe('normalizeSession keeps the mode', () => {
       id: '1',
       title: '未命名会话',
       mode: 'chat',
+      canUseKnowledge: false,
       updatedAt: '',
     })
     expect(normalizeSession({ id: '2', mode: 'learning_agent' }).mode).toBe(
@@ -121,6 +117,21 @@ describe('normalizeSession keeps the mode', () => {
     expect(normalizeSession({ id: '3' }).mode).toBe('')
     expect(normalizeSession({ mode: null }).mode).toBe('')
     expect(normalizeSession({ mode: 'agent' }).mode).toBe('')
+  })
+
+  it('reads the knowledge ceiling from the server, not from the mode', () => {
+    // The two can disagree while a deployment changes its rules. Guessing from
+    // the mode in either direction would hand a session a capability the
+    // server did not grant, or hide a switch that would work.
+    expect(
+      normalizeSession({ id: 'a', mode: 'learning_agent', can_use_knowledge: false })
+        .canUseKnowledge,
+    ).toBe(false)
+    expect(
+      normalizeSession({ id: 'b', mode: 'chat', can_use_knowledge: true })
+        .canUseKnowledge,
+    ).toBe(true)
+    expect(normalizeSession({ id: 'c', mode: 'learning_agent' }).canUseKnowledge).toBe(false)
   })
 
   it('labels an unknown mode honestly instead of as an agent', () => {
@@ -152,39 +163,6 @@ describe('normalizeSession keeps the mode', () => {
   })
 })
 
-describe('knowledge draft and wire conversion', () => {
-  it('starts disabled with no invented collection', () => {
-    expect(emptyKnowledgeDraft()).toEqual({ enabled: false, selectedCollectionIds: [] })
-  })
-
-  it('is only usable when enabled with at least one id', () => {
-    expect(isKnowledgeUsable({ enabled: true, selectedCollectionIds: [] })).toBe(false)
-    expect(isKnowledgeUsable({ enabled: false, selectedCollectionIds: ['c-1'] })).toBe(false)
-    expect(isKnowledgeUsable({ enabled: true, selectedCollectionIds: ['c-1'] })).toBe(true)
-    expect(isKnowledgeUsable(null)).toBe(false)
-  })
-
-  it('emits nothing at all when disabled — the one representation we standardise on', () => {
-    expect(toWireKnowledge(emptyKnowledgeDraft())).toBe(null)
-    expect(toWireKnowledge({ enabled: true, selectedCollectionIds: [] })).toBe(null)
-  })
-
-  it('emits the contract key names when enabled', () => {
-    expect(
-      toWireKnowledge({ enabled: true, selectedCollectionIds: ['collection-1'] }),
-    ).toEqual({ enabled: true, collection_ids: ['collection-1'] })
-  })
-
-  it('dedupes and de-noises the selected ids', () => {
-    expect(
-      toWireKnowledge({
-        enabled: true,
-        selectedCollectionIds: ['a', 'a', ' b ', '', 'c'],
-      }).collection_ids,
-    ).toEqual(['a', 'b', 'c'])
-  })
-})
-
 describe('streamMessage body', () => {
   const base = {
     sessionId: 's-1',
@@ -193,10 +171,10 @@ describe('streamMessage body', () => {
     onEvent: () => {},
   }
 
-  it('omits knowledge entirely when the option is off', async () => {
+  it('omits the policy when the caller did not supply one', async () => {
     route(() => sseResponse([sseFrame('message.completed', {})]))
 
-    await streamMessage({ ...base, knowledge: emptyKnowledgeDraft() })
+    await streamMessage(base)
 
     expect(JSON.parse(calls[0].init.body)).toEqual({ content: '问题' })
   })
@@ -204,22 +182,27 @@ describe('streamMessage body', () => {
   it('carries no legacy `message`, `mode` or `answer_strategy` field', async () => {
     route(() => sseResponse([sseFrame('message.completed', {})]))
 
-    await streamMessage({ ...base, knowledge: null })
+    await streamMessage({ ...base, knowledgePolicy: 'knowledge_disabled' })
 
-    expect(Object.keys(JSON.parse(calls[0].init.body))).toEqual(['content'])
+    expect(Object.keys(JSON.parse(calls[0].init.body))).toEqual([
+      'content',
+      'knowledgePolicy',
+    ])
   })
 
-  it('adds the knowledge block once a real collection is selected', async () => {
+  it('sends the explicit per-turn policy, never the retired knowledge block', async () => {
     route(() => sseResponse([sseFrame('message.completed', {})]))
 
     await streamMessage({
       ...base,
+      knowledgePolicy: 'knowledge_preferred',
+      // A caller that still passes the retired option gets nothing on the wire.
       knowledge: { enabled: true, selectedCollectionIds: ['collection-1'] },
     })
 
     expect(JSON.parse(calls[0].init.body)).toEqual({
       content: '问题',
-      knowledge: { enabled: true, collection_ids: ['collection-1'] },
+      knowledgePolicy: 'knowledge_preferred',
     })
   })
 

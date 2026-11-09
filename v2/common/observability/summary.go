@@ -12,7 +12,7 @@ package observability
 // answer, the body could not be read) from the ones that are not (the
 // cooldown held the compaction back, the request had no room left).
 func (r *MemoryRecorder) SummaryOutcome(reason string) {
-	reason = boundedLabel(reason, "none", "model_call", "parse", "structure", "length", "timeout", "storage", "empty_output", "cooldown", "skipped")
+	reason = boundedLabel(reason, "none", "model_call", "parse", "structure", "length", "timeout", "storage", "empty_output", "cooldown", "skipped", "previous_unreadable")
 	r.add("memory_summary_outcome_total{reason="+reason+"}", 1)
 	r.logf("memory_metric name=summary_outcome reason=%s", reason)
 }

@@ -3,7 +3,7 @@
 1. Do not add personal notes, generated evaluation artifacts, credentials or local database dumps.
 2. Add tests for changes to memory authorization, Agent tool execution, retrieval filtering or learning workflow transitions.
 3. Run the verification commands before opening a pull request:
-   - root module: `go vet ./cmd/... ./internal/... ./conversation/...` and `go test -count=1 ./cmd/... ./internal/... ./conversation/...`
+   - root module: `go vet ./cmd/... ./internal/... ./httpwire/...` and `go test -count=1 ./cmd/... ./internal/... ./httpwire/...`
    - `v2/`: `go vet ./...` and `go test -count=1 ./...`
    - `hybrid/`: `go vet ./...` and `go test -count=1 ./...`
    - `web/`: `npm ci`, `npm run lint`, `npm run test`, `npm run build`

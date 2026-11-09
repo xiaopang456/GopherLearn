@@ -17,7 +17,7 @@ import (
 	"GopherAI/service/episoderelation"
 )
 
-// STABILIZE-065 Phase 1.1.1, blocker 2: the relation pass, driven from the
+// Blocker 2: the relation pass, driven from the
 // worker.
 //
 // Phase 1.1 wired UseRelationWriter and then tested the generator by calling
@@ -59,7 +59,7 @@ func (g *chainGenerator) Generate(_ context.Context,
 }
 
 // chainAllowAll is the permissive support verifier these tests need after
-// STABILIZE-065 Phase 2-C1.1 made one a required constructor argument. Nothing
+// Made one a required constructor argument. Nothing
 // here is about semantic support, so the double keeps every assertion; there is
 // no such verifier in production code.
 type chainAllowAll struct{}

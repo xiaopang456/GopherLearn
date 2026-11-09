@@ -93,7 +93,7 @@ func TestRetrieverExplicitTopicPrefersExactAndFallsBackConstrained(t *testing.T)
 	if err != nil || len(got.Episodes) != 1 || got.Episodes[0].ID != "rpc-packet" {
 		t.Fatalf("exact result=%+v err=%v", got, err)
 	}
-	// STABILIZE-030: an exact miss no longer ends the read. It records why and
+	// an exact miss no longer ends the read. It records why and
 	// continues into the constrained fallback, where a candidate still has to
 	// be corroborated by two channels and still has to carry the evidence the
 	// question asked for. Here http-noise reaches both channels but recorded no

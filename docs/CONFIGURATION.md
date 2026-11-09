@@ -50,9 +50,9 @@
 |---|---|---|
 | `[isolatedEntry]` | **学习 Agent** 的 chat 客户端 | `chatKey`、`chatModel`、`chatBaseURL` |
 | `[ragModelConfig]` | **embedding 服务**的模型名/地址/密钥/维度（四件都在这一段）；情景关系分类器**身份标签**里的模型名（不发给 provider，见下表）；思考开关的方言 | `embeddingModel`、`embeddingBaseUrl`、`embeddingApiKey`、`dimension`、`chatModelName`、`chatThinkingDialect` |
-| `[ordinaryChat]` | **普通聊天**（直连，不经 Agent 回路）的 chat 客户端 | `GOPHERLEARN_OPENAI_BASE_URL`、`GOPHERLEARN_OPENAI_API_KEY`、`GOPHERLEARN_OPENAI_MODEL` |
+| ~~`[ordinaryChat]`~~ | **已废弃**：普通对话与学习 Agent 共用 `[isolatedEntry]` 的 chat 模型；文件里还写这一段会被指名拒绝 | 无（删掉整段） |
 
-**同一个 chat 模型要写两遍**：学习 Agent 与普通聊天各自配置，所以大多数部署会把 `[isolatedEntry]` 与 `[ordinaryChat]` 填成同一个模型、同一个地址。embedding 是另一件事，用同一家或另一家都行。
+**chat 模型只写一遍**：`[isolatedEntry]` 的 `chatModel` / `chatBaseURL` / `chatKey` 同时供学习 Agent 与普通对话使用，过去要填两遍的做法已经随 `[ordinaryChat]` 一起废弃。embedding 是另一件事，用同一家或另一家都行。
 
 代码上的对应关系：
 
@@ -62,7 +62,7 @@
 | `[ragModelConfig].embeddingApiKey` | 构造 embedder，与它认证的模型名、地址在同一段 | `v2/internal/isolated/dependencies.go`（`ProductionDependencies` → `Embedder`）；是否必填由入口判（`v2/internal/isolated/settings.go`），因为默认配置不该自带密钥 |
 | `[ragModelConfig].chatModelName` | 情景记忆**关系分类器的身份标签**——它不进请求体，答问题用的模型来自 `[isolatedEntry].chatModel` | `v2/internal/isolated/wiring.go`（`episoderelation.NewChatClassifier` 的 `Chat` 是 Agent 那个客户端，`ModelName` 只拼进 `identity`） |
 | `[ragModelConfig].chatThinkingDialect` | 决定思考开关怎么写进请求体 | `v2/internal/isolated/dependencies.go` → `aihelper.ThinkingExtraFields` |
-| `[ordinaryChat].*` | 构造普通聊天的 OpenAI 兼容客户端 | `conversation/client.go` → `internal/openai` |
+| ~~`[ordinaryChat].*`~~ | 已废弃：没有任何入口再从这里构建客户端 | 装载时指名拒绝：`hybrid/entry.go` |
 
 > 曾经有一个 `ragModelConfig.baseUrl`：**没有任何客户端从它构建**，只在启动校验里要求非空。它已被删除，留着它的配置文件会被**指名拒绝**并说明地址该写在哪里（`isolatedEntry.chatBaseURL`）。宽容地忽略才是危险的一条：那会让运维以为配置了地址，而程序用的是别处。
 >
@@ -168,8 +168,21 @@ shell 死掉，服务还活着，容器在宽限期结束后被强杀——服�
 | `scanIntervalSeconds` | | `5` | 扫描间隔（秒），必须大于 0 |
 | `indexTimeoutSeconds` | | `300` | 单次索引超时（秒），必须大于 0 |
 | `executionMode` | | 空 | 这个版本**只提供进程内处理**：省略或 `legacy` 都是同一个进程内处理；写出别的值（例如从旧配置继承下来的其它取值）会在启动时被拒绝，而不是悄悄降级成本地处理 |
+| `startupIndexAudit.mode` | | `audit` | 启动时校验知识索引，问两个问题：**每个文档**在 Redis 里的块数是否等于记录里的块数；**搜索索引本身**是否存在、它自报的文档数是否等于这些键的个数（索引被删掉时块都还在，只比块数会把它报成"一致"）。`off` 不比对，`audit` 只把结果写进日志和指标，`rebuild` 在比对之后把缺块的文档退回 `pending` 交给 worker 重建。索引本身的问题只报告、不退回文档：块都在的文档不算缺块。**只有"索引缺失"会被自动补回**——装配检索服务时、以及下一次索引任何文档时都会自己创建索引；schema 不符、自报文档数与键数不符、仍在索引中、有索引失败这几类**不会自动修复**，要运维处理。校验永远不阻止启动：索引缺块是"检索少给证据"，不是"服务起不来" |
+| `startupIndexAudit.rebuildLimit` | | `20` | `rebuild` 模式下一次启动最多退回多少个文档；超出的只告警，等下一次启动。取值不能为负 |
+
+> **这套校验只在正式入口执行。** `v2` 内核自带的 `main`（`v2/main.go`，部署镜像里没有它）走的是同一份配置校验：`startupIndexAudit.mode` 写错照样在启动时被拒，但它**不执行**校验，索引不会被比一遍。
 
 文档状态由文档所有者自己的接口查看：`GET /api/v1/knowledge/documents/:id/processing`。
+
+随时手工查一次（只读，不删任何键、不创建索引、不重建任何文档）：
+
+```bash
+# 在仓库根目录执行；go -C 会把程序的工作目录切到 v2/，所以配置写成 ../config.toml
+go -C v2 run ./cmd/indexaudit -config ../config.toml
+```
+
+输出里每个缺块的文档都带一条重建命令：`POST /api/v1/knowledge/documents/<id>/reindex`；索引本身的问题逐条写成 `index_problem="……"`，汇总行用 `index_problems=<个数>` 计数。`current index "gopherai_knowledge_chunks_v3_idx" does not exist` 就是"块都在、索引没了"这一种。
 
 ### `[ragModelConfig]`
 
@@ -214,6 +227,26 @@ shell 死掉，服务还活着，容器在宽限期结束后被强杀——服�
 - 把 `summaryOpenLoopsItemLimit` 调大时，`summaryEvidenceIDLimit` 通常也要一起调大：每条待办至少引用一条消息，条目多了、编号上限没跟上，结果还是会被引用上限截掉。
 - 上限调小 = 少留历史、省 token；上限调大 = 多留历史，但摘要更长、更占上下文预算。
 
+**库里存着读不出来的旧摘要时**：普通对话以前把摘要写成纯散文，或写成一份引用是字符串的旧结构化
+文档。这一版读不出这两种形状，此时**不花调用、也不进失败冷却**——压缩前先看库里那一行，读不出来就
+跳过这一轮，指标里记 `previous_unreadable`。回答照常带水位线之后的原始消息，只是这个会话的摘要停在
+原地。要让它继续推进，用一条单独的命令逐行转换，**默认只预演、不自动跑**：
+
+```bash
+# 在仓库根目录执行；go -C 会把程序的工作目录切到 v2/，所以配置写成 ../config.toml
+go -C v2 run ./cmd/summaryconvert -config ../config.toml          # 只读：逐行分类并报数
+go -C v2 run ./cmd/summaryconvert -config ../config.toml -apply   # 机械转换两种旧形状，水位线不动
+```
+
+转换不调用模型，也不需要任何 Provider 配置：纯散文按段落写进 `completed_items`，超长在段落边界或
+单条上限处切开；根 JSON 的分组、文本与引用原样搬，`legacy_text` 也放进 `completed_items`。写回前用
+产品自己的读取器解码转换结果，通不过就不写。转不了的行（读不出来的 JSON、无法表达成消息号的引用、
+超出文档预算）一律**列出来、不改那一行**。
+
+"文档预算"取的是**这份配置里的那三个数**（`summaryGroupItemLimit` / `summaryOpenLoopsItemLimit` /
+`summaryEvidenceIDLimit`），和运行时摘要器用的是同一套判定：部署调小了就拒掉装不下的行，调大了就
+不会误拒装得下的行。
+
 `maxToolCalls` / `maxModelCalls` / `maxGraphSteps` 三个数必须**互相够得着**，否则启动报错并说明是哪一处不够：
 
 - `maxModelCalls` 至少是 `maxToolCalls + 1`：每轮工具都要一次"决定调用工具"的生成，最后还要一次生成来写答案。
@@ -239,38 +272,20 @@ shell 死掉，服务还活着，容器在宽限期结束后被强杀——服�
 
 ### `[ordinaryChat]`
 
-这一段是**普通聊天**（直连，不经 Agent 回路）的配置。**键名是白名单**：白名单外的键在装载期直接被拒（`unsupported ordinaryChat setting`）。
+**已废弃，且不再被任何入口读取。** 普通对话与学习 Agent 共用 `[isolatedEntry]` 的 chat 模型：一轮普通对话就是同一条回路上**没有开启能力**的一轮，不再为它单独构建第二个客户端。
 
-必填四项：
+这一段不再被任何入口读取。普通对话与学习 Agent 共用 `[isolatedEntry]` 的 chat 模型：一轮普通对话就是同一条回路上**没有开启能力**的一轮，不再为它单独构建第二个客户端。
 
-| 键 | 必填 | 说明 |
-|---|---|---|
-| `GOPHERLEARN_AI_PROVIDER` | ✅ | 必须是 `openai_compatible`（其它值启动被拒） |
-| `GOPHERLEARN_OPENAI_BASE_URL` | ✅ | 不能为空；必须是 http(s) 且不带凭据的 URL |
-| `GOPHERLEARN_OPENAI_API_KEY` | ✅ | 不能为空 |
-| `GOPHERLEARN_OPENAI_MODEL` | ✅ | 模型名，不能为空 |
+配置文件里如果还写着 `[ordinaryChat]`，整合入口会**指名拒绝**并说明原因，而不是把它忽略掉继续启动。理由和 `ragModelConfig.baseUrl` 那条一样：一段还在文件里、但程序已经不读的模型配置，看起来仍在生效，实际不算数，最后会表现成一笔说不清的费用或一次说不清的失败，而不是一个错误。
 
-可选项（留空即用默认值；**默认值以代码为准，不是模板里注释掉的示例值**）：
+改法：删掉整段即可。
 
-| 键 | 默认值 | 取值范围 / 说明 |
-|---|---|---|
-| `GOPHERLEARN_OPENAI_ENABLE_THINKING` | 未设置 | `true` / `false`。**未设置时这个字段根本不上线**（它不是 OpenAI schema 的一部分，严格的 provider 可能拒绝） |
-| `GOPHERLEARN_OPENAI_THINKING_DIALECT` | `qwen` | `qwen` / `deepseek` / `none`，其它值启动被拒 |
-| `GOPHERLEARN_OPENAI_TEMPERATURE` | `0`（即「不指定」） | `0..2`。留空等于「什么都不问」，沿用 provider 自己的默认 |
-| `GOPHERLEARN_OPENAI_MAX_OUTPUT_TOKENS` | `1024` | 必须是正整数 |
-| `GOPHERLEARN_OPENAI_TIMEOUT` | `30s` | 必须是正的 Go duration。它同时约束「等响应头」和「流已开后等下一段」 |
-| `GOPHERLEARN_CONTEXT_MAX_MESSAGES` | `12` | 必须是正整数 |
-| `GOPHERLEARN_CONTEXT_MAX_RUNES` | `6000` | 必须是正整数 |
-| `GOPHERLEARN_SUMMARY_TRIGGER_MESSAGES` | `12` | 必须是正整数 |
-| `GOPHERLEARN_SUMMARY_TRIGGER_TOKENS` | `6000` | 必须是正整数 |
-| `GOPHERLEARN_SUMMARY_KEEP_RECENT_MESSAGES` | `8` | 必须是正整数 |
-| `GOPHERLEARN_SUMMARY_MAX_INPUT_TOKENS` | `8000` | 必须是正整数 |
-| `GOPHERLEARN_SUMMARY_MAX_OUTPUT_TOKENS` | `2000` | 必须是正整数 |
-| `GOPHERLEARN_SUMMARY_TIMEOUT` | `20s` | 必须是正的 Go duration（如 `20s`） |
-| `GOPHERLEARN_SUMMARY_STAGE_BUDGET` | `8s` | 必须是正的 Go duration |
-| `GOPHERLEARN_SUMMARY_FAILURE_COOLDOWN` | `30s` | 必须是正的 Go duration |
+| 旧键 | 现在 |
+|---|---|
+| `GOPHERLEARN_AI_PROVIDER`、`GOPHERLEARN_OPENAI_BASE_URL`、`GOPHERLEARN_OPENAI_API_KEY`、`GOPHERLEARN_OPENAI_MODEL` | 用 `[isolatedEntry]` 的 `chatBaseURL` / `chatKey` / `chatModel`；一处一个值，不再填两遍 |
+| `GOPHERLEARN_OPENAI_THINKING_DIALECT` | 用 `[ragModelConfig].chatThinkingDialect`（见下表） |
+| `GOPHERLEARN_OPENAI_ENABLE_THINKING`、`GOPHERLEARN_OPENAI_TEMPERATURE`、`GOPHERLEARN_OPENAI_MAX_OUTPUT_TOKENS`、`GOPHERLEARN_OPENAI_TIMEOUT`、`GOPHERLEARN_CONTEXT_*`、`GOPHERLEARN_SUMMARY_*` | 本文件不再有对应配置项：思考开关怎么写进请求由 `[ragModelConfig].chatThinkingDialect` 决定，回合的上下文截取、摘要触发与生成参数由内核的装配决定 |
 
-> 上下文预算同时按**条数**和**字符数**限制：只限一条会被另一条限住（12 句寒暄，或两个巨大的回答）。
 
 ---
 
@@ -304,7 +319,7 @@ HTTP 400  The `reasoning_content` in the thinking mode must be passed back to th
 - 已经带着 `reasoning_content` 的消息（不管值是真实思考内容、空字符串还是 `null`）**一律不碰**；
 - 只在**方言是 `deepseek` 且这次请求思考开着**的时候才注册。方言不是 `deepseek`，或者思考关着，请求体与之前**逐字节一致**，走的是原来那条路径。
 
-**普通聊天路径不受影响**：它不做工具调用，没有需要回传的 assistant 轮，DeepSeek 上可以开思考。
+**不开能力的回合不受影响**：一轮普通对话不绑工具，也就没有需要回传的 assistant 轮，DeepSeek 上可以开思考。
 
 > DeepSeek 一律用 `chatThinkingDialect = "deepseek"`，**不要用 `none`**：`none` 不发任何思考字段，DeepSeek 会沿用自己的默认（思考开），而 Agent 强制指定工具的那一次要发指定工具名的 `tool_choice`，在思考模式下会被拒。
 
@@ -423,8 +438,7 @@ rerankEndpoint = "http://127.0.0.1:18083"
 | `storageDir must not be empty` | `[knowledgeConfig].storageDir` 为空 | 补上 |
 | `executionMode must be empty or "legacy"` | 写了当前版本不支持的处理模式 | 删掉这一行（省略就是进程内处理） |
 | `the chat thinking dialect must be qwen, deepseek or none` | `chatThinkingDialect` 拼错了 | 改成 `qwen` / `deepseek` / `none` 之一 |
-| `unsupported ordinaryChat setting` | `[ordinaryChat]` 里出现了白名单外的键 | 只保留白名单里的键（见上表） |
-| `explicit openai_compatible ordinary client required` | `[ordinaryChat].GOPHERLEARN_AI_PROVIDER` 不是 `openai_compatible` | 改成 `openai_compatible` |
+| `retired configuration setting: [ordinaryChat] was removed` | 文件里还写着已废弃的 `[ordinaryChat]` 整段 | 删掉这一段；chat 模型只在 `[isolatedEntry]` 写一次 |
 | `the rerank configuration is invalid` | 重排配置本身有问题：provider 拼错、缺 `rerankModel`、超时为负 | 核对 `ragModelConfig` 的重排字段 |
 | `RAG_RERANK_AUTH_TOKEN` | 没设这个环境变量，或它不足 32 字节 | 按上面的第 2 步设置环境变量 |
 | `the rerank service refused the credential` | 服务不认这个 Key | 核对 Key 是否用在这个服务上（本地服务要同时配 `--api-key`） |
@@ -432,6 +446,5 @@ rerankEndpoint = "http://127.0.0.1:18083"
 | `the rerank service did not answer inside the configured timeout` | 太慢 | 调大 `rerankTimeoutMs`，或换一个更快的重排服务 |
 | `the rerank service serves a different model` | 本地服务跑的不是钉死的那个模型 | 用上面的 `--model-id` / `--revision` 重启容器 |
 | `the rerank service is unavailable` | 地址不通、服务没起 | 核对地址、端口与服务是否在运行 |
-| `GOPHERLEARN_OPENAI_TIMEOUT must be a positive Go duration` | 普通聊天的超时写法不对 | 用 `30s` 这类 Go duration |
 | `GOPHERLEARN_OPENAI_TEMPERATURE must be a number between 0 and 2` | 温度超范围 | 改成 `0..2` |
 | `GOPHERLEARN_OPENAI_MAX_OUTPUT_TOKENS must be a positive integer` | 输出上限不是正整数 | 改正 |

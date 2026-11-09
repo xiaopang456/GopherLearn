@@ -254,7 +254,7 @@ func TestRecallRejectsRowsTheIndexShouldNotHaveReturned(t *testing.T) {
 	}
 }
 
-// AGENT-021 demotes retrieval to a shortlist. What it must get right is which
+// Retrieval is demoted to a shortlist. What it must get right is which
 // topics are worth showing, and a topic is judged by its single best note.
 func TestCandidateTopicsRankByBestNoteNotByCount(t *testing.T) {
 	// Rank 0 belongs to a topic with one note; ranks 1-3 to a topic with three.

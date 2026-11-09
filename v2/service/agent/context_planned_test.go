@@ -62,7 +62,7 @@ func (r *recordingPlanned) PlanAndVerify(context.Context, RunContext) (PlannedMe
 
 // Under model_planned_v1 the old readers are not consulted at all. Calling them
 // first and letting a model re-rank what they returned would leave the
-// pre-STABILIZE-032 trigger rules deciding what the new path can ever see.
+// Earlier trigger rules deciding what the new path can ever see.
 func TestThePlannedModeDoesNotConsultTheOldReaders(t *testing.T) {
 	memory := &countingMemories{}
 	episodes := &countingEpisodes{}

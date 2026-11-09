@@ -19,8 +19,11 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/gin-gonic/gin"
-	"github.com/xiaopang456/GopherLearn/conversation"
+	"github.com/google/uuid"
+	"github.com/xiaopang456/GopherLearn/httpwire"
 	"gorm.io/gorm"
+	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -29,7 +32,6 @@ import (
 
 type httpSurface struct {
 	db    *gorm.DB
-	chat  *conversation.Service
 	agent *entry.Application
 }
 type rawWriterKey struct{}
@@ -49,8 +51,8 @@ func (w *authCapture) Write(b []byte) (int, error) { w.WriteHeader(200); return 
 
 // Only Gin/native-auth writes are captured. Successful compatibility handlers
 // write directly to the actual server writer, so buffering cannot swallow SSE.
-func newHTTPHandler(db *gorm.DB, chat *conversation.Service, agent *entry.Application) http.Handler {
-	s := &httpSurface{db: db, chat: chat, agent: agent}
+func newHTTPHandler(db *gorm.DB, agent *entry.Application) http.Handler {
+	s := &httpSurface{db: db, agent: agent}
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.RedirectTrailingSlash = false
@@ -154,11 +156,18 @@ func codeError(w http.ResponseWriter, result code.Code) {
 		apiError(w, 503, "internal_error", "internal server error")
 	}
 }
+
+// errInvalidArgument marks a request this surface cannot answer: a session
+// whose mode has no frontend shape, a path segment that is not an identifier.
+// It answers 400, and it is this surface's own error because the ordinary
+// conversation path that used to carry it is gone.
+var errInvalidArgument = errors.New("invalid argument")
+
 func daoError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, sessionDAO.ErrSessionNotFound), errors.Is(err, gorm.ErrRecordNotFound):
 		apiError(w, 404, "not_found", "resource not found")
-	case errors.Is(err, conversation.ErrInvalidArgument):
+	case errors.Is(err, errInvalidArgument):
 		apiError(w, 400, "invalid_request", "request is invalid")
 	default:
 		apiError(w, 500, "internal_error", "internal server error")
@@ -185,7 +194,7 @@ func (s *httpSurface) login(w http.ResponseWriter, r *http.Request, _ int64, _ s
 		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
-	if err := conversation.DecodeRequest(w, r, &input); err != nil {
+	if err := httpwire.DecodeRequest(w, r, &input); err != nil {
 		apiError(w, 400, "invalid_request", "request body is invalid")
 		return
 	}
@@ -208,7 +217,7 @@ func (s *httpSurface) login(w http.ResponseWriter, r *http.Request, _ int64, _ s
 		daoError(w, err)
 		return
 	}
-	conversation.WriteEnvelope(w, 200, map[string]any{"token": token, "user": profile(row)})
+	httpwire.WriteEnvelope(w, 200, map[string]any{"token": token, "user": profile(row)})
 }
 func (s *httpSurface) me(w http.ResponseWriter, r *http.Request, uid int64, name string) {
 	if !method(w, r, "GET") {
@@ -219,7 +228,7 @@ func (s *httpSurface) me(w http.ResponseWriter, r *http.Request, uid int64, name
 		daoError(w, err)
 		return
 	}
-	conversation.WriteEnvelope(w, 200, profile(row))
+	httpwire.WriteEnvelope(w, 200, profile(row))
 }
 func frontendMode(mode model.SessionMode) (string, error) {
 	switch mode {
@@ -228,7 +237,7 @@ func frontendMode(mode model.SessionMode) (string, error) {
 	case model.SessionModeAgent:
 		return "learning_agent", nil
 	default:
-		return "", conversation.ErrInvalidArgument
+		return "", errInvalidArgument
 	}
 }
 func sessionView(row model.Session) (any, error) {
@@ -236,7 +245,14 @@ func sessionView(row model.Session) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"id": row.ID, "user_id": strconv.FormatInt(row.UserID, 10), "title": row.Title, "mode": mode, "created_at": row.CreatedAt.UTC().Format(time.RFC3339Nano), "updated_at": row.UpdatedAt.UTC().Format(time.RFC3339Nano)}, nil
+	// The ceiling, stated by the server. A client that had to infer it would
+	// have to guess, and guessing wrong in this direction hands a conversation
+	// capabilities nobody authorised it for - which is also why this says nothing
+	// about the learner's own preference: the switch is per turn, and only the
+	// ceiling says whether a turn may ask for the library at all.
+	return map[string]any{"id": row.ID, "user_id": strconv.FormatInt(row.UserID, 10), "title": row.Title, "mode": mode,
+		"can_use_knowledge": row.Mode == model.SessionModeAgent,
+		"created_at":        row.CreatedAt.UTC().Format(time.RFC3339Nano), "updated_at": row.UpdatedAt.UTC().Format(time.RFC3339Nano)}, nil
 }
 func (s *httpSurface) sessions(w http.ResponseWriter, r *http.Request, uid int64, name string) {
 	if !noQuery(w, r) {
@@ -249,7 +265,7 @@ func (s *httpSurface) sessions(w http.ResponseWriter, r *http.Request, uid int64
 			Mode      string `json:"mode"`
 			RequestID string `json:"requestId"`
 		}
-		if err := conversation.DecodeRequest(w, r, &input); err != nil {
+		if err := httpwire.DecodeRequest(w, r, &input); err != nil {
 			apiError(w, 400, "invalid_request", "request body is invalid")
 			return
 		}
@@ -273,7 +289,7 @@ func (s *httpSurface) sessions(w http.ResponseWriter, r *http.Request, uid int64
 			daoError(w, err)
 			return
 		}
-		conversation.WriteEnvelope(w, 200, view)
+		httpwire.WriteEnvelope(w, 200, view)
 	case "GET":
 		rows, err := sessionDAO.NewRepository(s.db).ListByUserID(r.Context(), uid)
 		if err != nil {
@@ -289,7 +305,7 @@ func (s *httpSurface) sessions(w http.ResponseWriter, r *http.Request, uid int64
 			}
 			items = append(items, view)
 		}
-		conversation.WriteEnvelope(w, 200, map[string]any{"items": items})
+		httpwire.WriteEnvelope(w, 200, map[string]any{"items": items})
 	default:
 		apiError(w, 405, "invalid_request", "method is not allowed")
 	}
@@ -324,10 +340,7 @@ func (s *httpSurface) sessionItem(w http.ResponseWriter, r *http.Request, uid in
 			return
 		}
 	}
-	conversation.WriteEnvelope(w, 200, nil)
-}
-func messageView(row conversation.Message) any {
-	return map[string]any{"id": row.ID, "session_id": row.SessionID, "role": row.Role, "content": row.Content, "created_at": row.CreatedAt.UTC().Format(time.RFC3339Nano)}
+	httpwire.WriteEnvelope(w, 200, nil)
 }
 
 type messageInput struct {
@@ -341,7 +354,7 @@ type messageInput struct {
 
 func inputTurn(w http.ResponseWriter, r *http.Request) (messageInput, bool) {
 	var input messageInput
-	if err := conversation.DecodeRequest(w, r, &input); err != nil {
+	if err := httpwire.DecodeRequest(w, r, &input); err != nil {
 		apiError(w, 400, "invalid_request", "request body is invalid")
 		return input, false
 	}
@@ -363,7 +376,7 @@ func (s *httpSurface) messages(w http.ResponseWriter, r *http.Request, uid int64
 			daoError(w, err)
 			return
 		}
-		conversation.WriteEnvelope(w, 200, map[string]any{"items": items})
+		httpwire.WriteEnvelope(w, 200, map[string]any{"items": items})
 	case "POST":
 		owned, err := sessionDAO.NewRepository(s.db).GetByIDAndUserID(r.Context(), sid, uid)
 		if err != nil {
@@ -371,29 +384,25 @@ func (s *httpSurface) messages(w http.ResponseWriter, r *http.Request, uid int64
 			return
 		}
 		switch owned.Mode {
-		case model.SessionModeAgent:
-			s.agentMessage(w, r, uid, name, sid)
-			return
-		case model.SessionModeNormal:
+		case model.SessionModeAgent, model.SessionModeNormal:
 		default:
-			daoError(w, conversation.ErrInvalidArgument)
+			daoError(w, errInvalidArgument)
 			return
 		}
-		input, ok := inputTurn(w, r)
-		if !ok {
-			return
-		}
-		pair, err := s.chat.Send(r.Context(), strconv.FormatInt(uid, 10), sid, input.Content)
-		if err != nil {
-			conversation.WriteError(w, err, "message")
-			return
-		}
-		conversation.WriteEnvelope(w, 200, map[string]any{"user_message": messageView(pair.User), "assistant_message": messageView(pair.Assistant)})
+		// One turn path for both session kinds. Two engines here would break the
+		// promise the per-turn switch rests on: a conversation has one history and
+		// one summarizer, and a session whose turns are split between two writers
+		// gets that single summary row rewritten under two different budgets, which
+		// its compare-and-set then turns into losing writes. A legacy chat session
+		// cannot reach the library; the same policy the stream uses decides that
+		// here, and it answers before any turn is created.
+		s.agentMessage(w, r, uid, name, sid, owned.Mode)
+		return
 	default:
 		apiError(w, 405, "invalid_request", "method is not allowed")
 	}
 }
-func (s *httpSurface) agentMessage(w http.ResponseWriter, r *http.Request, uid int64, name, sid string) {
+func (s *httpSurface) agentMessage(w http.ResponseWriter, r *http.Request, uid int64, name, sid string, mode model.SessionMode) {
 	var input struct {
 		Content         string              `json:"content"`
 		RequestID       string              `json:"requestId"`
@@ -404,17 +413,54 @@ func (s *httpSurface) agentMessage(w http.ResponseWriter, r *http.Request, uid i
 		// turn's choice.
 		EnableThinking *bool                               `json:"enableThinking"`
 		TopicConsent   agentService.TopicConsentSubmission `json:"topicConsent"`
+		// The retired ordinary-chat fields, kept visible on purpose. They are raw so
+		// that "absent", "inert value" and "actually asking for something" stay three
+		// different answers: this endpoint never declared them for an Agent turn, and
+		// a decoder that disallows unknown fields used to refuse that - a refusal that
+		// simply making the field known would silently drop.
+		Knowledge   json.RawMessage `json:"knowledge"`
+		StreamSteps json.RawMessage `json:"stream_steps"`
 	}
-	if err := conversation.DecodeRequest(w, r, &input); err != nil {
+	if err := httpwire.DecodeRequest(w, r, &input); err != nil {
 		apiError(w, 400, "invalid_request", "request body is invalid")
+		return
+	}
+	steps, knowledgeEnabled, collectionIDs, malformed := retiredBodyValues(input.Knowledge, input.StreamSteps)
+	if message := malformed; message != "" {
+		apiError(w, 400, "invalid_request", message)
+		return
+	}
+	if message := retiredOrdinaryBodyRefusal(mode, false, len(input.Knowledge) > 0, len(input.StreamSteps) > 0, steps, knowledgeEnabled, collectionIDs); message != "" {
+		apiError(w, 400, "invalid_request", message)
+		return
+	}
+	if _, err := agentService.ResolveSessionPolicy(mode, input.KnowledgePolicy); err != nil {
+		apiError(w, 400, "invalid_request", "request is invalid")
 		return
 	}
 	result, err := s.agent.Agent.Run(r.Context(), agentService.RunRequest{
 		UserID: uid, UserName: name, SessionID: sid, Question: input.Content,
-		RequestID: input.RequestID, KnowledgePolicy: input.KnowledgePolicy, EnableThinking: input.EnableThinking, TopicConsent: input.TopicConsent,
+		RequestID: turnRequestKey(mode, input.RequestID), KnowledgePolicy: input.KnowledgePolicy, EnableThinking: input.EnableThinking, TopicConsent: input.TopicConsent,
 	}, agentService.DiscardEvents)
 	if err == nil {
-		conversation.WriteEnvelope(w, 200, result)
+		if mode != model.SessionModeAgent {
+			s.touchConversationSession(r.Context(), uid, sid)
+			// A conversation turn keeps the envelope this endpoint has always
+			// returned - the learner's message and the answer - because moving the
+			// turn onto the shared history is not a reason to change what a client
+			// reads. Both rows are read by this run's id, not by position: a second
+			// turn can already have landed, and a replayed request id belongs to an
+			// older pair, so "the last two" would answer one turn's identity with
+			// another turn's text.
+			pair, pairErr := s.runPair(r.Context(), uid, sid, result.RunID)
+			if pairErr != nil {
+				httpwire.WriteError(w, pairErr, "message")
+				return
+			}
+			httpwire.WriteEnvelope(w, 200, pair)
+			return
+		}
+		httpwire.WriteEnvelope(w, 200, result)
 		return
 	}
 	// Native classification and Run identity survive acquisition failures.
@@ -438,6 +484,158 @@ func (s *httpSurface) agentMessage(w http.ResponseWriter, r *http.Request, uid i
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{"data": result, "error": map[string]any{"code": key, "native_code": native, "message": native.Msg()}})
+}
+
+// retiredBodyValues reads the retired fields' values out of their raw presence. A
+// wrong type is refused rather than read as the zero value: `stream_steps: "yes"`
+// would otherwise become false and be silently accepted.
+func retiredBodyValues(knowledge, streamSteps json.RawMessage) (steps bool, enabled bool, collectionIDs []string, refusal string) {
+	if len(streamSteps) > 0 {
+		if err := strictUnmarshal(streamSteps, &steps); err != nil {
+			return false, false, nil, "request body is invalid"
+		}
+	}
+	if len(knowledge) > 0 {
+		var body struct {
+			Enabled       bool     `json:"enabled"`
+			CollectionIDs []string `json:"collection_ids"`
+		}
+		if err := strictUnmarshal(knowledge, &body); err != nil {
+			return false, false, nil, "request body is invalid"
+		}
+		return steps, body.Enabled, body.CollectionIDs, ""
+	}
+	return steps, false, nil, ""
+}
+
+// strictUnmarshal keeps the request decoder's own rule inside these two nested
+// fields. Reading them by hand with a permissive decoder would silently accept
+// `knowledge: {"enabled_typo": true}` - a client that meant to ask for its notes
+// would then be answered as if it had not asked, which is the same failure the
+// DisallowUnknownFields at the top of the request exists to prevent
+// (internal/httpapi/server.go).
+func strictUnmarshal(raw json.RawMessage, value any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return errors.New("retired field carries more than one value")
+	}
+	return nil
+}
+
+// retiredOrdinaryBodyRefusal keeps each endpoint's own old rule, because they were
+// never the same rule. An Agent turn never declared these fields and the decoder
+// disallows unknown fields, so their presence was a 400 about the body; that is kept,
+// otherwise a client asking an Agent turn for named collections would be answered as
+// if it had not asked. A conversation turn declared them, so an inert value stays
+// accepted today (`stream_steps: false`, `knowledge: {enabled: false}`, no ids) and
+// only a request that actually asks is refused, with the message it has always used.
+// stepsAllowed is true only where step frames are part of the contract: the stream
+// endpoint on an Agent session.
+func retiredOrdinaryBodyRefusal(mode model.SessionMode, stepsAllowed, knowledgePresent, stepsPresent, steps, knowledgeEnabled bool, collectionIDs []string) string {
+	if mode == model.SessionModeAgent {
+		if knowledgePresent || (stepsPresent && !stepsAllowed) {
+			return "request body is invalid"
+		}
+		return ""
+	}
+	if steps || knowledgeEnabled || len(collectionIDs) > 0 {
+		return "request is invalid"
+	}
+	return ""
+}
+
+// turnRequestKey keeps the idempotency rule where it already applied and keeps it
+// absent where it never did. An Agent turn has required a valid requestId. A
+// conversation turn never had one - the retired path had no idempotency at all - so
+// requiring it now would break every client that only sends content. Synthesising a
+// key per request preserves today's behaviour exactly: the same message sent twice is
+// two turns, and a client that does send a key still gets replay semantics from it.
+func turnRequestKey(mode model.SessionMode, requestID string) string {
+	if mode == model.SessionModeAgent || strings.TrimSpace(requestID) != "" {
+		return requestID
+	}
+	return uuid.NewString()
+}
+
+// messageRowView is the one serialization of a stored message, used by the history
+// read and by the non-streaming turn response alike, so the row a client reads
+// immediately cannot differ in shape from the same row after a reload.
+//
+// The run that produced a message is part of the message's own fact: it is what lets a
+// conversation that is opened again show the steps its turn took. A row with no run has
+// the key absent rather than empty.
+func messageRowView(row model.Message) map[string]any {
+	role := "assistant"
+	if row.IsUser {
+		role = "user"
+	}
+	view := map[string]any{
+		"id": strconv.FormatUint(uint64(row.ID), 10), "session_id": row.SessionID, "role": role,
+		"content": row.Content, "created_at": row.CreatedAt.UTC().Format(time.RFC3339Nano),
+	}
+	if row.AgentRunID != nil && strings.TrimSpace(*row.AgentRunID) != "" {
+		view["run_id"] = *row.AgentRunID
+	}
+	if len(row.Sources) > 0 {
+		sources := make([]any, 0, len(row.Sources))
+		for _, source := range row.Sources {
+			// Citation is a per-message ordinal, not a invented Collection/chunk ID.
+			sources = append(sources, map[string]any{"source_id": strconv.Itoa(source.Citation), "document_id": source.DocID, "title": source.FileName, "section": strings.Join(source.TitlePath, " / "), "snippet": source.Snippet, "original_v2": map[string]any{"citation": strconv.Itoa(source.Citation), "doc_id": source.DocID, "doc_version": source.DocVersion, "file_name": source.FileName, "title_path": source.TitlePath, "start_line": source.StartLine, "end_line": source.EndLine, "chunk_index": source.ChunkIndex, "score": source.Score, "snippet": source.Snippet}})
+		}
+		view["sources"] = sources
+	}
+	return view
+}
+
+// runPair reads the two rows one turn wrote through that same serializer.
+func (s *httpSurface) runPair(ctx context.Context, uid int64, sid, runID string) (map[string]any, error) {
+	repository := messageDAO.NewRepository(s.db)
+	user, err := repository.ReadOwnedRunUser(ctx, uid, sid, runID)
+	if err != nil {
+		return nil, err
+	}
+	assistant, err := repository.ReadOwnedRunAssistant(ctx, uid, sid, runID)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"user_message":      messageRowView(*user),
+		"assistant_message": messageRowView(*assistant),
+	}, nil
+}
+
+// touchConversationSession keeps a conversation turn moving its session to the top of a
+// list ordered by updated_at, which is what the retired ordinary append did in the same
+// transaction as the message insert.
+//
+// The shared path commits the answer before this layer gets control back, so the touch
+// can no longer be part of that transaction and a failure here cannot un-write the turn.
+// Withholding an answer that is already stored over a stale sort key would lose more than
+// it saves, so this logs and returns. It runs detached from the request: a learner who
+// closes the tab the moment the answer lands must not cost the session its recency.
+//
+// Only conversation turns get this. An Agent turn has never bumped the timestamp on this
+// path, and changing that is a separate decision about Agent sessions, not something to
+// slip into moving ordinary chat.
+func (s *httpSurface) touchConversationSession(ctx context.Context, uid int64, sid string) {
+	touchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	// The same clock GORM stamped the row with at creation, not time.Now().UTC(). These
+	// columns are ordered as stored text on SQLite, so a UTC value ("…T06:58:20Z") sorts
+	// below a local one ("…T14:58:20+08:00") even when it is the later instant, and the
+	// session would sink instead of rising. On MySQL the offset is dropped outright and
+	// the two clocks would be eight hours apart.
+	result := s.db.WithContext(touchCtx).Model(&model.Session{}).
+		Where("id = ? AND user_id = ?", sid, uid).
+		UpdateColumn("updated_at", s.db.NowFunc())
+	if result.Error != nil {
+		log.Printf("conversation session touch failed: session=%s error_type=%T", sid, result.Error)
+	}
 }
 
 func (s *httpSurface) history(ctx context.Context, uid int64, sid string) ([]any, error) {
@@ -465,23 +663,7 @@ func (s *httpSurface) history(ctx context.Context, uid int64, sid string) ([]any
 		}
 		for i := len(pages) - 1; i >= 0; i-- {
 			for _, row := range pages[i] {
-				view := messageView(domainMessage(row)).(map[string]any)
-				// The run that produced this message is part of the message's
-				// own fact: it is what lets a conversation that is opened again
-				// show the steps its turn took. A message of an ordinary chat
-				// has no run, and then the key is absent rather than empty.
-				if row.AgentRunID != nil && strings.TrimSpace(*row.AgentRunID) != "" {
-					view["run_id"] = *row.AgentRunID
-				}
-				if len(row.Sources) > 0 {
-					sources := make([]any, 0, len(row.Sources))
-					for _, source := range row.Sources {
-						// Citation is a per-message ordinal, not a invented Collection/chunk ID.
-						sources = append(sources, map[string]any{"source_id": strconv.Itoa(source.Citation), "document_id": source.DocID, "title": source.FileName, "section": strings.Join(source.TitlePath, " / "), "snippet": source.Snippet, "original_v2": map[string]any{"citation": strconv.Itoa(source.Citation), "doc_id": source.DocID, "doc_version": source.DocVersion, "file_name": source.FileName, "title_path": source.TitlePath, "start_line": source.StartLine, "end_line": source.EndLine, "chunk_index": source.ChunkIndex, "score": source.Score, "snippet": source.Snippet}})
-					}
-					view["sources"] = sources
-				}
-				items = append(items, view)
+				items = append(items, messageRowView(row))
 			}
 		}
 		return nil
@@ -497,46 +679,16 @@ func (s *httpSurface) stream(w http.ResponseWriter, r *http.Request, uid int64, 
 		daoError(w, err)
 		return
 	}
-	if owned.Mode == model.SessionModeAgent {
-		s.agentStream(w, r, uid, name)
+	switch owned.Mode {
+	case model.SessionModeAgent, model.SessionModeNormal:
+	default:
+		daoError(w, errInvalidArgument)
 		return
 	}
-	if owned.Mode != model.SessionModeNormal {
-		daoError(w, conversation.ErrInvalidArgument)
-		return
-	}
-	input, ok := inputTurn(w, r)
-	if !ok {
-		return
-	}
-	sid := sessionID(r)
-	user := strconv.FormatInt(uid, 10)
-	if err := s.chat.ValidateStream(r.Context(), user, sid, input.Content); err != nil {
-		conversation.WriteError(w, err, "stream")
-		return
-	}
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		apiError(w, 500, "internal_error", "streaming is unavailable")
-		return
-	}
-	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	terminal := false
-	emit := func(event conversation.Event) error {
-		if err := conversation.WriteEvent(w, event); err != nil {
-			return err
-		}
-		flusher.Flush()
-		if event.Name == "message.completed" || event.Name == "message.failed" {
-			terminal = true
-		}
-		return nil
-	}
-	err = s.chat.Stream(r.Context(), user, sid, input.Content, emit)
-	if err != nil && !terminal && r.Context().Err() == nil {
-		_ = emit(conversation.Event{Name: "message.failed", Code: "internal_error", Message: "回答生成失败。"})
-	}
+	// The same single path as the non-streaming turn, for the same reason: two
+	// writers on one conversation would leave its one summary row being rewritten
+	// under two different budgets, and the compare-and-set would make one of them
+	// lose. The frame shape of a conversation turn therefore becomes the shared
+	// one, which is a listed change, not a silent one.
+	s.agentStream(w, r, uid, name, owned.Mode)
 }

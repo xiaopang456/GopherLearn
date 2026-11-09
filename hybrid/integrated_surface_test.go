@@ -95,7 +95,7 @@ func nativeRouteSet(t *testing.T, handler http.Handler) map[string]bool {
 // missing row, which is a served path, while a missing registration is the
 // failure mode under test.
 func TestIntegratedRouteTablesCoverTheDefaultNavigation(t *testing.T) {
-	app, _, _, _, _, _ := httpFixture(t)
+	app, _, _, _, _ := httpFixture(t)
 	native := nativeRouteSet(t, app.Agent.Handler)
 	missing := []string{}
 	for _, row := range integratedNavRoutes {
@@ -116,7 +116,7 @@ func TestIntegratedRouteTablesCoverTheDefaultNavigation(t *testing.T) {
 // shapes. Their absence here is deliberate, not an oversight, and the front-end
 // rail must not offer them (web/test/integratedEntrySurface.test.js).
 func TestBaselineOnlySurfacesStayOutOfTheIntegratedApp(t *testing.T) {
-	app, _, _, _, token, _ := httpFixture(t)
+	app, _, _, token, _ := httpFixture(t)
 	native := nativeRouteSet(t, app.Agent.Handler)
 	for _, path := range []string{
 		"/api/v1/collections",
@@ -148,24 +148,30 @@ func TestBaselineOnlySurfacesStayOutOfTheIntegratedApp(t *testing.T) {
 	}
 }
 
-// TestChatAndAgentTurnsUseDifferentModels proves the two routes do not bleed into
-// each other: a chat turn calls the retained ordinary model and never touches the
-// Agent's tool-calling model, and an Agent turn is the reverse. The Agent turn
-// binding tools is what only the original Eino Runner does.
-func TestChatAndAgentTurnsUseDifferentModels(t *testing.T) {
-	app, _, ordinary, agentModel, token, _ := httpFixture(t)
+// TestChatAndAgentTurnsShareOneModelAndOnlyTheAgentTurnCarriesCapability proves the two
+// routes do not bleed into each other.
+//
+// They no longer run on two engines: a conversation turn uses the Agent's tool-calling
+// model, because that is the one configuration the deployment actually carries. What has
+// to stay apart is the capability. A conversation turn binds no tools, generates exactly
+// once, and the second turn carries the capability the first one does not - if it ever did, the two
+// engines would be back without anyone having decided it. An Agent turn is the reverse:
+// the original ReAct graph, with the original tool surface bound.
+func TestChatAndAgentTurnsShareOneModelAndOnlyTheAgentTurnCarriesCapability(t *testing.T) {
+	app, _, agentModel, token, _ := httpFixture(t)
 
 	chatSession := createHTTP(t, app.Handler, token, "普通对话")
 	chatBody, _ := json.Marshal(map[string]string{"content": "解释一下索引"})
 	if status, envelope, _ := requestHTTP(t, app.Handler, "POST", "/api/v1/sessions/"+chatSession+"/messages", string(chatBody), token); status != 200 || envelope["error"] != nil {
 		t.Fatalf("chat turn answered %d %v", status, envelope)
 	}
-	if len(ordinary.requests) == 0 {
-		t.Fatal("a chat turn reached no ordinary model")
+	if calls := agentModel.CallCount(); calls != 1 {
+		t.Fatalf("a conversation turn generated %d times, want exactly one", calls)
 	}
-	if agentModel.CallCount() != 0 {
-		t.Fatalf("a chat turn called the Agent's tool-calling model %d times", agentModel.CallCount())
+	if bindings := agentModel.BoundToolCalls(); len(bindings) != 0 {
+		t.Fatalf("a conversation turn was offered tools: %v", bindings)
 	}
+	conversationGenerations := agentModel.CallCount()
 
 	agentSession := dataHTTP(t, app.Handler, "POST", "/api/v1/sessions", `{"mode":"learning_agent","title":"学习 Agent","requestId":"surface-agent-1"}`, token)["id"].(string)
 	agentBody, _ := json.Marshal(map[string]any{"content": "查一下资料", "requestId": "surface-agent-turn-1"})
@@ -173,8 +179,8 @@ func TestChatAndAgentTurnsUseDifferentModels(t *testing.T) {
 	if status != 200 || envelope["error"] != nil {
 		t.Fatalf("agent turn answered %d %v", status, envelope)
 	}
-	if agentModel.CallCount() == 0 {
-		t.Fatal("an Agent turn reached no tool-calling model: the original Runner was bypassed")
+	if agentModel.CallCount() <= conversationGenerations {
+		t.Fatalf("an Agent turn reached no tool-calling model: the original Runner was bypassed (total %d, conversation %d)", agentModel.CallCount(), conversationGenerations)
 	}
 	if bindings := agentModel.BoundToolCalls(); len(bindings) == 0 {
 		t.Fatal("the Agent turn bound no tools, so it was not the Eino ReAct graph")
@@ -212,8 +218,5 @@ func TestChatAndAgentTurnsUseDifferentModels(t *testing.T) {
 		if !bound["propose_memory"] {
 			t.Fatalf("the draft tool was not bound; bindings were %v", bound)
 		}
-	}
-	if len(ordinary.requests) != 1 {
-		t.Fatalf("an Agent turn also invoked the ordinary model: %d requests", len(ordinary.requests))
 	}
 }

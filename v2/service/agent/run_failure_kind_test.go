@@ -13,7 +13,7 @@ import (
 // and statuses are exactly what they were.
 //
 // The second half matters as much as the first. classifyRunError feeds a
-// persisted status and a user-visible sentence; STABILIZE-062 needed the
+// persisted status and a user-visible sentence; an earlier round needed the
 // classification, not a change to what anyone sees.
 func TestClassifyRunFailureIsStructuralAndServiceOutputIsUnchanged(t *testing.T) {
 	for name, expected := range map[string]struct {

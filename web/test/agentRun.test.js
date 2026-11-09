@@ -40,9 +40,9 @@ vi.mock('vue-router', () => ({
   useRouter: () => ({ push: routerMock.push, replace: routerMock.replace }),
 }))
 
-const AGENT = { id: 'ag-1', title: '学习会话', mode: 'learning_agent' }
-const AGENT_B = { id: 'ag-2', title: '另一个学习会话', mode: 'learning_agent' }
-const CHAT = { id: 'ch-1', title: '普通对话', mode: 'chat' }
+const AGENT = { id: 'ag-1', title: '学习会话', mode: 'learning_agent', can_use_knowledge: true }
+const AGENT_B = { id: 'ag-2', title: '另一个学习会话', mode: 'learning_agent', can_use_knowledge: true }
+const CHAT = { id: 'ch-1', title: '普通对话', mode: 'chat', can_use_knowledge: false }
 
 /** Builds a run state parked in the given phase, through the real reducer. */
 function run(phase) {
@@ -75,8 +75,8 @@ function run(phase) {
   return abortRun(state)
 }
 
-function streaming(delta) {
-  return { kind: 'delta', delta, runId: '', messageId: 'a-1' }
+function streaming(content) {
+  return { kind: 'delta', content, runId: '', messageId: 'a-1' }
 }
 
 describe('deriveAgentStage maps the existing state machine', () => {
@@ -260,7 +260,7 @@ describe('the agent stage follows the four SSE events through useChat', () => {
   it('walks none -> waiting -> generating -> completed', async () => {
     serve([
       sseFrame('message.started', { message_id: 'a-1' }),
-      sseFrame('message.delta', { message_id: 'a-1', delta: '先讲一半' }),
+      sseFrame('message.delta', { message_id: 'a-1', content: '先讲一半' }),
       sseFrame('message.completed', { message_id: 'a-1', content: '先讲一半，后讲一半' }),
     ])
     const chat = useChat()
@@ -277,7 +277,7 @@ describe('the agent stage follows the four SSE events through useChat', () => {
   it('reads a failed stream as the failed stage', async () => {
     serve([
       sseFrame('message.started', { message_id: 'a-1' }),
-      sseFrame('message.delta', { message_id: 'a-1', delta: '写到这' }),
+      sseFrame('message.delta', { message_id: 'a-1', content: '写到这' }),
       sseFrame('message.failed', { message_id: 'a-1', code: 'invalid_request', message: '上下文过长' }),
     ])
     const chat = useChat()
@@ -308,7 +308,7 @@ describe('the agent stage follows the four SSE events through useChat', () => {
     // Request out, nothing back yet: waiting, not "generating".
     expect(chat.agentStage.value).toBe(AgentStage.Waiting)
 
-    orphan.push(sseFrame('message.delta', { message_id: 'a-1', delta: '正在写' }))
+    orphan.push(sseFrame('message.delta', { message_id: 'a-1', content: '正在写' }))
     await settle()
     expect(chat.agentStage.value).toBe(AgentStage.Generating)
 
@@ -404,6 +404,7 @@ describe('agent state never crosses a session boundary', () => {
     await chat.openSession('ch-1')
     expect(chat.isChatSession.value).toBe(true)
     expect(chat.isAgentSession.value).toBe(false)
+    expect(chat.canUseKnowledge.value).toBe(false)
     // A chat session has no agent stage of its own to display.
     await chat.send('对话问题')
     expect(chat.agentStage.value).toBe(AgentStage.Completed) // the run exists...
@@ -411,8 +412,9 @@ describe('agent state never crosses a session boundary', () => {
 
     await chat.openSession('ag-1')
     expect(chat.isAgentSession.value).toBe(true)
-    expect(chat.canUseKnowledge.value).toBe(false) // Agent never gets the grounding toggle
-    expect(chat.activeKnowledge.value).toEqual({ enabled: false, selectedCollectionIds: [] })
+    // The ceiling is the server's per-row answer: an Agent session may ask for
+    // the library, and the switch reads that, not the session's mode here.
+    expect(chat.canUseKnowledge.value).toBe(true)
   })
 })
 
@@ -454,7 +456,7 @@ describe('the agent region on the real screen', () => {
 
   const DONE = [
     sseFrame('message.started', { message_id: 'a-1' }),
-    sseFrame('message.delta', { message_id: 'a-1', delta: '回答正文' }),
+    sseFrame('message.delta', { message_id: 'a-1', content: '回答正文' }),
     sseFrame('message.completed', { message_id: 'a-1', content: '回答正文' }),
   ]
 
@@ -473,17 +475,16 @@ describe('the agent region on the real screen', () => {
     expect(panel.text()).toContain('本轮已完成')
     // Still no step list, because the backend has not emitted one.
     expect(agent.find('[data-test="agent-steps"]').exists()).toBe(false)
-    // And no knowledge toolbar in an agent session.
-    expect(agent.find('[data-test="knowledge-tools"]').exists()).toBe(false)
+    // The agent session carries the server's ceiling, so it has the switch.
+    expect(agent.find('[data-test="knowledge-tools"]').exists()).toBe(true)
     agent.unmount()
 
     const chatApp = await mountChat('ch-1', [CHAT], DONE)
     await chatApp.find('textarea').setValue('普通问题')
     await chatApp.find('[data-test="send"]').trigger('click')
     await flushPromises()
-    // The chat screen shows no grounding controls either — this build serves
-    // no knowledge collection, and a switch that can never be turned on reads
-    // as a broken screen. It gains no agent status strip.
+    // A chat session may not read the learner's documents, so it has no
+    // switch to offer. It gains no agent status strip.
     expect(chatApp.find('[data-test="knowledge-tools"]').exists()).toBe(false)
     expect(chatApp.find('[data-test="agent-panel"]').exists()).toBe(false)
     expect(chatApp.find('[data-test="agent-header"]').exists()).toBe(false)
@@ -549,8 +550,9 @@ describe('the agent region on the real screen', () => {
     expect(text).not.toContain('调用记忆')
     expect(text).not.toContain('出题')
     expect(text).toContain('学习 Agent')
-    expect(text).toContain('由服务端能力决定如何处理问题')
-    // The knowledge option is real as of Phase 3B, so it may still be stated.
-    expect(text).toContain('可单轮挂知识库')
+    expect(text).toContain('可检索你的资料，由服务端决定如何回答')
+    // A chat session never reads the learner's documents, so the menu must not
+    // promise a knowledge option there.
+    expect(text).toContain('通用提问，不读取你的资料')
   })
 })

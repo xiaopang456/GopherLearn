@@ -2,7 +2,7 @@ package memoryrecall
 
 import "testing"
 
-// STABILIZE-058 v1.2: a mode that exists but is missing from the enumeration is
+// A mode that exists but is missing from the enumeration is
 // a mode a deployment cannot select and an operator cannot discover from the
 // error message. Both were true of the v1.1 identity when it was added.
 func TestEveryValidModeIsEnumeratedAndParseable(t *testing.T) {

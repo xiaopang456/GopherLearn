@@ -391,7 +391,7 @@ func (s *topicMemoryReadState) render(records []serviceagent.TopicMemoryRecord,
 			// The read found this learner's notes and every one of them is
 			// already in front of the model with a reference. Saying "nothing
 			// is recorded" here would be a false negative with consequences:
-			// BUG-AGENT-152 is the record of what a model does when it is told
+			// The evidence kinds are the record of what a model does when it is told
 			// a negative it has no basis for.
 			output.Status, output.Reason = topicReadStatusNoEvidence, topicReadReasonAlreadyProvided
 			output.Summary = "当前主题的记忆已经在本轮提供过了，没有新增证据；请直接引用已给出的记忆编号。"
@@ -410,7 +410,7 @@ func (s *topicMemoryReadState) render(records []serviceagent.TopicMemoryRecord,
 // sees: its name, its description and the exact parameter schema.
 //
 // It exists for the same reason MemorySearchSchemaDigest does. A freeze that
-// bound one tool's contract and described the other would be BUG-AGENT-176
+// bound one tool's contract and described the other would be the same mistake
 // happening a second time, one tool along.
 func TopicMemoryReadSchemaDigest() (string, error) {
 	built, err := toolutils.InferTool(TopicMemoryReadName, topicMemoryReadDescription,

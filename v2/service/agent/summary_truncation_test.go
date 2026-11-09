@@ -360,7 +360,7 @@ func TestTheFailuresAreToldApart(t *testing.T) {
 // a compaction the cooldown held back is not a new failure, and it must not
 // spend another model call.
 func TestTheCooldownStillHoldsTheCompactionBack(t *testing.T) {
-	repository := &fakeSummaryRepository{current: &model.SessionSummary{UserID: 1, SessionID: "s", Content: "old-valid", CoveredMessageID: 1, Version: 1}}
+	repository := &fakeSummaryRepository{current: &model.SessionSummary{UserID: 1, SessionID: "s", Content: readablePreviousSummary, CoveredMessageID: 1, Version: 1}}
 	generator := &scriptedSummaryBody{err: fmt.Errorf("generate rolling summary: %w", context.DeadlineExceeded)}
 	config := DefaultSummaryConfig()
 	config.FailureCooldown = 30 * time.Second

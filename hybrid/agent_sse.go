@@ -4,15 +4,17 @@ import (
 	"GopherAI/common/rag"
 	agentController "GopherAI/controller/agent"
 	messageDAO "GopherAI/dao/message"
+	"GopherAI/model"
 	agentService "GopherAI/service/agent"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/xiaopang456/GopherLearn/conversation"
+	"github.com/xiaopang456/GopherLearn/httpwire"
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -28,6 +30,10 @@ type agentWireSink struct {
 	terminal bool
 	writeErr error
 	steps    bool
+	// liveText publishes a capability-free turn while its model writes, folding the
+	// fragments into the snapshot each frame carries.
+	liveText bool
+	live     strings.Builder
 	failure  *agentService.Event
 }
 
@@ -60,6 +66,23 @@ func (s *agentWireSink) Observe(ctx context.Context, e agentService.PublicText) 
 	defer s.mu.Unlock()
 	if s.terminal {
 		return errors.New("public text after terminal event")
+	}
+	if s.liveText {
+		// A turn with its knowledge switched off has no retrieved evidence to check the
+		// answer against, so nothing is gained by holding the text back. What goes out is
+		// still one snapshot per frame rather than a fragment, because a client replaces:
+		// a repeated frame cannot duplicate the answer, and if the published answer
+		// finally differs, message.completed replaces it again.
+		switch e.Phase {
+		case "agent.text.started":
+			s.live.Reset()
+			return nil
+		case "agent.text.delta":
+			s.live.WriteString(e.Content)
+			return s.emit(ctx, "message.delta", map[string]any{"run_id": e.RunID, "content": s.live.String(), "publication": e.Publication})
+		default:
+			return nil
+		}
 	}
 	var b *publishedBlock
 	if e.Phase == "agent.text.started" {
@@ -138,7 +161,7 @@ func (s *agentWireSink) Send(ctx context.Context, e agentService.Event) error {
 	// persisted assistant is read. Replays have no fabricated steps or blocks.
 	return nil
 }
-func (s *httpSurface) agentStream(w http.ResponseWriter, r *http.Request, uid int64, name string) {
+func (s *httpSurface) agentStream(w http.ResponseWriter, r *http.Request, uid int64, name string, mode model.SessionMode) {
 	if !noQuery(w, r) {
 		return
 	}
@@ -153,12 +176,36 @@ func (s *httpSurface) agentStream(w http.ResponseWriter, r *http.Request, uid in
 		EnableThinking *bool                               `json:"enableThinking"`
 		TopicConsent   agentService.TopicConsentSubmission `json:"topicConsent"`
 		StreamSteps    bool                                `json:"stream_steps"`
+		// The retired ordinary-chat field, raw for the same reason as on POST
+		// /messages: presence and value are different facts.
+		Knowledge json.RawMessage `json:"knowledge"`
 	}
-	if err := conversation.DecodeRequest(w, r, &input); err != nil {
+	if err := httpwire.DecodeRequest(w, r, &input); err != nil {
 		apiError(w, 400, "invalid_request", "request body is invalid")
 		return
 	}
-	request := agentService.RunRequest{UserID: uid, UserName: name, SessionID: sessionID(r), Question: input.Content, RequestID: input.RequestID, KnowledgePolicy: input.KnowledgePolicy, EnableThinking: input.EnableThinking, TopicConsent: input.TopicConsent}
+	_, knowledgeEnabled, collectionIDs, malformed := retiredBodyValues(input.Knowledge, nil)
+	if message := malformed; message != "" {
+		apiError(w, 400, "invalid_request", message)
+		return
+	}
+	if message := retiredOrdinaryBodyRefusal(mode, true, len(input.Knowledge) > 0, false, input.StreamSteps, knowledgeEnabled, collectionIDs); message != "" {
+		apiError(w, 400, "invalid_request", message)
+		return
+	}
+	// Refused here rather than inside the stream: a conversation turn that asks for
+	// the library has to be answered with an HTTP status, not with a failure frame
+	// after the headers already say this is an event stream.
+	effective, err := agentService.ResolveSessionPolicy(mode, input.KnowledgePolicy)
+	if err != nil {
+		apiError(w, 400, "invalid_request", "request is invalid")
+		return
+	}
+	// A capability-free turn has no evidence to validate, so its text goes out as it is
+	// written. A turn that kept its capability does not: an answer citing something this
+	// run never retrieved has to be caught before any of it reaches the screen.
+	liveText := !input.StreamSteps && !effective.CarriesAnyCapability()
+	request := agentService.RunRequest{UserID: uid, UserName: name, SessionID: sessionID(r), Question: input.Content, RequestID: turnRequestKey(mode, input.RequestID), KnowledgePolicy: input.KnowledgePolicy, EnableThinking: input.EnableThinking, TopicConsent: input.TopicConsent}
 	if err := agentService.ValidateRunRequestForAssembly(request); err != nil {
 		apiError(w, 400, "invalid_request", "Agent request is invalid")
 		return
@@ -173,12 +220,15 @@ func (s *httpSurface) agentStream(w http.ResponseWriter, r *http.Request, uid in
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	sink := &agentWireSink{writer: w, cancel: cancel, steps: input.StreamSteps}
-	if input.StreamSteps {
+	sink := &agentWireSink{writer: w, cancel: cancel, steps: input.StreamSteps, liveText: liveText}
+	if input.StreamSteps || liveText {
 		ctx = agentService.WithPublicTextObserver(ctx, sink.Observe)
 	}
 	result, err := s.agent.Agent.Run(ctx, request, sink)
 	if err == nil {
+		if mode != model.SessionModeAgent {
+			s.touchConversationSession(ctx, uid, sessionID(r))
+		}
 		var rowErr error
 		row, rowErr := messageDAO.NewRepository(s.db).ReadOwnedRunAssistant(ctx, uid, sessionID(r), result.RunID)
 		if rowErr != nil {

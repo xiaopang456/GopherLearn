@@ -24,7 +24,7 @@ func fragment(idx *int, id, name, arguments string) *schema.Message {
 func TestAggregatorAssemblesThenValidates(t *testing.T) {
 	aggregator := NewToolCallAggregator()
 	// Mid-stream the call has no name yet. Asking now is asking about a thing
-	// that does not exist, and this is exactly where STABILIZE-062 v1.1 asked.
+	// that does not exist, and this is exactly where the earlier version asked.
 	aggregator.Observe(fragment(at(0), "c1", "", `{"que`))
 	if report := aggregator.Validate([]string{SearchPastSessionsToolName}); report.Ok() {
 		t.Fatal("a half-delivered call was already judged well formed")

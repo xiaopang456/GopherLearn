@@ -15,7 +15,7 @@ import (
 // TopicResolver answers one question and only one: which of this learner's
 // topics is being asked about.
 //
-// It is deliberately not a memory retriever. AGENT-020's hybrid path injected
+// It is deliberately not a memory retriever. The earlier hybrid path injected
 // whatever the vector index ranked first, which recalled more and was measured
 // unsafe: an absolute cosine floor drifts upward as the memory pile grows (0.56
 // at a hundred memories, 0.63 at five hundred), so the same query walks out
@@ -66,11 +66,11 @@ type TopicResolverConfig struct {
 
 // DefaultTopicResolverConfig carries only the structural bounds.
 //
-// MinStandout and MinMargin are deliberately left at zero: the STABILIZE-030
+// MinStandout and MinMargin are deliberately left at zero: the
 // development gate failed at every point of the frozen grid, so there is no
 // validated value to ship. A number left in a Default*Config() is a
 // production default whatever the comment above it says — that is exactly how
-// BUG-AGENT-140 happened — so the semantic constructor demands both explicitly
+// happened — so the semantic constructor demands both explicitly
 // and refuses to build without them.
 func DefaultTopicResolverConfig() TopicResolverConfig {
 	return TopicResolverConfig{
@@ -149,7 +149,7 @@ type TopicResolveRequest struct {
 	UserID int64
 	// Question is the learner's raw text. It is never expanded: expansion costs
 	// a model call on the request path and invents subjects the learner did not
-	// mention, and EXP-005 measured its planner variant at a 1.6s P95 for a
+	// mention, and the planner variant was measured at a 1.6s P95 for a
 	// benefit that did not survive.
 	Question string
 	// AuthoritativeKeys are server-derived. They are accepted without any
@@ -261,7 +261,7 @@ func (r *TopicResolver) Resolve(ctx context.Context, request TopicResolveRequest
 		resolution.ReasonCodes = append(resolution.ReasonCodes, "no_topic_signal")
 		return resolution
 	}
-	// STABILIZE-031 5.3: a question that is all shell names no subject either.
+	// A question that is all shell names no subject either.
 	// "上次聊了什么" used to reach the semantic layer, buy an embedding and
 	// possibly propose a key — that is the system deciding a topic the learner
 	// never mentioned.
@@ -283,7 +283,7 @@ func (r *TopicResolver) Resolve(ctx context.Context, request TopicResolveRequest
 	return semantic
 }
 
-// identifierNegativeEvidence is STABILIZE-031 5.2.
+// identifierNegativeEvidence is the spelled-out-name rule.
 //
 // standout and margin both ask "how good is this candidate relative to the
 // batch it arrived with". This asks something else entirely: the learner
@@ -379,7 +379,7 @@ func (r *TopicResolver) resolveSemantic(ctx context.Context, request TopicResolv
 	// A topic scores by the best rank any one of its notes reached. Summing
 	// would let a topic with many mediocre notes outrank one whose single note
 	// matched exactly, which is the aggregation that sank the topic-centroid
-	// method in EXP-002B.
+	// method.
 	byKey := map[string]*TopicKeyCandidate{}
 	entry := func(key string) *TopicKeyCandidate {
 		if existing, ok := byKey[key]; ok {

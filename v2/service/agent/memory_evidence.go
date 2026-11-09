@@ -70,7 +70,7 @@ func memoryKindForPrefix(prefix string) (MemoryEvidenceKind, bool) {
 // something that happened in an earlier session.
 //
 // Only Episodic can. A preference is not a history, and this is the rule
-// BUG-AGENT-152 exists because nothing enforced: both read paths built a
+// The rule exists because nothing enforced it: both read paths built a
 // plausible past out of the learner's stated goals.
 func (k MemoryEvidenceKind) SupportsHistory() bool { return k == MemoryEvidenceEpisodic }
 
@@ -203,12 +203,12 @@ type MemoryEvidenceRegistry struct {
 	// keyed by kind, id and version, whichever component put it there.
 	//
 	// It is here rather than in either tool because it is the one fact both
-	// tools need and neither owns. STABILIZE-040 registers two memory tools in
+	// tools need and neither owns. One earlier change registers two memory tools in
 	// one run, and "has the model already been shown this row" has to have the
 	// same answer in both of them regardless of which ran first.
 	issued map[string]struct{}
 	// identityLabel is the reverse of issued: the label each identity was
-	// issued under. BUG-AGENT-217 needs it because a governed re-search hands
+	// issued under. One earlier change needs it because a governed re-search hands
 	// the tool locally numbered labels, and the turn's answer - which label
 	// this identity already carries - lives here, not in the tool.
 	identityLabel map[string]string
@@ -313,7 +313,7 @@ func (r *MemoryEvidenceRegistry) EpisodeCard(episodeID string, version uint64) (
 
 // LabelFor reports the label this turn already issued for one identity.
 //
-// BUG-AGENT-217: a governed re-search presents episodes the turn has seen
+// A governed re-search presents episodes the turn has seen
 // before under locally numbered labels, and the tool must reuse the label the
 // turn already gave them instead of the search's own numbering. The mapping
 // lives here because the registry is what a citation resolves against.
@@ -399,7 +399,7 @@ func (r *MemoryEvidenceRegistry) RegisterAs(ref string, entry MemoryEvidenceEntr
 		// error out of the memory tool, and a tool that fails while running is
 		// an infrastructure fault: one perfectly ordinary second question voided
 		// a whole measured round. The rehearsal that found it reproduced the
-		// shape STABILIZE-062 had been trying to explain for three versions.
+		// shape the failure classification had been trying to explain for three versions.
 		//
 		// A real collision - the same slot pointing at a different memory - is
 		// still refused, because that is the case where a citation would resolve
@@ -590,16 +590,16 @@ func (r *MemoryEvidenceRegistry) Attempted() bool {
 // back empty or unavailable.
 //
 // It is the state in which an answer must say so plainly rather than assemble a
-// plausible history out of the profile, which is exactly what BUG-AGENT-152
+// plausible history out of the profile, which is exactly what the evidence kinds
 // recorded both read paths doing.
-// The last clause is what STABILIZE-039 added. Under agent_memory_tool_v2 the
+// The last clause is what a later round added. Under agent_memory_tool_v2 the
 // window can already hold topic evidence before any search runs, so a search
 // that legitimately returns nothing new - because every hit was already shown -
 // must not turn a correct [S#] citation into "cited evidence that does not
 // exist". Under every earlier mode the clause changes nothing: S and E are
 // issued only by memory_search, and never without also landing in that call's
 // Refs, so HasLongTermEvidence is already implied by the loop above.
-// STABILIZE-040 adds the topic reads to both halves of it. Under v3 a turn may
+// One earlier change adds the topic reads to both halves of it. Under v3 a turn may
 // consult long-term memory without memory_search running at all, and a run that
 // asked for the current topic, was told there is none, and then cited [S1]
 // anyway is exactly the state this predicate exists to catch.

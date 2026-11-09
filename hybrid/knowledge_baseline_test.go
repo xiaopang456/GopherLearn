@@ -33,7 +33,6 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/glebarez/sqlite"
 	redisclient "github.com/redis/go-redis/v9"
-	"github.com/xiaopang456/GopherLearn/conversation"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -806,7 +805,7 @@ func (w *baselineWorld) Assemble() {
 	if chat == nil {
 		chat = &scriptedChatModel{}
 	}
-	app, err := Assemble(context.Background(), settings, baselineDependencies(db, chat, w.store, w.embedder), &ordinaryModel{}, conversation.Options{})
+	app, err := Assemble(context.Background(), settings, baselineDependencies(db, chat, w.store, w.embedder))
 	if err != nil {
 		_ = sqlDB.Close()
 		w.t.Fatal(err)
