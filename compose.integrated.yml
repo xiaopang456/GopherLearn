@@ -265,9 +265,14 @@ services:
   # this network.
   #
   # Two runs, in this order. The first previews and writes nothing:
-  #   docker compose -p gopherlearn-integrated -f compose.integrated.yml --profile init run --rm summaryconvert
+  #   docker compose -p gopherlearn-integrated -f compose.integrated.yml --profile init run --rm summaryconvert -config /config/integrated.toml
   # The second writes the conversions:
-  #   docker compose -p gopherlearn-integrated -f compose.integrated.yml --profile init run --rm summaryconvert -apply
+  #   docker compose -p gopherlearn-integrated -f compose.integrated.yml --profile init run --rm summaryconvert -config /config/integrated.toml -apply
+  #
+  # Both runs spell the configuration path out: `docker compose run` takes the first
+  # argument after the service name as the whole command, so a short "-apply" would
+  # replace the command configured below, and the tool would look for its own default
+  # path instead.
   summaryconvert:
     profiles: ["init"]
     image: gopherlearn-backend-integrated:1
