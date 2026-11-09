@@ -111,3 +111,45 @@ test('the judge reports what it read', () => {
   assert.deepEqual(judgeFact('每次总共 93 分钟。', s), { verdict: 'fail', reason: 'forbidden_value_present' })
   assert.deepEqual(judgeFact('我记得是 51 分钟吧。', s), { verdict: 'pass', reason: 'fact_value_present' })
 })
+
+// A value the answer states affirmatively stays a pass when the sentence also
+// attributes it to an earlier turn of the learner: "这是你在之前定下时说的"
+// says where the value came from, not that the value has been superseded.
+// The attribution excuses the soft marker only while its own phrase does not
+// cover the value. A frame that names the value itself ("这是你之前叫的北砚")
+// leaves the marker scoping over the value, so the mention stays historical.
+const named = (accepted, forbidden = []) => ({ mode: 'fact', accepted, forbidden })
+test('a value the answer hands back to an earlier turn is still a pass', () => {
+  const s = scenario(); s.answer = named(['北砚'])
+  assert.equal(scoreAttempt(record('代号是「北砚」——这是你在之前定下时说的（message_ids=7）。'), s).verdict, 'pass')
+  const t = scenario(); t.answer = named(['衡川'])
+  assert.equal(scoreAttempt(record('“衡川”——这是你之前在本地运行一次性验证脚本时使用的沙箱环境别名（message_ids=13）。'), t).verdict, 'pass')
+  // The same value, said with a plain attribution, was already a pass before.
+  assert.equal(scoreAttempt(record('代号是「北砚」，这是你之前定的。'), s).verdict, 'pass')
+  // The attribution may follow the value it names: the value is then not
+  // inside the phrase the attribution opens.
+  assert.equal(scoreAttempt(record('代号是「北砚」——你之前定的那个固定词，为的是脚本能按标题定位。'), s).verdict, 'pass')
+})
+test('an attribution that names the value itself leaves the value in the past', () => {
+  const s = scenario(); s.answer = named(['北砚'])
+  // The frame names the value, so the soft marker still scopes over it.
+  for (const text of ['这是你之前叫的北砚。', '这是你之前叫的北砚，现在改叫别的了。', '这是你之前定的那个固定词「北砚」，为的是脚本能按标题定位。']) {
+    assert.equal(scoreAttempt(record(text), s).verdict, 'needs_judge', text)
+  }
+  // A value the answer withdraws is not a current value either.
+  for (const text of ['你之前叫它北砚，现在改叫别的了。', '你之前叫北砚，现在改叫别的了。']) {
+    assert.equal(scoreAttempt(record(text), s).verdict, 'needs_judge', text)
+  }
+})
+test('a denial behind the same frame is still a denial', () => {
+  const s = scenario(); s.answer = named(['北砚'])
+  for (const text of ['这不是你之前定的北砚。', '北砚不是你之前定的那个。', '代号不是「北砚」，这是你之前定的另一个。', '这个代号不是北砚。']) {
+    assert.equal(scoreAttempt(record(text), s).verdict, 'needs_judge', text)
+  }
+})
+test('a value the answer places in the past stays pending', () => {
+  const s = scenario(); s.answer = named(['北砚'], ['青梧'])
+  for (const text of ['之前叫北砚，现在改叫别的了。', '原来叫北砚。', '之前叫青梧，现在改叫别的了。']) {
+    assert.equal(scoreAttempt(record(text), s).verdict, 'needs_judge', text)
+  }
+})
