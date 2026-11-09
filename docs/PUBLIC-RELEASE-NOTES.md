@@ -115,7 +115,7 @@ docker compose -f compose.integrated.yml exec redis redis-cli -a "$REDIS_PASSWOR
 **实测**：同样 500 个键，走这条流程重启之后 `DBSIZE` 是 **501**（500 个原有键，加上重写完成后新写的那个），
 原来那个键和重写后新写的键都在。
 
-**6. 换后端：构建新版后端（或拉取新镜像），替换并重启。** 这一版的后端带了两件新东西，
+**6. 换后端：先构建新版后端（或拉取新镜像），这一版的后端带了两件新东西，
 **旧的镜像里都没有**：
 
 - **分层摘要**（白板与摘要分段）——旧后端不写也不读，配置里的 `summarySegmentMode` 对它没有意义。
@@ -126,11 +126,25 @@ docker compose -f compose.integrated.yml exec redis redis-cli -a "$REDIS_PASSWOR
 ```bash
 # 从源码起：用这一版的代码构建
 docker compose -f compose.integrated.yml build backend
-docker compose -f compose.integrated.yml up -d backend
-# 或用发布的镜像：把 compose 文件里的 backend 镜像换成新版本，再 up -d backend
+# 或用发布的镜像：把 compose 文件里的 backend 镜像换成新版本
 ```
 
-**7. 跑一次 `summaryconvert`。** 用**新后端**里的命令，把旧的普通对话摘要转成这一版读得懂的形状：
+**7. 建表：用新版的 `schemainit` 升级数据库结构。** 分层摘要要用的三张新表
+（白板、摘要分段、分段任务）**不会自己出现**：正式整合入口拒绝在启动时改 schema
+（`isolatedEntry.migrate = true` 会被入口拒绝），所以启动时既不会建表、也不会顺手把
+`messages.user_name` 的列宽改宽。建表是**独立的一步**，要在新版后端**启动之前**做：
+
+```bash
+# 源码起：这一版的代码里有这个命令
+go -C v2 run ./cmd/schemainit -config ../config.integrated.toml.local
+# 容器起：compose 文件里备好了同一个命令的服务（用后端镜像里的 /schemainit）
+docker compose -p gopherlearn-integrated -f compose.integrated.yml --profile init run --rm schemainit
+```
+
+这一步是**加法**的：只建缺的表、列和索引，不删表、不改写已有的行，已经写进去的数据原样留着。
+跑完会看到一行 `schema initialized in <库名> on <主机>:<端口>`。
+
+**8. 跑一次 `summaryconvert`。** 用**新后端**里的命令，把旧的普通对话摘要转成这一版读得懂的形状：
 
 | 命令 | 做什么 |
 |---|---|
@@ -139,14 +153,55 @@ docker compose -f compose.integrated.yml up -d backend
 
 **默认只预演，不自动跑，也不在启动时跑**——跑之前那些会话照常工作，只是摘要停在原地。转不了的行（读不出来的 JSON、引用不是消息号因而无法无损搬运、超出当前文档预算）一律**列出来、不改那一行**。
 
-**8. 重启：换成新的入口（exec）和新配置。** 这一版的后端不再用 shell 包一层，而是自己就是 1 号进程
-（`exec`），这样停止信号直接到服务手里，停止时才来得及写最后那张快照。整合栈的启动方式不用改：
-新的启动脚本由 `compose.integrated.yml` 自己引用。
+**这条命令要在能访问到数据库的地方跑。** 它读的那份配置里的 MySQL 地址必须可达：
+用容器名（`gopherlearn-integrated-mysql`）时，只有**在 Docker 网络里**才解析得到——在宿主机上直接跑
+会得到 `lookup gopherlearn-integrated-mysql: no such host`，因为整合栈的 MySQL **不发布宿主端口**。
+所以容器部署的两种跑法：
 
-按 README §6 步骤 1 手工 `docker run` 起的：把那条命令换成 README 里的新版——要**多挂一个数据目录**
-（`/data`）、**多挂 `deploy/redis-stack-start.sh`**，并用它当入口。
+```bash
+# ① 宿主直跑：配置里的 mysqlConfig.host 要填一个宿主上可达的地址
+#    （整合栈的 MySQL 不发布端口，这种跑法要先把数据库端口发布出来，或用一份指向已发布端口的配置）
+go -C v2 run ./cmd/summaryconvert -config ../config.integrated.toml.local
 
-**9. 重启后核对 Redis 的键数。** 这一步是上面那套流程的验收：
+# ② 栈内跑：把命令放进 compose 的网络里，配置照旧用容器名
+docker compose -p gopherlearn-integrated -f compose.integrated.yml run --rm \
+  --entrypoint /summaryconvert backend -config /config/integrated.toml
+```
+
+> ② 这条命令要用一个**带这个命令的镜像**：后端镜像里目前只有 `/gopherlearn-integrated` 与 `/schemainit`
+> 两个二进制，**还没有 `/summaryconvert`**。所以在镜像里补上它之前，② 跑不起来——用 ①，或者等镜像补上
+> 这个命令。
+
+**9. 换 Redis 的启动入口：重建 redis 容器。** 这里换入口的是 **Redis 容器，不是后端**。
+
+镜像自带的 `/entrypoint.sh` 把 `redis-server` 当作 **shell 的子进程**跑起来：停止信号先到 shell，
+shell 死掉、服务还活着，容器在宽限期结束后被强杀，**最后那张快照来不及写**——正常停止就会丢掉
+上次快照之后的全部写入。这一版换用仓库里的 `deploy/redis-stack-start.sh` 接手：同样的命令、
+同样的模块，但最后一步是 `exec`，`redis-server` 自己就是 1 号进程，收到停止信号后写完快照再退出。
+
+**后端的入口没有变**：它本来就直接以 `/gopherlearn-integrated` 启动，不经 shell 包一层。
+
+用 compose 起的（**要重建，不是 restart**——重建才会带上新的挂载与新的入口）：
+
+```bash
+docker compose -p gopherlearn-integrated -f compose.integrated.yml up -d --force-recreate redis
+```
+
+按 README §6 步骤 1 手工 `docker run` 起的：把原来那条命令换成 README 里的新版——要**多挂一个数据目录**
+（`/data`）、**多挂 `deploy/redis-stack-start.sh`**，并用它当入口：
+
+```bash
+docker rm -f gopherlearn-redis
+docker run -d --name gopherlearn-redis -p 127.0.0.1:16360:6379 \
+  -v "$PWD/redis.integrated.conf.local:/redis-stack.conf:ro" \
+  -v "$PWD/deploy/redis-stack-start.sh:/redis-stack-start.sh:ro" \
+  -v gopherlearn-redis-data:/data \
+  -e REDIS_DATA_DIR=/data \
+  --entrypoint /bin/sh \
+  redis/redis-stack-server:latest /redis-stack-start.sh
+```
+
+**10. 重启后核对 Redis 的键数。** 这一步是上面那套流程的验收：
 
 ```bash
 docker compose -f compose.integrated.yml exec redis redis-cli -a "$REDIS_PASSWORD" DBSIZE
@@ -155,16 +210,23 @@ docker compose -f compose.integrated.yml exec redis redis-cli -a "$REDIS_PASSWOR
 **核对的是"重启前后键数没有变少"**，不是某个固定的数字——每个部署的索引大小不同。少了就是有问题，
 按下面这段处理。
 
-**10. 重新构建并重启前端。** 界面这一版有变化（知识库开关改成按轮选择、会话列表里 Agent 会话置顶）。`web/package.json` 与 `web/package-lock.json` 未改动，不需要重新执行 `npm --prefix web ci`，**重新构建一次前端**即可。
+**11. 重新构建并重启前端。** 界面这一版有变化（知识库开关改成按轮选择、会话列表里 Agent 会话置顶）。`web/package.json` 与 `web/package-lock.json` 未改动，不需要重新执行 `npm --prefix web ci`，**重新构建一次前端**即可。
 
 **万一索引真的空了怎么办：Redis 里存的是检索索引，不是数据。** 索引可以**从 MySQL 重建**——
 MySQL 里存着每一个文档的原文与它该有多少个块，Redis 里只是这些块的可检索副本。所以索引空了
 不等于资料没了：服务**启动时的索引校验**会把这种情况**报告出来**（`knowledge_index_audit`：
 比过了几个文档版本、索引里少了几个、多出来几个、有没有索引本身的问题），默认只报告不改东西；
-把 `[startupIndexAudit].mode` 配成 `rebuild`，还会把缺索引的文档**重新送去索引**
-（`rebuildLimit` 限着一次最多送多少个回去，默认 20）。这个校验**从不拒绝启动**，也从不删东西。
+把 `[knowledgeConfig.startupIndexAudit].mode` 配成 `rebuild`，会把**块数比记录少的那些文档**
+重新送去索引（`rebuildLimit` 限着一次最多送多少个回去，默认 20）。这个校验**从不拒绝启动**，
+也从不删东西。
 
-**不需要数据库迁移**：白板、分段、分段任务三张新表由服务启动时的自动迁移建好；`messages.user_name` 的列宽也由自动迁移就地改宽。都不需要手工写 DDL。
+**rebuild 只管"缺块"，不管"索引本身的问题"**：块数比记录少的文档会被退回重建；索引本身的问题
+（索引被删掉、自报的文档数与键数对不上、schema 不符、仍在索引中、有索引失败）**只报告、不退回
+文档**——块都在的文档不算缺块，退回去只会把已经在 Redis 里的块重新嵌入一遍。
+
+**数据库结构要升一次，但不用手写 DDL**：白板、分段、分段任务三张新表，以及 `messages.user_name`
+的列宽，都由**第 7 步的 `schemainit`** 建好（它只建缺的东西，不改已有的行）。这一步**不能省**——
+正式整合入口拒绝在启动时改 schema，所以服务启动时不会替你建表，也不会替你改列宽。
 
 **分层摘要没有新增必填项**：不写 `summarySegmentMode` 就是 `on`（默认开启）。想留在旧的滚动摘要上，就在 `[agentConfig]` 里显式写 `summarySegmentMode = "off"`，重启即可。
 
@@ -288,7 +350,7 @@ retired configuration setting: [ordinaryChat] was removed. A conversation turn i
 
 读不出来时不再花冤枉钱：到点要压缩时先读库里那一行，读不出来就**跳过这一轮**——一次模型调用都不发，也**不进失败冷却**（旧内容不会在两次对话之间自己变可读）。指标里记 `summary_outcome{reason="previous_unreadable"}`，回答照常带着水位线之后的原始消息，学习者只是拿不到"压缩过的更早历史"。这类会话的摘要会一直停在旧那一行，直到有人转换它。
 
-转换由上面升级步骤第 7 步那条 `summaryconvert` 命令做，**默认只预演**，不自动跑，也不在启动时跑：
+转换由上面升级步骤第 8 步那条 `summaryconvert` 命令做，**默认只预演**，不自动跑，也不在启动时跑：
 
 | 命令 | 做什么 |
 |---|---|
@@ -315,7 +377,7 @@ retired configuration setting: [ordinaryChat] was removed. A conversation turn i
 
 `messages.user_name` 过去声明成 `varchar(20)`，而它存的值是会话所有者的用户名，用户名自己那一列是 `varchar(50)`。名字在 21 到 50 个字符之间时，这一行要么写不进去（MySQL 严格模式下直接报错），要么被截断成一个对不上任何人的名字。这一版把两列对齐到同一个宽度。
 
-已有的表会在启动时的自动迁移里就地改宽，**不需要手工写 DDL**；已有的行不受影响。
+已有的表会在升级步骤第 7 步的 `schemainit` 里就地改宽，**不需要手工写 DDL**；已有的行不受影响。
 
 ### 聊天与摘要的请求现在带着输出长度上限
 
@@ -329,9 +391,11 @@ retired configuration setting: [ordinaryChat] was removed. A conversation turn i
 
 代码注释里有一些对读代码的人不说明任何事的标记。这一版把它们去掉，每条注释只留下这段代码在做什么。已写好的行为没有变化。
 
-### 不需要数据库迁移
+### 数据库结构要升一次（用 `schemainit`，不用手写 DDL）
 
-白板、分段、分段任务三张新表由服务启动时的自动迁移建好；除上面那条 `messages.user_name` 的列宽之外，数据表结构没有变化；那一处也由自动迁移完成，不需要手工写 DDL。旧形状的摘要**内容**要靠上面那条 `summaryconvert` 命令逐行转换，这不是一次迁移：命令不自动跑，跑之前那些会话照常工作，只是摘要停在原地不再推进。
+白板、分段、分段任务三张新表，加上 `messages.user_name` 的列宽，都由**升级步骤第 7 步的
+`schemainit`** 建好；除这两处之外，数据表结构没有变化。**这一步是独立的一步**，因为正式整合
+入口拒绝在启动时改 schema——服务启动时不会替你建表，也不会替你改列宽。旧形状的摘要**内容**要靠上面那条 `summaryconvert` 命令逐行转换，这不是一次迁移：命令不自动跑，跑之前那些会话照常工作，只是摘要停在原地不再推进。
 
 ## v0.2.1 · 界面说法中文化与地址简化
 
