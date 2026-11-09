@@ -1,4 +1,4 @@
-// Package memoryplan is the STABILIZE-032 model-planned long-term memory read
+// Package memoryplan is the model-planned long-term memory read
 // path.
 //
 // It changes how topic semantic memory and Episodes are *read*. It changes
@@ -16,7 +16,7 @@
 // whether it answers the question, personalises the answer, contradicts a
 // premise in it, is merely on a related subject, or is too compressed to tell.
 //
-// The reason for the split is the finding STABILIZE-031 ended on: owner, status,
+// The reason for the split is the finding an earlier round ended on: owner, status,
 // version and source closure were all correct and it was still not enough,
 // because a memory can be the learner's own, in force, and on the same subject
 // while not supporting the question at all. That is a relation between two
@@ -53,7 +53,7 @@ const (
 )
 
 // The bounds the design fixes. They are constants rather than configuration
-// because a limit that can be raised from a flag is not a limit: BUG-AGENT-125
+// because a limit that can be raised from a flag is not a limit: an earlier round
 // recorded what raising a cap after seeing results costs.
 const (
 	MaxPlanTopicKeys  = 3
@@ -446,7 +446,7 @@ func (r Relation) Valid() bool {
 // Injectable reports whether a relation may reach the assembled context.
 //
 // related_only and insufficient never do. That is the whole safety half of the
-// task: STABILIZE-031's added false-premise injections were every one of them a
+// task: the added false-premise injections were every one of them a
 // record that was the learner's own, active and on the subject, and related_only
 // is the verdict that names exactly that.
 func (r Relation) Injectable() bool {

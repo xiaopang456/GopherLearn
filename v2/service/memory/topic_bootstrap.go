@@ -14,7 +14,7 @@ import (
 //
 // The injected path has always rendered memories to []string and thrown the
 // rest away, which was fine while nothing downstream had to say which record a
-// line stood for. STABILIZE-039 has two things that do: the evidence registry
+// line stood for. The topic bootstrap has two things that do: the evidence registry
 // issues an S# that must resolve to a real row, and memory_search has to
 // recognise the same row if a later search returns it. Neither can be done from
 // a rendered sentence.

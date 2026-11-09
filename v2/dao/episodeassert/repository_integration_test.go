@@ -17,7 +17,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-// STABILIZE-058 v1.1 Phase A1, production shape.
+// Phase A1, production shape.
 //
 // The pure-function tests in service/episodeassert prove the rules. These prove
 // the parts that only a database can: the optimistic version has to be a
@@ -431,7 +431,7 @@ func TestExpandCandidatesSkipsUnreadableCards(t *testing.T) {
 	}
 }
 
-// STABILIZE-058 v1.3: what a re-projection must not lose, read from the real
+// What a re-projection must not lose, read from the real
 // tables.
 //
 // The projector's fail-closed rule is only as good as this query. The half that

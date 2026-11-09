@@ -18,12 +18,12 @@ const (
 	// It is the zero value, so a deployment that never heard of this setting
 	// gets the method its measurements were taken under.
 	WindowFixed WindowPolicy = "w0_fixed"
-	// WindowTokenBounded is STABILIZE-036. On a mixed-kind call where both
+	// WindowTokenBounded is the bounded-window experiment. On a mixed-kind call where both
 	// kinds had eligible records, the observation may carry whole cards the
 	// final merge dropped, up to eight cards and up to
 	// min(2800, floor(base x 1.35)) tokens.
 	//
-	// It is an experiment, not a default. STABILIZE-035 showed that widening
+	// It is an experiment, not a default. An earlier round showed that widening
 	// every search buys a little recall at half again the input cost; whether
 	// widening only the squeezed searches is worth it is what the paired run is
 	// for, and until that answers, production reads legacy_v2.

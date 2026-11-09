@@ -11,7 +11,7 @@ import (
 	"GopherAI/service/episodeassert"
 )
 
-// STABILIZE-065 red lights for the episodic write-side relation generator.
+// Red lights for the episodic write-side relation generator.
 //
 // Every one is a behavioural assertion about the production chain. A source
 // scan appears in exactly one place, as a guard beside a behavioural test, and

@@ -17,7 +17,7 @@ import (
 
 // The Episode-only contract.
 //
-// STABILIZE-058 v1.8.1 measured what the general contract costs in the two
+// Measured what the general contract costs in the two
 // modes that do not serve semantic memory: of fourteen questions, seven called
 // memory_search with kinds containing semantic and were refused before any
 // retrieval happened. Three of those seven asked for ["episodic","semantic"] -
@@ -203,8 +203,8 @@ func EpisodeSearchSchemaDigest() (string, error) {
 // toolContractDigest is the SHA-256 of what the model actually receives: the
 // tool's name, its description and its parameter schema.
 //
-// It exists because MemorySearchSchemaDigest does not cover the parameters
-// (BUG-EVAL-034). schema.ToolInfo embeds *ParamsOneOf, whose fields are
+// It exists because MemorySearchSchemaDigest does not cover the parameters:
+// schema.ToolInfo embeds *ParamsOneOf, whose fields are
 // unexported, so marshalling a ToolInfo yields the name, the description and
 // nothing else - the digest a freeze recorded as "memory_search_schema" has
 // been binding two thirds of the contract while its comment claimed all of it.

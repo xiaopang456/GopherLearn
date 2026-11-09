@@ -48,7 +48,7 @@ func TestAgentMemoryToolV2ObeysTheSameConfigurationRulesAsV1(t *testing.T) {
 	narrow := complete
 	narrow.MaxToolCalls, narrow.MaxModelCalls, narrow.MaxGraphSteps = 3, 4, 10
 	if err := narrow.Validate(); err == nil {
-		t.Fatal("agent_memory_tool_v2 accepted the pre-STABILIZE-033 budget")
+		t.Fatal("agent_memory_tool_v2 accepted the earlier budget")
 	}
 	wide := complete
 	wide.MaxToolCalls, wide.MaxModelCalls, wide.MaxGraphSteps = 8, 9, 20
@@ -59,7 +59,7 @@ func TestAgentMemoryToolV2ObeysTheSameConfigurationRulesAsV1(t *testing.T) {
 
 // An unknown mode still stops startup rather than falling back to something.
 //
-// The example used to be "agent_memory_tool_v3", which STABILIZE-040 made real.
+// The example used to be "agent_memory_tool_v3", which a later round made real.
 // A test whose unknown value can become known is a test that stops testing
 // without failing, so the value here is one no mode will ever take.
 func TestUnknownModeStillFailsClosedAfterV2(t *testing.T) {

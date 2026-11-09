@@ -151,7 +151,6 @@ type EpisodeDocument struct {
 	OpenLoops       []EpisodeEvidence `json:"open_loops"`
 	UserCorrections []EpisodeEvidence `json:"user_corrections"`
 	// Preferences and DurableExperiences are the two slots added in
-	// STABILIZE-065 Phase 2-C1.
 	//
 	// They exist because the learner's clearest durable statements had nowhere
 	// correct to go. "From now on explain code in Go" is not a decision about

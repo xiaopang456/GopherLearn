@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// STABILIZE-062 v1.4: an error gets its type where it is produced.
+// An error gets its type where it is produced.
 //
 // v1.3 classified by errors.Is against the Runner's own sentinels, which was the
 // right shape and stopped the keyword guessing. What it could not do is say

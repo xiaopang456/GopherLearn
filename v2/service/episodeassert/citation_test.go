@@ -172,7 +172,7 @@ func TestCitedAfterEmptyIsReportedSeparately(t *testing.T) {
 }
 
 // The judge boundary: strip exactly what was issued, and leave forgeries where
-// the deterministic check can still see them. BUG-AGENT-154.
+// the deterministic check can still see them.
 func TestStripRemovesOnlyIssuedLabels(t *testing.T) {
 	registry := registryWith(t, nil)
 	answer := "真实引用 [E12.d1]，伪造引用 [E99.d1]，文档引用 [1]，普通括号 [备注]。"

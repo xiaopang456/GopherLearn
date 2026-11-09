@@ -9,7 +9,7 @@ import (
 	"GopherAI/service/episodeassert"
 )
 
-// The time-series scenarios STABILIZE-065 phase 1 is specified against, plus
+// The time-series scenarios phase 1 is specified against, plus
 // the chain, ordering and failure cases around them.
 //
 // Every scenario runs the same production path the red lights use: a real

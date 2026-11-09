@@ -15,9 +15,9 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-// STABILIZE-061, the behavioural half.
+// The explicit-actions surface, the behavioural half.
 //
-// STABILIZE-060's three failures were all the same event: a request to save
+// The three failures that led here were all the same event: a request to save
 // something reached the Episode search first. These tests pin what the explicit
 // surface does about that, and - just as importantly - what it must not do to
 // the read direction, which was 19/20 and is not being repaired.
@@ -111,7 +111,7 @@ const (
 	searchDescriptionStub = "read-only lookup of earlier sessions"
 )
 
-// explicitTurn drives one turn in the STABILIZE-061 envelope.
+// explicitTurn drives one turn in the envelope.
 func explicitTurn(t *testing.T, question string, tools []tool.BaseTool,
 	script func(int) *schema.Message) (*scriptedChatModel, []model.AgentStep, []Event) {
 	t.Helper()
@@ -186,7 +186,7 @@ func TestPureSaveRequestBindsTheDraftToolFirstAndNeverSearches(t *testing.T) {
 // what explicitMemoryIntent produces for a recall question - nothing is forced
 // towards memory and the search is available.
 //
-// This is the half STABILIZE-060 passed at 19/20, and the one this round most
+// This is the half the earlier run passed at 19/20, and the one this round most
 // easily breaks: a rule that forced a draft whenever the mode was on would turn
 // every "你还记得" into a write attempt.
 func TestRecallQuestionForcesNothingWhenNoDraftToolIsRegistered(t *testing.T) {

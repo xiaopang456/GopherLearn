@@ -10,7 +10,7 @@ import (
 	"GopherAI/model"
 )
 
-// STABILIZE-058 v1.2, group A: the real write chain.
+// Group A: the real write chain.
 //
 // v1.1 built stable identity, reconciliation and an order-independent matcher,
 // and then left them where only tests could reach them: Projector.Project

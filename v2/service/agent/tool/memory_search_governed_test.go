@@ -16,7 +16,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 )
 
-// STABILIZE-058 v1.2, group B: the real read chain.
+// Group B: the real read chain.
 //
 // v1.1's ExpandEpisodes was reachable only from tests and from a standalone
 // component. Production memory_search never called it, so every governed

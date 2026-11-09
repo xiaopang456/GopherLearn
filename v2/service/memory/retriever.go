@@ -211,7 +211,7 @@ func (r *Retriever) RelevantMemories(ctx context.Context, request RecallRequest)
 // GlobalMemories is the always-injected half of long-term semantic memory.
 //
 // It is exported and it is the only implementation, called by RelevantMemories
-// above as well as by the STABILIZE-032 planned read path. Global memory is
+// above as well as by the planned read path. Global memory is
 // explicitly out of that task's scope: its relevance does not correlate with the
 // question, it already has its own 800-token ceiling, and letting a model decide
 // whether to drop a stated teaching preference or an explicit prohibition is a

@@ -8,7 +8,7 @@ import (
 	serviceagent "GopherAI/service/agent"
 )
 
-// STABILIZE-061, the contract layer.
+// The explicit-actions surface, the contract layer.
 //
 // Two claims are checked here. The first is that the explicit surface really is
 // the old implementation under new names - the parameter table it hands the
@@ -46,7 +46,7 @@ func TestExplicitReadContractIsTheEpisodeContractRenamed(t *testing.T) {
 		}
 	}
 	// The description has to carry both halves of the exclusion, because the
-	// old one carried only the positive half and STABILIZE-060 still sent three
+	// old one carried only the positive half and the earlier run still sent three
 	// save requests into it.
 	if !strings.Contains(description, "saves nothing") {
 		t.Fatalf("the description does not say the tool cannot save: %s", description)
@@ -130,16 +130,16 @@ func TestExplicitContractDigestsAreTheirOwn(t *testing.T) {
 	}
 }
 
-// E. The frozen surfaces did not move. The STABILIZE-059/060 freeze bound these
+// E. The frozen surfaces did not move. The earlier freeze bound these
 // two numbers, and a round that changed either of them would make its own
 // results incomparable with the ones it is trying to improve on.
 func TestFrozenContractsAreByteIdenticalAfterTheRename(t *testing.T) {
-	const generalFrozenBySTABILIZE058v181 = "790f2ba6e0bf9b9f517d72437c01636f6324ad6c59b1652109fed93e1a8c6490"
+	const generalFrozenContractDigest = "790f2ba6e0bf9b9f517d72437c01636f6324ad6c59b1652109fed93e1a8c6490"
 	general, err := MemorySearchSchemaDigest()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if general != generalFrozenBySTABILIZE058v181 {
+	if general != generalFrozenContractDigest {
 		t.Fatalf("the general memory_search schema changed: %s", general)
 	}
 	// The default registry - every mode before this round - still builds the

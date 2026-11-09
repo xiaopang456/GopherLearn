@@ -9,7 +9,7 @@ import (
 	"GopherAI/model"
 )
 
-// STABILIZE-058 v1.3: a re-projection may not orphan a governance relation.
+// A re-projection may not orphan a governance relation.
 //
 // v1.2 computed the orphans and then logged them, which is the shape of a check
 // without being one. The state table would still hold "this decision was

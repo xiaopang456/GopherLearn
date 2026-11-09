@@ -657,7 +657,7 @@ func TestProjectionJobConcurrentSessionReleasePreservesLatestDesiredTarget(t *te
 	}
 }
 
-// BUG-AGENT-104. RecoverExpired used to be three multi-row UPDATEs whose WHERE
+// RecoverExpired used to be three multi-row UPDATEs whose WHERE
 // clause led with status, so InnoDB entered through idx_episode_jobs_status and
 // then took the primary key — the opposite order to CompleteOrRequeue's point
 // update. A load run caught the two deadlocking, and the rolled-back side was

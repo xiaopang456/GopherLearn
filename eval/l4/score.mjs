@@ -79,6 +79,59 @@ const SOFT_MARKER = [
 ]
 // "而是" introduces the affirmed term, "而不是" denies the one that follows.
 const AFFIRM_INTRODUCER = '而是'
+// The product prepends a fixed banner when its knowledge retrieval found
+// nothing (or was unavailable) and the answer fell back to general knowledge.
+// The banner is retrieval status, not a statement about any answer value, but
+// its "不是你上传笔记中的结论" reads as a hard negation to the clause
+// analysis, so it is removed before the answer is judged.
+const STANDARD_FALLBACK_BANNERS = [
+  '你的个人知识库中没有找到足以回答该问题的笔记证据。\n以下内容来自模型的通用知识，不是你上传笔记中的结论，可能与你的笔记表述不一致。',
+  '当前个人知识库检索暂时不可用，本次没有使用你上传的笔记。\n以下内容来自模型的通用知识，请在知识库恢复后再核对。',
+]
+function stripStandardFallbackBanners(text) {
+  let out = text
+  for (const banner of STANDARD_FALLBACK_BANNERS) {
+    out = out.split(banner.normalize('NFKC')).join('\n')
+  }
+  return out
+}
+// A soft marker says the value belongs to the past. It does not deny the
+// value, and it is not confident enough to call either: such an answer stays
+// pending instead of being decided.
+//
+// A marker can also sit inside an attribution: "你之前定的名字是北砚",
+// "这是你在之前定下时说的". Such a marker says where the value came from
+// instead of putting the value in the past, but only when the phrase the
+// attribution opens does not cover the value. When the phrase does cover it
+// ("这是你之前叫的北砚"), the marker modifies the value itself, so the
+// mention stays historical and the answer stays pending.
+const SOFT_ATTRIBUTION = /[你您](?:在|于)?(?:之前|原来|原先|此前|以前|先前)/u
+// A copula closes the phrase that an attribution opens.
+const PHRASE_CLOSE = /(?:是|为|叫做|叫作|即)/u
+// phraseEnd returns where the phrase an attribution opens ends: at the next
+// copula or at the end of the sentence.
+function phraseEnd(text, from) {
+  const rest = text.slice(from)
+  const close = PHRASE_CLOSE.exec(rest)
+  const stop = rest.search(STRONG_BREAK)
+  if (close && (stop < 0 || close.index < stop)) return from + close.index
+  if (stop >= 0) return from + stop
+  return text.length
+}
+// softPastScopes reports whether a soft marker in the given clause puts the
+// mention in the past. A plain marker always does. A marker inside an
+// attribution only does when the phrase that the attribution opens covers the
+// mention: "这是你之前叫的北砚" puts the mention in the past, while
+// "你之前定的名字是北砚" does not.
+function softPastScopes(text, clauseStart, clauseEnd, span) {
+  const clause = text.slice(clauseStart, clauseEnd)
+  if (!hasMarker(clause, SOFT_MARKER)) return false
+  const attribution = SOFT_ATTRIBUTION.exec(clause)
+  if (!attribution) return true
+  const start = clauseStart + attribution.index
+  const end = phraseEnd(text, clauseStart + attribution.index + attribution[0].length)
+  return span.start >= start && span.end <= end
+}
 // A weak break separates clauses inside one sentence; a strong break ends the
 // sentence or the thought. A denial or a withdrawal binds only inside the
 // strong segment it stands in.
@@ -204,12 +257,11 @@ function mentionState(text, span, spans) {
     if (hasMarker(clause, HARD_NEGATION)) return 'negated'
   }
   if (before) {
-    const clause = text.slice(before[0], before[1])
-    if (!holdsAnotherValue(before, span, spans) && hasMarker(clause, SOFT_MARKER)) return 'uncertain'
+    if (!holdsAnotherValue(before, span, spans) && softPastScopes(text, before[0], before[1], span)) return 'uncertain'
   }
   for (const range of forward) {
     if (holdsAnotherValue(range, span, spans)) continue
-    if (hasMarker(text.slice(range[0], range[1]), SOFT_MARKER)) return 'uncertain'
+    if (softPastScopes(text, range[0], range[1], span)) return 'uncertain'
   }
   return 'present'
 }
@@ -226,7 +278,7 @@ function factReading(spans, values) {
 // judgeFact decides a scenario whose answer key names the values it expects
 // and the values it forbids.
 export function judgeFact(answer, scenario) {
-  const text = answer.normalize('NFKC')
+  const text = stripStandardFallbackBanners(String(answer).normalize('NFKC'))
   const accepted = [...scenario.answer.accepted, ...(scenario.answer.aliases ?? [])]
   const forbidden = [...(scenario.answer.forbidden ?? [])]
   const spans = []

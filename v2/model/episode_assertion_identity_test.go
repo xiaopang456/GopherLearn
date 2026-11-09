@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// STABILIZE-058 v1.1: the identity defect, reproduced before it is fixed.
+// The identity defect, reproduced before it is fixed.
 //
 // v1 derived an assertion id from its position in the document -
 // <episodeID>:d1, :d2, ... - and called that stable. The test that was supposed

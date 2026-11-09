@@ -145,7 +145,7 @@ Boundary 3 above is amended because this learner decides for themselves which su
 // renamed, and with nothing else changed.
 //
 // It is a mechanical substitution rather than a rewritten prompt, and that is
-// the point of the round. STABILIZE-061 varies what the two memory actions are
+// the point of the round. One earlier change varies what the two memory actions are
 // called; a prompt rewritten at the same time would add guidance, and a result
 // could then be attributed to the new sentences rather than to the contract.
 // The substitution is verified in both directions by a test - replacing the new
@@ -165,14 +165,14 @@ var explicitMemoryActionPrompt = strings.NewReplacer(
 ).Replace(agentMemoryUserConfirmedV1SystemPrompt)
 
 // explicitMemorySourcePrompt makes all three competing actions source
-// specific. It is a mechanical substitution of the STABILIZE-061 prompt so
+// specific. It is a mechanical substitution of the prompt so
 // the new round changes no routing advice beyond the tool contract itself.
 var explicitMemorySourcePrompt = strings.NewReplacer(
 	MustToolNameFor(CapabilityKnowledgeSearch, SurfaceExplicitActions),
 	MustToolNameFor(CapabilityKnowledgeSearch, SurfaceExplicitSources),
 ).Replace(explicitMemoryActionPrompt)
 
-// sourcePriorityPrompt is the STABILIZE-063 prompt. It is the explicit-source
+// sourcePriorityPrompt is the prompt. It is the explicit-source
 // prompt with the base prompt's technical-first boundary replaced by a
 // source-priority rule, and nothing else changed.
 //
@@ -648,7 +648,7 @@ func (f GlobalMemoryProviderFunc) GlobalMemories(ctx context.Context, input RunC
 // from separate readers: the planner decides the topic and episode halves in one
 // pass, and the global half is read by the same call so that the builder has one
 // provider to consult rather than a mixture of old and new ones. A mixture is
-// what would let the pre-STABILIZE-032 trigger rules keep deciding what the new
+// what would let the earlier trigger rules keep deciding what the new
 // path ever gets to see.
 type PlannedMemoryRecall struct {
 	Global   []string
@@ -894,7 +894,7 @@ func (b *DatabaseContextBuilder) UseEpisodeProvider(provider EpisodeProvider) {
 }
 
 // UseTopicKeyResolver attaches the shared topic resolution step. Without it the
-// builder behaves exactly as it did before STABILIZE-030.
+// builder behaves exactly as it did before the planned read path.
 func (b *DatabaseContextBuilder) UseTopicKeyResolver(resolver TopicKeyResolver) {
 	b.topics = resolver
 }
@@ -1150,7 +1150,7 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	} else if b.config.MemoryReadMode.UsesModelPlanner() {
 		// The planned path replaces both readers rather than wrapping them.
 		// Calling the old ones first and letting a model re-rank what they
-		// returned would leave the pre-STABILIZE-032 trigger rules deciding
+		// returned would leave the earlier trigger rules deciding
 		// what the new path can ever see, which is the arrangement this mode
 		// exists to get out from under.
 		if b.planned == nil {

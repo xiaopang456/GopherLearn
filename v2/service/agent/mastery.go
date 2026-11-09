@@ -41,7 +41,7 @@ type MasteryTopicKeyProvider interface {
 
 // MasteryTopics separates the two things the returned key slice used to mix.
 //
-// STABILIZE-039 needs the distinction because it spends the keys differently.
+// One earlier change needs the distinction because it spends the keys differently.
 // Matched keys pick which assessment shapes the explanation: a wrong one makes
 // the answer badly pitched. Authoritative keys decide which of the learner own
 // private notes are put in front of the model before it has read anything, with
@@ -273,7 +273,7 @@ func (p *TopicProgressMasteryProvider) CurrentMasteryWithTopicSources(ctx contex
 	return rendered + p.renderDetail(ctx, input.UserID, matched), topics, nil
 }
 
-// authoritativeTopicKey is the whole trust boundary of STABILIZE-039, in one
+// authoritativeTopicKey is the whole trust boundary of the topic bootstrap, in one
 // place so there is exactly one thing to read when asking what the server is
 // willing to vouch for.
 //

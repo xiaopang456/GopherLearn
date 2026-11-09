@@ -2,7 +2,7 @@ package agenttool
 
 import "testing"
 
-// STABILIZE-063: the three source-priority contracts are frozen separately and
+// The three source-priority contracts are frozen separately and
 // differ from the explicit-sources contracts they replace.
 func TestSourcePriorityDescriptionsDifferFromExplicitSources(t *testing.T) {
 	saveOld, err := SaveMemoryDraftSchemaDigest()

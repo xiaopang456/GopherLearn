@@ -27,13 +27,13 @@ type MemoryDraftRegistry struct {
 	proposer MemoryDraftProposer
 	topics   *memoryservice.TopicCatalogue
 	now      func() time.Time
-	// explicitNames exposes the same proposer under the STABILIZE-061 name and
+	// explicitNames exposes the same proposer under the name and
 	// description. The permission gate, the identity handling, the idempotency
 	// key and the confirmation flag are untouched by it.
 	explicitNames bool
 }
 
-// UseExplicitActionNames switches this registry to the STABILIZE-061 surface.
+// UseExplicitActionNames switches this registry to the surface.
 func (r *MemoryDraftRegistry) UseExplicitActionNames(enabled bool) { r.explicitNames = enabled }
 
 func NewMemoryDraftRegistry(proposer MemoryDraftProposer) (*MemoryDraftRegistry, error) {
