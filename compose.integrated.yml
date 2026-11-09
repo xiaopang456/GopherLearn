@@ -254,6 +254,40 @@ services:
     networks:
       - data
 
+  # The one-time summary conversion, behind the same profile so an ordinary `up` never
+  # runs it.
+  #
+  # The command reads the stored summaries, reports what shape each one has, and - with
+  # -apply - rewrites the old shapes into the current one. It calls no model, so it
+  # spends nothing, but it writes to the database, so it is not something an ordinary
+  # start may do on its own. It is here for the same reason schemainit is: this stack's
+  # MySQL publishes no port, so the command can only reach the database from inside
+  # this network.
+  #
+  # Two runs, in this order. The first previews and writes nothing:
+  #   docker compose -p gopherlearn-integrated -f compose.integrated.yml --profile init run --rm summaryconvert
+  # The second writes the conversions:
+  #   docker compose -p gopherlearn-integrated -f compose.integrated.yml --profile init run --rm summaryconvert -apply
+  summaryconvert:
+    profiles: ["init"]
+    image: gopherlearn-backend-integrated:1
+    container_name: gopherlearn-integrated-summaryconvert
+    restart: "no"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    entrypoint: ["/summaryconvert"]
+    command: ["-config", "/config/integrated.toml"]
+    volumes:
+      - type: bind
+        source: ./config.integrated.toml.local
+        target: /config/integrated.toml
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      - data
+
 networks:
   data:
     name: gopherlearn-integrated-data

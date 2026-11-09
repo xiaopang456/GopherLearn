@@ -144,33 +144,38 @@ docker compose -p gopherlearn-integrated -f compose.integrated.yml --profile ini
 这一步是**加法**的：只建缺的表、列和索引，不删表、不改写已有的行，已经写进去的数据原样留着。
 跑完会看到一行 `schema initialized in <库名> on <主机>:<端口>`。
 
-**8. 跑一次 `summaryconvert`。** 用**新后端**里的命令，把旧的普通对话摘要转成这一版读得懂的形状：
+**8. 跑一次 `summaryconvert`。** 把旧的普通对话摘要转成这一版读得懂的形状。
 
-| 命令 | 做什么 |
-|---|---|
-| `go -C v2 run ./cmd/summaryconvert -config ../config.toml` | 逐行分类并报数：现行 / 根 JSON / 纯散文 / 读不出来 / 空行。**不写一行库** |
-| 加上 `-apply` | 把两种旧形状机械地、无损地写成现行 JSON，水位线不动，版本号 +1 |
-
-**默认只预演，不自动跑，也不在启动时跑**——跑之前那些会话照常工作，只是摘要停在原地。转不了的行（读不出来的 JSON、引用不是消息号因而无法无损搬运、超出当前文档预算）一律**列出来、不改那一行**。
-
-**这条命令要在能访问到数据库的地方跑。** 它读的那份配置里的 MySQL 地址必须可达：
-用容器名（`gopherlearn-integrated-mysql`）时，只有**在 Docker 网络里**才解析得到——在宿主机上直接跑
-会得到 `lookup gopherlearn-integrated-mysql: no such host`，因为整合栈的 MySQL **不发布宿主端口**。
-所以容器部署的两种跑法：
+**跑两遍：先预演，看清楚要改什么；再正式转换。**
 
 ```bash
-# ① 宿主直跑：配置里的 mysqlConfig.host 要填一个宿主上可达的地址
-#    （整合栈的 MySQL 不发布端口，这种跑法要先把数据库端口发布出来，或用一份指向已发布端口的配置）
-go -C v2 run ./cmd/summaryconvert -config ../config.integrated.toml.local
+# ① 预演：逐行分类并报数（现行 / 根 JSON / 纯散文 / 读不出来 / 空行），不写一行库
+docker compose -p gopherlearn-integrated -f compose.integrated.yml --profile init run --rm summaryconvert \
+  -config /config/integrated.toml
 
-# ② 栈内跑：把命令放进 compose 的网络里，配置照旧用容器名
-docker compose -p gopherlearn-integrated -f compose.integrated.yml run --rm \
-  --entrypoint /summaryconvert backend -config /config/integrated.toml
+# ② 正式转换：把两种旧形状机械地、无损地写成现行 JSON，水位线不动，版本号 +1
+docker compose -p gopherlearn-integrated -f compose.integrated.yml --profile init run --rm summaryconvert \
+  -config /config/integrated.toml -apply
 ```
 
-> ② 这条命令要用一个**带这个命令的镜像**：后端镜像里目前只有 `/gopherlearn-integrated` 与 `/schemainit`
-> 两个二进制，**还没有 `/summaryconvert`**。所以在镜像里补上它之前，② 跑不起来——用 ①，或者等镜像补上
-> 这个命令。
+> **为什么两遍都要写 `-config`**：`docker compose run` 的 SERVICE 之后第一个参数是**整条命令**，
+> 不是追加给命令的参数。所以只写 `run --rm summaryconvert -apply` 会把服务里配好的
+> `-config /config/integrated.toml` 顶掉，命令转而去找它自己的默认路径 `config/config.toml`，
+> 然后以 `load configuration: … no such file or directory` 结束。**两遍都写全 `-config`**。
+
+这个服务用**后端镜像里的 `/summaryconvert`**，与后端在同一个网络里，因此能连到 MySQL——整合栈的
+MySQL 不发布宿主端口，在宿主机上直接跑这条命令是连不上数据库的（`no such host`）。
+
+**默认只预演，不自动跑，也不在启动时跑**——跑之前那些会话照常工作，只是摘要停在原地。转不了的行
+（读不出来的 JSON、引用不是消息号因而无法无损搬运、超出当前文档预算）一律**列出来、不改那一行**。
+
+> **备选：从源码跑。** 手里有源码、且配置里的 MySQL 地址在宿主机上可达时（比如数据库端口已发布），
+> 也可以不走容器：
+> ```bash
+> go -C v2 run ./cmd/summaryconvert -config ../config.integrated.toml.local
+> # 加上 -apply 才是正式转换
+> ```
+> 两种跑法做的是同一件事，用哪一个都行；**先预演、再转换**的顺序不变。
 
 **9. 换 Redis 的启动入口：重建 redis 容器。** 这里换入口的是 **Redis 容器，不是后端**。
 
@@ -350,12 +355,13 @@ retired configuration setting: [ordinaryChat] was removed. A conversation turn i
 
 读不出来时不再花冤枉钱：到点要压缩时先读库里那一行，读不出来就**跳过这一轮**——一次模型调用都不发，也**不进失败冷却**（旧内容不会在两次对话之间自己变可读）。指标里记 `summary_outcome{reason="previous_unreadable"}`，回答照常带着水位线之后的原始消息，学习者只是拿不到"压缩过的更早历史"。这类会话的摘要会一直停在旧那一行，直到有人转换它。
 
-转换由上面升级步骤第 8 步那条 `summaryconvert` 命令做，**默认只预演**，不自动跑，也不在启动时跑：
+转换由上面升级步骤第 8 步那个 `summaryconvert` 服务做（后端镜像里的命令，与后端同一个网络，
+所以能连到数据库），**默认只预演**，不自动跑，也不在启动时跑：
 
 | 命令 | 做什么 |
 |---|---|
-| `summaryconvert -config config/config.toml` | 逐行分类并报告数量：现行 / 根 JSON / 纯散文 / 读不出来 / 空行。不写一行库 |
-| 加 `-apply` | 把两种旧形状**机械地、无损地**写成现行 JSON，水位线**不动**，版本号 +1 |
+| `docker compose -p gopherlearn-integrated -f compose.integrated.yml --profile init run --rm summaryconvert -config /config/integrated.toml` | 逐行分类并报告数量：现行 / 根 JSON / 纯散文 / 读不出来 / 空行。不写一行库 |
+| 同一条命令加上 `-apply` | 把两种旧形状**机械地、无损地**写成现行 JSON，水位线**不动**，版本号 +1 |
 
 转换**不调用模型**，也不需要任何 Provider 配置。纯散文按段落放进现行的字符串分组（`completed_items`），每段不超过单条上限，超长就在段落边界或上限处切开，切开的几段拼回去仍是原文。根 JSON 的各个分组、文本与引用原样搬过来；它多出来的 `legacy_text`（这张表没有对应字段）也一并放进 `completed_items`，不是只报一个丢弃字数。写回前用产品自己的读取器解码转换结果，通不过就不写；写进去的就是这份已验证文档的规范 JSON。
 

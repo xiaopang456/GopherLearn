@@ -419,6 +419,24 @@ docker compose -p gopherlearn-integrated -f compose.integrated.yml up -d --build
 
 第 3 步的 `init` profile 用同一个后端镜像、把 `schemainit` 当作入口，跑完即退出；它不在普通的 `up` 里，所以正常启动**不会**去写 schema。
 
+同一个 profile 里还有第二个按需命令：`summaryconvert`，把旧形状的摘要转成这一版读得懂的形状。
+它也跑完即退出，两遍——先预演，再转换：
+
+```bash
+# 预演：分类并报数，不写一行库
+docker compose -p gopherlearn-integrated -f compose.integrated.yml --profile init run --rm summaryconvert \
+  -config /config/integrated.toml
+
+# 正式转换
+docker compose -p gopherlearn-integrated -f compose.integrated.yml --profile init run --rm summaryconvert \
+  -config /config/integrated.toml -apply
+```
+
+> `docker compose run` 的 SERVICE 之后第一个参数是**整条命令**，不是追加给命令的参数。
+> 所以两遍都要写全 `-config /config/integrated.toml`：只写 `… run --rm summaryconvert -apply`
+> 会把服务里配好的 `-config` 顶掉，命令转而去找它自己的默认路径，然后以
+> `load configuration: … no such file or directory` 结束。
+
 ### 7.4 访问与运维
 
 ```bash

@@ -40,11 +40,14 @@ COPY hybrid ./hybrid
 # the binary is static and needs no libc at runtime. The build runs inside hybrid/
 # because that is the module owning the entry package.
 #
-# Two binaries are produced. The entry is the application; schemainit is the one
+# Three binaries are produced. The entry is the application; schemainit is the one
 # command that creates the tables. The entry refuses to change a schema, and the
 # stack's MySQL publishes no port, so without a second binary in this image the
 # operator could not create the schema at all and the backend would refuse to
-# start forever. Both are static and need no shell to run.
+# start forever. summaryconvert is the one command that rewrites the stored
+# summaries; it reads and writes the database and calls no model, and it lives
+# here for the same reason: the stack's MySQL is reachable from inside the
+# network and from nowhere else. All three are static and need no shell to run.
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     cd /src/hybrid && \
@@ -52,9 +55,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     -o /out/gopherlearn-integrated ./cmd/gopherlearn-integrated && \
     cd /src/v2 && \
     CGO_ENABLED=0 GOOS=linux GOTOOLCHAIN=local go build -trimpath -ldflags="-s -w" \
-    -o /out/schemainit ./cmd/schemainit
+    -o /out/schemainit ./cmd/schemainit && \
+    CGO_ENABLED=0 GOOS=linux GOTOOLCHAIN=local go build -trimpath -ldflags="-s -w" \
+    -o /out/summaryconvert ./cmd/summaryconvert
 
-# Runtime stage: scratch, so the image contains the binary and a CA bundle and
+# Runtime stage: scratch, so the image contains the binaries and a CA bundle and
 # nothing else - no shell, no toolchain, no source, no tests, and no configuration
 # file. No timezone database is copied: every timestamp this entry writes to the
 # wire is formatted in UTC, so a missing tzdata cannot silently shift a displayed
@@ -64,6 +69,7 @@ FROM scratch
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=build /out/gopherlearn-integrated /gopherlearn-integrated
 COPY --from=build /out/schemainit /schemainit
+COPY --from=build /out/summaryconvert /summaryconvert
 
 # An arbitrary high uid with no /etc/passwd entry: the process is never root. The
 # knowledge storage directory it writes must be provided by the operator as a
