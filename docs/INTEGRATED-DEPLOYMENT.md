@@ -156,3 +156,17 @@ Docker 侧读数是**静态**的：`Dockerfile.backend-integrated` 的 COPY 行�
 **初始化是独立的一步**：`compose.integrated.yml` 不建 schema、不建账号、不跑 `grant`、
 不做迁移；入口继续拒绝 `migrate = true`。首次建库用
 `docker compose ... --profile init run --rm schemainit`。
+
+同一个 profile 里还有第二个按需命令 `summaryconvert`：它把旧形状的普通对话摘要转成这一版读得懂的
+形状，跑完即退出，**默认只预演、不写库**，要正式转换再加 `-apply`。它同样只在这个网络里跑，
+所以连得到不发布宿主端口的 MySQL：
+
+```bash
+docker compose -p gopherlearn-integrated -f compose.integrated.yml --profile init run --rm summaryconvert \
+  -config /config/integrated.toml          # 预演
+docker compose -p gopherlearn-integrated -f compose.integrated.yml --profile init run --rm summaryconvert \
+  -config /config/integrated.toml -apply   # 正式转换
+```
+
+两遍都要写全 `-config /config/integrated.toml`：`docker compose run` 的 SERVICE 之后第一个参数是
+**整条命令**，不是追加给命令的参数。

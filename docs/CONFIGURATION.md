@@ -235,10 +235,22 @@ go -C v2 run ./cmd/indexaudit -config ../config.toml
 原地。要让它继续推进，用一条单独的命令逐行转换，**默认只预演、不自动跑**：
 
 ```bash
-# 在仓库根目录执行；go -C 会把程序的工作目录切到 v2/，所以配置写成 ../config.toml
-go -C v2 run ./cmd/summaryconvert -config ../config.toml          # 只读：逐行分类并报数
-go -C v2 run ./cmd/summaryconvert -config ../config.toml -apply   # 机械转换两种旧形状，水位线不动
+# 在整合栈里跑（推荐）：这个服务跑完即退出，与后端同一个网络，因此能连到 MySQL
+docker compose -p gopherlearn-integrated -f compose.integrated.yml --profile init run --rm summaryconvert \
+  -config /config/integrated.toml          # 只读：逐行分类并报数
+docker compose -p gopherlearn-integrated -f compose.integrated.yml --profile init run --rm summaryconvert \
+  -config /config/integrated.toml -apply   # 机械转换两种旧形状，水位线不动
+
+# 在仓库根目录执行也可以：go -C 会把程序的工作目录切到 v2/，所以配置写成 ../config.toml。
+# 但前提是配置里的 MySQL 地址在宿主机上可达——整合栈的 MySQL 不发布宿主端口，所以宿主机直跑会连不上
+go -C v2 run ./cmd/summaryconvert -config ../config.toml
+go -C v2 run ./cmd/summaryconvert -config ../config.toml -apply
 ```
+
+> `docker compose run` 的 SERVICE 之后第一个参数是**整条命令**，不是追加给命令的参数。所以容器那两遍
+> 都要写全 `-config /config/integrated.toml`：只写 `… run --rm summaryconvert -apply` 会把服务里配好的
+> `-config` 顶掉，命令转而去找它自己的默认路径，然后以 `load configuration: … no such file or
+> directory` 结束。
 
 转换不调用模型，也不需要任何 Provider 配置：纯散文按段落写进 `completed_items`，超长在段落边界或
 单条上限处切开；根 JSON 的分组、文本与引用原样搬，`legacy_text` 也放进 `completed_items`。写回前用
