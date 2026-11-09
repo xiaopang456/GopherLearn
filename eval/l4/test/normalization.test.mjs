@@ -21,6 +21,31 @@ test('fact expressions normalize numbers, units and times within prose', () => {
   }
 })
 
+test('the no-evidence fallback banner is stripped before judging', () => {
+  const scenario = {category:'R1', answer:{accepted:['岱岑'], forbidden:[], aliases:[]}}
+  const banner = '你的个人知识库中没有找到足以回答该问题的笔记证据。\n以下内容来自模型的通用知识，不是你上传笔记中的结论，可能与你的笔记表述不一致。'
+  const value = '是“岱岑”——你之前定的那个固定词，为的是脚本能按标题定位。'
+  // The banner is retrieval status, not a statement about the value. The
+  // value behind it is affirmed, even though the sentence attributes it to an
+  // earlier turn ("你之前定的").
+  assert.equal(judgeFact(`${banner}\n\n${value}`, scenario).verdict, 'pass')
+  assert.equal(judgeFact(value, scenario).verdict, 'pass')
+  // The retrieval-unavailable banner is stripped the same way.
+  const unavailable = '当前个人知识库检索暂时不可用，本次没有使用你上传的笔记。\n以下内容来自模型的通用知识，请在知识库恢复后再核对。'
+  assert.equal(judgeFact(`${unavailable}\n\n${value}`, scenario).verdict, 'pass')
+  // A banner must not mask a genuinely denied value.
+  assert.equal(judgeFact(`${banner}\n\n不是岱岑。`, scenario).verdict, 'needs_judge')
+})
+
+test('attributional "你之前定的" is not a past marker, but real past values stay pending', () => {
+  const name = {answer:{accepted:['澜岐'], forbidden:[], aliases:[]}}
+  assert.equal(judgeFact('你之前定的名字是澜岐。', name).verdict, 'pass')
+  assert.equal(judgeFact('之前叫澜岐，现在改叫别的了。', name).verdict, 'needs_judge')
+  const schedule = {answer:{accepted:['7次'], forbidden:['3次'], aliases:[]}}
+  assert.equal(judgeFact('你之前定的是每周 7 次。', schedule).verdict, 'pass')
+  assert.equal(judgeFact('之前是 3 次。', schedule).verdict, 'needs_judge')
+  assert.equal(judgeFact('现在是每周 3 次。', schedule).verdict, 'fail')
+})
 
 test('R3 routes answers naming both historical and current values to the semantic checkpoint', () => {
   const scenario = {category:'R3', answer:{accepted:['24分钟'], forbidden:['76分钟'], aliases:[]}}
