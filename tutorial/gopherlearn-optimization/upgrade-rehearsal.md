@@ -103,7 +103,8 @@ beside the embedding model name and address it belongs to. Move the key there an
 
 ### 第 3、4、5 步 · Redis 的 AOF
 
-这三步的实测已在上一轮做过（一次性容器，500 个键，两种做法对比），结果照抄不再重跑：
+这三步的实测在**上一轮**已经做过（一次性容器，500 个键，两种做法对比），本轮演练**没有重跑**，
+结果照抄：
 **只改配置直接重启会带着空索引起来**（`DBSIZE` 0，下一次快照把 dump.rdb 覆盖成 189 字节/1 键）；
 **运行中 `CONFIG SET appendonly yes` 等 `aof_rewrite_in_progress:0` 再重启**，`DBSIZE` 保持完整。
 
