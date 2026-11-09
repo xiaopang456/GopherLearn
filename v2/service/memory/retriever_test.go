@@ -43,7 +43,7 @@ func (r *recallRepository) Recall(_ context.Context, query memorydao.RecallQuery
 	return matched, nil
 }
 
-// AGENT-018 splits recall by type: `profile` is fetched whole rather than
+// Recall splits by type: `profile` is fetched whole rather than
 // matched, so the fake serves it from a separate slice.
 func (r *recallRepository) ListAllActive(_ context.Context, userID int64, memoryType model.MemoryScope, minConfidence float64, limit int) ([]model.LongTermMemory, error) {
 	r.globalQuery = listAllActiveQuery{UserID: userID, Scope: memoryType, MinConfidence: minConfidence, Limit: limit}
@@ -154,7 +154,7 @@ func TestRetrieverRanksTopicNotesAndDefensivelyIsolates(t *testing.T) {
 	}
 }
 
-// AGENT-018: a preference applies to every technical question but resembles
+// A preference applies to every technical question but resembles
 // none of them, so it is injected whole rather than matched. This is the case
 // no similarity method can serve, which is why the type skips retrieval.
 func TestRetrieverAlwaysInjectsProfileEvenWithoutTagOverlap(t *testing.T) {
@@ -179,7 +179,7 @@ func TestRetrieverAlwaysInjectsProfileEvenWithoutTagOverlap(t *testing.T) {
 			t.Fatal("another user's profile leaked")
 		}
 	}
-	// AGENT-019: the two blocks are returned separately so neither can consume
+	// The two blocks are returned separately so neither can consume
 	// the other's token budget in the context builder.
 	if len(recalled.Topic) != 0 {
 		t.Errorf("no topic note matches this question, got %v", recalled.Topic)

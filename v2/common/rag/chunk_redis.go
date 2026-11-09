@@ -136,7 +136,7 @@ type RedisChunkSearchResult struct {
 }
 
 // SearchByUserVector is a storage-level proof of TAG isolation. The chat-level
-// retrieval service with active-version filtering is implemented in RAG-010.
+// retrieval service with active-version filtering is implemented above it.
 func (r *RedisChunkRepository) SearchByUserVector(ctx context.Context, userID int64, vector []float32, topK int) ([]RedisChunkSearchResult, error) {
 	if userID <= 0 || len(vector) != r.dimension || topK <= 0 {
 		return nil, fmt.Errorf("search chunk vectors: invalid user, vector dimension, or topK")

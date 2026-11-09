@@ -14,7 +14,7 @@ import (
 // Real local HTTP -> original auth/Service/Runner/DAO, using the current Vue
 // composable and API/parser/reducers in Node; model and database stay offline.
 func TestFrontendAgentComposableThroughHybridHTTP(t *testing.T) {
-	app, db, model, ordinary, _, _ := sseFixture(t, func(_ int, _ []*schema.Message) streamPlan {
+	app, db, model, _, _ := sseFixture(t, func(_ int, _ []*schema.Message) streamPlan {
 		return streamPlan{parts: pieces("你好", "，公开片段")}
 	})
 	server := httptest.NewServer(app.Handler)
@@ -46,9 +46,6 @@ func TestFrontendAgentComposableThroughHybridHTTP(t *testing.T) {
 	// what the old append rule would have doubled.
 	if model.CallCount() != 2 || result.History != 1 || !result.OrdinaryDone {
 		t.Fatalf("calls/result: %d %+v", model.CallCount(), result)
-	}
-	if calls := len(ordinary.all()); calls != 0 {
-		t.Fatalf("the frontend's conversation turn reached the retired ordinary model %d times", calls)
 	}
 	rows := agentRows(t, db, result.Agent)
 	if len(rows) != 2 || rows[1].Content != result.Content || result.RunID == "" || result.MessageID == "" {

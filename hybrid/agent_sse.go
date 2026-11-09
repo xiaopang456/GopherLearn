@@ -10,7 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/xiaopang456/GopherLearn/conversation"
+	"github.com/xiaopang456/GopherLearn/httpwire"
 	"io"
 	"net/http"
 	"strconv"
@@ -180,7 +180,7 @@ func (s *httpSurface) agentStream(w http.ResponseWriter, r *http.Request, uid in
 		// /messages: presence and value are different facts.
 		Knowledge json.RawMessage `json:"knowledge"`
 	}
-	if err := conversation.DecodeRequest(w, r, &input); err != nil {
+	if err := httpwire.DecodeRequest(w, r, &input); err != nil {
 		apiError(w, 400, "invalid_request", "request body is invalid")
 		return
 	}

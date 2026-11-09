@@ -164,8 +164,12 @@ func TestTheOnModeSendsTheBoardAndTheSegments(t *testing.T) {
 
 // The same window with the mode off carries neither block: the assertion above
 // must be able to fail, or it is measuring the wrong thing.
+//
+// The mode is set here rather than left to the default, because this test is
+// about the off mode and the shipped default is on.
 func TestTheOffModeSendsNeitherBlock(t *testing.T) {
 	s := testSettings(t)
+	s.Config.AgentConfig.SummarySegmentMode = "off"
 	app, db, _, token := newFixture(t, s, func(context.Context, int) (*schema.Message, error) {
 		return schema.AssistantMessage("你好", nil), nil
 	})

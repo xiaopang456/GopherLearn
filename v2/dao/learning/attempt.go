@@ -434,7 +434,7 @@ func (r *Repository) GetTopicProgress(ctx context.Context, userID int64, topicKe
 }
 
 // ListTopicProgress returns a bounded slice of the user's topic progress,
-// most recently assessed first. AGENT-017 uses it to match the current
+// most recently assessed first. The agent turn uses it to match the current
 // question against topics the learner has actually been graded on.
 //
 // The limit is a database guard, not a context budget: the caller matches and
@@ -623,7 +623,7 @@ func minDAO(a, b int) int {
 // ListRecentAttemptsByTopic returns the learner's graded attempts on one topic,
 // most recent first.
 //
-// AGENT-021 uses it to answer questions the mastery score cannot: "we did three
+// The topic bundle uses it to answer questions the mastery score cannot: "we did three
 // questions on this" is a fact about attempts, not about a level. Only completed
 // attempts are returned — a skipped or failed one records that grading did not
 // happen, which says nothing about what the learner knows.

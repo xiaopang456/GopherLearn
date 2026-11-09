@@ -444,7 +444,10 @@ describe('a turn that did not ask to be watched', () => {
     const { app } = await openAndSend(CHAT)
 
     const stream = bodies.filter((call) => call.path.endsWith('/stream'))
-    expect(stream[0].body).toEqual({ content: 'RPC 为什么没有消息边界？' })
+    expect(stream[0].body).toEqual({
+      content: 'RPC 为什么没有消息边界？',
+      knowledgePolicy: 'knowledge_disabled',
+    })
     expect(assistantTurn(app).find('[data-test="markdown-body"]').text()).toBe('普通对话的一半答案')
     expect(app.find('[data-test="process-notes"]').exists()).toBe(false)
     app.unmount()

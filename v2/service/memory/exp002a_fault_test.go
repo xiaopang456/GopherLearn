@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// These tests are experiment-only fault traces for EXP-002A. They exercise
+// These tests are experiment-only fault traces. They exercise
 // failure boundaries that are intentionally not reachable from the HTTP API.
 func TestEXP002AExtractorIndependentFaultMatrix(t *testing.T) {
 	base := `{"subject":"scope","proposed_content":"project scope","confidence":0.8,"importance":5,"sensitive":false}`

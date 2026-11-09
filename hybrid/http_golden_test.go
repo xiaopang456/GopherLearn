@@ -25,7 +25,7 @@ func TestHTTPCompatibilityGoldenDoesNotReplaceOriginalGolden(t *testing.T) {
 	if err := json.Unmarshal(bytes, &golden); err != nil {
 		t.Fatal(err)
 	}
-	app, _, _, _, token, _ := httpFixture(t)
+	app, _, _, token, _ := httpFixture(t)
 	for _, tc := range golden.Errors {
 		auth := tc.Token
 		if auth == "authenticated" {

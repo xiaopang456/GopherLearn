@@ -39,7 +39,7 @@ func TestAnOrdinaryConversationTurnSendsTheConversationBlocksUnderTheMode(t *tes
 		t.Run(tc.mode, func(t *testing.T) {
 			settings := testSettings(t)
 			settings.Config.AgentConfig.SummarySegmentMode = tc.mode
-			app, db, ordinary, agent, token, _ := httpFixtureWithSettings(t, settings, nil)
+			app, db, agent, token, _ := httpFixtureWithSettings(t, settings)
 			session := createSession(t, app, token, "ordinary-"+tc.mode, "chat")
 			mustSeedOrdinaryLayeredState(t, db, 1, session)
 
@@ -47,12 +47,11 @@ func TestAnOrdinaryConversationTurnSendsTheConversationBlocksUnderTheMode(t *tes
 			if status != 200 || envelope["error"] != nil {
 				t.Fatalf("the ordinary turn failed: %d %s", status, raw)
 			}
-			// The premise, checked rather than assumed: this turn ran on the V2
-			// path. If ordinary chat had gone back to the retained path, the
-			// assertions below would be reading the wrong model entirely.
-			if agent.CallCount() == 0 || len(ordinary.all()) != 0 {
-				t.Fatalf("the ordinary turn did not run on the V2 path: v2 calls=%d retained calls=%d",
-					agent.CallCount(), len(ordinary.all()))
+			// The premise, checked rather than assumed: this turn reached the
+			// model. If the turn had gone anywhere else, the assertions below
+			// would be reading the wrong model entirely.
+			if agent.CallCount() == 0 {
+				t.Fatalf("the ordinary turn did not reach the model: %d calls", agent.CallCount())
 			}
 			// And it is a capability-free turn, which is why the blocks matter
 			// here: a turn offered no tools has nothing but the conversation.
@@ -136,7 +135,7 @@ func TestAnOrdinaryConversationWritesItsBoardAndSegments(t *testing.T) {
 	settings.Config.AgentConfig.SummarySegmentTriggerMessages = 2
 	settings.Config.AgentConfig.SummarySegmentTriggerTokens = 1000000
 	settings.Config.AgentConfig.SummarySegmentMaxAttempts = 1
-	app, db, _, agent, token, _ := httpFixtureWithSettings(t, settings, nil)
+	app, db, agent, token, _ := httpFixtureWithSettings(t, settings)
 
 	// One fake answers both contracts. The reply is written to satisfy the
 	// segment writer's own document - schema version, one point that cites a

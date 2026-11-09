@@ -297,10 +297,14 @@ func (g *ModelSummaryGenerator) GenerateSummary(ctx context.Context, previous st
 	if rag.EstimateTokens(payload) > g.maxInputTokens {
 		return SummaryGeneration{}, fmt.Errorf("rolling summary input exceeds token limit")
 	}
+	// The output limit goes into the request itself. The check below measures the
+	// document the model returned, but a request that names no limit leaves the
+	// reply length to the provider's default, and a provider's default is not a
+	// budget this deployment can hold itself to.
 	response, err := g.model.Generate(ctx, []*schema.Message{
 		schema.SystemMessage(summarySystemPrompt),
 		schema.UserMessage(payload),
-	})
+	}, modelcomponent.WithMaxTokens(g.maxOutputTokens))
 	if err != nil {
 		return SummaryGeneration{}, fmt.Errorf("generate rolling summary: %w", err)
 	}

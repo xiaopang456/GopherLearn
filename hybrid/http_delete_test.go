@@ -50,7 +50,7 @@ func TestHTTPSessionDeleteUsesOriginalCascadeAndDerivedIndex(t *testing.T) {
 	for _, failure := range []bool{false, true} {
 		t.Run(map[bool]string{false: "cleaned", true: "cleanup-error"}[failure], func(t *testing.T) {
 			transport := &httpRedisTransport{fail: failure}
-			app, db, _, _, token, other := httpFixtureWithModel(t, nil, transport)
+			app, db, _, token, other := httpFixtureWithTransport(t, transport)
 			sid := createHTTP(t, app.Handler, token, "delete aggregate")
 			dataHTTP(t, app.Handler, "POST", "/api/v1/sessions/"+sid+"/messages", `{"content":"stored before delete"}`, token)
 			now := time.Now().UTC()

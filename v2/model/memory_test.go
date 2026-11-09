@@ -22,7 +22,7 @@ func TestMemoryCandidateValidation(t *testing.T) {
 		t.Fatal("candidate without source accepted")
 	}
 
-	// AGENT-018: the per-type shape is what makes the two-type taxonomy
+	// The per-type shape is what makes the two-type taxonomy
 	// decidable. A topic note without a topic, or a profile carrying one, would
 	// blur exactly the boundary the migration exists to keep sharp.
 	copy = *valid
@@ -183,7 +183,7 @@ func TestMemoryRevisionRequestKeyIsBounded(t *testing.T) {
 	}
 }
 
-// BUG-AGENT-029: AGENT-018 removed the per-type fallback tag but left the
+// The per-type fallback tag was removed but the
 // validation floor at one, so any memory whose wording misses the 30-word
 // vocabulary could not be stored at all. Real notes hit this immediately:
 // titles like "两个请求并发完成时，什么会回滚、什么不会" contain no vocabulary term.

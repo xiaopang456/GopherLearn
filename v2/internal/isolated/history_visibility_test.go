@@ -74,6 +74,12 @@ func TestHistoryCapabilityRequiresVisibleUsableSummaryGrantThroughHTTP(t *testin
 	for _, kind := range []string{"trimmed", "undecodable", "past-watermark", "zero-version", "legacy-no-summary-grants"} {
 		t.Run(kind, func(t *testing.T) {
 			s := testSettings(t)
+			// The layered summary is off here on purpose. This test is about
+			// the rolling summary's grant: whether an unreadable one keeps
+			// the learner's own words out of reach. The layered summary
+			// grants the same capability from the blocks it puts in the
+			// window, which is a different rule with its own tests.
+			s.Config.AgentConfig.SummarySegmentMode = "off"
 			if kind != "legacy-no-summary-grants" {
 				toolMode(s)
 			}

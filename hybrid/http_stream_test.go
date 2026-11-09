@@ -24,7 +24,7 @@ import (
 func TestHTTPStreamPublishesACapabilityFreeTurnWhileItGenerates(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	app, _, agent, ordinary, token, _ := sseFixture(t, func(_ int, _ []*schema.Message) streamPlan {
+	app, _, agent, token, _ := sseFixture(t, func(_ int, _ []*schema.Message) streamPlan {
 		return streamPlan{parts: pieces("第一段：", "第二段"), entered: entered, release: release}
 	})
 	defer func() {
@@ -103,15 +103,12 @@ func TestHTTPStreamPublishesACapabilityFreeTurnWhileItGenerates(t *testing.T) {
 	if agent.CallCount() != 1 {
 		t.Fatalf("a conversation turn generated %d times, want 1", agent.CallCount())
 	}
-	if calls := len(ordinary.all()); calls != 0 {
-		t.Fatalf("a conversation turn reached the retired ordinary model %d times", calls)
-	}
 }
 
 // A turn that kept its capability is the other half: its answer is held until the
 // citations in it have been checked, so nothing before that point may carry text.
 func TestHTTPStreamHoldsAKnowledgeTurnUntilItsCitationsAreChecked(t *testing.T) {
-	app, _, _, _, token, _ := httpFixture(t)
+	app, _, _, token, _ := httpFixture(t)
 	sid := createAgentHTTP(t, app, token, "held-turn", "Agent")
 	server := httptest.NewServer(app.Handler)
 	defer server.Close()
@@ -170,12 +167,12 @@ func (w *noFlushWriter) Write(p []byte) (int, error) { return w.recorder.Write(p
 // back - a late failure can no longer un-write an earlier success, and pretending
 // otherwise would be asserting a contract the code does not have.
 //
-// The retired ordinary model is asserted unused in every case: a turn that reached it
+// The retired ordinary model is gone in every case: a turn that reached it
 // would mean the move back to two engines had happened without anyone noticing.
 func TestHTTPFailureEventsAndPersistenceUseOriginalStreamContract(t *testing.T) {
 	for _, name := range []string{"model-send", "model-stream", "user-store", "assistant-store", "touch-store", "cancel-model", "cancel-delta", "write-started", "write-delta", "write-completed", "no-real-flusher"} {
 		t.Run(name, func(t *testing.T) {
-			app, db, ordinary, agent, token, _ := httpFixture(t)
+			app, db, agent, token, _ := httpFixture(t)
 			sid := createHTTP(t, app.Handler, token, name)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -260,9 +257,6 @@ func TestHTTPFailureEventsAndPersistenceUseOriginalStreamContract(t *testing.T) 
 			history := dataHTTP(t, app.Handler, "GET", "/api/v1/sessions/"+sid+"/messages", "", token)["items"].([]any)
 			if len(history) != wantRows || agent.CallCount() != wantGenerations {
 				t.Fatalf("HTTP facts rows=%d generations=%d want %d/%d: %s", len(history), agent.CallCount(), wantRows, wantGenerations, recorder.Body.String())
-			}
-			if calls := len(ordinary.all()); calls != 0 {
-				t.Fatalf("a conversation turn reached the retired ordinary model %d times", calls)
 			}
 			body := recorder.Body.String()
 			switch wantTerminal {

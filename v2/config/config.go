@@ -476,19 +476,19 @@ type AgentConfig struct {
 	// SummarySegmentMode decides whether the layered summary writes anything
 	// and whether the new state is read back:
 	//
-	//   - "off" writes nothing.
+	//   - "off" writes nothing and the window is built from the old rolling
+	//     summary. This is the way back to the previous behaviour.
 	//   - "shadow" writes the segments and the board, but the context still
 	//     comes from the old path. The write side is watched without changing
 	//     what the model sees.
+	//   - "on" writes the new state and reads it back: the window carries the
+	//     board and the segments instead of the rolling summary.
 	//
-	// The applied mode is not offered yet: the parts that read the new state
-	// back, and the fallback that goes with them, are the next change. Until
-	// then "on" would write exactly what "shadow" writes and read nothing, so
-	// it is refused rather than accepted and mistaken for the real thing.
-	//
-	// The default is off. The tables and the worker exist, but nothing reads
-	// the segments yet, and a segment that is written and never read is a
-	// segment that costs a model call per batch for nothing.
+	// The default is on. The write side, the read side and the fallback that
+	// goes with them are assembled together, so a deployment that says nothing
+	// gets the layered summary. A deployment that wants the old rolling
+	// summary sets "off"; a deployment that wants to watch the write side
+	// without changing the window sets "shadow".
 	SummarySegmentMode string `toml:"summarySegmentMode"`
 	// SummarySegmentWorkerCount is how many segment jobs are processed at the
 	// same time.
@@ -667,10 +667,12 @@ func defaultConfig() *Config {
 		EpisodeTaskTimeoutSeconds: 30, EpisodeLeaseSeconds: 60, EpisodeRetryDelaySeconds: 15,
 		EpisodeRecoveryIntervalSeconds: 30, EpisodeQuietWindowSeconds: 600,
 		EpisodeMaxAttempts: 3, EpisodeMaxInputTokens: 12000, EpisodeMaxOutputTokens: 1800, EpisodeMaxMessages: 4096,
-		// The layered summary is off until the parts that read it exist. A
-		// segment that is written and never read costs a model call per
-		// batch and answers nothing.
-		SummarySegmentMode:                     "off",
+		// The layered summary is on: the write side, the read side and the
+		// fallback that goes with them are assembled together, so a
+		// deployment that says nothing gets the layered summary. "off" is
+		// the way back to the old rolling summary and "shadow" writes
+		// without being read.
+		SummarySegmentMode:                     "on",
 		SummarySegmentWorkerCount:              1,
 		SummarySegmentQueueSize:                32,
 		SummarySegmentScanIntervalSeconds:      3,

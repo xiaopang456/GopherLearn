@@ -278,7 +278,7 @@ func prepareUserMemoryScopeMigration(db *gorm.DB) error {
 }
 
 // migrateUserMemoryScopes is intentionally data-aware. AutoMigrate can add the
-// new columns, but it cannot translate the two AGENT-018 values or keep the
+// new columns, but it cannot translate the two retired scope values or keep the
 // four retired values frozen. Keeping the old memory_type values in place also
 // makes the migration rollback/audit friendly; the column becomes nullable so
 // new code can write memory_scope without dual-writing a retired field.

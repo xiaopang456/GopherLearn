@@ -50,7 +50,7 @@ type Message struct {
 	AgentRunID      *string             `gorm:"type:varchar(36);uniqueIndex:idx_messages_agent_run_role,priority:1" json:"-"`
 	AgentRunRole    *string             `gorm:"type:varchar(16);uniqueIndex:idx_messages_agent_run_role,priority:2" json:"-"`
 	SessionID       string              `gorm:"index;not null;type:varchar(36)" json:"session_id"`
-	UserName        string              `gorm:"type:varchar(20)" json:"username"`
+	UserName        string              `gorm:"type:varchar(50)" json:"username"`
 	Content         string              `gorm:"type:text" json:"content"`
 	IsUser          bool                `gorm:"not null;" json:"is_user"`
 	Sources         MessageSources      `gorm:"type:json" json:"sources"`

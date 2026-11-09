@@ -64,7 +64,7 @@ func normalizeFixedTags(values []string, limit int) model.StringList {
 // normalizeRankedTags truncates in the caller's order and sorts afterwards, so
 // that a deliberate priority survives the cut while storage order stays stable.
 //
-// BUG-AGENT-023: the old code did this the other way round, dropping the most
+// The old code did this the other way round, dropping the most
 // discriminating tags purely because of how they were spelled.
 func normalizeRankedTags(values []string, limit int) model.StringList {
 	result := dedupeValidTags(values)
@@ -123,18 +123,18 @@ func GenerateQueryTags(question, topic string) model.StringList {
 // DeriveCandidateTags keeps the closed indexing vocabulary on the Go side.
 // The LLM decides semantic content; it cannot invent storage or index metadata.
 //
-// Two AGENT-018 corrections are visible here.
+// Two corrections to the retired types are visible here.
 //
 // The evidence body, the subject and the content are weighted separately.
 // Previously they were concatenated and the result truncated alphabetically,
 // so a memory matching {agent, api, backend, context, memory, rag} kept the
 // first four by spelling and dropped `memory` and `rag` — the two tags that
-// actually identified it (BUG-AGENT-023).
+// actually identified it.
 //
 // The per-type fallback tag is gone. Every project_fact used to be stamped
 // with `project`, whose query aliases include 设计, 方案 and 目标, so any
 // question containing one of those matched all of them at once and the tag
-// stopped discriminating (BUG-AGENT-024). A memory that yields no tag now
+// stopped discriminating. A memory that yields no tag now
 // simply has fewer tags, and is reached through its topic key instead.
 func DeriveCandidateTags(evidence Evidence, subject, content string) model.StringList {
 	// Subject and content are the memory itself; the surrounding evidence is

@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"errors"
 	redisclient "github.com/redis/go-redis/v9"
-	"github.com/xiaopang456/GopherLearn/conversation"
 	"gorm.io/gorm"
 	"io"
 	"mime/multipart"
@@ -52,7 +51,7 @@ func knowledgeFixture(t *testing.T, scan int, chunks *knowledgeFaultChunks) (*Ap
 	migrations := 0
 	deps := dependencies(t, db, &scriptedChatModel{}, &chunks.testChunks, &migrations)
 	deps.Chunks = func(_ *redisclient.Client, _ int) (entry.ChunkStore, error) { return chunks, nil }
-	app, err := Assemble(context.Background(), settings, deps, &ordinaryModel{}, conversation.Options{})
+	app, err := Assemble(context.Background(), settings, deps)
 	if err != nil {
 		t.Fatal(err)
 	}

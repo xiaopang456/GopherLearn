@@ -10,10 +10,10 @@ import (
 	"unicode/utf8"
 )
 
-// AGENT-018 replaced the original four memory types with two.
+// The original four memory types were replaced with two.
 //
 // The old taxonomy classified on "what is this about", a semantic axis where a
-// single sentence can belong to several types at once. EXP-002B Pipeline
+// single sentence can belong to several types at once. The pipeline
 // Scale-1 measured the cost: 25 of 80 expected `experience` events were
 // classified as a perfectly legal `project_fact`, and `project_fact` had the
 // worst tag overlap of the four at 16/80.
@@ -42,7 +42,7 @@ const (
 	MemoryScopeTopic MemoryScope = "topic"
 )
 
-// The pre-AGENT-018 types. Existing rows keep them so that no user content is
+// The retired types. Existing rows keep them so that no user content is
 // destroyed by the migration, but they are not valid for new writes and are
 // not part of any recall type set, so they can never re-enter an answer.
 const (
@@ -90,7 +90,7 @@ const (
 // MemoryDurability separates preferences that hold indefinitely from goals and
 // plans that expire. Both are `profile`: they are consumed the same way, so the
 // difference is a field rather than a type. Making it a type would have
-// recreated the ambiguity AGENT-018 removed, since "I want to interview in
+// recreated the ambiguity the two types removed, since "I want to interview in
 // August" is equally readable as a preference and as a goal.
 type MemoryDurability string
 
@@ -107,7 +107,7 @@ const (
 	// MemorySubjectMaxRunes bounds the one-line summary that doubles as the
 	// retrieval unit, which is why no separate description field exists.
 	MemorySubjectMaxRunes = 200
-	// MemoryContentMaxRunes was 2000 before AGENT-018. Five memories at the old
+	// MemoryContentMaxRunes was 2000 under the retired types. Five memories at the old
 	// limit could not fit the 2000-token memory budget and were always going to
 	// be truncated; anything longer than this belongs in several separate
 	// conclusions rather than one memory.
@@ -390,7 +390,7 @@ func (c *MemoryCandidate) ValidatePayload() error {
 
 // validateMemoryShape enforces the per-type fields that make the two-type
 // taxonomy decidable. A profile that carries a topic, or a topic note without
-// one, would blur exactly the boundary AGENT-018 exists to keep sharp.
+// one, would blur exactly the boundary the two types exist to keep sharp.
 func validateMemoryShape(scope MemoryScope, topicKey string, durability MemoryDurability, validUntil *time.Time, createdAt time.Time) error {
 	topicKey = strings.TrimSpace(topicKey)
 	if utf8.RuneCountInString(topicKey) > 160 {
@@ -427,8 +427,8 @@ func validateMemoryShape(scope MemoryScope, topicKey string, durability MemoryDu
 	return nil
 }
 
-// LongTermMemory is the recallable representation. AGENT-011 defines and
-// queries it; AGENT-012 owns promotion, merge, supersede and user governance.
+// LongTermMemory is the recallable representation. The memory service defines and
+// queries it, and owns promotion, merge, supersede and user governance.
 type LongTermMemory struct {
 	ID                string               `gorm:"primaryKey;type:varchar(36)" json:"id"`
 	UserID            int64                `gorm:"not null;index:idx_long_memories_scope_recall,priority:1" json:"user_id"`
@@ -620,11 +620,11 @@ func MemoryContentHash(content string) string {
 	return fmt.Sprintf("%x", sum[:])
 }
 
-// validMemoryTags allows an empty tag set since AGENT-018.
+// validMemoryTags allows an empty tag set.
 //
 // Before it, a per-type fallback tag guaranteed at least one entry, so the
-// floor of one was never reached. Removing that fallback (BUG-AGENT-024, where
-// `project` was stamped on every project_fact and stopped discriminating) also
+// floor of one was never reached. Removing that fallback (the per-type tag was
+// stamped on every project memory and stopped discriminating) also
 // removed the guarantee, which would have made any memory whose wording misses
 // the fixed vocabulary impossible to store at all.
 //

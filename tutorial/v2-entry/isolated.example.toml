@@ -37,3 +37,10 @@ dimension = 1024
 rerankEnabled = false
 # Omitted agent fields retain the build's defaults: legacy_v2/shadow_only.
 # A deployment may explicitly choose legacy_v2/inject_enabled.
+#
+# The layered summary is on by default: the window carries the board and the
+# summary segments instead of the old rolling summary. A deployment that wants
+# the rolling summary writes summarySegmentMode = "off"; one that only wants to
+# watch the write side writes summarySegmentMode = "shadow".
+# [agentConfig]
+# summarySegmentMode = "on"

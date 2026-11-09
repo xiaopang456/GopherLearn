@@ -8,7 +8,6 @@ import (
 	"fmt"
 	modelcomponent "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
-	"github.com/xiaopang456/GopherLearn/conversation"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -32,7 +31,7 @@ func TestLearningSSEExcludedFromActualAssemblies(t *testing.T) {
 			}
 			var handler http.Handler
 			if mixed {
-				app, err := Assemble(context.Background(), settings, deps, &ordinaryModel{}, conversation.Options{})
+				app, err := Assemble(context.Background(), settings, deps)
 				if err != nil {
 					t.Fatal(err)
 				}

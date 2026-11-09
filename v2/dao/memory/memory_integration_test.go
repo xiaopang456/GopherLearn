@@ -114,7 +114,7 @@ func TestRecallUsesUserStatusTypeTagsConfidenceAndMarkUsedIsolation(t *testing.T
 	expired.Durability, expired.ValidUntil = model.MemoryDurabilityTimeBound, &past
 	globalNoTags := recallFixture(uuid.NewString(), userID, model.MemoryScopeGlobal, model.LongTermMemoryActive, nil, .9)
 	globalNoTags.TopicKey = ""
-	// A pre-AGENT-018 row: same user, same tag, high confidence. It must stay
+	// A row written under a retired type: same user, same tag, high confidence. It must stay
 	// stored and stay out of every result, which is what "keep but freeze"
 	// means in practice.
 	retired := recallFixture(uuid.NewString(), userID, model.MemoryScopeTopic, model.LongTermMemoryActive, []string{"docker", "gopherai", "project"}, .99)
@@ -181,7 +181,7 @@ func recallFixture(id string, userID int64, memoryType model.MemoryScope, status
 		Tags: model.StringList(tags), SourceRefs: model.StringList{"source:" + id}, Confidence: confidence, Importance: 7, Status: status,
 		Durability: model.MemoryDurabilityStable,
 	}
-	// AGENT-018 shape: a topic note is bound to a topic, a profile never is.
+	// The current shape: a topic note is bound to a topic, a profile never is.
 	switch memoryType {
 	case model.MemoryScopeTopic:
 		memory.TopicKey = "docker"
@@ -371,7 +371,7 @@ func TestGovernanceAppliesFiveActionsIdempotentlyAndSupportsUserControl(t *testi
 	if _, err := repository.DeleteMemory(ctx, userID+1, editable.ID, "cross-user", now); !errors.Is(err, ErrMemoryNotFound) {
 		t.Fatalf("cross-user deletion err=%v", err)
 	}
-	// AGENT-018: rows written under a retired type are kept but frozen. They
+	// Rows written under a retired type are kept but frozen. They
 	// cannot be corrected, because a correction would have to re-validate them
 	// under the new shape rules, which they cannot satisfy.
 	retired := recallFixture(uuid.NewString(), userID, model.MemoryScopeTopic, model.LongTermMemoryActive, []string{"go", "learning"}, .8)

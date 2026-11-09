@@ -114,8 +114,8 @@ func (s EpisodeProjectionStatus) Valid() bool {
 }
 
 // EpisodeTopic is a stable topic handle plus its user-facing label. Topic keys
-// are retrieval metadata, not a model-owned namespace; the projector added in
-// AGENT-024 must validate them against its own deterministic rules.
+// are retrieval metadata, not a model-owned namespace; the model projector must
+// validate them against its own deterministic rules.
 type EpisodeTopic struct {
 	Key   string `json:"key"`
 	Label string `json:"label"`
@@ -231,7 +231,7 @@ func (d *EpisodeDocument) Scan(value any) error {
 }
 
 // DecodeEpisodeDocument is the single strict decoder shared by storage tests
-// now and by the model projector in AGENT-024. Unknown fields and trailing JSON
+// now and by the model projector. Unknown fields and trailing JSON
 // are rejected instead of being silently persisted as an expanded protocol.
 func DecodeEpisodeDocument(data []byte) (EpisodeDocument, error) {
 	var document EpisodeDocument

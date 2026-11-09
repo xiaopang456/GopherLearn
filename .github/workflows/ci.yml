@@ -16,9 +16,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: gofmt -l cmd internal conversation
-      - run: go vet ./cmd/... ./internal/... ./conversation/...
-      - run: go test -count=1 ./cmd/... ./internal/... ./conversation/...
+      - run: gofmt -l cmd internal httpwire
+      - run: go vet ./cmd/... ./internal/... ./httpwire/...
+      - run: go test -count=1 ./cmd/... ./internal/... ./httpwire/...
 
   v2:
     name: v2 module (application kernel)
@@ -37,6 +37,11 @@ jobs:
       - run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test -count=1 ./...
+      # The reference entry carries a build tag, so the steps above never see
+      # it. Building the tag here is what keeps that file from rotting
+      # unnoticed: it used to name an AI helper factory and a router that no
+      # longer exist, and nothing noticed because nothing built it.
+      - run: go build -tags v2_entry_reference -o /dev/null .
 
   hybrid:
     name: hybrid module (integrated entry)

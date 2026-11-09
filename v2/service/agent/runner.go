@@ -159,6 +159,18 @@ type RunnerConfig struct {
 	// a deployment without a reranker never produces one and the
 	// pre-retrieval stays off there too.
 	RelevanceThreshold float64
+	// OutputReserveTokens is what the window keeps for the reply, and it is the
+	// output limit every generation of the turn is sent with.
+	//
+	// The window's arithmetic already rests on this number: the input target
+	// and the reserve together have to fit inside the declared window. A
+	// request that names no limit of its own leaves the reply length to the
+	// provider's default, which is not a budget this deployment holds itself
+	// to - the default is the provider's, and it changes without notice.
+	//
+	// Zero means the runner was built without a reserve, and no limit is sent.
+	// A negative number is a configuration fault and is refused.
+	OutputReserveTokens int
 }
 
 // ToolCallLimits is the per-capability half of the tool budget.
@@ -392,6 +404,9 @@ func (c RunnerConfig) Validate() error {
 	}
 	if c.RelevanceThreshold < 0 || c.RelevanceThreshold > 1 {
 		return fmt.Errorf("relevance threshold must be between 0 and 1")
+	}
+	if c.OutputReserveTokens < 0 {
+		return fmt.Errorf("output reserve must not be negative")
 	}
 	return nil
 }
@@ -941,7 +956,7 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 		memorySearchAvailable: memorySearchAvailable,
 		availableTools:        availableTools,
 	}
-	bounded := &boundedModel{inner: r.chatModel, state: state, thinkingDialect: r.config.ThinkingDialect}
+	bounded := &boundedModel{inner: r.chatModel, state: state, thinkingDialect: r.config.ThinkingDialect, outputReserveTokens: r.config.OutputReserveTokens}
 
 	// The server-side pre-retrieval is a search of the learner's material, so
 	// it is a step and it costs a tool slot. Recording it is what keeps the
@@ -1901,6 +1916,10 @@ type boundedModel struct {
 	// written in. It rides with the model because the option that carries the
 	// switch is applied per call.
 	thinkingDialect string
+	// outputReserveTokens is the reply budget the window kept back, and it is
+	// the output limit every generation of the turn carries. Zero leaves the
+	// request without a limit of its own.
+	outputReserveTokens int
 }
 
 func (m *boundedModel) before(ctx context.Context, attempt int, reason string) error {
@@ -1983,6 +2002,12 @@ func (m *boundedModel) plan(opts []modelcomponent.Option) (generation, error) {
 		callOpts = append(callOpts, modelcomponent.WithToolChoice(schema.ToolChoiceForced))
 	}
 	callOpts = append(callOpts, aihelper.ThinkingModelOptions(m.thinkingDialect, thinkingEnabledForModelCall(m.state.input.EnableThinking, forcedTool))...)
+	if m.outputReserveTokens > 0 {
+		// The reply budget travels with every generation, including the ones that
+		// call a tool: a tool call is an answer too, and the provider's own
+		// default is not the budget this window was measured against.
+		callOpts = append(callOpts, modelcomponent.WithMaxTokens(m.outputReserveTokens))
+	}
 	return generation{model: callModel, forcedTool: forcedTool, answers: answers, opts: callOpts}, nil
 }
 
@@ -2160,7 +2185,7 @@ func (m *boundedModel) WithTools(tools []*schema.ToolInfo) (modelcomponent.ToolC
 	if err != nil {
 		return nil, err
 	}
-	return &boundedModel{inner: bound, state: m.state, tools: append([]*schema.ToolInfo(nil), tools...), thinkingDialect: m.thinkingDialect}, nil
+	return &boundedModel{inner: bound, state: m.state, tools: append([]*schema.ToolInfo(nil), tools...), thinkingDialect: m.thinkingDialect, outputReserveTokens: m.outputReserveTokens}, nil
 }
 
 // CapabilityFreeEmptyAnswer is what a turn with no capabilities falls back to when

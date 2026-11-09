@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// AGENT-021 makes `topic_key` the shared primary key of long-term memory and
+// `topic_key` is the shared primary key of long-term memory and
 // learning state.
 //
 // Before this, the two sides invented keys independently. The quiz module keyed

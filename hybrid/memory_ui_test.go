@@ -12,7 +12,7 @@ import (
 )
 
 func TestMemoryFrontendPageAndAgentCardThroughOriginalHTTP(t *testing.T) {
-	app, db, _, agent, _, _ := httpFixture(t)
+	app, db, agent, _, _ := httpFixture(t)
 	agent.respond = func(_ context.Context, n int) (*schema.Message, error) {
 		if n%2 == 1 {
 			args := `{"scope":"topic","topic_key":"redis","subject":"个人理解","content":"我用队列理解 Redis","tags":["redis"],"durability":"stable"}`

@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -99,19 +100,129 @@ func (f *testChunks) SearchActiveByUserText(context.Context, int64, string, int,
 }
 func (*testChunks) DeleteDocumentVersion(context.Context, int64, string, int) error { return nil }
 
-type redisTransport struct{}
+type redisTransport struct {
+	// sets is the part of Redis the offline transport keeps: the sorted sets
+	// the summary segment's recent-use record lives in. The record is what
+	// keeps a segment the learner reached for in front of them on the next
+	// turn, so an entry-level test cannot be written without it: the entry
+	// writes the record through Redis and reads it back through the same
+	// client.
+	sets *redisSortedSets
+}
+
+// redisSortedSets is an in-memory stand-in for the sorted sets the offline
+// transport serves.
+//
+// It is not a Redis implementation: it keeps what the recent-use record
+// needs and nothing else. The ordering is the one Redis uses, because the
+// record's meaning depends on it: the newest use is the first member.
+type redisSortedSets struct {
+	mu   sync.Mutex
+	sets map[string][]redisSortedEntry
+}
+
+type redisSortedEntry struct {
+	member string
+	score  float64
+}
+
+func newRedisSortedSets() *redisSortedSets {
+	return &redisSortedSets{sets: map[string][]redisSortedEntry{}}
+}
+
+// add puts a member into a set with a score, the way ZADD does: a member that
+// is already there takes the new score.
+func (s *redisSortedSets) add(key, member string, score float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries := s.sets[key]
+	for index := range entries {
+		if entries[index].member == member {
+			entries[index].score = score
+			s.sets[key] = entries
+			return
+		}
+	}
+	entries = append(entries, redisSortedEntry{member: member, score: score})
+	s.sets[key] = entries
+	s.sort(entries)
+}
+
+// members returns the members of a set in the order Redis returns them in:
+// by score, newest first.
+func (s *redisSortedSets) members(key string) []redisSortedEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries := s.sets[key]
+	s.sort(entries)
+	return entries
+}
+
+// removeByRank drops the members in a rank range and reports how many went.
+//
+// A negative rank counts from the end, the way Redis counts it.
+func (s *redisSortedSets) removeByRank(key string, start, stop int64) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries := s.sets[key]
+	s.sort(entries)
+	first, last, ok := rankRange(int64(len(entries)), start, stop)
+	if !ok {
+		return 0
+	}
+	s.sets[key] = append(entries[:first], entries[last+1:]...)
+	return last - first + 1
+}
+
+// sort puts the entries in the order Redis returns them in: by score, newest
+// first, and by member when two members share a score.
+func (s *redisSortedSets) sort(entries []redisSortedEntry) {
+	sort.SliceStable(entries, func(left, right int) bool {
+		if entries[left].score != entries[right].score {
+			return entries[left].score > entries[right].score
+		}
+		return entries[left].member > entries[right].member
+	})
+}
+
+// rankRange turns a rank range into the indexes it covers.
+//
+// A negative rank counts from the end, and an empty range covers nothing.
+func rankRange(length, start, stop int64) (int64, int64, bool) {
+	if start < 0 {
+		start += length
+	}
+	if stop < 0 {
+		stop += length
+	}
+	if start < 0 {
+		start = 0
+	}
+	if stop >= length {
+		stop = length - 1
+	}
+	if stop < start || length == 0 {
+		return 0, 0, false
+	}
+	return start, stop, true
+}
 
 func (redisTransport) DialHook(redisclient.DialHook) redisclient.DialHook {
 	return func(context.Context, string, string) (net.Conn, error) {
 		return nil, errors.New("offline test forbids Redis dialing")
 	}
 }
-func (redisTransport) ProcessHook(redisclient.ProcessHook) redisclient.ProcessHook {
+func (h redisTransport) ProcessHook(redisclient.ProcessHook) redisclient.ProcessHook {
 	return func(_ context.Context, cmd redisclient.Cmder) error {
 		if cmd.Name() == "ft.info" {
 			err := errors.New("unknown index name")
 			cmd.SetErr(err)
 			return err
+		}
+		if h.sets != nil {
+			if handled, err := h.sets.serve(cmd); handled {
+				return err
+			}
 		}
 		switch c := cmd.(type) {
 		case *redisclient.StatusCmd:
@@ -127,6 +238,120 @@ func (redisTransport) ProcessHook(redisclient.ProcessHook) redisclient.ProcessHo
 		}
 		return nil
 	}
+}
+
+// stringArgs renders a command's arguments as the strings Redis would have
+// received.
+//
+// The client writes a score as a float and a rank as an integer, so the
+// arguments are not all strings by the time they arrive here.
+func stringArgs(raw []any) ([]string, bool) {
+	args := make([]string, 0, len(raw))
+	for _, value := range raw {
+		switch typed := value.(type) {
+		case string:
+			args = append(args, typed)
+		case int64:
+			args = append(args, strconv.FormatInt(typed, 10))
+		case int:
+			args = append(args, strconv.Itoa(typed))
+		case float64:
+			args = append(args, strconv.FormatFloat(typed, 'f', -1, 64))
+		default:
+			return nil, false
+		}
+	}
+	return args, true
+}
+
+// serve answers the sorted-set commands the recent-use record uses.
+//
+// It reports whether the command was one of them: a command it does not know
+// belongs to the caller, not to it.
+func (s *redisSortedSets) serve(cmd redisclient.Cmder) (bool, error) {
+	// The command name decides first: only the sorted-set commands are this
+	// transport's business, and the others take arguments of kinds it does
+	// not have to read.
+	switch cmd.Name() {
+	case "zadd", "zremrangebyrank", "zrevrange":
+	case "multi":
+		// A transaction opens with MULTI. The offline transport has no
+		// transaction to speak of: every command it answers stands on its
+		// own, and the record it keeps is a sorted set, so a transaction
+		// over it changes nothing.
+		if c, ok := cmd.(*redisclient.StatusCmd); ok {
+			c.SetVal("OK")
+		}
+		return true, nil
+	case "exec":
+		// A transaction ends with EXEC, whose answer is the list of the
+		// replies. The commands' replies were already set one by one.
+		if c, ok := cmd.(*redisclient.SliceCmd); ok {
+			c.SetVal([]any{})
+		}
+		return true, nil
+	default:
+		return false, nil
+	}
+	args, ok := stringArgs(cmd.Args())
+	if !ok {
+		return true, fmt.Errorf("offline transport: %s takes strings", cmd.Name())
+	}
+	if len(args) < 2 {
+		return true, fmt.Errorf("offline transport: %s needs a key", cmd.Name())
+	}
+	key := args[1]
+	switch cmd.Name() {
+	case "zadd":
+		if len(args) < 4 {
+			return true, fmt.Errorf("offline transport: zadd needs a score and a member")
+		}
+		score, err := strconv.ParseFloat(args[2], 64)
+		if err != nil {
+			return true, fmt.Errorf("offline transport: zadd score: %v", err)
+		}
+		s.add(key, args[3], score)
+		if c, ok := cmd.(*redisclient.IntCmd); ok {
+			c.SetVal(1)
+		}
+		return true, nil
+	case "zremrangebyrank":
+		if len(args) < 4 {
+			return true, fmt.Errorf("offline transport: zremrangebyrank needs a range")
+		}
+		start, startErr := strconv.ParseInt(args[2], 10, 64)
+		stop, stopErr := strconv.ParseInt(args[3], 10, 64)
+		if startErr != nil || stopErr != nil {
+			return true, fmt.Errorf("offline transport: zremrangebyrank range")
+		}
+		removed := s.removeByRank(key, start, stop)
+		if c, ok := cmd.(*redisclient.IntCmd); ok {
+			c.SetVal(removed)
+		}
+		return true, nil
+	case "zrevrange":
+		if len(args) < 4 {
+			return true, fmt.Errorf("offline transport: zrevrange needs a range")
+		}
+		start, startErr := strconv.ParseInt(args[2], 10, 64)
+		stop, stopErr := strconv.ParseInt(args[3], 10, 64)
+		if startErr != nil || stopErr != nil {
+			return true, fmt.Errorf("offline transport: zrevrange range")
+		}
+		entries := s.members(key)
+		first, last, ok := rankRange(int64(len(entries)), start, stop)
+		members := []string{}
+		if ok {
+			for _, entry := range entries[first : last+1] {
+				members = append(members, entry.member)
+			}
+		}
+		if c, ok := cmd.(*redisclient.StringSliceCmd); ok {
+			c.SetVal(members)
+		}
+		return true, nil
+	}
+	return false, nil
 }
 func (h redisTransport) ProcessPipelineHook(redisclient.ProcessPipelineHook) redisclient.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redisclient.Cmder) error {
@@ -181,7 +406,7 @@ func sqliteDatabase(t *testing.T) *gorm.DB {
 func dependencies(t *testing.T, db *gorm.DB, chat *captureModel, chunks *testChunks, migrations *int) Dependencies {
 	return Dependencies{Clock: func() time.Time { return time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC) }, Infrastructure: Infrastructure{OpenDatabase: func(context.Context, *config.Config) (*gorm.DB, error) { return db, nil }, InitializeDatabase: func(*gorm.DB) error { *migrations++; return nil }, OpenRedis: func(*config.Config) (*redisclient.Client, error) {
 		client := redisclient.NewClient(&redisclient.Options{Addr: "offline.invalid:6379", MaxRetries: -1})
-		client.AddHook(redisTransport{})
+		client.AddHook(redisTransport{sets: newRedisSortedSets()})
 		return client, nil
 	}}, ChatModel: func(context.Context, *Settings) (modelcomponent.ToolCallingChatModel, error) { return chat, nil }, JSONChatModel: func(context.Context, *Settings) (modelcomponent.ToolCallingChatModel, error) { return chat, nil }, Embedder: func(context.Context, *config.Config) (embedding.Embedder, error) {
 		return &retrievalFakeEmbedder{dimension: 1024}, nil
@@ -291,8 +516,10 @@ func TestNativeEntryCapturesDefaultAndDeploymentTools(t *testing.T) {
 			sort.Strings(names)
 			// The draft tool is on the table every turn now. Whether the model
 			// is told to use it is decided by the question, not by whether it
-			// is there.
-			want := []string{"document_read", "knowledge_search", "propose_memory"}
+			// is there. The segment browse tool is on the table because the
+			// layered summary is on by default, and it only exists in that
+			// mode: there are no segments to browse in the other two.
+			want := []string{"browse_summary_segments", "document_read", "knowledge_search", "propose_memory"}
 			if !reflect.DeepEqual(names, want) {
 				t.Fatalf("tools %v want %v", names, want)
 			}

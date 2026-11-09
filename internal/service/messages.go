@@ -28,9 +28,8 @@ type MessageService struct {
 	// summarizer is nil when rolling summaries are disabled, which is what an echo
 	// deployment does: a placeholder model must not be asked to write a summary of a
 	// conversation that was never understood.
-	summarizer            summary.ConversationSummarizer
-	summaryPolicy         summary.Policy
-	frozenOrdinarySummary bool
+	summarizer    summary.ConversationSummarizer
+	summaryPolicy summary.Policy
 	// summaryGuard remembers which sessions have just failed to summarize. It is nil
 	// when summaries are disabled, and a nil guard cools nothing down.
 	summaryGuard *summaryGuard
@@ -177,11 +176,6 @@ func WithTaskMetrics(publisher *modelcall.Publisher) MessageServiceOption {
 // deployment with the workflow must not silently lose it either.
 func WithLearningTaskState(reader ActiveLearningReader) MessageServiceOption {
 	return func(service *MessageService) { service.learningState = reader }
-}
-
-// WithFrozenOrdinarySummary selects the frozen ordinary summary chain only in isolated wiring.
-func WithFrozenOrdinarySummary() MessageServiceOption {
-	return func(s *MessageService) { s.frozenOrdinarySummary = true }
 }
 
 func NewMessageService(repo repository.ConversationStore, assistant responder.Responder, options ...MessageServiceOption) *MessageService {

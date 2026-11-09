@@ -9,14 +9,12 @@ import MessageBubble from '../components/MessageBubble.vue'
 import ServerNotice from '../components/ServerNotice.vue'
 import SessionPanel from '../components/SessionPanel.vue'
 import { useChat } from '../composables/useChat.js'
-import { useKnowledge } from '../composables/useKnowledge.js'
 import { useMediaQuery } from '../composables/useMediaQuery.js'
 import { SessionMode } from '../lib/modes.js'
 
 const route = useRoute()
 const router = useRouter()
 const chat = useChat()
-const knowledge = useKnowledge()
 
 const panelOpen = ref(false)
 const transcript = ref(null)
@@ -76,10 +74,6 @@ async function startNew(mode) {
   if (id) router.replace({ name: 'session', params: { sessionId: id } })
 }
 
-function chooseKnowledge(next) {
-  chat.setKnowledge(chat.activeId.value, next)
-}
-
 function select(id) {
   router.push({ name: 'session', params: { sessionId: id } })
 }
@@ -97,7 +91,7 @@ function select(id) {
     <SessionPanel
       v-if="showPanel"
       class="chat__panel"
-      :sessions="chat.sessions.value"
+      :sessions="chat.orderedSessions.value"
       :active-id="chat.activeId.value"
       :loading="chat.sessionsLoading.value"
       :error="chat.sessionsError.value"
@@ -250,12 +244,10 @@ function select(id) {
         :streaming="chat.streaming.value"
         :disabled="chat.historyLoading.value"
         :mode="chat.activeMode.value"
-        :knowledge="chat.activeKnowledge.value"
-        :collections="knowledge.collections.value"
+        v-model:knowledge-enabled="chat.knowledgeEnabled.value"
         :can-use-knowledge="chat.canUseKnowledge.value"
         @submit="chat.send()"
         @abort="chat.cancel"
-        @update:knowledge="chooseKnowledge"
       />
     </section>
   </div>

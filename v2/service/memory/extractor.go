@@ -133,7 +133,7 @@ secrets. Never infer success. Confidence is 0..1 and importance is an integer
 type ModelExtractor struct {
 	model modelcomponent.ToolCallingChatModel
 	// topics is optional. Without it the extractor still works and still mints
-	// keys, which is the pre-AGENT-021 behaviour; with it, a note is attached to
+	// keys, which is the behaviour without a topic catalogue; with it, a note is attached to
 	// a topic the learner already has whenever one applies.
 	topics *TopicCatalogue
 }
@@ -265,7 +265,7 @@ func (e *ModelExtractor) Extract(ctx context.Context, evidence Evidence) (*model
 	switch scope {
 	case model.MemoryScopeGlobal:
 	case model.MemoryScopeTopic:
-		// AGENT-021: resolve against the learner's existing topics rather than
+		// Resolve against the learner's existing topics rather than
 		// minting a key from whatever the model wrote. Without this the memory
 		// side and the quiz side accumulate separate namespaces for the same
 		// subject, and a lookup by one never finds the other.
@@ -305,7 +305,7 @@ func extractionTools(authority EvidenceAuthority) []*schema.ToolInfo {
 		// carries no statement by the user about themselves.
 		names = append([]string{toolRememberTopic}, names...)
 	case EvidenceAuthorityLearningAssessment:
-		// AGENT-018: graded results are structured state in TopicProgress and
+		// Graded results are structured state in TopicProgress and
 		// are read live, so a finished quiz no longer produces memory at all.
 		// Its evidence is scores and missing points, which is exactly the
 		// content that must not be rewritten into prose.

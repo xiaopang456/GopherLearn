@@ -105,7 +105,7 @@ func NewRetriever(repository RecallRepository, learning ActiveLearningReader, us
 
 // RecallResult keeps the two memory types apart all the way to the caller.
 //
-// They were concatenated into one slice until AGENT-019 measured the cost:
+// They were concatenated into one slice until the cost was measured:
 // with the profile block emitted first and no overall cap, thirty globals
 // arrived ahead of every retrieved note, so the token budget was spent before
 // a single query-relevant memory was reached. Ordering alone cannot fix that,
@@ -357,7 +357,7 @@ func rankMemories(candidates []model.LongTermMemory, userID int64, tags []string
 	return ranked
 }
 
-// AGENT-018 left two types, and the old per-mode type sets no longer carry any
+// Only two types are left, and the old per-mode type sets no longer carry any
 // meaning: both types are allowed in both modes. What differs is how they are
 // selected, which is handled above rather than by filtering here.
 //

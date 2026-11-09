@@ -31,7 +31,7 @@ func postTurn(t *testing.T, app *Application, token, session, policy string) (in
 }
 
 func TestSessionListStatesTheKnowledgeCeilingTheServerSet(t *testing.T) {
-	app, _, _, _, token, _ := httpFixture(t)
+	app, _, _, token, _ := httpFixture(t)
 	agentSession := createSession(t, app, token, "ceiling-agent", "learning_agent")
 	chatSession := createSession(t, app, token, "ceiling-chat", "chat")
 
@@ -57,7 +57,7 @@ func TestSessionListStatesTheKnowledgeCeilingTheServerSet(t *testing.T) {
 // The alternative - folding it into "use the library" - is the direction that reads
 // somebody's documents when they meant not to.
 func TestUnknownKnowledgePolicyIsRefusedBeforeAnyCall(t *testing.T) {
-	app, _, ordinary, agent, token, _ := httpFixture(t)
+	app, _, agent, token, _ := httpFixture(t)
 	session := createSession(t, app, token, "policy-unknown", "learning_agent")
 
 	status, envelope, raw := postTurn(t, app, token, session, "knowledge_force")
@@ -70,16 +70,13 @@ func TestUnknownKnowledgePolicyIsRefusedBeforeAnyCall(t *testing.T) {
 	if agent.CallCount() != 0 {
 		t.Fatalf("a refused turn still asked the model %d times", agent.CallCount())
 	}
-	if len(ordinary.all()) != 0 {
-		t.Fatal("a refused turn reached the retained chat path as well")
-	}
 }
 
 // A session that was never granted the library cannot be granted it by a request:
 // the answer is an error, not a quietly downgraded turn, so a client that believes
 // it asked for the library learns right away that it did not get it.
 func TestLegacyChatSessionCannotBeAskedForTheLibrary(t *testing.T) {
-	app, _, _, agent, token, _ := httpFixture(t)
+	app, _, agent, token, _ := httpFixture(t)
 	session := createSession(t, app, token, "policy-legacy", "chat")
 
 	for _, policy := range []string{"knowledge_preferred", "knowledge_only"} {
@@ -100,7 +97,7 @@ func TestLegacyChatSessionCannotBeAskedForTheLibrary(t *testing.T) {
 // identity, and the client can read it back - with one difference that has to be
 // observable rather than assumed: nothing in its ledger names a capability.
 func TestSwitchedOffTurnAnswersWithoutAnyCapability(t *testing.T) {
-	app, db, ordinary, agent, token, _ := httpFixture(t)
+	app, db, agent, token, _ := httpFixture(t)
 	session := createSession(t, app, token, "off-turn", "learning_agent")
 
 	status, envelope, raw := postTurn(t, app, token, session, "knowledge_disabled")
@@ -117,9 +114,6 @@ func TestSwitchedOffTurnAnswersWithoutAnyCapability(t *testing.T) {
 	}
 	if agent.CallCount() != 1 {
 		t.Fatalf("a capability-free turn is one generation, got %d", agent.CallCount())
-	}
-	if len(ordinary.all()) != 0 {
-		t.Fatal("the switched-off turn used the retained chat path instead of the V2 one")
 	}
 	var steps []model.AgentStep
 	if err := db.Where("run_id = ?", runID).Find(&steps).Error; err != nil {

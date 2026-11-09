@@ -10,12 +10,12 @@ import (
 	"strings"
 )
 
-// AGENT-020 replaces tag matching as the recall channel for `topic_note`.
+// Semantic retrieval replaces tag matching as the recall channel for `topic_note`.
 //
-// EXP-002B B1 measured the shipped tag path at hit@5 0.000 on a corpus built
+// The shipped tag path was measured at hit@5 0.000 on a corpus built
 // from the user's real notes — below the 0.052 of a control that ignores the
 // question entirely. The replacement is the retrieval shape the knowledge base
-// has used since RAG-010 (vector plus lexical, fused by reciprocal rank), with
+// has always used (vector plus lexical, fused by reciprocal rank), with
 // two additions B1 found necessary:
 //
 //   - query expansion, the only change measured to raise recall@20 (0.662 to
@@ -49,7 +49,7 @@ type MemoryLoader interface {
 
 // AbstentionRule selects how the recall path decides it has found nothing.
 //
-// EXP-002B shipped AbstainByAbsoluteCosine and the blind set refuted it: the
+// The absolute-cosine floor shipped and the blind set refuted it: the
 // rule lost 13 answerable queries to win 1, p = 0.0018. The cause was measured
 // afterwards and is a property of the quantity, not of the value chosen for it.
 // Cosine similarity to the best match drifts upward as the memory pile grows -
@@ -261,7 +261,7 @@ func standoutRatio(semantic []memorydao.MemorySearchResult) float64 {
 	return semantic[0].Similarity() / mean
 }
 
-// CandidateTopics is what retrieval is for after AGENT-021.
+// CandidateTopics is what retrieval is for.
 //
 // It returns topic keys, ordered by how much of the candidate set falls under
 // each, and it is used to shorten the catalogue offered to the model — not to
@@ -311,7 +311,7 @@ func (s *SimilarityRecall) CandidateTopics(ctx context.Context, userID int64, qu
 	// A topic is scored by the best rank any of its notes reached. Summing
 	// instead would let a topic with many mediocre notes outrank one whose
 	// single note matched exactly, which is the failure that sank the
-	// topic-centroid method in EXP-002B: aggregating over a topic's contents
+	// topic-centroid method: aggregating over a topic's contents
 	// flattens the very signal that identifies it.
 	byID := make(map[string]int, len(ranked))
 	for position, id := range ranked {
@@ -367,7 +367,7 @@ func (s *SimilarityRecall) expandedQuestion(ctx context.Context, question string
 //
 // The rank from fusion decides which memories are selected, because that is
 // what B1 measured. Within the selected set, a memory the user confirmed is
-// presented first: AGENT-012 protects user corrections from being overwritten,
+// presented first: a user correction is protected from being overwritten,
 // and it would be inconsistent to then bury them behind an inference.
 func (s *SimilarityRecall) order(memories []model.LongTermMemory, ranked []string, userID int64) []model.LongTermMemory {
 	position := make(map[string]int, len(ranked))
@@ -402,7 +402,7 @@ func (s *SimilarityRecall) order(memories []model.LongTermMemory, ranked []strin
 // The knowledge base side does the same thing in rag.FuseRRF with the same
 // constant, but that function is typed to chunk results and reusing it here
 // would mean either converting types back and forth or widening a component
-// that has been stable since RAG-010. The rule it encodes is one line: never
+// that has been stable for a long time. The rule it encodes is one line: never
 // add a cosine distance to a BM25 score, because they are not on the same
 // scale and the sum is not explainable afterwards.
 const rrfRankConstant = 60.0

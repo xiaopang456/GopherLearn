@@ -57,7 +57,7 @@ type knowledgeRuntime struct {
 	cleanup   *knowledgeService.CleanupWorkerPool
 	retrieval knowledgeRetriever
 	documents *knowledgeService.DocumentService
-	// embedder is shared with long-term memory. AGENT-020 calibrated its
+	// embedder is shared with long-term memory. The recall index calibrated its
 	// cosine floor against vectors from this model, so memory must not build
 	// its own embedder: two models would put the two sides in different spaces
 	// and make the threshold meaningless.
@@ -218,7 +218,7 @@ func runStartupIndexAudit(ctx context.Context, conf *config.Config, documentRepo
 }
 
 // buildMemoryIndex keeps the old re-buildable topic index synchronized for
-// diagnostics and rollback. AGENT-027 deliberately does not attach it to the
+// diagnostics and rollback. It is deliberately not attached to the
 // production Retriever: Topic UserMemory requires a strong server-derived key,
 // so Query Expansion and vector-only selection are outside the read path.
 func buildMemoryIndex(repository *memoryDAO.Repository, embedder embedding.Embedder) *memoryService.Indexer {
@@ -270,6 +270,11 @@ func agentRunnerConfig(mode memoryrecall.ReadMode, agentConf config.AgentConfig,
 		// reranker's scores move with the corpus and with the reranker itself,
 		// and the comparison run is what should move this number.
 		RelevanceThreshold: agentConf.KnowledgeRelevanceThreshold,
+		// The window keeps this much for the reply, and every generation of the
+		// turn is sent with it as the output limit. It is the same number the
+		// window's arithmetic rests on, so the request and the budget that
+		// measured it cannot drift apart.
+		OutputReserveTokens: agentConf.ContextOutputReserveTokens,
 	}
 	if mode.UsesMemorySearchTool() {
 		runnerConfig.PerTool = agentService.AgentMemoryToolRunnerConfig().PerTool
@@ -803,7 +808,7 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	if summarySegmentAssembly.Applies() {
 		summarySource = agentService.EmptySummaryProvider{}
 	}
-	// AGENT-017: mastery comes straight from TopicProgress on every turn, so a
+	// Mastery comes straight from TopicProgress on every turn, so a
 	// newly graded quiz changes the next explanation without any extraction,
 	// governance or staleness window in between.
 	masteryProvider, err := agentService.NewMasteryProvider(
@@ -814,7 +819,7 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	if err != nil {
 		return nil, fmt.Errorf("initialize agent mastery provider: %v", err)
 	}
-	// AGENT-021: the band alone tells the model how deep to go; the questions
+	// The band alone tells the model how deep to go; the questions
 	// already asked and the points the grader found missing tell it what to
 	// cover. Both come from one topic key. A failure here leaves the band in
 	// place rather than removing mastery.
@@ -900,6 +905,17 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 				conf.AgentConfig.ContextMaxSegmentTokens))
 		if layeredErr != nil {
 			return nil, fmt.Errorf("initialize layered summary reader: %v", layeredErr)
+		}
+		if summarySegmentIndex != nil {
+			// The segments the last few turns reached for stay in front of the
+			// learner, so a question about the same stretch does not have to
+			// find it again.
+			//
+			// The record only adds to the resident set: the newest segments
+			// are read first and the block walks them from the newest
+			// backwards, so what the record brings back takes the room that
+			// is left and never the room the newest ones need.
+			layeredProvider.UseRecentUse(summarySegmentIndex)
 		}
 		// A session the old path summarised has neither a board nor a segment.
 		// Converting it when it is read gives it the same shape as a new one

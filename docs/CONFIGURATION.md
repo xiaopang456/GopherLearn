@@ -24,6 +24,7 @@
   - [`[knowledgeConfig]`](#knowledgeconfig)
   - [`[ragModelConfig]`](#ragmodelconfig)
   - [`[agentConfig]`](#agentconfig)
+  - [分层摘要（`summarySegmentMode`）](#分层摘要summarysegmentmode)
   - [`[emailConfig]`](#emailconfig)
   - [`[ordinaryChat]`](#ordinarychat)
 - [思考开关与方言](#思考开关与方言)
@@ -218,6 +219,7 @@ go -C v2 run ./cmd/indexaudit -config ../config.toml
 | `memoryReadMode` | `legacy_v2` | 长期记忆的整条读取路径模式 |
 | `episodeRecallMode` | `shadow_only` | 情景召回模式 |
 | `episodeRelationMode` | `off` | 情景关系抽取模式 |
+| `summarySegmentMode` | `on` | **分层摘要模式**。`on`：写入并读回（白板 + 摘要分段），窗口里不再带旧的滚动摘要；`off`：不写，回到旧的滚动摘要；`shadow`：只写不读，只观察写入侧。详见下面「分层摘要」一节 |
 | `summaryGroupItemLimit` | `20` | 摘要里**每一组**最多留多少条。超出时按「留最新、丢最早」截断，**整份摘要不会被丢掉** |
 | `summaryOpenLoopsItemLimit` | `20` | 摘要里「待办」这一组最多留多少条。待办涨得最快，单独给一个上限，方便实测发现砍太狠时调大 |
 | `summaryEvidenceIDLimit` | `64` | 整份摘要最多引用多少条**不同的消息编号**。超出时丢最旧的条目 |
@@ -227,6 +229,26 @@ go -C v2 run ./cmd/indexaudit -config ../config.toml
 - 把 `summaryOpenLoopsItemLimit` 调大时，`summaryEvidenceIDLimit` 通常也要一起调大：每条待办至少引用一条消息，条目多了、编号上限没跟上，结果还是会被引用上限截掉。
 - 上限调小 = 少留历史、省 token；上限调大 = 多留历史，但摘要更长、更占上下文预算。
 
+**库里存着读不出来的旧摘要时**：普通对话以前把摘要写成纯散文，或写成一份引用是字符串的旧结构化
+文档。这一版读不出这两种形状，此时**不花调用、也不进失败冷却**——压缩前先看库里那一行，读不出来就
+跳过这一轮，指标里记 `previous_unreadable`。回答照常带水位线之后的原始消息，只是这个会话的摘要停在
+原地。要让它继续推进，用一条单独的命令逐行转换，**默认只预演、不自动跑**：
+
+```bash
+# 在仓库根目录执行；go -C 会把程序的工作目录切到 v2/，所以配置写成 ../config.toml
+go -C v2 run ./cmd/summaryconvert -config ../config.toml          # 只读：逐行分类并报数
+go -C v2 run ./cmd/summaryconvert -config ../config.toml -apply   # 机械转换两种旧形状，水位线不动
+```
+
+转换不调用模型，也不需要任何 Provider 配置：纯散文按段落写进 `completed_items`，超长在段落边界或
+单条上限处切开；根 JSON 的分组、文本与引用原样搬，`legacy_text` 也放进 `completed_items`。写回前用
+产品自己的读取器解码转换结果，通不过就不写。转不了的行（读不出来的 JSON、无法表达成消息号的引用、
+超出文档预算）一律**列出来、不改那一行**。
+
+"文档预算"取的是**这份配置里的那三个数**（`summaryGroupItemLimit` / `summaryOpenLoopsItemLimit` /
+`summaryEvidenceIDLimit`），和运行时摘要器用的是同一套判定：部署调小了就拒掉装不下的行，调大了就
+不会误拒装得下的行。
+
 `maxToolCalls` / `maxModelCalls` / `maxGraphSteps` 三个数必须**互相够得着**，否则启动报错并说明是哪一处不够：
 
 - `maxModelCalls` 至少是 `maxToolCalls + 1`：每轮工具都要一次"决定调用工具"的生成，最后还要一次生成来写答案。
@@ -235,6 +257,29 @@ go -C v2 run ./cmd/indexaudit -config ../config.toml
 例如想放宽到 5 次工具调用，就写 `maxToolCalls = 5`、`maxModelCalls = 6`、`maxGraphSteps = 16`；只写前一个，另外两个够不着，新名额是纸上的。
 
 `memoryTopicStandout` 与 `memoryTopicMargin` **没有默认值**：启用相关模式却不给出这两个数，是启动失败。
+
+### 分层摘要（`summarySegmentMode`）
+
+**默认 `on`。** 会话变长以后，窗口里带的不再是"一份滚动摘要"，而是两层结构化的状态：
+
+- **白板**（表 `session_whiteboards`）：当前还成立的事实——目标、计划、每个计划项现在的值。被改过的值会标出「已改为」，没标的那个才是现在的值。
+- **摘要分段**（表 `session_summary_segments`）：早先那些轮次的压缩记录，按主题分段，每条都带消息编号作为出处。分段既可以常驻在窗口里，也可以按当前问题检索出来再放进去；模型还能用 `browse_summary_segments` 工具自己翻这个会话更早的分段。
+
+两种块各有自己的预算：`contextMaxWhiteboardTokens`（白板）、`contextMaxResidentSegmentTokens`（常驻分段）、`contextMaxRetrievedSegmentTokens`（检索出来的分段）、`contextMaxSegmentTokens`（单条分段）。在 `on` 模式下，前三个数加上摘要、掌握度、情景记忆这些预算，必须比 `contextInputTargetTokens` 减掉 `knowledgeMaxRunTokens` 小，否则启动报错说明哪一处装不下。
+
+三种模式：
+
+| 模式 | 写 | 读 | 什么时候用 |
+|---|---|---|---|
+| `on`（默认） | 白板 + 分段 | 白板 + 分段 | 正常运行 |
+| `shadow` | 白板 + 分段 | 不读 | 只观察写入侧：模型看到的还是旧的滚动摘要，新状态照样落库，便于上线前对比 |
+| `off` | 不写 | 不读 | 回到改动前的滚动摘要 |
+
+**怎么回退**：把 `summarySegmentMode` 写成 `off`，重启即可。已经写进去的白板和分段不删，也不再被读到；改回 `on` 之后新的分段会接着写。
+
+**升级时要注意的一件事**：这个键**不写就是 `on`**。配置文件里没有这一行，等于选了分层摘要，而不是选了旧的滚动摘要——想留在旧行为上，就要显式写 `off`。
+
+**验证到什么程度**：在长会话评测里，分层摘要这一侧明显更好（合计 130/132 对 101/131，答对的次数 / 有可用答案的次数）；评测覆盖的是写入、读回、预算裁剪与引用检查。**「翻过的分段下一轮还在」**（最近用过的分段回到常驻段）**没有经过评测验证**：评测的每个场景只问一个问题，问完就结束，没有"下一轮"可观察，这一项只有装配层的测试覆盖。
 
 ### `[emailConfig]`
 

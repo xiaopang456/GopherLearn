@@ -10,7 +10,6 @@ import { createSSEParser } from '../lib/sseParser.js'
 import { toStreamEvent } from '../lib/sseEvents.js'
 import { isStepEventName, toStepEvent } from '../lib/agentSteps.js'
 import { isTextBlockEventName, toTextBlockEvent } from '../lib/agentTextBlocks.js'
-import { toWireKnowledge } from '../lib/knowledge.js'
 import { streamPath } from './sessions.js'
 
 /**
@@ -22,8 +21,6 @@ import { streamPath } from './sessions.js'
  * @param {object} options
  * @param {string} options.sessionId
  * @param {string} options.content
- * @param {object} [options.knowledge]   Chat knowledge draft; ignored unless it
- *   is usable, and never sent for a Learning Agent session (the caller decides)
  * @param {AbortSignal} options.signal
  * @param {(event: object) => void} options.onEvent   normalised stream event
  * @param {boolean} [options.streamSteps]  ask for the agent's progress frames; the
@@ -37,7 +34,6 @@ import { streamPath } from './sessions.js'
 export async function streamMessage({
   sessionId,
   content,
-  knowledge,
   signal,
   onEvent,
   streamSteps = false,
@@ -61,8 +57,6 @@ export async function streamMessage({
   if (enableThinking !== undefined) body.enableThinking = enableThinking
   if (knowledgePolicy !== undefined) body.knowledgePolicy = knowledgePolicy
   if (topicConsent !== undefined) body.topicConsent = topicConsent
-  const wire = toWireKnowledge(knowledge)
-  if (wire) body.knowledge = wire
   // Progress is requested only explicitly; ordinary calls keep their wire body.
   if (streamSteps === true) body.stream_steps = true
 

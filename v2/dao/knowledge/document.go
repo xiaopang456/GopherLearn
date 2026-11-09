@@ -197,7 +197,7 @@ type ActiveDocumentVersion struct {
 }
 
 // ListActiveVersionsByUserID is the retrieval-side allow-list used by
-// RAG-010. It deliberately includes a document whose new Version failed while
+// the retrieval path. It deliberately includes a document whose new Version failed while
 // its older ActiveVersion is still valid, and excludes logical deletions.
 func (r *Repository) ListActiveVersionsByUserID(ctx context.Context, userID int64) ([]ActiveDocumentVersion, error) {
 	var versions []ActiveDocumentVersion

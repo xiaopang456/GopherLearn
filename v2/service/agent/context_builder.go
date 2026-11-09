@@ -333,7 +333,7 @@ type ContextConfig struct {
 	InputTargetTokens   int
 	OutputReserveTokens int
 	EvidenceReserve     int
-	// AGENT-019 split the single memory budget in two. Profile always applies
+	// The memory budget is split in two. Profile always applies
 	// and is injected whole; topic notes are query-relevant and retrieved. One
 	// shared budget meant whichever block came first starved the other, and the
 	// profile block came first, so thirty preferences could consume the whole
@@ -341,7 +341,7 @@ type ContextConfig struct {
 	MaxGlobalUserMemoryTokens int
 	// MaxTopicUserMemoryTokens bounds the topic payload the mastery path injects.
 	//
-	// AGENT-021 merged this with the old mastery budget: a topic's assessment
+	// This is merged with the old mastery budget: a topic's assessment
 	// and its notes come from one key and read as one thing, and splitting them
 	// into two prompt blocks showed the model two disconnected halves of the
 	// same subject. The combined figure is the sum of the two it replaces, so
@@ -438,7 +438,7 @@ func DefaultContextConfig() ContextConfig {
 		// InputTargetTokens stays at 20000 while the shipped config runs at
 		// 28000. This is not drift: main.go never calls this function, it
 		// builds ContextConfig from AgentConfig. The only callers are tests,
-		// and exp001b_harness_test.go records a frozen EXP-001B baseline whose
+		// and exp001b_harness_test.go records a frozen baseline whose
 		// saturation assertions ("projected_15k_to_20k", plus the dropped and
 		// truncated branches its pressure messages exercise) are defined
 		// against 20000. Raising it here would silently move an experiment
@@ -1396,7 +1396,7 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	if len(confirmedStates) > 0 || len(confirmedRecords) > 0 {
 		// One block, two provenances. The learner's confirmation bought both
 		// halves of one subject, and splitting them into two prompt blocks is
-		// what AGENT-021 removed.
+		// what the merged block removed.
 		topicText, preinjected = renderConfirmedTopicContext(input.MemoryEvidence, confirmedStates,
 			confirmedRecords, topicBudget)
 	} else if len(bootstrapTopics) > 0 {
@@ -1424,7 +1424,7 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		breakdown.TopicUserMemory = messageTokenCost(topicText)
 		remaining -= breakdown.TopicUserMemory
 	}
-	// Build the pre-AGENT-026 tail first. Episode is optional derived context,
+	// Build the tail first. Episode is optional derived context,
 	// so it may use only capacity that would otherwise be unused; it never
 	// removes SessionSummary or Recent Messages that the same run had without
 	// Episode injection.

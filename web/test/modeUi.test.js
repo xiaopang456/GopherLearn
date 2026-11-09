@@ -3,7 +3,6 @@ import { flushPromises, mount } from '@vue/test-utils'
 
 import ChatView from '../src/views/ChatView.vue'
 import { setTokenProvider } from '../src/api/http.js'
-import { useKnowledge } from '../src/composables/useKnowledge.js'
 import { DESKTOP_QUERY, installMedia } from './helpers/media.js'
 import { jsonResponse, sseFrame, sseResponse } from './helpers/transport.js'
 
@@ -18,32 +17,47 @@ vi.mock('vue-router', () => ({
   useRouter: () => ({ push: mocks.push, replace: mocks.replace }),
 }))
 
-const CHAT = { id: 's-chat', title: '我的对话', mode: 'chat', updated_at: '2026-09-24T08:00:00Z' }
+const CHAT = {
+  id: 's-chat',
+  title: '我的对话',
+  mode: 'chat',
+  can_use_knowledge: false,
+  updated_at: '2026-09-24T08:00:00Z',
+}
 const AGENT = {
   id: 's-agent',
   title: '学习 Agent',
   mode: 'learning_agent',
+  can_use_knowledge: true,
   updated_at: '2026-09-24T09:00:00Z',
 }
-const MYSTERY = { id: 's-odd', title: '旧会话', mode: 'voice_beta', updated_at: '' }
+const MYSTERY = {
+  id: 's-odd',
+  title: '旧会话',
+  mode: 'voice_beta',
+  can_use_knowledge: false,
+  updated_at: '',
+}
 
 let calls
 
-function serve({ sessions = [], history = {}, stream = [], collections = [] } = {}) {
+function serve({ sessions = [], history = {}, stream = [] } = {}) {
   globalThis.fetch = async (url, init = {}) => {
     calls.push({ url: String(url), init })
     const path = new URL(String(url), 'https://api.test').pathname
 
-    if (path === '/api/v1/collections') {
-      return jsonResponse({ data: { items: collections }, error: null })
-    }
     if (path.endsWith('/stream')) {
       return sseResponse(stream.length ? stream : [sseFrame('message.completed', { content: '回声' })])
     }
     if (path === '/api/v1/sessions' && init.method === 'POST') {
       const body = JSON.parse(init.body)
       return jsonResponse({
-        data: { id: `s-made-${calls.length}`, title: body.title, mode: body.mode },
+        data: {
+          id: `s-made-${calls.length}`,
+          title: body.title,
+          mode: body.mode,
+          can_use_knowledge: body.mode === 'learning_agent',
+        },
         error: null,
       })
     }
@@ -84,24 +98,21 @@ afterEach(() => {
 })
 
 describe('the composer follows the stored mode', () => {
-  it('offers the grounding toolbar in a chat session that has collections', async () => {
-    serve({
-      sessions: [CHAT, AGENT],
-      collections: [{ id: 'col-os', title: '操作系统笔记' }],
-    })
-    await useKnowledge().loadCollections()
-    const app = await mountAt('/chat/s-chat', { sessionId: 's-chat' })
-
-    expect(app.find('[data-test="knowledge-tools"]').exists()).toBe(true)
-    app.unmount()
-  })
-
-  it('offers no grounding toolbar in a learning agent session', async () => {
+  it('offers the knowledge switch where the server granted the capability', async () => {
     serve({
       sessions: [CHAT, AGENT],
       history: { 's-agent': [{ id: 'm-1', role: 'user', content: '帮我出一题' }] },
     })
     const app = await mountAt('/chat/s-agent', { sessionId: 's-agent' })
+
+    expect(app.find('[data-test="knowledge-tools"]').exists()).toBe(true)
+    expect(app.find('[data-test="knowledge-toggle"]').text()).toContain('使用知识库')
+    app.unmount()
+  })
+
+  it('offers no knowledge switch in a chat session', async () => {
+    serve({ sessions: [CHAT, AGENT] })
+    const app = await mountAt('/chat/s-chat', { sessionId: 's-chat' })
 
     expect(app.find('[data-test="knowledge-tools"]').exists()).toBe(false)
     expect(app.text()).not.toContain('使用知识库')
@@ -149,9 +160,10 @@ describe('the composer follows the stored mode', () => {
 
     const marks = app.findAll('[data-test="session-mode"]')
     expect(marks).toHaveLength(3)
+    // Agent sessions are pinned above the rest, whatever the server's order.
     expect(marks.map((node) => node.attributes('title'))).toEqual([
-      '对话',
       '学习 Agent',
+      '对话',
       '模式未识别',
     ])
     app.unmount()
@@ -199,8 +211,9 @@ describe('creating a session is an explicit mode choice', () => {
       title: '学习 Agent',
       requestId: expect.stringMatching(/^create-/),
     })
-    // and the main region switches to the agent chrome immediately
-    expect(app.find('[data-test="knowledge-tools"]').exists()).toBe(false)
+    // The echoed row carries the server's ceiling, so the new agent session
+    // offers the knowledge switch immediately.
+    expect(app.find('[data-test="knowledge-tools"]').exists()).toBe(true)
     app.unmount()
   })
 
@@ -220,77 +233,89 @@ describe('creating a session is an explicit mode choice', () => {
   })
 })
 
-describe('the grounding picker mirrors the shared collection list', () => {
-  it('lists a real collection with no invented entry', async () => {
-    serve({
-      sessions: [CHAT],
-      collections: [
-        { id: 'col-os', title: '操作系统笔记' },
-        { id: 'col-concurrency', title: '并发编程' },
-      ],
-    })
-    // The shell loads collections in the app; this stands in for it.
-    await useKnowledge().loadCollections()
-
-    const app = await mountAt('/chat/s-chat', { sessionId: 's-chat' })
-    const toggle = app.find('[data-test="knowledge-toggle"]')
-    expect(toggle.attributes('disabled')).toBeUndefined()
-
-    await toggle.trigger('click')
-    await app.find('[data-test="knowledge-pick"]').trigger('click')
-
-    const options = app.findAll('.tool__option')
-    expect(options.map((node) => node.text())).toEqual(['操作系统笔记', '并发编程'])
-    app.unmount()
+describe('the knowledge switch reaches the wire as a per-turn policy', () => {
+  beforeEach(() => {
+    localStorage.clear()
   })
 
-  it('shows no grounding controls at all when there is nothing to ground with', async () => {
-    serve({ sessions: [CHAT], collections: [] })
-    await useKnowledge().loadCollections()
-
-    const app = await mountAt('/chat/s-chat', { sessionId: 's-chat' })
-    // A switch that can never be turned on, pointing at a page that cannot
-    // enable it, reads as a broken screen. The controls come back on their own
-    // once the backend serves a collection.
-    expect(app.find('[data-test="knowledge-tools"]').exists()).toBe(false)
-    expect(app.text()).not.toContain('使用知识库')
-    expect(app.text()).not.toContain('添加知识库后可启用')
-    app.unmount()
-  })
-
-  it('sends the selection chosen through the composer on the wire', async () => {
+  it('is on by default and sends knowledge_preferred for an agent turn', async () => {
     serve({
-      sessions: [CHAT],
-      collections: [{ id: 'col-os', title: '操作系统笔记' }],
+      sessions: [AGENT],
+      history: { 's-agent': [] },
       stream: [sseFrame('message.completed', { message_id: 'a-1', content: '回声' })],
     })
-    await useKnowledge().loadCollections()
+    const app = await mountAt('/chat/s-agent', { sessionId: 's-agent' })
+    const toggle = app.find('[data-test="knowledge-toggle"]')
+    expect(toggle.attributes('aria-pressed')).toBe('true')
 
-    const app = await mountAt('/chat/s-chat', { sessionId: 's-chat' })
-
-    // Armed but nothing picked yet: the turn must go out ungrounded.
-    await app.find('[data-test="knowledge-toggle"]').trigger('click')
-    await app.find('textarea').setValue('先不引用')
+    await app.find('textarea').setValue('解释一下页表')
     await app.find('[data-test="send"]').trigger('click')
     await flushPromises()
-    let stream = calls.filter((call) => call.url.endsWith('/stream')).at(-1)
-    expect(JSON.parse(stream.init.body)).toEqual({ content: '先不引用' })
 
-    // Now pick the collection through the picker and ask again.
-    await app.find('[data-test="knowledge-toggle"]').trigger('click')
-    await app.find('[data-test="knowledge-toggle"]').trigger('click')
-    await app.find('[data-test="knowledge-pick"]').trigger('click')
-    await app.find('.tool__option input[type="checkbox"]').setValue(true)
-
-    await app.find('textarea').setValue('页表怎么工作')
-    await app.find('[data-test="send"]').trigger('click')
-    await flushPromises()
-    stream = calls.filter((call) => call.url.endsWith('/stream')).at(-1)
-
+    const stream = calls.filter((call) => call.url.endsWith('/stream')).at(-1)
     expect(JSON.parse(stream.init.body)).toEqual({
-      content: '页表怎么工作',
-      knowledge: { enabled: true, collection_ids: ['col-os'] },
+      content: '解释一下页表',
+      requestId: expect.stringMatching(/^send-/),
+      enableThinking: false,
+      knowledgePolicy: 'knowledge_preferred',
+      stream_steps: true,
     })
+    app.unmount()
+  })
+
+  it('sends knowledge_disabled when the learner switched it off', async () => {
+    serve({
+      sessions: [AGENT],
+      history: { 's-agent': [] },
+      stream: [sseFrame('message.completed', { message_id: 'a-1', content: '回声' })],
+    })
+    const app = await mountAt('/chat/s-agent', { sessionId: 's-agent' })
+    await app.find('[data-test="knowledge-toggle"]').trigger('click')
+    await app.find('textarea').setValue('不查资料')
+    await app.find('[data-test="send"]').trigger('click')
+    await flushPromises()
+
+    const stream = calls.filter((call) => call.url.endsWith('/stream')).at(-1)
+    expect(JSON.parse(stream.init.body).knowledgePolicy).toBe('knowledge_disabled')
+    app.unmount()
+  })
+
+  it('a stored off survives a reload', async () => {
+    localStorage.setItem('gopherlearn-knowledge', 'false')
+    serve({ sessions: [AGENT], history: { 's-agent': [] } })
+
+    const app = await mountAt('/chat/s-agent', { sessionId: 's-agent' })
+    expect(app.find('[data-test="knowledge-toggle"]').attributes('aria-pressed')).toBe('false')
+    app.unmount()
+  })
+
+  it('remembers the switch for the next visit', async () => {
+    serve({ sessions: [AGENT], history: { 's-agent': [] } })
+
+    const app = await mountAt('/chat/s-agent', { sessionId: 's-agent' })
+    await app.find('[data-test="knowledge-toggle"]').trigger('click')
+
+    expect(localStorage.getItem('gopherlearn-knowledge')).toBe('false')
+    app.unmount()
+  })
+
+  it('a chat turn never asks for the library and never sends the retired block', async () => {
+    serve({
+      sessions: [CHAT],
+      history: { 's-chat': [] },
+      stream: [sseFrame('message.completed', { message_id: 'a-1', content: '回声' })],
+    })
+    const app = await mountAt('/chat/s-chat', { sessionId: 's-chat' })
+    expect(app.find('[data-test="knowledge-tools"]').exists()).toBe(false)
+
+    await app.find('textarea').setValue('随便聊聊')
+    await app.find('[data-test="send"]').trigger('click')
+    await flushPromises()
+
+    const stream = calls.filter((call) => call.url.endsWith('/stream')).at(-1)
+    const body = JSON.parse(stream.init.body)
+    expect(body.knowledgePolicy).toBe('knowledge_disabled')
+    expect(body).not.toHaveProperty('knowledge')
     app.unmount()
   })
 })

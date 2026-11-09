@@ -33,7 +33,6 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/glebarez/sqlite"
 	redisclient "github.com/redis/go-redis/v9"
-	"github.com/xiaopang456/GopherLearn/conversation"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -806,7 +805,7 @@ func (w *baselineWorld) Assemble() {
 	if chat == nil {
 		chat = &scriptedChatModel{}
 	}
-	app, err := Assemble(context.Background(), settings, baselineDependencies(db, chat, w.store, w.embedder), &ordinaryModel{}, conversation.Options{})
+	app, err := Assemble(context.Background(), settings, baselineDependencies(db, chat, w.store, w.embedder))
 	if err != nil {
 		_ = sqlDB.Close()
 		w.t.Fatal(err)
@@ -837,8 +836,13 @@ func baselineDependencies(db *gorm.DB, chat modelcomponent.ToolCallingChatModel,
 			},
 		},
 		ChatModel: func(context.Context, *entry.Settings) (modelcomponent.ToolCallingChatModel, error) { return chat, nil },
-		Embedder:  func(context.Context, *config.Config) (embedding.Embedder, error) { return embedder, nil },
-		Chunks:    func(*redisclient.Client, int) (entry.ChunkStore, error) { return store, nil },
+		// The segment writer's model. It is the same fake: the layered
+		// summary is on by default, so the write path has to be buildable
+		// here, and a second fake would make it unclear which of the two an
+		// assertion was reading.
+		JSONChatModel: func(context.Context, *entry.Settings) (modelcomponent.ToolCallingChatModel, error) { return chat, nil },
+		Embedder:      func(context.Context, *config.Config) (embedding.Embedder, error) { return embedder, nil },
+		Chunks:        func(*redisclient.Client, int) (entry.ChunkStore, error) { return store, nil },
 	}
 }
 

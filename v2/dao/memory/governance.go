@@ -20,7 +20,7 @@ var (
 	ErrDreamConflict     = errors.New("memory dream state conflict")
 	ErrMemoryNotFound    = errors.New("long-term memory not found")
 	ErrMemoryConflict    = errors.New("long-term memory state conflict")
-	// AGENT-018 retired the four original memory types. Rows written before the
+	// The four original memory types are retired. Rows written before the
 	// migration are kept so no user content is lost, but they are frozen: not
 	// recallable, not correctable. Correcting one would have to re-validate it
 	// under the new shape rules, which it cannot satisfy.
