@@ -13,11 +13,11 @@
 //   - the duration words and their English spellings, because the answer may use them
 //     even when the key does not.
 //
-// The table was measured, not guessed: see the census over the four frozen sets
-// (tutorial/gopherlearn-optimization/l4-measure-word-census.json). "个" is deliberately
-// NOT in it. It was measured in five places, all of them `required` values of
-// needs_judge scenarios, which this file never compares; adding it would change
-// nothing.
+// The table was measured, not guessed: a census over the four frozen question sets
+// counted the measure words the answer keys really use. The census and its report are
+// not in this repository. "个" is deliberately NOT in the table. It was measured in
+// five places, all of them `required` values of needs_judge scenarios, which this
+// file never compares; adding it would change nothing.
 
 // The order matters for the scanner: a longer spelling comes before a shorter one
 // that starts with it.
@@ -70,24 +70,105 @@ export function compoundMention(expression, after) {
 
 const DIGITS = { 零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 }
 
+// The units of a section (the part below ten thousand) and what they are worth.
+const SECTION_UNITS = new Map([['十', 10], ['百', 100], ['千', 1000]])
+
+// parseSection reads the part of a Chinese numeral that is below ten thousand.
+//
+// Only a legal writing is read. The units have to come in decreasing order and may not
+// repeat, only "十" may leave out the digit in front of it, and two digits may not
+// stand next to each other. "一百百" is therefore not read (as a hundred hundred, or
+// as two hundred - it is not either), and "一二" is not read as twelve.
+//
+// A "零" in the middle fills the place of a digit that is not written ("一百零八"), so
+// the digit it stands for has to follow it.
+//
+// It returns null for anything it cannot read, and the caller then keeps the value as
+// it was written instead of guessing.
+function parseSection(text) {
+  if (!text) return null
+  let total = 0
+  let digit = null
+  let digitWasZero = false
+  let zeroPending = false
+  let sawUnit = false
+  let smallestUnit = 10000
+  for (const c of text) {
+    if (c === '零' || c === '〇') {
+      if (!sawUnit) {
+        // A leading zero: "零五" is five, and "零" on its own is zero.
+        if (digit !== null) return null
+        digit = 0
+        digitWasZero = true
+        continue
+      }
+      // A zero in the middle fills the place of a digit that is not written, and the
+      // digit it stands for has to follow it.
+      if (zeroPending) return null
+      zeroPending = true
+      continue
+    }
+    if (Object.hasOwn(DIGITS, c)) {
+      if (zeroPending) { zeroPending = false; digit = DIGITS[c]; digitWasZero = false; continue }
+      if (digit !== null) {
+        // Two digits in a row are not a number.
+        if (!digitWasZero) return null
+        digit = DIGITS[c]
+        digitWasZero = false
+        continue
+      }
+      digit = DIGITS[c]
+      digitWasZero = false
+      continue
+    }
+    const unit = SECTION_UNITS.get(c)
+    if (unit === undefined) return null
+    if (unit >= smallestUnit) return null
+    if (zeroPending) return null
+    smallestUnit = unit
+    // Only "十" may leave out the digit in front of it ("十" is ten). "百" and "千"
+    // have to be written out ("一百", "一千"), so "千十" is not read as a number.
+    if (digit === null && c !== '十') return null
+    total += (digit === null ? 1 : digit) * unit
+    sawUnit = true
+    digit = null
+    digitWasZero = false
+  }
+  // A zero that waited for a digit never got one.
+  if (zeroPending) return null
+  if (digit !== null) total += digit
+  return total
+}
+
 // chineseNumber reads a Chinese numeral. It returns NaN for anything it cannot read,
 // and the caller then keeps the value as it was written instead of guessing.
+//
+// Only a complete, legal writing is read. A single "万", a "万万" and a "一百百" are
+// not numbers, and they are not read as zero either: a value that is not read stays
+// the text it was written as and is matched literally, so a key of "万次" can never
+// be satisfied by an answer of "0次".
 //
 // The unit matters: a plain "十" is ten, "二十" is twenty, and "一千二百" is twelve
 // hundred. "万" is a section: "两万五千" is twenty-five thousand, not twenty-two
 // thousand and five.
 export function chineseNumber(s) {
   if (/^\d+(?:\.\d+)?$/.test(s)) return Number(s)
-  let total = 0, section = 0, digit = 0
-  for (const c of s) {
-    if (c === '万' || c === '萬') { total += (section + digit) * 10000; section = 0; digit = 0 }
-    else if (c === '千') { section += (digit || 1) * 1000; digit = 0 }
-    else if (c === '百') { section += (digit || 1) * 100; digit = 0 }
-    else if (c === '十') { section += (digit || 1) * 10; digit = 0 }
-    else if (Object.hasOwn(DIGITS, c)) digit = digit * 10 + DIGITS[c]
-    else return NaN
+  if (typeof s !== 'string' || !s) return NaN
+  const sections = s.split(/[万萬]/)
+  if (sections.length > 2) return NaN
+  if (sections.length === 1) {
+    const value = parseSection(s)
+    return value === null ? NaN : value
   }
-  return total + section + digit
+  const [high, low] = sections
+  // "万" alone, and "万五千", are not legal writings: the ten-thousands part has to be
+  // written out.
+  if (!high) return NaN
+  const highValue = parseSection(high)
+  if (highValue === null) return NaN
+  const lowValue = low === '' ? 0 : parseSection(low)
+  if (lowValue === null) return NaN
+  return highValue * 10000 + lowValue
 }
 
 // The number a quantity may carry: Arabic digits, or Chinese numerals.

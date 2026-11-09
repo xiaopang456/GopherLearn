@@ -45,9 +45,62 @@ test('chineseNumber reads the thousands and the ten-thousands', () => {
   assert.equal(chineseNumber('一万'), 10000)
   assert.equal(chineseNumber('两万五千'), 25000)
   assert.equal(chineseNumber('一万二千三百四十五'), 12345)
+  assert.equal(chineseNumber('十万'), 100000)
   // What it cannot read, it does not guess.
   assert.ok(Number.isNaN(chineseNumber('廿')))
   assert.ok(Number.isNaN(chineseNumber('两亿')))
+})
+
+// The boundary: only a complete, legal writing is read. Everything else keeps its
+// text and is matched literally - so a key can never be satisfied by a different
+// value that happens to be read as zero.
+test('a malformed Chinese numeral is not read at all', () => {
+  const malformed = [
+    '万',        // a lone ten-thousand
+    '万万',      // two ten-thousands
+    '一百百',    // a unit that repeats
+    '十十',      // a unit that repeats
+    '一二',      // two digits in a row
+    '千十',      // the units grow instead of shrinking
+    '万五千',    // the ten-thousands part is not written out
+    '百',        // a hundred without the digit in front of it
+    '千',        // a thousand without the digit in front of it
+    '一百零',    // a zero in the middle that never gets its digit
+    '亿',        // a unit this parser does not know
+    '',
+  ]
+  for (const text of malformed) {
+    assert.ok(Number.isNaN(chineseNumber(text)), `${text} must not be read as a number`)
+  }
+})
+
+test('a key of "万次" is not satisfied by an answer of "0次"', () => {
+  // The bug this closes: "万" used to be read as zero, so the key "万次" and the
+  // answer "0次" were the same value, and a wrong answer passed.
+  const key = { answer: { accepted: ['万次'], forbidden: [], aliases: [] } }
+  assert.equal(normalizeValue('万次'), 'text:万次')
+  assert.notEqual(normalizeValue('万次'), normalizeValue('0次'))
+  const wrong = judgeFact('答案是0次。', key)
+  assert.notEqual(wrong.verdict, 'pass', 'the wrong answer must not pass')
+  // A key that cannot be read is not a value the scorer can rule on: the item goes
+  // to a judge, the same as any other value that is not read (see "两亿次" above).
+  assert.equal(wrong.verdict, 'needs_judge')
+  assert.equal(judgeFact('答案是万次。', key).verdict, 'pass')
+})
+
+test('a malformed numeral in the key keeps its text and is matched literally', () => {
+  const rows = [
+    ['万次', '答案是万次。', 'pass'],
+    ['万次', '答案是0次。', 'needs_judge'],
+    ['万万次', '答案是万万次。', 'pass'],
+    ['万万次', '答案是0次。', 'needs_judge'],
+    ['一百百次', '答案是一百百次。', 'pass'],
+    ['一百百次', '答案是200次。', 'needs_judge'],
+  ]
+  for (const [keyValue, answer, expected] of rows) {
+    const scenario = { answer: { accepted: [keyValue], forbidden: [], aliases: [] } }
+    assert.equal(judgeFact(answer, scenario).verdict, expected, `${keyValue} / ${answer}`)
+  }
 })
 
 test('a quantity with a large numeral is the same value however it is written', () => {
