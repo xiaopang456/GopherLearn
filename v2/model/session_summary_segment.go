@@ -19,14 +19,46 @@ import (
 // value stay answerable: the segment that recorded the old value is still there,
 // marked as superseded rather than deleted.
 const (
-	// SessionSummarySegmentSchemaV1 is the version of a segment's content.
+	// SessionSummarySegmentSchemaV1 is the version of a segment's content
+	// that could only hold what the learner said.
+	//
+	// It is read, not written: every point in a version 1 segment is the
+	// learner's, and a segment written before the source field existed says
+	// so by not having one.
 	SessionSummarySegmentSchemaV1 = 1
 
-	// SessionSummarySegmentPointLimit is how many points one segment may carry.
+	// SessionSummarySegmentSchemaV2 is the version of a segment's content
+	// that says who said each point.
+	//
+	// A point in a version 2 segment may be something the assistant
+	// produced, and the field is what tells the two apart: a version 2
+	// point with no source is the learner's, exactly as a version 1 point
+	// is.
+	SessionSummarySegmentSchemaV2 = 2
+
+	// SessionSummarySegmentPointLimit is how many of the learner's points
+	// one segment may carry.
 	SessionSummarySegmentPointLimit = 20
 
-	// SessionSummarySegmentPointMaxRunes bounds one point's text.
+	// SessionSummarySegmentPointMaxRunes bounds one learner's point text.
 	SessionSummarySegmentPointMaxRunes = 500
+
+	// SessionSummarySegmentAssistantItemLimit is how many of the assistant's
+	// products one segment may carry.
+	//
+	// It is a limit of its own rather than a share of the point limit: an
+	// assistant product is short - a title, a number, a line of a list -
+	// and a segment that spent its points on them would have none left for
+	// what the learner said.
+	SessionSummarySegmentAssistantItemLimit = 6
+
+	// SessionSummarySegmentAssistantItemMaxRunes bounds one assistant
+	// product's text.
+	//
+	// It is well under the learner's own limit because the product is a
+	// pointer to something, not the thing: "三道题：斐波那契、动态规划、图搜索"
+	// is enough to find it again, and the whole of it is not.
+	SessionSummarySegmentAssistantItemMaxRunes = 40
 
 	// SessionSummarySegmentTermLimit is how many names or numbers one segment
 	// may list for exact retrieval.
@@ -35,6 +67,36 @@ const (
 	// SessionSummarySegmentTermMaxRunes bounds one name or number.
 	SessionSummarySegmentTermMaxRunes = 100
 )
+
+// Who a point in a segment came from.
+const (
+	// SessionSummarySegmentSourceUser is what the learner said.
+	//
+	// It is the default: a point with no source is the learner's, and so is
+	// every point of a segment written before the field existed.
+	SessionSummarySegmentSourceUser = "user"
+	// SessionSummarySegmentSourceAssistant is something the assistant
+	// produced and the learner did not take a position on.
+	SessionSummarySegmentSourceAssistant = "assistant"
+	// SessionSummarySegmentSourceAssistantAccepted is something the assistant
+	// proposed and the learner explicitly took on.
+	//
+	// It is the only source that may reach the board, and only with the
+	// evidence that says so: the assistant's message and the learner's
+	// message after it.
+	SessionSummarySegmentSourceAssistantAccepted = "assistant_accepted"
+)
+
+// ValidSummarySegmentSource reports whether a source is one of the three.
+func ValidSummarySegmentSource(source string) bool {
+	switch source {
+	case SessionSummarySegmentSourceUser, SessionSummarySegmentSourceAssistant,
+		SessionSummarySegmentSourceAssistantAccepted:
+		return true
+	default:
+		return false
+	}
+}
 
 // Index states of a segment's derived search vector.
 const (
@@ -54,6 +116,36 @@ var ErrSummarySegmentNotFound = errors.New("summary segment not found")
 type SessionSummarySegmentPoint struct {
 	Text               string `json:"text"`
 	EvidenceMessageIDs []uint `json:"evidence_message_ids,omitempty"`
+	// Source says who the point came from.
+	//
+	// It is empty in a segment written before the field existed, and it
+	// means the learner there. The field is what the program checks the
+	// evidence against: a point that claims the learner said it has to cite
+	// a learner message, and a point that claims the assistant produced it
+	// has to cite an assistant message.
+	Source string `json:"source,omitempty"`
+}
+
+// PointSource is the point's source, with the empty source read as the
+// learner's.
+//
+// The empty source is the learner's rather than an error because a segment
+// written before the field existed carries no source at all, and reading it
+// as the learner's is what keeps those segments answerable.
+func (p SessionSummarySegmentPoint) PointSource() string {
+	source := strings.TrimSpace(p.Source)
+	if source == "" {
+		return SessionSummarySegmentSourceUser
+	}
+	return source
+}
+
+// IsAssistantPoint reports whether the point is something the assistant
+// produced.
+func (p SessionSummarySegmentPoint) IsAssistantPoint() bool {
+	source := p.PointSource()
+	return source == SessionSummarySegmentSourceAssistant ||
+		source == SessionSummarySegmentSourceAssistantAccepted
 }
 
 // SessionSummarySegmentContent is the stored body of a segment.
@@ -134,7 +226,8 @@ func DecodeSessionSummarySegmentContent(content string) (SessionSummarySegmentCo
 	if err := ensureSegmentJSONEOF(decoder); err != nil {
 		return SessionSummarySegmentContent{}, err
 	}
-	if document.SchemaVersion != SessionSummarySegmentSchemaV1 {
+	if document.SchemaVersion != SessionSummarySegmentSchemaV1 &&
+		document.SchemaVersion != SessionSummarySegmentSchemaV2 {
 		return SessionSummarySegmentContent{}, fmt.Errorf("unsupported summary segment schema version %d", document.SchemaVersion)
 	}
 	if err := document.Validate(); err != nil {
@@ -192,19 +285,44 @@ func (s SessionSummarySegment) SearchText() string {
 
 // Validate checks a segment body's shape and bounds.
 func (c SessionSummarySegmentContent) Validate() error {
-	if c.SchemaVersion != SessionSummarySegmentSchemaV1 {
-		return fmt.Errorf("summary segment schema version must be %d", SessionSummarySegmentSchemaV1)
+	switch c.SchemaVersion {
+	case SessionSummarySegmentSchemaV1, SessionSummarySegmentSchemaV2:
+	default:
+		return fmt.Errorf("summary segment schema version must be %d or %d",
+			SessionSummarySegmentSchemaV1, SessionSummarySegmentSchemaV2)
 	}
 	if len([]rune(strings.TrimSpace(c.Topic))) > 200 {
 		return fmt.Errorf("summary segment topic is too long")
 	}
-	if len(c.Points) > SessionSummarySegmentPointLimit {
-		return fmt.Errorf("summary segment has too many points")
-	}
+	// The two kinds of point have limits of their own. The learner's points
+	// keep the limit they always had, and the assistant's products are
+	// counted separately: a segment that carried six products and twenty
+	// learner points would be a segment about the assistant.
+	learnerPoints, assistantPoints := 0, 0
 	for _, point := range c.Points {
+		switch point.PointSource() {
+		case SessionSummarySegmentSourceUser:
+			learnerPoints++
+		case SessionSummarySegmentSourceAssistant, SessionSummarySegmentSourceAssistantAccepted:
+			assistantPoints++
+		default:
+			return fmt.Errorf("summary segment point has an unknown source %q", point.Source)
+		}
 		if err := point.Validate(); err != nil {
 			return err
 		}
+	}
+	if learnerPoints > SessionSummarySegmentPointLimit {
+		return fmt.Errorf("summary segment has too many points")
+	}
+	if assistantPoints > SessionSummarySegmentAssistantItemLimit {
+		return fmt.Errorf("summary segment has too many assistant products")
+	}
+	if c.SchemaVersion == SessionSummarySegmentSchemaV1 && assistantPoints > 0 {
+		// A version 1 segment could only hold what the learner said, so a
+		// product in one is a body this schema cannot describe.
+		return fmt.Errorf("summary segment version %d cannot carry assistant products",
+			SessionSummarySegmentSchemaV1)
 	}
 	if len(c.Names) > SessionSummarySegmentTermLimit {
 		return fmt.Errorf("summary segment has too many names")
@@ -225,7 +343,11 @@ func (p SessionSummarySegmentPoint) Validate() error {
 	if strings.TrimSpace(p.Text) == "" {
 		return fmt.Errorf("summary segment point has no text")
 	}
-	if len([]rune(strings.TrimSpace(p.Text))) > SessionSummarySegmentPointMaxRunes {
+	limit := SessionSummarySegmentPointMaxRunes
+	if p.IsAssistantPoint() {
+		limit = SessionSummarySegmentAssistantItemMaxRunes
+	}
+	if len([]rune(strings.TrimSpace(p.Text))) > limit {
 		return fmt.Errorf("summary segment point is too long")
 	}
 	if len(p.EvidenceMessageIDs) > SessionSummaryEvidenceLimit {

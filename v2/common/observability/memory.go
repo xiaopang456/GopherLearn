@@ -199,7 +199,7 @@ func (r *MemoryRecorder) KnowledgeFallbackDuration(duration time.Duration) {
 // Every count here is an intervention the server had to make, so a rising
 // number names the part of the generator that is drifting. Nothing in this
 // call carries board text: the label set is fixed and the rest are counts.
-func (r *MemoryRecorder) Whiteboard(applied, changed, fabricated, suspiciousDelete, missedUpdate, truncated, dropped, droppedDone int) {
+func (r *MemoryRecorder) Whiteboard(applied, changed, fabricated, suspiciousDelete, missedUpdate, truncated, dropped, droppedDone int, unprovenAcceptance, unknownOrigin int) {
 	mode := r.modeLabel()
 	r.addTotal("whiteboard_applied_total", int64(applied))
 	r.addTotal("whiteboard_changed_total", int64(changed))
@@ -209,6 +209,8 @@ func (r *MemoryRecorder) Whiteboard(applied, changed, fabricated, suspiciousDele
 	r.addTotal("whiteboard_truncated_total", int64(truncated))
 	r.addTotal("whiteboard_dropped_total", int64(dropped))
 	r.addTotal("whiteboard_dropped_done_total", int64(droppedDone))
+	r.addTotal("whiteboard_unproven_acceptance_total", int64(unprovenAcceptance))
+	r.addTotal("whiteboard_unknown_origin_total", int64(unknownOrigin))
 	if fabricated > 0 {
 		r.add("whiteboard_fabricated_batches_total{mode="+mode+"}", 1)
 	}
@@ -218,8 +220,28 @@ func (r *MemoryRecorder) Whiteboard(applied, changed, fabricated, suspiciousDele
 	if missedUpdate > 0 {
 		r.add("whiteboard_missed_update_batches_total{mode="+mode+"}", 1)
 	}
-	r.logf("memory_metric name=whiteboard mode=%s applied=%d changed=%d fabricated=%d suspicious_delete=%d missed_update=%d truncated=%d dropped=%d dropped_done=%d",
-		mode, applied, changed, fabricated, suspiciousDelete, missedUpdate, truncated, dropped, droppedDone)
+	if unprovenAcceptance > 0 {
+		r.add("whiteboard_unproven_acceptance_batches_total{mode="+mode+"}", 1)
+	}
+	r.logf("memory_metric name=whiteboard mode=%s applied=%d changed=%d fabricated=%d suspicious_delete=%d missed_update=%d truncated=%d dropped=%d dropped_done=%d unproven_acceptance=%d unknown_origin=%d",
+		mode, applied, changed, fabricated, suspiciousDelete, missedUpdate, truncated, dropped, droppedDone,
+		unprovenAcceptance, unknownOrigin)
+}
+
+// SummarySegmentAssistant records what one segment carried of the
+// assistant's own products.
+//
+// The two counts are what a measurement of that mode needs: how many
+// products the generator found, and how many of them the learner took on.
+// A generator that produces many products and few acceptances is producing
+// things nobody asked for, and one that produces few of either is not
+// recording anything.
+func (r *MemoryRecorder) SummarySegmentAssistant(products, accepted int) {
+	mode := r.modeLabel()
+	r.addTotal("summary_segment_assistant_products_total", int64(products))
+	r.addTotal("summary_segment_assistant_accepted_total", int64(accepted))
+	r.logf("memory_metric name=summary_segment_assistant mode=%s products=%d accepted=%d",
+		mode, products, accepted)
 }
 
 // WhiteboardDelta records that a batch was asked for its changes instead of

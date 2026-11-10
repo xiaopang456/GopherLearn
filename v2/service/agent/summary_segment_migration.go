@@ -198,10 +198,10 @@ func (m *SummarySegmentMigrator) Migrate(ctx context.Context, input RunContext) 
 // is most likely to ask about.
 func ConvertLegacySummary(document model.SessionSummaryDocument, coveredMessageID uint, migratedFromVersion uint64) (model.SessionWhiteboardDocument, model.SessionSummarySegmentContent, bool) {
 	board := model.SessionWhiteboardDocument{
-		SchemaVersion: model.SessionWhiteboardSchemaV1, MigratedFromVersion: migratedFromVersion,
+		SchemaVersion: model.SessionWhiteboardSchemaV2, MigratedFromVersion: migratedFromVersion,
 	}
 	segment := model.SessionSummarySegmentContent{
-		SchemaVersion: model.SessionSummarySegmentSchemaV1, Topic: "历史摘要",
+		SchemaVersion: model.SessionSummarySegmentSchemaV2, Topic: "历史摘要",
 		MigratedFromVersion: migratedFromVersion,
 	}
 	if goal := strings.TrimSpace(document.CurrentGoal); goal != "" {

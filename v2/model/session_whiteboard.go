@@ -23,8 +23,22 @@ import (
 // The board is sent to the model on every turn, so its size is a fixed cost
 // rather than a growing one. Every limit here exists to keep that cost bounded.
 const (
-	// SessionWhiteboardSchemaV1 is the version of the whiteboard document.
+	// SessionWhiteboardSchemaV1 is the version of the whiteboard document
+	// that could only hold what the learner said.
+	//
+	// It is read, not written: every entry in a version 1 board is the
+	// learner's, and a board written before the origin field existed says
+	// so by not having one.
 	SessionWhiteboardSchemaV1 = 1
+
+	// SessionWhiteboardSchemaV2 is the version of the whiteboard document
+	// that says where each entry came from.
+	//
+	// An entry in a version 2 board may be an assistant proposal the
+	// learner took on, and the origin field is what tells the two apart: a
+	// version 2 entry with no origin is the learner's, exactly as a version
+	// 1 entry is.
+	SessionWhiteboardSchemaV2 = 2
 
 	// SessionWhiteboardItemLimit is how many entries one board category may hold.
 	// A category that reaches the limit has its oldest entries merged away, and
@@ -46,6 +60,32 @@ const (
 	SessionWhiteboardTokenLimit = 1200
 )
 
+// Where a board entry came from.
+const (
+	// SessionWhiteboardOriginUser is what the learner said.
+	//
+	// It is the default: an entry with no origin is the learner's, and so is
+	// every entry of a board written before the field existed.
+	SessionWhiteboardOriginUser = "user"
+	// SessionWhiteboardOriginAssistantAccepted is something the assistant
+	// proposed and the learner explicitly took on.
+	//
+	// It is the only other origin there is. An assistant proposal nobody
+	// accepted is not a current fact, so it stays in the summary segments
+	// and never reaches the board.
+	SessionWhiteboardOriginAssistantAccepted = "assistant_accepted"
+)
+
+// ValidSessionWhiteboardOrigin reports whether an origin is one of the two.
+func ValidSessionWhiteboardOrigin(origin string) bool {
+	switch origin {
+	case SessionWhiteboardOriginUser, SessionWhiteboardOriginAssistantAccepted:
+		return true
+	default:
+		return false
+	}
+}
+
 // SessionWhiteboardEntry is one current fact on the board.
 //
 // Key is what makes overwriting possible: two entries about the same thing carry
@@ -66,8 +106,31 @@ type SessionWhiteboardEntry struct {
 	// SourceMessageIDs are the learner's own messages this entry came from.
 	// They are what authorises reading the original wording back.
 	SourceMessageIDs []uint `json:"source_message_ids,omitempty"`
+	// Origin says whether the entry is the learner's or an assistant
+	// proposal the learner took on.
+	//
+	// It is empty in a board written before the field existed, and it means
+	// the learner there. An entry that says the learner accepted an
+	// assistant proposal has to cite the proposal and the message that
+	// accepted it, and the board engine checks that before the entry is
+	// stored.
+	Origin string `json:"origin,omitempty"`
 	// UpdatedAtMessageID is the last message that changed this entry.
 	UpdatedAtMessageID uint `json:"updated_at_message_id,omitempty"`
+}
+
+// EntryOrigin is the entry's origin, with the empty origin read as the
+// learner's.
+//
+// The empty origin is the learner's rather than an error because a board
+// written before the field existed carries no origin at all, and reading it
+// as the learner's is what keeps those boards usable.
+func (e SessionWhiteboardEntry) EntryOrigin() string {
+	origin := strings.TrimSpace(e.Origin)
+	if origin == "" {
+		return SessionWhiteboardOriginUser
+	}
+	return origin
 }
 
 // SessionWhiteboardGoal is the learner's current goal. It is a single entry
@@ -130,7 +193,8 @@ func DecodeSessionWhiteboardDocument(content string) (SessionWhiteboardDocument,
 	if err := ensureWhiteboardJSONEOF(decoder); err != nil {
 		return SessionWhiteboardDocument{}, err
 	}
-	if document.SchemaVersion != SessionWhiteboardSchemaV1 {
+	if document.SchemaVersion != SessionWhiteboardSchemaV1 &&
+		document.SchemaVersion != SessionWhiteboardSchemaV2 {
 		return SessionWhiteboardDocument{}, fmt.Errorf("unsupported session whiteboard schema version %d", document.SchemaVersion)
 	}
 	if err := document.Validate(); err != nil {
@@ -159,8 +223,11 @@ func (d *SessionWhiteboardDocument) Validate() error {
 	if d == nil {
 		return fmt.Errorf("session whiteboard is nil")
 	}
-	if d.SchemaVersion != SessionWhiteboardSchemaV1 {
-		return fmt.Errorf("session whiteboard schema version must be %d", SessionWhiteboardSchemaV1)
+	switch d.SchemaVersion {
+	case SessionWhiteboardSchemaV1, SessionWhiteboardSchemaV2:
+	default:
+		return fmt.Errorf("session whiteboard schema version must be %d or %d",
+			SessionWhiteboardSchemaV1, SessionWhiteboardSchemaV2)
 	}
 	if d.Goal != nil {
 		if err := validateWhiteboardGoal(*d.Goal); err != nil {
@@ -200,6 +267,9 @@ func (e SessionWhiteboardEntry) Validate() error {
 	}
 	if len([]rune(strings.TrimSpace(e.Value))) > SessionWhiteboardTextMaxRunes {
 		return fmt.Errorf("session whiteboard entry value is too long")
+	}
+	if !ValidSessionWhiteboardOrigin(e.EntryOrigin()) {
+		return fmt.Errorf("session whiteboard entry has an unknown origin %q", e.Origin)
 	}
 	switch e.State {
 	case "", "open", "done":

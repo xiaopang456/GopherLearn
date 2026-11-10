@@ -413,6 +413,8 @@ func runLayeredSegments(ctx context.Context, sessionID string, messages []model.
 	if err != nil {
 		return err
 	}
+	generator.UseAssistantContent(agentConfig.SummaryAssistantContentEnabled())
+	generator.UseSegmentBudget(agentConfig.EffectiveSegmentTokens())
 	whiteboard := ""
 	previousSegment := ""
 	seq := 0

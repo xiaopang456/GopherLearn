@@ -25,6 +25,21 @@ import (
 // whole update stops updating, and a board that stopped updating is the
 // failure this structure exists to remove.
 
+// WhiteboardMessageRole says what a cited message was.
+//
+// It is a role rather than a boolean because the engine has to tell three
+// things apart: a message the learner wrote, a message the assistant wrote,
+// and a message whose role is not known - and an unknown role proves
+// nothing.
+type WhiteboardMessageRole string
+
+const (
+	// WhiteboardMessageRoleUser is a message the learner wrote.
+	WhiteboardMessageRoleUser WhiteboardMessageRole = "user"
+	// WhiteboardMessageRoleAssistant is a message the assistant wrote.
+	WhiteboardMessageRoleAssistant WhiteboardMessageRole = "assistant"
+)
+
 // WhiteboardBatch is what one batch of learner messages allows a proposal to
 // refer to.
 type WhiteboardBatch struct {
@@ -35,6 +50,20 @@ type WhiteboardBatch struct {
 	// is compared against when the engine looks for a value the board may
 	// have missed.
 	Messages []string
+	// AssistantMessageIDs are the assistant's messages this batch covered.
+	//
+	// They are here for one reason: a proposal of the assistant's that the
+	// learner took on may reach the board, and it has to cite the message
+	// the proposal was made in as well as the message that took it on.
+	AssistantMessageIDs []uint
+	// KnownMessages says what every message id the citations may point at
+	// was.
+	//
+	// It holds the messages of this batch and the ones of an earlier batch
+	// that the previous segment still cites. The engine cannot ask the
+	// database what a message was, so an acceptance that straddles two
+	// batches can only be checked if the earlier message is described here.
+	KnownMessages map[uint]WhiteboardMessageRole
 	// FirstMessageID is the oldest message id this batch may cite: everything
 	// below it is already covered by the segment before this one.
 	FirstMessageID uint
@@ -42,15 +71,88 @@ type WhiteboardBatch struct {
 	LastMessageID uint
 }
 
-// allowed returns the message ids a citation may point at.
-func (b WhiteboardBatch) allowed() map[uint]struct{} {
+// learnerMessage reports whether an id is one of the learner's messages in
+// this batch.
+func (b WhiteboardBatch) learnerMessage(id uint) (WhiteboardMessageRole, bool) {
+	for _, candidate := range b.MessageIDs {
+		if candidate == id {
+			return WhiteboardMessageRoleUser, true
+		}
+	}
+	return "", false
+}
+
+// allowed returns the message ids a citation of an entry with this origin
+// may point at.
+//
+// The origin decides the set: an entry of the learner's may only cite the
+// learner's messages, and an entry that is an accepted proposal may also
+// cite the assistant's message the proposal was made in.
+//
+// The learner's own set is the one the engine always had. Widening it for
+// the other origin is what lets a proposal reach the board without letting
+// an entry of the learner's cite something the learner did not say.
+func (b WhiteboardBatch) allowed(origin string) map[uint]struct{} {
 	allowed := make(map[uint]struct{}, len(b.MessageIDs))
 	for _, id := range b.MessageIDs {
 		if id > 0 {
 			allowed[id] = struct{}{}
 		}
 	}
+	if origin != model.SessionWhiteboardOriginAssistantAccepted {
+		return allowed
+	}
+	for _, id := range b.AssistantMessageIDs {
+		if id > 0 {
+			allowed[id] = struct{}{}
+		}
+	}
+	// A proposal the assistant made in an earlier batch. The previous
+	// segment still cites it, so the engine knows it was the assistant's;
+	// this batch never saw the message itself.
+	for id, role := range b.KnownMessages {
+		if role != WhiteboardMessageRoleAssistant {
+			continue
+		}
+		if _, inBatch := allowed[id]; inBatch {
+			continue
+		}
+		allowed[id] = struct{}{}
+	}
 	return allowed
+}
+
+// acceptedAssistantProposal reports whether the citations prove that the
+// learner took an assistant proposal on.
+//
+// The proof is a pair: the assistant's message that made the proposal, and a
+// learner's message after it that accepted it. One without the other is not
+// acceptance - the assistant's message alone is a proposal nobody answered,
+// and the learner's message alone is a statement with no proposal to accept.
+//
+// The order is the message ids' order, which is the order the messages were
+// written in.
+func acceptedAssistantProposal(ids []uint, batch WhiteboardBatch) bool {
+	proposals := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		if batch.KnownMessages[id] == WhiteboardMessageRoleAssistant {
+			proposals = append(proposals, id)
+		}
+	}
+	if len(proposals) == 0 {
+		return false
+	}
+	for _, id := range ids {
+		if batch.KnownMessages[id] != WhiteboardMessageRoleUser {
+			continue
+		}
+		for _, proposal := range proposals {
+			if id > proposal {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // WhiteboardProposal is what the generator proposed for the board.
@@ -98,6 +200,17 @@ type WhiteboardDiagnostics struct {
 	// generator does, because the points belong to the segment and the
 	// counters are reported together.
 	DroppedPoints int
+	// UnprovenAcceptances is how many entries were dropped because they
+	// claimed the learner took an assistant proposal on and their citations
+	// did not show it.
+	//
+	// It is a count of its own because it is the one intervention that says
+	// something about the model: a generator that keeps claiming acceptances
+	// nobody gave is a generator that has learned the wrong rule.
+	UnprovenAcceptances int
+	// UnknownOrigins is how many entries were dropped because they named an
+	// origin the engine does not know.
+	UnknownOrigins int
 }
 
 // WhiteboardResult is the outcome of applying one proposal.
@@ -120,13 +233,17 @@ type WhiteboardResult struct {
 // is trimmed to its limits, and only what survived is compared against the
 // old board to produce the changes.
 func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal WhiteboardProposal, batch WhiteboardBatch) (WhiteboardResult, error) {
-	if current.SchemaVersion != model.SessionWhiteboardSchemaV1 {
-		return WhiteboardResult{}, fmt.Errorf("session whiteboard schema version must be %d", model.SessionWhiteboardSchemaV1)
+	if current.SchemaVersion != model.SessionWhiteboardSchemaV1 &&
+		current.SchemaVersion != model.SessionWhiteboardSchemaV2 {
+		return WhiteboardResult{}, fmt.Errorf("session whiteboard schema version must be %d or %d",
+			model.SessionWhiteboardSchemaV1, model.SessionWhiteboardSchemaV2)
 	}
 	result := WhiteboardResult{
-		Board: model.SessionWhiteboardDocument{SchemaVersion: model.SessionWhiteboardSchemaV1},
+		Board: model.SessionWhiteboardDocument{SchemaVersion: model.SessionWhiteboardSchemaV2},
 	}
-	allowed := batch.allowed()
+	// The goal is always the learner's, so it may only cite the learner's
+	// own messages however the rest of the proposal is made up.
+	allowed := batch.allowed(model.SessionWhiteboardOriginUser)
 
 	goal, goalChange, dropped, fabricated := applyWhiteboardGoal(current.Goal, proposal.Goal, allowed, batch)
 	result.Board.Goal = goal
@@ -137,19 +254,19 @@ func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal W
 	}
 
 	constraints, constraintChanges, constraintDiag := applyWhiteboardGroup(
-		current.Constraints, proposal.Constraints, allowed, batch, false)
+		current.Constraints, proposal.Constraints, batch, false)
 	result.Board.Constraints = constraints
 	result.Changes = append(result.Changes, constraintChanges...)
 	result.Diagnostics.add(constraintDiag)
 
 	plan, planChanges, planDiag := applyWhiteboardGroup(
-		current.Plan, proposal.Plan, allowed, batch, true)
+		current.Plan, proposal.Plan, batch, true)
 	result.Board.Plan = plan
 	result.Changes = append(result.Changes, planChanges...)
 	result.Diagnostics.add(planDiag)
 
 	openItems, openChanges, openDiag := applyWhiteboardGroup(
-		current.OpenItems, proposal.OpenItems, allowed, batch, false)
+		current.OpenItems, proposal.OpenItems, batch, false)
 	result.Board.OpenItems = openItems
 	result.Changes = append(result.Changes, openChanges...)
 	result.Diagnostics.add(openDiag)
@@ -189,6 +306,8 @@ func (d *WhiteboardDiagnostics) add(other WhiteboardDiagnostics) {
 	d.TruncatedTexts += other.TruncatedTexts
 	d.DroppedEntries += other.DroppedEntries
 	d.DroppedDonePlan += other.DroppedDonePlan
+	d.UnprovenAcceptances += other.UnprovenAcceptances
+	d.UnknownOrigins += other.UnknownOrigins
 }
 
 // applyWhiteboardGoal decides what the board's goal becomes.
@@ -241,7 +360,7 @@ func applyWhiteboardGoal(current *model.SessionWhiteboardGoal, proposed *model.S
 // one, because a board that still lists finished work is a board that has
 // not been read.
 func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []model.SessionWhiteboardEntry,
-	allowed map[uint]struct{}, batch WhiteboardBatch, doneFirst bool) ([]model.SessionWhiteboardEntry, []model.SessionSummarySegmentChange, WhiteboardDiagnostics) {
+	batch WhiteboardBatch, doneFirst bool) ([]model.SessionWhiteboardEntry, []model.SessionSummarySegmentChange, WhiteboardDiagnostics) {
 	var diagnostics WhiteboardDiagnostics
 	currentByKey := make(map[string]model.SessionWhiteboardEntry, len(current))
 	for _, entry := range current {
@@ -275,6 +394,13 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 			text = string([]rune(text)[:model.SessionWhiteboardTextMaxRunes])
 			diagnostics.TruncatedTexts++
 		}
+		origin := entry.EntryOrigin()
+		if !model.ValidSessionWhiteboardOrigin(origin) {
+			// An origin the engine does not know is an origin it cannot
+			// check, and an entry it cannot check does not go on the board.
+			diagnostics.UnknownOrigins++
+			continue
+		}
 		key := strings.TrimSpace(entry.Key)
 		previous, isExisting := currentByKey[key]
 		if key != "" {
@@ -285,16 +411,25 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 			}
 			seenKeys[key] = struct{}{}
 		}
-		ids, ok := filterWhiteboardEvidence(entry.SourceMessageIDs, previous.SourceMessageIDs, allowed)
+		ids, ok := filterWhiteboardEvidence(entry.SourceMessageIDs, previous.SourceMessageIDs, batch.allowed(origin))
 		if !ok {
 			// The entry cites a message this batch never contained. It is
 			// dropped on its own: the rest of the proposal is still usable.
 			diagnostics.FabricatedEntries++
 			continue
 		}
+		if origin == model.SessionWhiteboardOriginAssistantAccepted && !acceptedAssistantProposal(ids, batch) {
+			// The entry says the learner took a proposal on, and the
+			// citations do not show it. A proposal nobody accepted is not a
+			// current fact, so it stays in the summary segment and never
+			// reaches the board.
+			diagnostics.UnprovenAcceptances++
+			continue
+		}
 		updated := entry
 		updated.Text = text
 		updated.Key = key
+		updated.Origin = origin
 		updated.SourceMessageIDs = ids
 		if updated.UpdatedAtMessageID == 0 {
 			if isExisting {

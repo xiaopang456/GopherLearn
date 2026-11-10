@@ -490,6 +490,22 @@ type AgentConfig struct {
 	// summary sets "off"; a deployment that wants to watch the write side
 	// without changing the window sets "shadow".
 	SummarySegmentMode string `toml:"summarySegmentMode"`
+	// SummaryAssistantContent decides whether the layered summary records
+	// what the assistant produced as well as what the learner said:
+	//
+	//   - "off" records only the learner's own statements. The assistant's
+	//     body is replaced by a placeholder before the generator sees it, and
+	//     everything downstream behaves exactly as it did before.
+	//   - "on" also records the assistant's products - the exercises, the
+	//     plan items, the names and the numbers it gave - and labels them so
+	//     the reader can tell whose words a line holds.
+	//
+	// The default is off. A summary that carries the assistant's own words
+	// is a different thing from one that does not, and the difference has to
+	// be measured before it becomes the default. Turning it on also wants
+	// contextMaxSegmentTokens raised to 450, because a segment that carries
+	// the products as well as the learner's statements needs more room.
+	SummaryAssistantContent string `toml:"summaryAssistantContent"`
 	// SummarySegmentWorkerCount is how many segment jobs are processed at the
 	// same time.
 	SummarySegmentWorkerCount int `toml:"summarySegmentWorkerCount"`
@@ -599,7 +615,35 @@ const (
 	defaultResidentSegmentTokens  = 1200
 	defaultRetrievedSegmentTokens = 1000
 	defaultSegmentTokens          = 300
+	// defaultAssistantSegmentTokens is what one segment may cost when the
+	// summary also records what the assistant produced.
+	//
+	// The segment carries the learner's statements and the assistant's
+	// products for the same stretch of conversation, and the products are
+	// what makes it longer. The resident budget is divided by this number,
+	// so a larger segment means fewer of them travel with every turn.
+	defaultAssistantSegmentTokens = 450
 )
+
+// EffectiveSegmentTokens is what one summary segment may cost.
+//
+// The assistant's products need more room than the learner's statements
+// alone, so a deployment that records them gets a larger segment. A
+// configured value that is not the default is the deployment's own decision
+// and is left alone: the setting exists so that a deployment which knows
+// what its budget can carry can say so.
+func (c AgentConfig) EffectiveSegmentTokens() int {
+	if c.SummaryAssistantContent == "on" && c.ContextMaxSegmentTokens == defaultSegmentTokens {
+		return defaultAssistantSegmentTokens
+	}
+	return c.ContextMaxSegmentTokens
+}
+
+// SummaryAssistantContentEnabled reports whether the summary records what the
+// assistant produced.
+func (c AgentConfig) SummaryAssistantContentEnabled() bool {
+	return c.SummaryAssistantContent == "on"
+}
 
 func defaultConfig() *Config {
 	return &Config{JwtConfig: JwtConfig{
@@ -672,7 +716,11 @@ func defaultConfig() *Config {
 		// deployment that says nothing gets the layered summary. "off" is
 		// the way back to the old rolling summary and "shadow" writes
 		// without being read.
-		SummarySegmentMode:                     "on",
+		SummarySegmentMode: "on",
+		// The assistant's own products are not recorded yet. The behaviour
+		// has to be measured first, and a mode that is measured in every
+		// deployment is not a mode that can be measured.
+		SummaryAssistantContent:                "off",
 		SummarySegmentWorkerCount:              1,
 		SummarySegmentQueueSize:                32,
 		SummarySegmentScanIntervalSeconds:      3,
@@ -999,6 +1047,9 @@ func applyAgentEnv(c *AgentConfig) error {
 	}
 	if value, ok := os.LookupEnv("AGENT_TOPIC_CONSENT_SECRET"); ok {
 		c.TopicConsentSecret = strings.TrimSpace(value)
+	}
+	if value, ok := os.LookupEnv("AGENT_SUMMARY_ASSISTANT_CONTENT"); ok {
+		c.SummaryAssistantContent = strings.TrimSpace(value)
 	}
 	for name, set := range map[string]func(string){
 		"MEMORY_PLANNER_MODEL":    func(value string) { c.MemoryPlannerModel = value },
@@ -1355,6 +1406,11 @@ func (c AgentConfig) Validate() error {
 		// side is what makes "on" meaningful, and it is assembled together
 		// with the mode.
 		return fmt.Errorf("summarySegmentMode must be off, shadow or on")
+	}
+	switch c.SummaryAssistantContent {
+	case "off", "on":
+	default:
+		return fmt.Errorf("summaryAssistantContent must be off or on")
 	}
 	if c.SummarySegmentWorkerCount < 1 || c.SummarySegmentWorkerCount > 16 ||
 		c.SummarySegmentQueueSize < c.SummarySegmentWorkerCount || c.SummarySegmentQueueSize > 1000 {
