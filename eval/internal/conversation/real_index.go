@@ -130,7 +130,7 @@ func BuildSharedIndex(ctx context.Context, repository string, env RealEnvironmen
 			os.Unsetenv("RAG_RERANK_AUTH_TOKEN")
 		}
 	}()
-	if err = writeEntryConfig(path, settings, wire.URL); err != nil {
+	if err = writeEntryConfig(path, settings); err != nil {
 		return report, err
 	}
 	product := startStandardProduct(path)

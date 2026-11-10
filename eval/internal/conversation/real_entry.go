@@ -458,7 +458,7 @@ func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, que
 			os.Unsetenv("RAG_RERANK_AUTH_TOKEN")
 		}
 	}()
-	if err = writeEntryConfig(path, settings, wire.URL); err != nil {
+	if err = writeEntryConfig(path, settings); err != nil {
 		return result, err
 	}
 	loaded, err := entry.Load(path)
