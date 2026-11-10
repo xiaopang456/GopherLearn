@@ -66,6 +66,8 @@ test('a malformed Chinese numeral is not read at all', () => {
     '百',        // a hundred without the digit in front of it
     '千',        // a thousand without the digit in front of it
     '一百零',    // a zero in the middle that never gets its digit
+    '一万零',    // a trailing placeholder is not a complete number
+    '一萬〇',
     '一百二零三', // a zero on top of a digit that is still waiting for its unit
     '一万二',    // ten thousand and two here, twelve thousand in speech
     '亿',        // a unit this parser does not know
@@ -74,6 +76,11 @@ test('a malformed Chinese numeral is not read at all', () => {
   for (const text of malformed) {
     assert.ok(Number.isNaN(chineseNumber(text)), `${text} must not be read as a number`)
   }
+})
+
+test('a trailing zero after ten thousand remains a literal quantity', () => {
+  assert.equal(normalizeValue('一万零次'), 'text:一万零次')
+  assert.notEqual(normalizeValue('一万零次'), normalizeValue('10000次'))
 })
 
 test('a key of "万次" is not satisfied by an answer of "0次"', () => {

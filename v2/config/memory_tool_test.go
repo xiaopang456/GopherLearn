@@ -37,7 +37,7 @@ func TestMemoryToolIsNotADefaultAnywhere(t *testing.T) {
 		base.MemoryToolMinConfidence != 0 || base.MemoryToolTimeoutMS != 0 {
 		t.Fatalf("the memory tool has a production default: %+v", base)
 	}
-	if base.MaxToolCalls != 3 || base.MaxModelCalls != 4 || base.MaxGraphSteps != 10 {
+	if base.MaxToolCalls != 4 || base.MaxModelCalls != 5 || base.MaxGraphSteps != 10 {
 		t.Fatalf("the shipped run budget moved: %d/%d/%d", base.MaxToolCalls, base.MaxModelCalls, base.MaxGraphSteps)
 	}
 	for _, path := range []string{"config.docker.toml", "config.toml"} {

@@ -24,7 +24,7 @@ func TestShippedDefaultRemainsLegacyV2(t *testing.T) {
 	if got := DefaultContextConfig().MemoryReadMode; got != memoryrecall.ModeLegacyV2 {
 		t.Fatalf("default context mode = %s", got)
 	}
-	if got := DefaultRunnerConfig(); got.MaxToolCalls != 3 || got.MaxModelCalls != 4 || got.MaxGraphSteps != 10 {
+	if got := DefaultRunnerConfig(); got.MaxToolCalls != 4 || got.MaxModelCalls != 5 || got.MaxGraphSteps != 10 {
 		t.Fatalf("default runner budget = %#v", got)
 	}
 }

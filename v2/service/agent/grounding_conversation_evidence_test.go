@@ -105,6 +105,23 @@ func TestAnAnswerFromConversationEvidenceIsNotRefusedByTheCitationCheck(t *testi
 	}
 }
 
+func TestFullWidthConversationReferenceRemainsConversation(t *testing.T) {
+	fake := &scriptedChatModel{respond: func(context.Context, int) (*schema.Message, error) {
+		return schema.AssistantMessage("你最初定的是每次读 15 页 ［1］。", nil), nil
+	}}
+	runner, err := NewRunner(fake, StaticToolRegistry{}, newMemoryStepRepository(), conversationWindowBuilder{summary: 1104, grants: []uint{1}}, DefaultRunnerConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := runner.Run(context.Background(), testRunContext(), DiscardEvents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AnswerBasis != rag.AnswerBasisConversation || len(result.Sources) != 0 || result.GroundingRefusal != nil {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
 // The conversation evidence labels its segments, and a model that answers
 // from those segments may point at them by the number it was shown. That
 // number is a pointer at the conversation too, and it resolves.

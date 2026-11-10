@@ -328,7 +328,9 @@ func TestRunnerSynthesizesGroundedAnswerAfterDocumentReadRetryConsumesBudget(t *
 			}}), nil
 		},
 	}
-	runner := mustRunner(t, fake, StaticToolRegistry{Registered: []tool.BaseTool{searchTool, readTool}}, newMemoryStepRepository(), DefaultRunnerConfig())
+	config := DefaultRunnerConfig()
+	config.MaxToolCalls, config.MaxModelCalls = 3, 4
+	runner := mustRunner(t, fake, StaticToolRegistry{Registered: []tool.BaseTool{searchTool, readTool}}, newMemoryStepRepository(), config)
 	input := testRunContext()
 	input.Question = "请根据知识库解释 TCP 粘包与 PacketBuffer。"
 	result, err := runner.Run(context.Background(), input, DiscardEvents)
