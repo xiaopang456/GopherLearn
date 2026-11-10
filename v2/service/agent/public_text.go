@@ -41,7 +41,8 @@ type publicModelCall struct {
 	publication string
 	opened      bool
 	tools       bool
-	content     strings.Builder
+	pending     string
+	malformed   bool
 }
 
 const malformedToolCallAnswer = "这一轮模型未能正常调用工具，请重试。"
@@ -66,6 +67,18 @@ func newPublicModelCall(ctx context.Context, state *runState, publication string
 func (c *publicModelCall) send(ctx context.Context, phase, content, kind string) error {
 	return c.observer(ctx, PublicText{RunID: c.runID, Round: c.round, Phase: phase, Content: content, Kind: kind, Publication: c.publication})
 }
+func (c *publicModelCall) emit(ctx context.Context, content string) error {
+	if content == "" {
+		return nil
+	}
+	if !c.opened {
+		if err := c.send(ctx, "agent.text.started", "", ""); err != nil {
+			return err
+		}
+		c.opened = true
+	}
+	return c.send(ctx, "agent.text.delta", content, "")
+}
 func (c *publicModelCall) accept(ctx context.Context, message *schema.Message) error {
 	if message == nil || (message.Role != "" && message.Role != schema.Assistant) {
 		return nil
@@ -76,18 +89,35 @@ func (c *publicModelCall) accept(ctx context.Context, message *schema.Message) e
 	if message.Content == "" {
 		return nil
 	}
-	c.content.WriteString(message.Content)
-	return nil
-}
-func (c *publicModelCall) end(ctx context.Context, failed bool) error {
-	if c.content.Len() == 0 {
+	if c.malformed {
 		return nil
 	}
-	if err := c.send(ctx, "agent.text.started", "", ""); err != nil {
+	c.pending += message.Content
+	if strings.Contains(c.pending, "｜｜DSML｜｜") {
+		c.pending = ""
+		c.malformed = true
+		return c.emit(ctx, malformedToolCallAnswer)
+	}
+	// Retain a possible marker prefix across chunks; ordinary text remains streaming.
+	keep := 0
+	for _, marker := range []string{"<｜｜DSML｜｜", "</｜｜DSML｜｜", "｜｜DSML｜｜"} {
+		for n := 1; n < len(marker) && n <= len(c.pending); n++ {
+			if strings.HasSuffix(c.pending, marker[:n]) && n > keep {
+				keep = n
+			}
+		}
+	}
+	ready := c.pending[:len(c.pending)-keep]
+	c.pending = c.pending[len(c.pending)-keep:]
+	return c.emit(ctx, ready)
+}
+func (c *publicModelCall) end(ctx context.Context, failed bool) error {
+	if err := c.emit(ctx, c.pending); err != nil {
 		return err
 	}
-	if err := c.send(ctx, "agent.text.delta", safeModelText(c.content.String()), ""); err != nil {
-		return err
+	c.pending = ""
+	if !c.opened {
+		return nil
 	}
 	kind := "answer_candidate"
 	if c.tools {
