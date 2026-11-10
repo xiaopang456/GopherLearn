@@ -1025,7 +1025,7 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 		answer.WriteString(message.Content)
 	}
 	if !knowledgeTerminal {
-		finalAnswer = strings.TrimSpace(answer.String())
+		finalAnswer = safeModelText(strings.TrimSpace(answer.String()))
 		if finalAnswer == "" && !policy.CarriesAnyCapability() {
 			// The learner switched this turn's capabilities off; they did not
 			// cancel their question. A model that answers with a tool call under a
@@ -1095,6 +1095,7 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	// Grounded answers are buffered until citations have been checked. This
 	// prevents an unsupported model draft from leaking through SSE before the
 	// server can replace it with a safe answer.
+	finalAnswer = safeModelText(finalAnswer)
 	if err := sendEvent(ctx, sink, Event{Type: EventAnswerDelta, RunID: input.RunID, Content: finalAnswer}); err != nil {
 		return state.result(), err
 	}
@@ -1268,7 +1269,7 @@ func readAnswerStream(stream *schema.StreamReader[*schema.Message]) (string, err
 			answer.WriteString(message.Content)
 		}
 	}
-	return strings.TrimSpace(answer.String()), nil
+	return safeModelText(strings.TrimSpace(answer.String())), nil
 }
 
 func normalizeRunnerError(ctx context.Context, err error) error {

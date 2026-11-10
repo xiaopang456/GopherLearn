@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/cloudwego/eino/schema"
 	"io"
+	"strings"
 )
 
 // PublicText is an observation of Content at the existing model boundary. It
@@ -40,6 +41,16 @@ type publicModelCall struct {
 	publication string
 	opened      bool
 	tools       bool
+	content     strings.Builder
+}
+
+const malformedToolCallAnswer = "这一轮模型未能正常调用工具，请重试。"
+
+func safeModelText(text string) string {
+	if strings.Contains(text, "｜｜DSML｜｜") {
+		return malformedToolCallAnswer
+	}
+	return text
 }
 
 func newPublicModelCall(ctx context.Context, state *runState, publication string) *publicModelCall {
@@ -65,17 +76,18 @@ func (c *publicModelCall) accept(ctx context.Context, message *schema.Message) e
 	if message.Content == "" {
 		return nil
 	}
-	if !c.opened {
-		if err := c.send(ctx, "agent.text.started", "", ""); err != nil {
-			return err
-		}
-		c.opened = true
-	}
-	return c.send(ctx, "agent.text.delta", message.Content, "")
+	c.content.WriteString(message.Content)
+	return nil
 }
 func (c *publicModelCall) end(ctx context.Context, failed bool) error {
-	if !c.opened {
+	if c.content.Len() == 0 {
 		return nil
+	}
+	if err := c.send(ctx, "agent.text.started", "", ""); err != nil {
+		return err
+	}
+	if err := c.send(ctx, "agent.text.delta", safeModelText(c.content.String()), ""); err != nil {
+		return err
 	}
 	kind := "answer_candidate"
 	if c.tools {

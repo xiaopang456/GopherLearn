@@ -2,7 +2,10 @@ package agent
 
 import (
 	"context"
+	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
+	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -52,5 +55,60 @@ func TestPublicObservationIgnoresPrivateMessageFieldsAndToolContent(t *testing.T
 	}
 	if len(seen) != 3 || seen[1].Content != "public" || seen[2].Kind != "process" {
 		t.Fatalf("privacy/process seam %v", seen)
+	}
+}
+
+func TestMalformedToolCallIsNeverPublished(t *testing.T) {
+	const markup = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="knowledge_search">
+<｜｜DSML｜｜ parameter name="query" string="true">Redis 持久化 RDB AOF 学习顺序</｜｜DSML｜｜ parameter>
+<｜｜DSML｜｜ parameter name="max_results" string="false">5</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+	for _, tc := range []struct {
+		name, text string
+		calls      int
+	}{{"budget available", markup, 4}, {"budget exhausted", markup, 1}, {"inside prose", "前文" + markup + "后文", 4}} {
+		t.Run(tc.name, func(t *testing.T) {
+			var observed []PublicText
+			ctx := WithPublicTextObserver(context.Background(), func(_ context.Context, e PublicText) error { observed = append(observed, e); return nil })
+			c := &publicModelCall{observer: func(_ context.Context, e PublicText) error { observed = append(observed, e); return nil }}
+			runes := []rune(tc.text)
+			for i := 0; i < len(runes); i += 3 {
+				end := i + 3
+				if end > len(runes) {
+					end = len(runes)
+				}
+				if err := c.accept(ctx, schema.AssistantMessage(string(runes[i:end]), nil)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if len(observed) != 0 {
+				t.Fatal("text published before inspection")
+			}
+			if err := c.end(ctx, false); err != nil {
+				t.Fatal(err)
+			}
+			if len(observed) != 3 || observed[1].Content != malformedToolCallAnswer {
+				t.Fatalf("observed=%v", observed)
+			}
+			fake := &scriptedChatModel{respond: func(context.Context, int) (*schema.Message, error) { return schema.AssistantMessage(tc.text, nil), nil }}
+			config := DefaultRunnerConfig()
+			config.MaxModelCalls = tc.calls
+			var count atomic.Int32
+			runner := mustRunner(t, fake, StaticToolRegistry{Registered: []tool.BaseTool{mustFakeTool(t, &count)}}, newMemoryStepRepository(), config)
+			result, err := runner.Run(ctx, testRunContext(), DiscardEvents)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(result.Answer, "｜｜DSML｜｜") || strings.TrimSpace(result.Answer) == "" {
+				t.Fatalf("answer=%q", result.Answer)
+			}
+			for _, e := range observed {
+				if strings.Contains(e.Content, "｜｜DSML｜｜") {
+					t.Fatalf("published=%q", e.Content)
+				}
+			}
+		})
 	}
 }
