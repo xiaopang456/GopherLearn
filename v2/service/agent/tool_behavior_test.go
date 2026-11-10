@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -619,4 +620,64 @@ func mustRefusingDraftTool(t *testing.T) tool.InvokableTool {
 		t.Fatal(err)
 	}
 	return result
+}
+
+func TestPreRetrievalLeavesRoomForTwoSearchesAndRead(t *testing.T) {
+	fake := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {
+		if call <= 3 {
+			name := knowledgeSearchToolName
+			if call == 3 {
+				name = "document_read"
+			}
+			return schema.AssistantMessage("", []schema.ToolCall{{ID: fmt.Sprintf("call-%d", call), Function: schema.FunctionCall{Name: name, Arguments: fmt.Sprintf(`{"topic":"query-%d"}`, call)}}}), nil
+		}
+		return schema.AssistantMessage("TCP 面向字节流 [1]。", nil), nil
+	}}
+	registry := &proberRegistry{StaticToolRegistry: StaticToolRegistry{Registered: []tool.BaseTool{
+		mustNamedEvidenceTool(t, knowledgeSearchToolName, nil),
+		mustNamedEvidenceTool(t, "document_read", nil),
+	}}, outcome: hitOutcome()}
+	steps := newMemoryStepRepository()
+	runner := mustRunnerWithWindow(t, fake, registry, steps, DefaultRunnerConfig(), mustRealWindowBuilder(t))
+	input := testRunContext()
+	input.Question = "TCP 粘包为什么会发生？"
+	input.MemoryEvidence = NewMemoryEvidenceRegistry()
+	result, err := runner.Run(context.Background(), input, DiscardEvents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ToolCalls != 4 {
+		t.Fatalf("calls=%d", result.ToolCalls)
+	}
+	if got := toolStepNames(steps); len(got) != 4 || got[3] != "document_read" {
+		t.Fatalf("steps=%v", got)
+	}
+}
+
+func TestFullWidthDocumentCitations(t *testing.T) {
+	for _, tc := range []struct {
+		name, answer string
+		grounded     bool
+	}{
+		{"ascii", "答案 [1]", true}, {"fullwidth", "答案 ［1］", true},
+		{"mixed", "答案 [1] 和 ［1］", true}, {"unknown", "答案 ［9］", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &scriptedChatModel{respond: func(context.Context, int) (*schema.Message, error) {
+				return schema.AssistantMessage(tc.answer, nil), nil
+			}}
+			registry := &proberRegistry{StaticToolRegistry: StaticToolRegistry{Registered: []tool.BaseTool{mustNamedEvidenceTool(t, knowledgeSearchToolName, nil)}}, outcome: hitOutcome()}
+			runner := mustRunnerWithWindow(t, fake, registry, newMemoryStepRepository(), DefaultRunnerConfig(), mustRealWindowBuilder(t))
+			input := testRunContext()
+			input.Question = "TCP 粘包为什么会发生？"
+			input.MemoryEvidence = NewMemoryEvidenceRegistry()
+			result, err := runner.Run(context.Background(), input, DiscardEvents)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (result.KnowledgeStatus == rag.KnowledgeStatusGrounded) != tc.grounded {
+				t.Fatalf("status=%s answer=%q", result.KnowledgeStatus, result.Answer)
+			}
+		})
+	}
 }

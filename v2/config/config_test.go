@@ -237,7 +237,7 @@ func TestKnowledgeEnvironmentOverrideRejectsNonInteger(t *testing.T) {
 
 func TestDefaultAgentConfigAndEnvironmentOverrides(t *testing.T) {
 	got := defaultConfig().AgentConfig
-	if got.MaxToolCalls != 3 || got.MaxModelCalls != 4 || got.MaxGraphSteps != 10 || got.DeadlineSeconds != 45 ||
+	if got.MaxToolCalls != 4 || got.MaxModelCalls != 5 || got.MaxGraphSteps != 10 || got.DeadlineSeconds != 45 ||
 		got.DeadlineThinkingSeconds != 60 ||
 		got.KnowledgeDefaultTopK != 5 || got.KnowledgeMaxTopK != 8 || got.KnowledgeMaxResultTokens != 700 ||
 		got.KnowledgeMaxObservationTokens != 2200 || got.KnowledgeMaxRunTokens != 6500 ||

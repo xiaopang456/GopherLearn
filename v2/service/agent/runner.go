@@ -237,7 +237,7 @@ func (l ToolCallLimits) limitFor(name string) int {
 const DefaultHistoryReadCalls = 2
 
 func DefaultRunnerConfig() RunnerConfig {
-	return RunnerConfig{MaxToolCalls: 3, MaxModelCalls: 4, MaxGraphSteps: 10, Deadline: 45 * time.Second, DeadlineThinking: 60 * time.Second, RelevanceThreshold: DefaultRelevanceThreshold}
+	return RunnerConfig{MaxToolCalls: 4, MaxModelCalls: 5, MaxGraphSteps: 10, Deadline: 45 * time.Second, DeadlineThinking: 60 * time.Second, RelevanceThreshold: DefaultRelevanceThreshold}
 }
 
 // AgentMemoryToolRunnerConfig is the only budget agent_memory_tool_v1 runs
@@ -2457,7 +2457,7 @@ func probeSearchSummary(outcome *RelevanceOutcome) string {
 		len(outcome.Chunks), outcome.TopScore, outcome.Threshold)
 }
 
-var finalCitationPattern = regexp.MustCompile(`\[(\d{1,4})\]`)
+var finalCitationPattern = regexp.MustCompile(`[\[［](\d{1,4})[\]］]`)
 
 // probeSourcesFor returns the pre-retrieval's chunks that the answer cites.
 //

@@ -624,7 +624,7 @@ func defaultConfig() *Config {
 			RebuildLimit: DefaultStartupIndexAuditRebuildLimit,
 		},
 	}, AgentConfig: AgentConfig{
-		MaxToolCalls: 3, MaxModelCalls: 4, MaxGraphSteps: 10, DeadlineSeconds: 45,
+		MaxToolCalls: 4, MaxModelCalls: 5, MaxGraphSteps: 10, DeadlineSeconds: 45,
 		// A thinking turn writes its answer after the thinking, and the
 		// measured cost of that generation is about forty seconds on the
 		// provider this project ships with. The plain deadline of forty-five

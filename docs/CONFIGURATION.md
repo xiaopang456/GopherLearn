@@ -208,8 +208,8 @@ go -C v2 run ./cmd/indexaudit -config ../config.toml
 | 键 | 默认值 | 说明 |
 |---|---|---|
 | `agentThinkingEnabled` | `false` | **学习 Agent 的思考开关**。打开后 Agent 自己那几次模型调用会带上思考开关；**强制指定工具的那一次仍然不带思考**（供应商在思考模式下会拒绝指定工具的 `tool_choice`）。后台任务（摘要、情景投影、关系分类等）不读这个开关，永远是关闭的 |
-| `maxToolCalls` | `3` | 单轮最多工具调用数 |
-| `maxModelCalls` | `4` | 单轮最多模型调用数 |
+| `maxToolCalls` | `4` | 单轮最多工具调用数 |
+| `maxModelCalls` | `5` | 单轮最多模型调用数 |
 | `maxGraphSteps` | `10` | 单轮最多图步数 |
 | `deadlineSeconds` | `45` | 单轮时间预算（思考关闭时） |
 | `deadlineThinkingSeconds` | `60` | 单轮时间预算（**思考开启时**）。思考开启的回答要等思考写完再写，实测最后那一次生成本身就要四十秒左右，用 45 秒会把这些轮次切在答案出现之前；思考关闭的轮次仍用 `deadlineSeconds` |

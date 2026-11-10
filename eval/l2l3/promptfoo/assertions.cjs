@@ -38,7 +38,7 @@ async function judgeAssertion(output, context) {
   if (!record) return { pass: false, score: 0, reason: '[error] the provider returned no record' }
   const { judgeTrial, corpus } = await load()
   const question = JSON.parse(context.vars.q)
-  const outcome = await judgeTrial(record, question, { corpus, defaultMaxToolCalls: Number(process.env.GL_L23_DEFAULT_MAX_TOOL_CALLS ?? 3) })
+  const outcome = await judgeTrial(record, question, { corpus, defaultMaxToolCalls: Number(process.env.GL_L23_DEFAULT_MAX_TOOL_CALLS ?? 4) })
   const parts = []
   let pass = true
   for (const layer of ['l2', 'l3']) {

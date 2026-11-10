@@ -140,7 +140,7 @@ async function main(argv) {
     labelsPath: args.labels,
     l3OnlyPath: args['l3-only'],
     uploadNamesPath: args['upload-names'],
-    defaultMaxToolCalls: args['default-max-tool-calls'] ? Number(args['default-max-tool-calls']) : 3,
+    defaultMaxToolCalls: args['default-max-tool-calls'] ? Number(args['default-max-tool-calls']) : 4,
     allowUnpinned: args['allow-unpinned'] === true,
   })
   writeOutcomes(args.out, result)
