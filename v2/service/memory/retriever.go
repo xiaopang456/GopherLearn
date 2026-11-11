@@ -403,15 +403,10 @@ func renderMemory(memory model.LongTermMemory) string {
 // model has to know is that a value may be out of date, not what second it
 // was written.
 //
-// A memory whose timestamps are both missing carries no date at all rather
-// than a fabricated one: an invented date is worse than an absent one,
-// because it looks like a fact about when the learner said it.
+// The label itself lives in the model package, because more than one path
+// renders a memory into the window and they have to agree on it.
 func renderMemorySavedOn(memory model.LongTermMemory) string {
-	saved := model.MemorySavedOn(memory)
-	if saved.IsZero() {
-		return ""
-	}
-	return "; 保存于 " + saved.UTC().Format("2006-01-02")
+	return model.MemorySavedOnLabel(memory)
 }
 
 // RenderMemoryLine exposes renderMemory so the M1/M2 paired harness can map

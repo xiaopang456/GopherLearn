@@ -525,6 +525,26 @@ func MemorySavedOn(memory LongTermMemory) time.Time {
 	return memory.CreatedAt
 }
 
+// MemorySavedOnLabel is the date part of the line a memory reaches the
+// model as.
+//
+// There is more than one path that renders a memory into the window, and
+// the date is only useful if it is on all of them: a memory that shows its
+// age on one path and not on another reads as "how old this is depends on
+// the path", which is worse than not showing it at all. So the label lives
+// here, next to the day it names, and every renderer writes the same one.
+//
+// A memory whose timestamps are both missing carries no date rather than a
+// fabricated one: an invented date is worse than an absent one, because it
+// looks like a fact about when the learner said it.
+func MemorySavedOnLabel(memory LongTermMemory) string {
+	saved := MemorySavedOn(memory)
+	if saved.IsZero() {
+		return ""
+	}
+	return "; 保存于 " + saved.UTC().Format("2006-01-02")
+}
+
 func (m LongTermMemory) ExpiredAt(now time.Time) bool {
 	return m.Durability == MemoryDurabilityTimeBound && m.ValidUntil != nil && !m.ValidUntil.After(now)
 }

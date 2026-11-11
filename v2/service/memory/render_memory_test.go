@@ -17,10 +17,10 @@ import (
 
 func TestRenderMemoryCarriesTheDayItWasLastChanged(t *testing.T) {
 	memory := model.LongTermMemory{
-		Scope:   model.MemoryScopeGlobal,
-		Subject: "Go 版本",
-		Content: "1.22",
-		Tags:    []string{"go"},
+		Scope:     model.MemoryScopeGlobal,
+		Subject:   "Go 版本",
+		Content:   "1.22",
+		Tags:      []string{"go"},
 		CreatedAt: time.Date(2026, 10, 1, 9, 30, 0, 0, time.UTC),
 		UpdatedAt: time.Date(2026, 10, 12, 16, 5, 0, 0, time.UTC),
 	}
