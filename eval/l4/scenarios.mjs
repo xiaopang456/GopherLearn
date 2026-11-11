@@ -1,5 +1,5 @@
 import crypto from 'node:crypto'
-import { normalizeValue } from './normalize.mjs'
+import { foldText, normalizeValue } from './normalize.mjs'
 
 export const categories = new Set(['early_fact', 'constraint', 'stale', 'no_fabrication', 'irrelevant'])
 // The second round adds six categories under a schema version of their own.
@@ -27,17 +27,16 @@ function factValueKey(value) {
   return normalizeValue(value)
 }
 
-// The second round's own comparison of a value against a text.
+// The second round's own comparison of a value against a text uses foldText, the
+// folding of normalize.mjs: the same folding the answer and the values of the
+// answer key go through.
 //
-// It is a plain fold - NFKC, no whitespace, lower case - and not the scorer's
-// normalization, because it is used to ask "is this value in this text", and
-// the scorer's normalization answers a different question: it names a
-// quantity canonically instead of folding a whole sentence. A value that is
-// not an expression therefore has to be looked for literally in the folded
-// text, which is what the second-round dataset was written against.
-function foldText(text) {
-  return String(text ?? '').normalize('NFKC').replace(/\s+/gu, '').toLowerCase()
-}
+// It is that folding and not the scorer's normalization, because it is used to
+// ask "is this value in this text", and the scorer's normalization answers a
+// different question: it names a quantity canonically instead of folding a
+// whole sentence. A value that is not an expression therefore has to be looked
+// for literally in the folded text, which is what the second-round dataset was
+// written against.
 
 // The product's own token estimator, mirrored.
 //

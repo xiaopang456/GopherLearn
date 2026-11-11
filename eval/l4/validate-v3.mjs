@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import {pathToFileURL} from 'node:url'
 import {checkScenario} from './scenarios.mjs'
+import {foldText} from './normalize.mjs'
 
 // Dataset checks complement the per-scenario structural checks; human review
 // remains necessary for semantics, transitions, paraphrases and relative dates.
@@ -39,7 +40,13 @@ const DATE_WITH_YEAR = /(20\d{2})[-年](\d{1,2})[-月](\d{1,2})日?/g
 const DATE_WITHOUT_YEAR = /(?<![\d年月])(\d{1,2})月(\d{1,2})日/g
 const WEEKDAYS = {'日': 0, '天': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6}
 
-const fold = text => String(text ?? '').normalize('NFKC').replace(/\s+/gu, '').toLowerCase()
+// The folding of a text is the one of normalize.mjs: the same one the scorer
+// and the second round's checks use, so that a value and the text that states
+// it are written the same way everywhere.
+const fold = foldText
+// compact is the same width folding without the lower case: the number scan,
+// the n-grams and the duplicate-turn check are about the characters as they
+// were written, and a case difference is not the same turn.
 const compact = text => String(text ?? '').normalize('NFKC').replace(/\s+/gu, '')
 
 // quantitySeconds turns "29分钟" and "29min" into the same number, so a different

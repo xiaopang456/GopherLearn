@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {judgeFact} from '../score.mjs'
+import { fold, foldCharacters, foldText, normalizeValue } from '../normalize.mjs'
 
 test('fact expressions normalize numbers, units and times within prose', () => {
   const rows = [
@@ -82,4 +83,59 @@ test('punctuated clock keys normalize before R3 historical-value routing', () =>
     assert.equal(judgeFact('最初六点半，后来晚上十点十分', scenario).verdict, 'needs_judge')
     assert.equal(judgeFact('晚上十点十分', scenario).verdict, 'fail')
   }
+})
+
+// The full-width forms of the ASCII punctuation, the digits and the letters.
+// NFKC folds them onto their half-width forms, so a value written with one is
+// the same value as the same value written with the other.
+const FULLWIDTH_COMMA = '，'
+const FULLWIDTH_ONE = '１'
+
+test('a full-width alias is found in an answer that states it either way', () => {
+  const alias = {answer:{accepted:['甲'], forbidden:[], aliases:['别名' + FULLWIDTH_COMMA + '乙']}}
+  assert.equal(judgeFact('答案是别名' + FULLWIDTH_COMMA + '乙。', alias).verdict, 'pass')
+  assert.equal(judgeFact('答案是别名,乙。', alias).verdict, 'pass')
+  // A full-width digit is the same digit.
+  const digits = {answer:{accepted:['甲'], forbidden:[], aliases:['第' + FULLWIDTH_ONE + '项']}}
+  assert.equal(judgeFact('是第1项。', digits).verdict, 'pass')
+  assert.equal(judgeFact('是第' + FULLWIDTH_ONE + '项。', digits).verdict, 'pass')
+})
+
+test('a full-width forbidden value is blocked in an answer that states it either way', () => {
+  const forbidden = {answer:{accepted:['甲'], forbidden:['坏值' + FULLWIDTH_COMMA + '丙'], aliases:[]}}
+  assert.equal(judgeFact('答案是坏值' + FULLWIDTH_COMMA + '丙。', forbidden).verdict, 'fail')
+  assert.equal(judgeFact('答案是坏值,丙。', forbidden).verdict, 'fail')
+})
+
+test('the answer key compares its own values after the same folding', () => {
+  // The key's own comparison is the one that says a value cannot be right and
+  // wrong at once, so it has to see the two spellings of a value as one value.
+  assert.equal(normalizeValue('别名' + FULLWIDTH_COMMA + '乙'), normalizeValue('别名,乙'))
+  assert.equal(fold('别名' + FULLWIDTH_COMMA + '乙'), foldText('别名,乙'))
+  // The width and the spacing are folded the same way on both sides: the
+  // haystack the mentions are looked for in is the folded text.
+  assert.equal(foldCharacters('别名' + FULLWIDTH_COMMA + '乙').text, foldText('别名,乙'))
+  // A value may carry a sentence mark at its end, and the mark is not part of
+  // it. The text it is looked for in keeps its own mark.
+  assert.equal(fold('别名。'), '别名')
+  assert.equal(foldText('别名。'), '别名。')
+})
+
+// The Greek sigma that ends a word is written "ς", and folded on its own it is
+// "σ". A value is therefore folded as a whole word and the answer is folded
+// letter by letter, and the two do not meet in Greek text unless the answer is
+// written the folded way.
+//
+// The two folds are kept apart on purpose - they are what the frozen datasets
+// were written against - and these two answers pin them.
+test('a value is folded as a word and the answer is folded letter by letter', () => {
+  assert.equal(foldText('ΟΣ'), 'ος')
+  assert.equal(foldCharacters('ΟΣ').text, 'οσ')
+  const scenario = {answer:{accepted:['ΟΣ'], forbidden:[], aliases:[]}}
+  // The answer writes the sigma as it stands at the end of a word, so it is
+  // read as "οσ" and the value "ος" is not in it.
+  assert.equal(judgeFact('ΟΣ', scenario).verdict, 'needs_judge')
+  // The answer writes the sigma the other way, so it is read as "ος" and the
+  // value is in it.
+  assert.equal(judgeFact('ος', scenario).verdict, 'pass')
 })
