@@ -565,6 +565,15 @@ const (
 	DefaultRetrievedSegmentTokens = 1000
 	// DefaultSegmentTokens bounds one segment inside either block.
 	DefaultSegmentTokens = 300
+	// DefaultAssistantSegmentTokens bounds one segment when the assistant's
+	// products are recorded in it.
+	//
+	// It is larger because a segment that also carries what the assistant
+	// produced needs more room for the same stretch of conversation: three
+	// exercises and what they were is more than the learner's own summary
+	// of them. The cost is fewer resident segments, because the resident
+	// budget is divided by the per-segment one.
+	DefaultAssistantSegmentTokens = 450
 	// DefaultMinRecentMessages is how many of the newest raw messages every
 	// turn keeps even when the segments have covered them. It matches the
 	// rolling summary's RetainMessages default, because the two are the same

@@ -77,7 +77,7 @@ func legacyDocument() model.SessionSummaryDocument {
 // The board holds what is true now; the segment holds everything as text,
 // because that is the only place the session's progress is still answerable.
 func TestTheConversionPutsTheOldGroupsWhereTheyBelong(t *testing.T) {
-	board, segment, ok := ConvertLegacySummary(legacyDocument(), 40, 1)
+	board, segment, ok := ConvertLegacySummary(legacyDocument(), 40, 1, model.SessionWhiteboardSchemaV1, model.SessionSummarySegmentSchemaV1)
 	if !ok {
 		t.Fatal("the document was not converted")
 	}
@@ -121,7 +121,7 @@ func TestTheConversionPutsTheOldGroupsWhereTheyBelong(t *testing.T) {
 // A reference is a document the session touched. It is progress inside the
 // session, not a fact about it, and the board is where the facts are.
 func TestTheReferencesStayOutOfTheBoard(t *testing.T) {
-	board, _, ok := ConvertLegacySummary(legacyDocument(), 40, 1)
+	board, _, ok := ConvertLegacySummary(legacyDocument(), 40, 1, model.SessionWhiteboardSchemaV1, model.SessionSummarySegmentSchemaV1)
 	if !ok {
 		t.Fatal("the document was not converted")
 	}
@@ -142,7 +142,7 @@ func TestTheConversionTrimsToWhatTheTablesAccept(t *testing.T) {
 		document.ConfirmedDecisions = append(document.ConfirmedDecisions,
 			model.SessionSummaryEvidence{Text: "决定", EvidenceMessageIDs: []uint{uint(index + 1)}})
 	}
-	board, segment, ok := ConvertLegacySummary(document, 40, 1)
+	board, segment, ok := ConvertLegacySummary(document, 40, 1, model.SessionWhiteboardSchemaV1, model.SessionSummarySegmentSchemaV1)
 	if !ok {
 		t.Fatal("the document was not converted")
 	}
@@ -170,7 +170,7 @@ func TestTheConversionCutsTheEvidenceToWhatTheBoardAccepts(t *testing.T) {
 	document := model.SessionSummaryDocument{
 		ConfirmedDecisions: model.SessionSummaryEvidenceList{{Text: "决定", EvidenceMessageIDs: ids}},
 	}
-	board, segment, ok := ConvertLegacySummary(document, 40, 1)
+	board, segment, ok := ConvertLegacySummary(document, 40, 1, model.SessionWhiteboardSchemaV1, model.SessionSummarySegmentSchemaV1)
 	if !ok {
 		t.Fatal("the document was not converted")
 	}
@@ -208,7 +208,7 @@ func TestTheConversionDropsTheEvidenceTheTablesRefuse(t *testing.T) {
 			{Text: "决定", EvidenceMessageIDs: []uint{0, 7, 7, 9}},
 		},
 	}
-	board, segment, ok := ConvertLegacySummary(document, 40, 1)
+	board, segment, ok := ConvertLegacySummary(document, 40, 1, model.SessionWhiteboardSchemaV1, model.SessionSummarySegmentSchemaV1)
 	if !ok {
 		t.Fatal("the document was not converted")
 	}
@@ -233,7 +233,7 @@ func TestTheConversionCutsTheReferencesToWhatTheSegmentAccepts(t *testing.T) {
 	document := model.SessionSummaryDocument{
 		References: []string{strings.Repeat("长", 1000)},
 	}
-	_, segment, ok := ConvertLegacySummary(document, 40, 1)
+	_, segment, ok := ConvertLegacySummary(document, 40, 1, model.SessionWhiteboardSchemaV1, model.SessionSummarySegmentSchemaV1)
 	if !ok {
 		t.Fatal("the document was not converted")
 	}
@@ -254,7 +254,7 @@ func TestTheConversionCutsTheReferencesToWhatTheSegmentAccepts(t *testing.T) {
 // The old summary is rewritten as the session goes on, so the version is what
 // says which revision of it the board and the segment were built from.
 func TestTheConversionRecordsWhereItCameFrom(t *testing.T) {
-	board, segment, ok := ConvertLegacySummary(legacyDocument(), 40, 3)
+	board, segment, ok := ConvertLegacySummary(legacyDocument(), 40, 3, model.SessionWhiteboardSchemaV1, model.SessionSummarySegmentSchemaV1)
 	if !ok {
 		t.Fatal("the document was not converted")
 	}
@@ -599,6 +599,58 @@ func TestTheProviderKeepsTheRawConversationWhenTheRereadIsInconsistent(t *testin
 	if snapshot.Board != nil || len(snapshot.Resident) != 0 {
 		t.Fatalf("the snapshot carries state it could not confirm: board=%v resident=%d",
 			snapshot.Board, len(snapshot.Resident))
+	}
+}
+
+// The conversion writes the version the deployment's mode writes.
+//
+// The mode that does not record what the assistant produced writes version 1:
+// the converted documents are the ones the version before this change wrote,
+// and a deployment that rolls back can still read them.
+func TestTheConversionWritesTheVersionTheModeWrites(t *testing.T) {
+	for _, testCase := range []struct {
+		name             string
+		assistantContent bool
+		wantBoard        int
+		wantSegment      int
+	}{
+		{"off", false, model.SessionWhiteboardSchemaV1, model.SessionSummarySegmentSchemaV1},
+		{"on", true, model.SessionWhiteboardSchemaV2, model.SessionSummarySegmentSchemaV2},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			reader := &fakeSegmentReader{}
+			legacy := &fakeLegacyReader{summary: &model.SessionSummary{
+				UserID: 7, SessionID: "session", Content: mustMarshalSummary(t, legacyDocument()),
+				CoveredMessageID: 40, Version: 5,
+			}}
+			writer := &fakeMigrationWriter{}
+			migrator, err := NewSummarySegmentMigrator(reader, legacy, writer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			migrator.UseAssistantContent(testCase.assistantContent)
+			if _, err := migrator.Migrate(context.Background(),
+				RunContext{UserID: 7, SessionID: "session", Question: "拆包"}); err != nil {
+				t.Fatalf("migrate: %v", err)
+			}
+			if writer.board == nil || writer.segment == nil {
+				t.Fatal("nothing was written")
+			}
+			board, err := model.DecodeSessionWhiteboardDocument(writer.board.Content)
+			if err != nil {
+				t.Fatalf("decode the board: %v", err)
+			}
+			if board.SchemaVersion != testCase.wantBoard {
+				t.Fatalf("the board is version %d, want %d", board.SchemaVersion, testCase.wantBoard)
+			}
+			segment, err := model.DecodeSessionSummarySegmentContent(writer.segment.Content)
+			if err != nil {
+				t.Fatalf("decode the segment: %v", err)
+			}
+			if segment.SchemaVersion != testCase.wantSegment {
+				t.Fatalf("the segment is version %d, want %d", segment.SchemaVersion, testCase.wantSegment)
+			}
+		})
 	}
 }
 

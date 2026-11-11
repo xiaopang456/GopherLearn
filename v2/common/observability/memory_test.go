@@ -58,9 +58,10 @@ func TestMemoryRecorderBoundsTheWhiteboardAndSegmentLabels(t *testing.T) {
 	secret := "private-board-body"
 	var logs []string
 	recorder := NewMemoryRecorder(func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) })
-	recorder.Whiteboard(1, 2, 3, 4, 5, 6, 7, 8)
+	recorder.Whiteboard(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
 	recorder.SummarySegment("failed", secret, 0, 0)
 	recorder.SummarySegment("generated", "none", 4, 2)
+	recorder.SummarySegmentAssistant(3, 1)
 
 	snapshot := recorder.Snapshot()
 	if snapshot.Totals["whiteboard_applied_total"] != 1 ||
@@ -70,8 +71,14 @@ func TestMemoryRecorderBoundsTheWhiteboardAndSegmentLabels(t *testing.T) {
 		snapshot.Totals["whiteboard_missed_update_total"] != 5 ||
 		snapshot.Totals["whiteboard_truncated_total"] != 6 ||
 		snapshot.Totals["whiteboard_dropped_total"] != 7 ||
-		snapshot.Totals["whiteboard_dropped_done_total"] != 8 {
+		snapshot.Totals["whiteboard_dropped_done_total"] != 8 ||
+		snapshot.Totals["whiteboard_unproven_acceptance_total"] != 9 ||
+		snapshot.Totals["whiteboard_unknown_origin_total"] != 10 {
 		t.Fatalf("unexpected whiteboard totals: %#v", snapshot.Totals)
+	}
+	if snapshot.Totals["summary_segment_assistant_products_total"] != 3 ||
+		snapshot.Totals["summary_segment_assistant_accepted_total"] != 1 {
+		t.Fatalf("unexpected assistant product totals: %#v", snapshot.Totals)
 	}
 	if snapshot.Counters["whiteboard_fabricated_batches_total{mode=off}"] != 1 ||
 		snapshot.Counters["whiteboard_suspicious_delete_batches_total{mode=off}"] != 1 ||
