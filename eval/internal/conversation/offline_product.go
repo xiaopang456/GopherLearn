@@ -130,6 +130,7 @@ func offlineSettings(repository, storage string) (*entry.Settings, error) {
 	if err != nil {
 		return nil, err
 	}
+	applySummaryAssistantContentEnv(settings)
 	settings.Config.KnowledgeConfig.StorageDir = storage
 	settings.Config.AgentConfig.EpisodeQuietWindowSeconds = 86400
 	settings.Config.AgentThinkingEnabled = true
@@ -140,6 +141,32 @@ func offlineSettings(repository, storage string) (*entry.Settings, error) {
 	settings.Config.RagRerankModel = "synthetic-rerank"
 	settings.Config.RagRerankToken = "synthetic-rerank-token-at-least-32-characters"
 	return settings, settings.Validate()
+}
+
+// summaryAssistantContentEnv is the switch that says whether the layered
+// summary records what the assistant produced as well as what the learner
+// said.
+const summaryAssistantContentEnv = "AGENT_SUMMARY_ASSISTANT_CONTENT"
+
+// applySummaryAssistantContentEnv carries the switch from the environment
+// into the settings the product is run with.
+//
+// The product's own configuration loader reads this variable, but the
+// isolated entry the harness runs never consults the process environment: it
+// is handed one explicit file and reads nothing else, so a switch said in the
+// environment never reached it. A measurement of the mode that records the
+// assistant's products therefore had no way to turn that mode on.
+//
+// The value is not checked here. The configuration's own validation is the
+// check: a value that is neither "off" nor "on" stops the run instead of
+// quietly measuring a mode nobody meant.
+func applySummaryAssistantContentEnv(settings *entry.Settings) {
+	if settings == nil {
+		return
+	}
+	if value, ok := os.LookupEnv(summaryAssistantContentEnv); ok {
+		settings.Config.AgentConfig.SummaryAssistantContent = strings.TrimSpace(value)
+	}
 }
 
 func closeSandbox(s *Sandbox) error {

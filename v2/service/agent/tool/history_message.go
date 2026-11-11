@@ -33,6 +33,20 @@ const maxHistoryMessageIDsPerCall = 5
 // sentence would bind the number without binding the tool.
 const readHistoryMessageDescription = "Read back the learner's own words for a message an episode cites. Use it when the learner asks what they actually said, or when an episode entry is too compressed to answer from. Only ids listed in an injected episode's message_ids can be read."
 
+// readHistoryMessageAssistantDescription is the contract the model reads when
+// the summary also records what the assistant produced.
+//
+// It is a separate sentence rather than an edit to the one above because the
+// base one is measured: a freeze digests exactly those bytes, and a tool
+// whose contract changed under it would bind a number to something nobody
+// measured.
+//
+// The promise it adds is narrow on purpose. The assistant's own words may be
+// read back only for the messages a summary segment or the board cites, and
+// the sentence says what such a message proves: it is what the assistant
+// said at the time, and it cannot prove what the learner said.
+const readHistoryMessageAssistantDescription = "Read back the learner's own words for a message an episode cites, and the assistant's own words for a message a summary segment or the board cites. Use it when the learner asks what they actually said, or when an episode entry is too compressed to answer from. Only ids listed in an injected episode's message_ids, a summary segment's message_ids or the board's message_ids can be read. A message that comes back with role assistant is what the assistant said at the time: it cannot prove what the learner said."
+
 // ReadHistoryMessageContractDigest is read_history_message's name, description
 // and parameter schema, digested together.
 //
@@ -42,7 +56,21 @@ const readHistoryMessageDescription = "Read back the learner's own words for a m
 // in the grant set and the per-tool limit, both of which the manifest records
 // separately.
 func ReadHistoryMessageContractDigest() (string, error) {
-	built, err := toolutils.InferTool(ReadHistoryMessageName, readHistoryMessageDescription,
+	return readHistoryMessageContractDigest(readHistoryMessageDescription)
+}
+
+// ReadHistoryMessageAssistantContractDigest is the digest of the contract the
+// model reads when the summary also records what the assistant produced.
+//
+// It is a function of its own because the contract is not the same one: a
+// seal that digested the base description for a run whose tool promised
+// something more would bind the number to the wrong bytes.
+func ReadHistoryMessageAssistantContractDigest() (string, error) {
+	return readHistoryMessageContractDigest(readHistoryMessageAssistantDescription)
+}
+
+func readHistoryMessageContractDigest(description string) (string, error) {
+	built, err := toolutils.InferTool(ReadHistoryMessageName, description,
 		func(context.Context, *ReadHistoryMessageInput) (*ReadHistoryMessageOutput, error) {
 			return nil, nil
 		})
@@ -53,7 +81,7 @@ func ReadHistoryMessageContractDigest() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read the history read schema: %w", err)
 	}
-	return toolContractDigest(ReadHistoryMessageName, readHistoryMessageDescription, info)
+	return toolContractDigest(ReadHistoryMessageName, description, info)
 }
 
 // EpisodeEvidenceFacts is what one stored Episode card says about itself, read
@@ -190,6 +218,13 @@ type HistoryMessageRegistry struct {
 	// check is that the segment still exists and still covers the same
 	// messages.
 	segmentEvidence SummarySegmentEvidenceReader
+	// assistantContent says the summary also records what the assistant
+	// produced, and that the assistant's own messages may therefore be read
+	// back.
+	//
+	// It is off by default. With it off, only the learner's own words are
+	// readable, and the tool says so.
+	assistantContent bool
 }
 
 func NewHistoryMessageRegistry(reader HistoryMessageReader) (*HistoryMessageRegistry, error) {
@@ -236,6 +271,32 @@ type SummarySegmentEvidenceReader interface {
 // summary segments' citations.
 func (r *HistoryMessageRegistry) UseSummarySegmentEvidenceReader(reader SummarySegmentEvidenceReader) {
 	r.segmentEvidence = reader
+}
+
+// UseAssistantContent turns the read-back of the assistant's own messages on
+// or off.
+//
+// With it off, only the learner's own words are readable: an assistant row
+// cannot prove what the learner said, so it is not returned even when a card
+// cites it.
+//
+// With it on, the assistant's messages that a summary segment or the board
+// cites may be read back too. The grant set still decides which ids exist
+// for this run, so an assistant message nobody cited is still not readable -
+// what changes is that a cited one may be.
+func (r *HistoryMessageRegistry) UseAssistantContent(enabled bool) {
+	if r == nil {
+		return
+	}
+	r.assistantContent = enabled
+}
+
+// description is the contract the model reads for this run.
+func (r *HistoryMessageRegistry) description() string {
+	if r != nil && r.assistantContent {
+		return readHistoryMessageAssistantDescription
+	}
+	return readHistoryMessageDescription
 }
 
 type ReadHistoryMessageInput struct {
@@ -299,7 +360,7 @@ func (r *HistoryMessageRegistry) Tools(ctx context.Context, run serviceagent.Run
 	// granted, or not actually read back never reaches this registry at all.
 	evidence := run.MemoryEvidence
 
-	read, err := toolutils.InferTool(ReadHistoryMessageName, readHistoryMessageDescription,
+	read, err := toolutils.InferTool(ReadHistoryMessageName, r.description(),
 		func(ctx context.Context, input *ReadHistoryMessageInput) (*ReadHistoryMessageOutput, error) {
 			if input == nil || len(input.MessageIDs) == 0 {
 				return nil, fmt.Errorf("at least one message id is required")
@@ -372,11 +433,15 @@ func (r *HistoryMessageRegistry) Tools(ctx context.Context, run serviceagent.Run
 			}
 			emitted := make(map[uint]struct{}, len(wanted))
 			for _, message := range messages {
-				// Evidence ids are meant to point at learner statements. Fail
-				// closed on anything else: an assistant row cannot prove what the
-				// learner said, an unrequested id proves nothing about this run,
-				// and a row from a session no grant named was read out of scope.
-				if _, requested := wantedSet[message.ID]; !requested || !message.IsUser {
+				// An id nobody cited never reaches the database, and a row
+				// from a session no grant named was read out of scope. The
+				// role is the one thing the grant set does not carry: the
+				// learner's own words are readable in every mode, and the
+				// assistant's only in the mode whose summary records them.
+				if _, requested := wantedSet[message.ID]; !requested {
+					continue
+				}
+				if !message.IsUser && !r.assistantContent {
 					continue
 				}
 				if _, duplicate := emitted[message.ID]; duplicate {
@@ -393,8 +458,12 @@ func (r *HistoryMessageRegistry) Tools(ctx context.Context, run serviceagent.Run
 					continue
 				}
 				emitted[message.ID] = struct{}{}
+				role := "user"
+				if !message.IsUser {
+					role = "assistant"
+				}
 				view := HistoryMessageView{
-					MessageID: int(message.ID), Role: "user",
+					MessageID: int(message.ID), Role: role,
 					SentAt:  message.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 					Content: content, Truncated: truncated,
 				}

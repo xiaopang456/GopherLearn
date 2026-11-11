@@ -727,6 +727,10 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		// still there and still covers the same turns.
 		historyTools.UseSummarySegmentEvidenceReader(
 			agentTool.NewSummarySegmentEvidenceReader(sessionDAO.DefaultRepository()))
+		// The assistant's own messages are readable only in the mode whose
+		// summary records them. The grant set still decides which ids exist
+		// for the run, so an assistant message nobody cited stays unreadable.
+		historyTools.UseAssistantContent(conf.AgentConfig.SummaryAssistantContentEnabled())
 		registries := []agentService.ToolRegistry{knowledgeTools, memoryDraftTools, historyTools}
 		if summarySegmentAssembly.Applies() {
 			// browse_summary_segments opens the session's older segments. It
@@ -855,7 +859,7 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		MaxWhiteboardTokens:       conf.AgentConfig.ContextMaxWhiteboardTokens,
 		MaxResidentSegmentTokens:  conf.AgentConfig.ContextMaxResidentSegmentTokens,
 		MaxRetrievedSegmentTokens: conf.AgentConfig.ContextMaxRetrievedSegmentTokens,
-		MaxSegmentTokens:          conf.AgentConfig.ContextMaxSegmentTokens,
+		MaxSegmentTokens:          conf.AgentConfig.EffectiveSegmentTokens(),
 		MinRecentMessages:         conf.AgentConfig.ContextMinRecentMessages,
 		EpisodeRecallMode:         agentService.EpisodeRecallMode(conf.AgentConfig.EpisodeRecallMode),
 		HistoryFetchLimit:         conf.AgentConfig.ContextHistoryFetchLimit,
@@ -902,7 +906,7 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		layeredProvider, layeredErr := agentService.NewDatabaseLayeredSummaryProvider(
 			sessionDAO.DefaultRepository(), preselector,
 			agentService.ResidentSegmentCount(conf.AgentConfig.ContextMaxResidentSegmentTokens,
-				conf.AgentConfig.ContextMaxSegmentTokens))
+				conf.AgentConfig.EffectiveSegmentTokens()))
 		if layeredErr != nil {
 			return nil, fmt.Errorf("initialize layered summary reader: %v", layeredErr)
 		}
@@ -925,6 +929,10 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		if migrateErr != nil {
 			return nil, fmt.Errorf("initialize summary segment migrator: %v", migrateErr)
 		}
+		// The conversion writes the version the deployment's mode writes, so
+		// a deployment that rolls back can still read what was converted
+		// while the mode was off.
+		migrator.UseAssistantContent(conf.AgentConfig.SummaryAssistantContentEnabled())
 		layeredProvider.UseMigrator(migrator)
 		if attachErr := contextBuilder.UseLayeredSummaryProvider(layeredProvider); attachErr != nil {
 			return nil, fmt.Errorf("attach layered summary reader: %v", attachErr)
@@ -1308,7 +1316,7 @@ func buildSummarySegmentPreselector(conf *config.Config, embed memoryrecall.Embe
 		return nil, err
 	}
 	preselector.UseLimits(agentService.SummarySegmentPreselectLimits(
-		conf.AgentConfig.ContextMaxRetrievedSegmentTokens, conf.AgentConfig.ContextMaxSegmentTokens))
+		conf.AgentConfig.ContextMaxRetrievedSegmentTokens, conf.AgentConfig.EffectiveSegmentTokens()))
 	return preselector, nil
 }
 

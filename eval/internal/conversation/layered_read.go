@@ -798,6 +798,8 @@ func seedLayeredState(ctx context.Context, s *Sandbox, messages []model.Message,
 	if err != nil {
 		return seededLayered{}, outcome, err
 	}
+	generator.UseAssistantContent(agentConfig.SummaryAssistantContentEnabled())
+	generator.UseSegmentBudget(agentConfig.EffectiveSegmentTokens())
 	seeded := seededLayered{}
 	whiteboard := ""
 	previous := ""
@@ -1073,7 +1075,7 @@ func windowContextConfig(settings *entry.Settings) agent.ContextConfig {
 		MaxWhiteboardTokens:       agentConfig.ContextMaxWhiteboardTokens,
 		MaxResidentSegmentTokens:  agentConfig.ContextMaxResidentSegmentTokens,
 		MaxRetrievedSegmentTokens: agentConfig.ContextMaxRetrievedSegmentTokens,
-		MaxSegmentTokens:          agentConfig.ContextMaxSegmentTokens,
+		MaxSegmentTokens:          agentConfig.EffectiveSegmentTokens(),
 		MinRecentMessages:         agentConfig.ContextMinRecentMessages,
 		EpisodeRecallMode:         agent.EpisodeRecallMode(agentConfig.EpisodeRecallMode),
 		HistoryFetchLimit:         agentConfig.ContextHistoryFetchLimit,
@@ -1186,6 +1188,9 @@ func buildLayeredReadRunner(s *Sandbox, settings *entry.Settings,
 		return nil, nil, fmt.Errorf("history message tool: %w", err)
 	}
 	historyTools.UseSummarySegmentEvidenceReader(agentTool.NewSummarySegmentEvidenceReader(sessiondao.NewRepository(s.db)))
+	// The assistant's own messages are readable only in the mode whose
+	// summary records them.
+	historyTools.UseAssistantContent(settings.Config.AgentConfig.SummaryAssistantContentEnabled())
 	registries := []agent.ToolRegistry{historyTools}
 	if arm == LayeredArmOn {
 		browseTools, browseErr := agentTool.NewBrowseSummarySegmentsRegistry(sessiondao.NewRepository(s.db))
@@ -1209,11 +1214,11 @@ func buildLayeredReadRunner(s *Sandbox, settings *entry.Settings,
 		}
 		preselector.UseLimits(agent.SummarySegmentPreselectLimits(
 			settings.Config.AgentConfig.ContextMaxRetrievedSegmentTokens,
-			settings.Config.AgentConfig.ContextMaxSegmentTokens))
+			settings.Config.AgentConfig.EffectiveSegmentTokens()))
 		provider, err := agent.NewDatabaseLayeredSummaryProvider(
 			sessiondao.NewRepository(s.db), preselector,
 			agent.ResidentSegmentCount(settings.Config.AgentConfig.ContextMaxResidentSegmentTokens,
-				settings.Config.AgentConfig.ContextMaxSegmentTokens))
+				settings.Config.AgentConfig.EffectiveSegmentTokens()))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1407,7 +1412,7 @@ func buildLayeredReadWindow(ctx context.Context, s *Sandbox, repository string,
 	provider, err := agent.NewDatabaseLayeredSummaryProvider(
 		sessiondao.NewRepository(s.db), preselector,
 		agent.ResidentSegmentCount(settings.Config.AgentConfig.ContextMaxResidentSegmentTokens,
-			settings.Config.AgentConfig.ContextMaxSegmentTokens))
+			settings.Config.AgentConfig.EffectiveSegmentTokens()))
 	if err != nil {
 		return agent.ContextWindow{}, nil, err
 	}

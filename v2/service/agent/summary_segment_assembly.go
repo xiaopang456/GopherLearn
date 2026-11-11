@@ -54,6 +54,11 @@ func (a *SummarySegmentAssembly) Applies() bool {
 type SummarySegmentAssemblyConfig struct {
 	// Mode is "off", "shadow" or "on".
 	Mode string
+	// AssistantContent says the summary records what the assistant produced
+	// as well as what the learner said.
+	AssistantContent bool
+	// SegmentTokens is what one segment may cost.
+	SegmentTokens int
 	// WorkerConfig is the worker's timing and limits.
 	WorkerConfig SummarySegmentWorkerConfig
 	// TriggerConfig is the threshold at which a segment is wanted.
@@ -115,7 +120,9 @@ func SummarySegmentAssemblyConfigFromSettings(conf config.AgentConfig) (SummaryS
 		fallbackLease = fallbackBudget + 5*time.Second
 	}
 	assembly := SummarySegmentAssemblyConfig{
-		Mode: conf.SummarySegmentMode,
+		Mode:             conf.SummarySegmentMode,
+		AssistantContent: conf.SummaryAssistantContentEnabled(),
+		SegmentTokens:    conf.EffectiveSegmentTokens(),
 		WorkerConfig: SummarySegmentWorkerConfig{
 			WorkerCount:       conf.SummarySegmentWorkerCount,
 			QueueSize:         conf.SummarySegmentQueueSize,
@@ -195,6 +202,13 @@ func NewSummarySegmentAssembly(
 		if err != nil {
 			return nil, err
 		}
+		// A generator the assembly built takes the assembly's settings: it
+		// is the same deployment's configuration, read in one place. A
+		// generator that was handed in keeps the settings its owner gave
+		// it, because that owner may be measuring the two modes side by
+		// side.
+		built.UseAssistantContent(settings.AssistantContent)
+		built.UseSegmentBudget(settings.SegmentTokens)
 		segmentGenerator = built
 	}
 	producer, err := NewModelSummarySegmentProducer(repository, repository, segmentGenerator, settings.ProducerConfig)

@@ -183,12 +183,42 @@ func renderWhiteboardEntry(entry model.SessionWhiteboardEntry) string {
 		}
 		out.WriteString(": ")
 	}
+	out.WriteString(whiteboardOriginLabel(entry))
 	out.WriteString(strings.TrimSpace(entry.Text))
 	if value := strings.TrimSpace(entry.Value); value != "" && !strings.Contains(entry.Text, value) {
 		fmt.Fprintf(&out, " (value: %s)", value)
 	}
 	out.WriteString(renderEvidenceIDs(entry.SourceMessageIDs))
 	return out.String()
+}
+
+// whiteboardOriginLabel is what an entry's origin reads as in the window.
+//
+// The origin is also a field the program checks, but a model that cannot
+// tell whose words an entry holds will quote an assistant's proposal as if
+// the learner had set it. The label is what stops that.
+func whiteboardOriginLabel(entry model.SessionWhiteboardEntry) string {
+	if entry.EntryOrigin() == model.SessionWhiteboardOriginAssistantAccepted {
+		return "（助手提议，用户已同意）"
+	}
+	return ""
+}
+
+// segmentPointLabel is what a point's source reads as in the window.
+//
+// The source is also a field the program checks, and the label says the
+// same thing in the text the model reads: a product the assistant produced
+// and a statement the learner made are read very differently once the model
+// knows which is which.
+func segmentPointLabel(point model.SessionSummarySegmentPoint) string {
+	switch point.PointSource() {
+	case model.SessionSummarySegmentSourceAssistant:
+		return "（助手给出）"
+	case model.SessionSummarySegmentSourceAssistantAccepted:
+		return "（助手提议，用户已同意）"
+	default:
+		return ""
+	}
 }
 
 // renderEvidenceIDs renders the ids a compressed statement was drawn from.
@@ -322,14 +352,16 @@ func renderSummarySegment(segment model.SessionSummarySegment, document model.Se
 	trimmed := false
 	for index, point := range content.Points {
 		text := strings.TrimSpace(point.Text)
-		line := "- " + text + renderEvidenceIDs(point.EvidenceMessageIDs) + pointMarks[index]
+		line := "- " + segmentPointLabel(point) + text +
+			renderEvidenceIDs(point.EvidenceMessageIDs) + pointMarks[index]
 		cost := rag.EstimateTokens(line) + 1
 		if perSegmentTokens > 0 && used+cost > perSegmentTokens {
 			if len(evidence) == 0 {
 				// The first point does not fit on its own. Its text is cut,
 				// but its ids and its marker stay: the marker is what says
 				// the value is not current any more.
-				cut, ok := trimPointLine(text, point.EvidenceMessageIDs, pointMarks[index], perSegmentTokens-used)
+				cut, ok := trimPointLine(text, segmentPointLabel(point),
+					point.EvidenceMessageIDs, pointMarks[index], perSegmentTokens-used)
 				if ok {
 					out.WriteString("\n" + cut)
 					evidence = append(evidence, point.EvidenceMessageIDs...)
@@ -349,9 +381,11 @@ func renderSummarySegment(segment model.SessionSummarySegment, document model.Se
 //
 // The ids and the supersession marker are the last things to go. A line that
 // lost its marker would show a superseded value as if it were current, and
-// the point of the marker is to prevent exactly that.
-func trimPointLine(text string, ids []uint, mark string, budget int) (string, bool) {
-	suffix := renderEvidenceIDs(ids) + mark
+// the point of the marker is to prevent exactly that. The source label goes
+// with them for the same reason: a line that lost it would show the
+// assistant's words as if they were the learner's.
+func trimPointLine(text, label string, ids []uint, mark string, budget int) (string, bool) {
+	suffix := label + renderEvidenceIDs(ids) + mark
 	room := budget - rag.EstimateTokens("- "+suffix) - 1
 	if room <= 0 {
 		return "", false
@@ -360,7 +394,7 @@ func trimPointLine(text string, ids []uint, mark string, budget int) (string, bo
 	if cut == "" {
 		return "", false
 	}
-	return "- " + cut + suffix, true
+	return "- " + label + cut + renderEvidenceIDs(ids) + mark, true
 }
 
 // summarySegmentSupersession marks the values of a segment that the board has
@@ -555,6 +589,10 @@ func SummarySegmentSupersessionNotes(segment model.SessionSummarySegment,
 // The evidence ids travel with the text: they are what the model needs in
 // order to ask for the learner's own words back, and a point without them
 // is a claim the model cannot check.
+//
+// The source label travels with them too. A point the assistant produced is
+// not a thing the learner said, and a model that cannot tell the two apart
+// will answer with the assistant's words as if they were the learner's.
 func RenderSummarySegmentPoint(point model.SessionSummarySegmentPoint) string {
-	return strings.TrimSpace(point.Text) + renderEvidenceIDs(point.EvidenceMessageIDs)
+	return segmentPointLabel(point) + strings.TrimSpace(point.Text) + renderEvidenceIDs(point.EvidenceMessageIDs)
 }
