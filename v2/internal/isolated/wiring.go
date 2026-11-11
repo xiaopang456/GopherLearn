@@ -929,6 +929,10 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		if migrateErr != nil {
 			return nil, fmt.Errorf("initialize summary segment migrator: %v", migrateErr)
 		}
+		// The conversion writes the version the deployment's mode writes, so
+		// a deployment that rolls back can still read what was converted
+		// while the mode was off.
+		migrator.UseAssistantContent(conf.AgentConfig.SummaryAssistantContentEnabled())
 		layeredProvider.UseMigrator(migrator)
 		if attachErr := contextBuilder.UseLayeredSummaryProvider(layeredProvider); attachErr != nil {
 			return nil, fmt.Errorf("attach layered summary reader: %v", attachErr)

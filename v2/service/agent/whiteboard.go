@@ -232,14 +232,26 @@ type WhiteboardResult struct {
 // entry is checked for its shape, then for its sources, then the merged board
 // is trimmed to its limits, and only what survived is compared against the
 // old board to produce the changes.
-func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal WhiteboardProposal, batch WhiteboardBatch) (WhiteboardResult, error) {
+//
+// The schema version is the one the board is written in, and it is the
+// caller's decision: the mode that does not record what the assistant
+// produced writes version 1 and the mode that does writes version 2. The
+// version decides two things - what the document looks like on disk, and what
+// may be in it, because a version 1 board could only hold what the learner
+// said.
+func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal WhiteboardProposal,
+	batch WhiteboardBatch, schemaVersion int) (WhiteboardResult, error) {
 	if current.SchemaVersion != model.SessionWhiteboardSchemaV1 &&
 		current.SchemaVersion != model.SessionWhiteboardSchemaV2 {
 		return WhiteboardResult{}, fmt.Errorf("session whiteboard schema version must be %d or %d",
 			model.SessionWhiteboardSchemaV1, model.SessionWhiteboardSchemaV2)
 	}
+	if schemaVersion != model.SessionWhiteboardSchemaV1 && schemaVersion != model.SessionWhiteboardSchemaV2 {
+		return WhiteboardResult{}, fmt.Errorf("session whiteboard schema version must be %d or %d",
+			model.SessionWhiteboardSchemaV1, model.SessionWhiteboardSchemaV2)
+	}
 	result := WhiteboardResult{
-		Board: model.SessionWhiteboardDocument{SchemaVersion: model.SessionWhiteboardSchemaV2},
+		Board: model.SessionWhiteboardDocument{SchemaVersion: schemaVersion},
 	}
 	// The goal is always the learner's, so it may only cite the learner's
 	// own messages however the rest of the proposal is made up.
@@ -254,19 +266,19 @@ func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal W
 	}
 
 	constraints, constraintChanges, constraintDiag := applyWhiteboardGroup(
-		current.Constraints, proposal.Constraints, batch, false)
+		current.Constraints, proposal.Constraints, batch, false, schemaVersion)
 	result.Board.Constraints = constraints
 	result.Changes = append(result.Changes, constraintChanges...)
 	result.Diagnostics.add(constraintDiag)
 
 	plan, planChanges, planDiag := applyWhiteboardGroup(
-		current.Plan, proposal.Plan, batch, true)
+		current.Plan, proposal.Plan, batch, true, schemaVersion)
 	result.Board.Plan = plan
 	result.Changes = append(result.Changes, planChanges...)
 	result.Diagnostics.add(planDiag)
 
 	openItems, openChanges, openDiag := applyWhiteboardGroup(
-		current.OpenItems, proposal.OpenItems, batch, false)
+		current.OpenItems, proposal.OpenItems, batch, false, schemaVersion)
 	result.Board.OpenItems = openItems
 	result.Changes = append(result.Changes, openChanges...)
 	result.Diagnostics.add(openDiag)
@@ -354,13 +366,44 @@ func applyWhiteboardGoal(current *model.SessionWhiteboardGoal, proposed *model.S
 	return goal, change, 0, 0
 }
 
+// whiteboardOriginForVersion is the origin an entry is written with.
+//
+// The field is written only when it says something other than the learner:
+// the learner's own entry is the default, and an entry that does not say so
+// is the document the mode that does not record the assistant's products
+// always wrote.
+//
+// A version 1 board could only hold what the learner said, so a proposal the
+// learner took on is written there as the learner's own. That is not a
+// guess: "assistant_accepted" says the learner took it on, and the version
+// simply cannot say who proposed it.
+func whiteboardOriginForVersion(origin string, schemaVersion int) string {
+	if origin != model.SessionWhiteboardOriginAssistantAccepted {
+		return ""
+	}
+	if schemaVersion == model.SessionWhiteboardSchemaV1 {
+		return ""
+	}
+	return model.SessionWhiteboardOriginAssistantAccepted
+}
+
+// whiteboardEntryForVersion is an entry as the board's version may hold it.
+//
+// An entry the proposal did not mention is carried over from the old board,
+// and it may name a proposal the learner took on. The same rule as for a
+// proposed entry applies to it.
+func whiteboardEntryForVersion(entry model.SessionWhiteboardEntry, schemaVersion int) model.SessionWhiteboardEntry {
+	entry.Origin = whiteboardOriginForVersion(entry.EntryOrigin(), schemaVersion)
+	return entry
+}
+
 // applyWhiteboardGroup merges one category of entries.
 //
 // doneFirst marks the plan: a finished step is dropped before an unfinished
 // one, because a board that still lists finished work is a board that has
 // not been read.
 func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []model.SessionWhiteboardEntry,
-	batch WhiteboardBatch, doneFirst bool) ([]model.SessionWhiteboardEntry, []model.SessionSummarySegmentChange, WhiteboardDiagnostics) {
+	batch WhiteboardBatch, doneFirst bool, schemaVersion int) ([]model.SessionWhiteboardEntry, []model.SessionSummarySegmentChange, WhiteboardDiagnostics) {
 	var diagnostics WhiteboardDiagnostics
 	currentByKey := make(map[string]model.SessionWhiteboardEntry, len(current))
 	for _, entry := range current {
@@ -376,7 +419,7 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 	// constraint because the generator stopped repeating it would lose the
 	// one thing the learner most needs to survive the next turn.
 	for _, entry := range current {
-		merged = append(merged, entry)
+		merged = append(merged, whiteboardEntryForVersion(entry, schemaVersion))
 		if key := strings.TrimSpace(entry.Key); key != "" {
 			positions[key] = len(merged) - 1
 		}
@@ -429,7 +472,7 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 		updated := entry
 		updated.Text = text
 		updated.Key = key
-		updated.Origin = origin
+		updated.Origin = whiteboardOriginForVersion(origin, schemaVersion)
 		updated.SourceMessageIDs = ids
 		if updated.UpdatedAtMessageID == 0 {
 			if isExisting {

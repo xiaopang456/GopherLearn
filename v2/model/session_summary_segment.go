@@ -22,18 +22,19 @@ const (
 	// SessionSummarySegmentSchemaV1 is the version of a segment's content
 	// that could only hold what the learner said.
 	//
-	// It is read, not written: every point in a version 1 segment is the
-	// learner's, and a segment written before the source field existed says
-	// so by not having one.
+	// It is the version the mode that does not record what the assistant
+	// produced writes, so a segment written in that mode is the one it
+	// always wrote. It stays readable: every point in a version 1 segment
+	// is the learner's, and a segment written before the source field
+	// existed says so by not having one.
 	SessionSummarySegmentSchemaV1 = 1
 
 	// SessionSummarySegmentSchemaV2 is the version of a segment's content
 	// that says who said each point.
 	//
-	// A point in a version 2 segment may be something the assistant
-	// produced, and the field is what tells the two apart: a version 2
-	// point with no source is the learner's, exactly as a version 1 point
-	// is.
+	// The mode that records what the assistant produced writes this one.
+	// Both versions are read: a version 2 point with no source is the
+	// learner's, exactly as a version 1 point is.
 	SessionSummarySegmentSchemaV2 = 2
 
 	// SessionSummarySegmentPointLimit is how many of the learner's points
@@ -123,6 +124,10 @@ type SessionSummarySegmentPoint struct {
 	// evidence against: a point that claims the learner said it has to cite
 	// a learner message, and a point that claims the assistant produced it
 	// has to cite an assistant message.
+	//
+	// It is written only when it says something other than the learner, so
+	// a segment written by the mode that does not record the assistant's
+	// products is the document it always was, byte for byte.
 	Source string `json:"source,omitempty"`
 }
 

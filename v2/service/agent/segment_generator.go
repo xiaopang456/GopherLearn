@@ -160,6 +160,35 @@ func (g *ModelSegmentGenerator) segmentBudget() int {
 	return g.segmentTokens
 }
 
+// segmentSchemaVersion is the schema version the documents are written in.
+//
+// The version follows the mode, and that is the point of it: a segment and a
+// board written by the mode that does not record the assistant's products are
+// the documents that mode always wrote, byte for byte. A deployment that
+// rolls back to the version before this one can still read everything that
+// was written while the mode was off, because nothing about the shape
+// changed.
+//
+// The mode that does record the assistant's products writes version 2, which
+// is where the two new fields live.
+func (g *ModelSegmentGenerator) segmentSchemaVersion() int {
+	if g != nil && g.assistantContent {
+		return model.SessionSummarySegmentSchemaV2
+	}
+	return model.SessionSummarySegmentSchemaV1
+}
+
+// boardSchemaVersion is the schema version the board is written in.
+//
+// It is the same decision as the segment's: the mode that does not record
+// the assistant's products writes the board it always wrote.
+func (g *ModelSegmentGenerator) boardSchemaVersion() int {
+	if g != nil && g.assistantContent {
+		return model.SessionWhiteboardSchemaV2
+	}
+	return model.SessionWhiteboardSchemaV1
+}
+
 // segmentSystemPrompt asks for one object with two halves.
 //
 // The whiteboard is a rewrite, not an append: an entry that still holds is
@@ -565,7 +594,7 @@ func (g *ModelSegmentGenerator) generateSegment(ctx context.Context, input Segme
 			droppedPoints: droppedPoints, err: err}
 	}
 
-	current, err := decodeCurrentWhiteboard(input.Whiteboard)
+	current, err := decodeCurrentWhiteboard(input.Whiteboard, g.boardSchemaVersion())
 	if err != nil {
 		return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInvalidOutput, err: err}
 	}
@@ -574,7 +603,7 @@ func (g *ModelSegmentGenerator) generateSegment(ctx context.Context, input Segme
 		Constraints: document.Whiteboard.Constraints,
 		Plan:        document.Whiteboard.Plan,
 		OpenItems:   document.Whiteboard.OpenItems,
-	}, batch)
+	}, batch, g.boardSchemaVersion())
 	if err != nil {
 		return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInvalidOutput, err: err}
 	}
@@ -650,7 +679,7 @@ func (g *ModelSegmentGenerator) applyChangesOnly(ctx context.Context, payload st
 	if err != nil {
 		return rewrite, nil
 	}
-	merged, err := mergeWhiteboardDelta(current, delta)
+	merged, err := mergeWhiteboardDelta(current, delta, g.boardSchemaVersion())
 	if err != nil {
 		return rewrite, nil
 	}
@@ -659,7 +688,7 @@ func (g *ModelSegmentGenerator) applyChangesOnly(ctx context.Context, payload st
 		Constraints: merged.Constraints,
 		Plan:        merged.Plan,
 		OpenItems:   merged.OpenItems,
-	}, batch)
+	}, batch, g.boardSchemaVersion())
 	if err != nil {
 		return rewrite, nil
 	}
@@ -817,9 +846,12 @@ func whiteboardBatchFor(input SegmentGenerationInput, assistantContent bool) Whi
 }
 
 // decodeCurrentWhiteboard reads the board the batch starts from.
-func decodeCurrentWhiteboard(content string) (model.SessionWhiteboardDocument, error) {
+//
+// The schema version is the one the batch will write, so a batch that starts
+// with no board at all starts with the board of the mode it belongs to.
+func decodeCurrentWhiteboard(content string, schemaVersion int) (model.SessionWhiteboardDocument, error) {
 	if strings.TrimSpace(content) == "" {
-		return model.SessionWhiteboardDocument{SchemaVersion: model.SessionWhiteboardSchemaV2}, nil
+		return model.SessionWhiteboardDocument{SchemaVersion: schemaVersion}, nil
 	}
 	document, err := model.DecodeSessionWhiteboardDocument(content)
 	if err != nil {
@@ -852,9 +884,9 @@ func decodeSegmentDeltaDocument(content string) (segmentDeltaDocument, error) {
 // would fail a batch over bookkeeping the model cannot check, and the engine
 // behind this call re-validates every citation anyway.
 func mergeWhiteboardDelta(current model.SessionWhiteboardDocument,
-	delta segmentDeltaDocument) (model.SessionWhiteboardDocument, error) {
+	delta segmentDeltaDocument, schemaVersion int) (model.SessionWhiteboardDocument, error) {
 	merged := model.SessionWhiteboardDocument{
-		SchemaVersion: model.SessionWhiteboardSchemaV2,
+		SchemaVersion: schemaVersion,
 		Constraints:   append([]model.SessionWhiteboardEntry(nil), current.Constraints...),
 		Plan:          append([]model.SessionWhiteboardEntry(nil), current.Plan...),
 		OpenItems:     append([]model.SessionWhiteboardEntry(nil), current.OpenItems...),
@@ -971,8 +1003,14 @@ func decodeSegmentGenerationDocument(content string) (segmentGenerationDocument,
 func buildSegmentContent(document segmentGenerationDocument, input SegmentGenerationInput,
 	batch WhiteboardBatch, assistantContent bool) (model.SessionSummarySegmentContent, int, error) {
 	content := model.SessionSummarySegmentContent{
-		SchemaVersion: model.SessionSummarySegmentSchemaV2,
+		SchemaVersion: model.SessionSummarySegmentSchemaV1,
 		Topic:         strings.TrimSpace(document.Segment.Topic),
+	}
+	if assistantContent {
+		// The mode that records the assistant's products writes the version
+		// that can hold them. The mode that does not writes the version it
+		// always wrote.
+		content.SchemaVersion = model.SessionSummarySegmentSchemaV2
 	}
 	if len(content.Topic) > 200 {
 		content.Topic = content.Topic[:200]
@@ -1011,7 +1049,7 @@ func buildSegmentContent(document segmentGenerationDocument, input SegmentGenera
 			text = string([]rune(text)[:limit])
 		}
 		points = append(points, model.SessionSummarySegmentPoint{
-			Text: text, EvidenceMessageIDs: ids, Source: source,
+			Text: text, EvidenceMessageIDs: ids, Source: segmentSourceForVersion(source, assistantContent),
 		})
 	}
 	content.Points = trimSegmentPoints(points)
@@ -1033,6 +1071,22 @@ func buildSegmentContent(document segmentGenerationDocument, input SegmentGenera
 			droppedPoints: dropped, err: fmt.Errorf("summary segment has no usable point")}
 	}
 	return content, dropped, nil
+}
+
+// segmentSourceForVersion is the source a point is written with.
+//
+// The field is written only when it says something other than the learner:
+// the learner's own point is the default, and a point that does not say so
+// is the document the mode that does not record the assistant's products
+// always wrote.
+func segmentSourceForVersion(source string, assistantContent bool) string {
+	if !assistantContent {
+		return ""
+	}
+	if source == model.SessionSummarySegmentSourceUser {
+		return ""
+	}
+	return source
 }
 
 // usableSegmentEvidence decides which of a point's citations survive.

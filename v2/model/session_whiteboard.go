@@ -26,18 +26,19 @@ const (
 	// SessionWhiteboardSchemaV1 is the version of the whiteboard document
 	// that could only hold what the learner said.
 	//
-	// It is read, not written: every entry in a version 1 board is the
-	// learner's, and a board written before the origin field existed says
-	// so by not having one.
+	// It is the version the mode that does not record what the assistant
+	// produced writes, so a board written in that mode is the one it always
+	// wrote. It stays readable: every entry in a version 1 board is the
+	// learner's, and a board written before the origin field existed says so
+	// by not having one.
 	SessionWhiteboardSchemaV1 = 1
 
 	// SessionWhiteboardSchemaV2 is the version of the whiteboard document
 	// that says where each entry came from.
 	//
-	// An entry in a version 2 board may be an assistant proposal the
-	// learner took on, and the origin field is what tells the two apart: a
-	// version 2 entry with no origin is the learner's, exactly as a version
-	// 1 entry is.
+	// The mode that records what the assistant produced writes this one.
+	// Both versions are read: a version 2 entry with no origin is the
+	// learner's, exactly as a version 1 entry is.
 	SessionWhiteboardSchemaV2 = 2
 
 	// SessionWhiteboardItemLimit is how many entries one board category may hold.
@@ -114,6 +115,10 @@ type SessionWhiteboardEntry struct {
 	// assistant proposal has to cite the proposal and the message that
 	// accepted it, and the board engine checks that before the entry is
 	// stored.
+	//
+	// It is written only when it says something other than the learner, so
+	// a board written by the mode that does not record the assistant's
+	// products is the document it always was, byte for byte.
 	Origin string `json:"origin,omitempty"`
 	// UpdatedAtMessageID is the last message that changed this entry.
 	UpdatedAtMessageID uint `json:"updated_at_message_id,omitempty"`
@@ -241,6 +246,14 @@ func (d *SessionWhiteboardDocument) Validate() error {
 		for _, entry := range group {
 			if err := entry.Validate(); err != nil {
 				return err
+			}
+			if d.SchemaVersion == SessionWhiteboardSchemaV1 &&
+				entry.EntryOrigin() == SessionWhiteboardOriginAssistantAccepted {
+				// A version 1 board could only hold what the learner said,
+				// so an entry that names an assistant proposal is a body this
+				// schema cannot describe.
+				return fmt.Errorf("session whiteboard version %d cannot carry an assistant proposal",
+					SessionWhiteboardSchemaV1)
 			}
 		}
 	}

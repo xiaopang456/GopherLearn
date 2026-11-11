@@ -71,6 +71,14 @@ type SummarySegmentMigrator struct {
 	legacy LegacySummaryReader
 	writer SummarySegmentMigrationWriter
 	now    func() time.Time
+	// assistantContent says the deployment records what the assistant
+	// produced, and with it the version the converted documents are written
+	// in.
+	//
+	// It is off by default, and then the conversion writes version 1: the
+	// documents are the ones the version before this change wrote, and a
+	// deployment that rolls back can still read them.
+	assistantContent bool
 }
 
 // NewSummarySegmentMigrator builds a migrator.
@@ -80,6 +88,37 @@ func NewSummarySegmentMigrator(reader SummarySegmentReader, legacy LegacySummary
 		return nil, fmt.Errorf("summary segment migrator dependencies are required")
 	}
 	return &SummarySegmentMigrator{reader: reader, legacy: legacy, writer: writer, now: time.Now}, nil
+}
+
+// UseAssistantContent turns the recording of the assistant's products on or
+// off for the conversion.
+//
+// The conversion has no model in it: an old summary says what the learner
+// said, and the board and the segment it becomes say the same. The only
+// thing the mode changes here is the version the documents are written in,
+// so that a deployment which rolls back can still read what was written
+// while the mode was off.
+func (m *SummarySegmentMigrator) UseAssistantContent(enabled bool) {
+	if m == nil {
+		return
+	}
+	m.assistantContent = enabled
+}
+
+// segmentSchemaVersion is the version the converted segment is written in.
+func (m *SummarySegmentMigrator) segmentSchemaVersion() int {
+	if m != nil && m.assistantContent {
+		return model.SessionSummarySegmentSchemaV2
+	}
+	return model.SessionSummarySegmentSchemaV1
+}
+
+// boardSchemaVersion is the version the converted board is written in.
+func (m *SummarySegmentMigrator) boardSchemaVersion() int {
+	if m != nil && m.assistantContent {
+		return model.SessionWhiteboardSchemaV2
+	}
+	return model.SessionWhiteboardSchemaV1
 }
 
 // Migrate converts the session's old summary if it has one and the new
@@ -131,7 +170,8 @@ func (m *SummarySegmentMigrator) Migrate(ctx context.Context, input RunContext) 
 			input.SessionID, err)
 		return false, nil
 	}
-	boardDocument, segmentContent, ok := ConvertLegacySummary(document, summary.CoveredMessageID, summary.Version)
+	boardDocument, segmentContent, ok := ConvertLegacySummary(document, summary.CoveredMessageID, summary.Version,
+		m.boardSchemaVersion(), m.segmentSchemaVersion())
 	if !ok {
 		return false, nil
 	}
@@ -196,12 +236,17 @@ func (m *SummarySegmentMigrator) Migrate(ctx context.Context, input RunContext) 
 // The groups are trimmed to what the new tables allow. A group that reaches
 // its limit keeps its newest entries, because the newest is what the learner
 // is most likely to ask about.
-func ConvertLegacySummary(document model.SessionSummaryDocument, coveredMessageID uint, migratedFromVersion uint64) (model.SessionWhiteboardDocument, model.SessionSummarySegmentContent, bool) {
+//
+// The versions are the ones the caller writes in. The mode that does not
+// record what the assistant produced writes version 1, so the converted
+// documents are the ones the version before this change wrote.
+func ConvertLegacySummary(document model.SessionSummaryDocument, coveredMessageID uint, migratedFromVersion uint64,
+	boardSchemaVersion, segmentSchemaVersion int) (model.SessionWhiteboardDocument, model.SessionSummarySegmentContent, bool) {
 	board := model.SessionWhiteboardDocument{
-		SchemaVersion: model.SessionWhiteboardSchemaV2, MigratedFromVersion: migratedFromVersion,
+		SchemaVersion: boardSchemaVersion, MigratedFromVersion: migratedFromVersion,
 	}
 	segment := model.SessionSummarySegmentContent{
-		SchemaVersion: model.SessionSummarySegmentSchemaV2, Topic: "历史摘要",
+		SchemaVersion: segmentSchemaVersion, Topic: "历史摘要",
 		MigratedFromVersion: migratedFromVersion,
 	}
 	if goal := strings.TrimSpace(document.CurrentGoal); goal != "" {
