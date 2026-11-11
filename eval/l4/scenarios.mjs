@@ -155,13 +155,16 @@ export function attemptIdOf(scenario, index) {
 export function scenarioQuestions(scenario) {
   const questions = Array.isArray(scenario?.questions) ? scenario.questions : []
   if (!questions.length) {
-    return [{ index: 0, attempt: scenario?.id, question: scenario?.question, answer: scenario?.answer }]
+    return [{ index: 0, attempt: scenario?.id, question: scenario?.question, answer: scenario?.answer, turn: null }]
   }
   return questions.map((question, index) => ({
     index,
     attempt: attemptIdOf(scenario, index),
     question: question?.question,
     answer: question?.answer,
+    // The turn is the round of the conversation the question was asked at. It
+    // is what a record names its question by, so it travels with the question.
+    turn: Number.isInteger(question?.turn) ? question.turn : null,
   }))
 }
 export function attemptIds(scenario) {
@@ -191,6 +194,15 @@ export function questionIndexOf(attempt) {
 // the attempt id or by the question index. A record that names a question
 // that does not exist is not resolved: the caller turns that into an
 // identity error rather than scoring it against the wrong key.
+//
+// The question index of a record is the turn the question was asked at, when
+// the scenario says which turn that is. The turn is the better name: it says
+// where in the conversation the question was asked, while the position in the
+// list says only where in the file it was written down. A scenario that does
+// not name the turn keeps the position, and a record may carry either where
+// the two cannot be confused - the turn is at least as large as the number of
+// questions, so a turn of three and a position of three cannot both be right
+// for the same question.
 export function resolveAttempt(scenario, record) {
   const list = scenarioQuestions(scenario)
   if (!isMultiQuestion(scenario)) {
@@ -200,14 +212,33 @@ export function resolveAttempt(scenario, record) {
   }
   const named = list.find(question => question.attempt === record?.qid)
   if (named) {
-    if (Number.isInteger(record?.question_index) && record.question_index !== named.index) return null
+    if (Number.isInteger(record?.question_index) && !namesThisQuestion(named, record.question_index)) return null
     return named
   }
   if (record?.qid === scenario?.id) {
     const index = Number.isInteger(record?.question_index) ? record.question_index : 0
-    return list[index] ?? null
+    const byPosition = list[index] ?? null
+    const byTurn = list.find(question => question.turn !== null && question.turn === index) ?? null
+    // The two readings may disagree, and then the record names two questions
+    // at once. It is not resolved: scoring it would mean guessing which of the
+    // two keys the answer was read against.
+    if (byPosition && byTurn && byPosition !== byTurn) return null
+    return byTurn ?? byPosition
   }
   return null
+}
+
+// namesThisQuestion says whether a record's question index names the question
+// it is asked about.
+//
+// The index is the turn of the question when the scenario names it, and the
+// position in the list otherwise. A record that carries the other one is
+// accepted too, because a scenario whose questions do not name their turns
+// has only the position to offer, and a record written before the turns
+// existed still carries it.
+function namesThisQuestion(question, index) {
+  if (question.turn !== null && index === question.turn) return true
+  return index === question.index
 }
 
 export function checkScenario(s) {
@@ -518,6 +549,26 @@ export function checkSecondRound(s) {
       if (!question.answer || typeof question.answer !== 'object') { errors.push(`question ${index + 1} has no answer key`); continue }
       if (!['fact', 'needs_judge'].includes(question.answer.mode)) errors.push(`question ${index + 1} has an unknown scoring mode`)
       if (question.answer.mode === 'fact' && (!Array.isArray(question.answer.accepted) || !question.answer.accepted.length)) errors.push(`question ${index + 1} has no accepted value`)
+      // The turn is the round of the conversation the question was asked at.
+      // It is what a record names its question by, and it is what says which
+      // part of the conversation the answer has to come from.
+      if (question.turn === undefined || question.turn === null) {
+        errors.push(`question ${index + 1} does not name the turn it was asked at`)
+      } else if (!valid(question.turn)) {
+        errors.push(`question ${index + 1} names a turn that is not in the history: ${question.turn}`)
+      } else if (!(s.evidence_turns ?? []).includes(question.turn)) {
+        // The round the question was asked at is a round of evidence: what
+        // the assistant said then is part of what the answer may rest on.
+        errors.push(`question ${index + 1} is asked at turn ${question.turn}, which is not an evidence turn`)
+      }
+      // The questions are asked in the order of the conversation, so a later
+      // question cannot be asked before an earlier one.
+      if (index > 0) {
+        const previous = questions[index - 1]
+        if (Number.isInteger(previous?.turn) && Number.isInteger(question.turn) && question.turn <= previous.turn) {
+          errors.push(`question ${index + 1} is asked at turn ${question.turn}, which is not after the turn of the question before it`)
+        }
+      }
       // A follow-up leans on the turn before it, so the answers of the
       // questions must not be the same value: otherwise the second question
       // would test nothing the first one did not.

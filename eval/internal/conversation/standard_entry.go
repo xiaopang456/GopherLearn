@@ -131,12 +131,12 @@ func loginStandardProduct(ctx context.Context, p *standardProduct, client *http.
 // one question keeps the key it always used; an attempt that asks several
 // gives each of them its own, because one key would make the second
 // question a replay of the first.
-func askProductQuestion(ctx context.Context, client *http.Client, base, token, sessionID, question, requestID string, index int) (QuestionResult, error) {
-	entry := QuestionResult{Index: index, Question: question}
+func askProductQuestion(ctx context.Context, client *http.Client, base, token, sessionID string, question Question, requestID string, index int) (QuestionResult, error) {
+	entry := QuestionResult{Index: index, Turn: question.Turn, Question: question.Text}
 	if index > 0 {
 		requestID = fmt.Sprintf("%s-%d", requestID, index+1)
 	}
-	body, _ := json.Marshal(map[string]any{"sessionId": sessionID, "requestId": requestID, "question": question, "knowledgePolicy": "knowledge_preferred", "enableThinking": true})
+	body, _ := json.Marshal(map[string]any{"sessionId": sessionID, "requestId": requestID, "question": question.Text, "knowledgePolicy": "knowledge_preferred", "enableThinking": true})
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/v1/AI/agent/run", bytes.NewReader(body))
 	if err != nil {
 		return entry, err
@@ -186,7 +186,7 @@ func askProductQuestion(ctx context.Context, client *http.Client, base, token, s
 // its answer are still in the conversation. The first failure ends the
 // attempt, because a later question asked without the earlier one would not
 // be the question the scenario asks.
-func askProductQuestions(ctx context.Context, client *http.Client, base, token, sessionID string, questions []string, requestID string) ([]QuestionResult, error) {
+func askProductQuestions(ctx context.Context, client *http.Client, base, token, sessionID string, questions []Question, requestID string) ([]QuestionResult, error) {
 	asked := make([]QuestionResult, 0, len(questions))
 	for index, question := range questions {
 		entry, err := askProductQuestion(ctx, client, base, token, sessionID, question, requestID, index)
@@ -252,7 +252,7 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 		return result, fmt.Errorf("question required")
 	}
 	for _, question := range questions {
-		if strings.TrimSpace(question) == "" {
+		if strings.TrimSpace(question.Text) == "" {
 			return result, fmt.Errorf("question required")
 		}
 	}

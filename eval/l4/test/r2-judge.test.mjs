@@ -62,7 +62,8 @@ function a3Scenario() {
 }
 
 // f1Scenario is a valid second-round F1 scenario: one history, two questions
-// asked in a row, each with its own key.
+// asked in a row, each with its own key, and each naming the round of the
+// conversation it was asked at.
 function f1Scenario() {
   counter += 1
   const id = `l4r2-f1-${counter}`
@@ -70,7 +71,7 @@ function f1Scenario() {
     id, category: 'F1', split: splitForId(id), schema_version: 'l4.scenario.draft.v4',
     entity_name: '测试物',
     key_turns: { artifact_turn: 30 },
-    evidence_turns: [30],
+    evidence_turns: [30, 36, 45],
     distance_to_question: TURNS + 1 - 30,
     turns: secondRoundTurns({
       30: { user: '我们说说测试物这件事。', assistant: '我整理了测试物的清单，第一项是甲，第二项是乙。' },
@@ -78,8 +79,8 @@ function f1Scenario() {
     question: undefined,
     answer: undefined,
     questions: [
-      { question: '「测试物」这份清单的第一项练什么？', answer: { mode: 'fact', accepted: ['甲'], forbidden: ['乙'], aliases: [] } },
-      { question: '那第二项呢？', answer: { mode: 'fact', accepted: ['乙'], forbidden: ['甲'], aliases: [] } },
+      { turn: 36, question: '「测试物」这份清单的第一项练什么？', answer: { mode: 'fact', accepted: ['甲'], forbidden: ['乙'], aliases: ['甲项'] } },
+      { turn: 45, question: '那第二项呢？', answer: { mode: 'fact', accepted: ['乙'], forbidden: ['甲'], aliases: [] } },
     ],
   }
 }
@@ -195,8 +196,8 @@ test('a category with no criterion of its own carries none', () => {
 test('a record of a multi-question scenario is read against the question it answers', () => {
   const s = f1Scenario()
   const records = [
-    attempt(`${s.id}#q1`, { question_index: 0, answer: '甲' }),
-    attempt(`${s.id}#q2`, { question_index: 1, answer: '乙' }),
+    attempt(`${s.id}#q1`, { question_index: 36, answer: '甲' }),
+    attempt(`${s.id}#q2`, { question_index: 45, answer: '乙' }),
   ]
   // F1 is decided by the values themselves, so it is not asked about by
   // default. The judge is called here on purpose, to show that a record is
@@ -212,23 +213,46 @@ test('a record of a multi-question scenario is read against the question it answ
 
 test('a record that names a question the scenario does not have is not resolved', () => {
   const s = f1Scenario()
-  const rows = judgeInput(new Map([[s.id, s]]), [attempt(`${s.id}#q3`, { question_index: 2 })], { selected: ['F1'] })
+  const rows = judgeInput(new Map([[s.id, s]]), [attempt(`${s.id}#q3`, { question_index: 50 })], { selected: ['F1'] })
   assert.deepEqual(rows, [])
 })
 
 test('the questions of one scenario are scored one at a time, each against its own key', () => {
   const s = f1Scenario()
-  const first = scoreAttempt({ qid: `${s.id}#q1`, question_index: 0, rep: 0, arm: 'current', env: 'fake', answer: '甲' }, s)
-  const second = scoreAttempt({ qid: `${s.id}#q2`, question_index: 1, rep: 0, arm: 'current', env: 'fake', answer: '甲' }, s)
+  const first = scoreAttempt({ qid: `${s.id}#q1`, question_index: 36, rep: 0, arm: 'current', env: 'fake', answer: '甲' }, s)
+  const second = scoreAttempt({ qid: `${s.id}#q2`, question_index: 45, rep: 0, arm: 'current', env: 'fake', answer: '甲' }, s)
   assert.equal(first.verdict, 'pass')
   assert.equal(first.id, `${s.id}#q1`)
-  assert.equal(first.question_index, 0)
+  // The question index of the outcome is the round the question was asked at,
+  // so the outcome says where in the conversation the answer has to come from.
+  assert.equal(first.question_index, 36)
   // The same answer is wrong for the second question: its key forbids the
   // first question's value. An attempt that was scored against the scenario's
   // first key would call this a pass.
   assert.equal(second.verdict, 'fail')
   assert.equal(second.id, `${s.id}#q2`)
-  assert.equal(second.question_index, 1)
+  assert.equal(second.question_index, 45)
+})
+
+// An alias is a second wording of the right answer, and the scorer has to
+// read it as one: a learner who wrote it down differently has still answered
+// the question.
+test('an alias is read as the right answer', () => {
+  const s = f1Scenario()
+  const aliased = scoreAttempt({ qid: `${s.id}#q1`, question_index: 36, rep: 0, arm: 'current', env: 'fake', answer: '甲项' }, s)
+  assert.equal(aliased.verdict, 'pass', JSON.stringify(aliased))
+  const wrong = scoreAttempt({ qid: `${s.id}#q1`, question_index: 36, rep: 0, arm: 'current', env: 'fake', answer: '乙' }, s)
+  assert.equal(wrong.verdict, 'fail', JSON.stringify(wrong))
+})
+
+// A record names its question by the round the question was asked at. A
+// record that names another round is a record of another attempt, and it is
+// not scored against the key it does not belong to.
+test('a record that names another round is not scored against that key', () => {
+  const s = f1Scenario()
+  const wrong = scoreAttempt({ qid: `${s.id}#q1`, question_index: 45, rep: 0, arm: 'current', env: 'fake', answer: '甲' }, s)
+  assert.equal(wrong.verdict, 'error')
+  assert.equal(wrong.reason, 'identity_mismatch')
 })
 
 // An answer the scorer cannot decide waits for a judge. A category the judge
@@ -250,7 +274,7 @@ test('an undecided answer of every second-round category reaches the judge', () 
   for (const [category, build, answer] of cases) {
     const s = build()
     const qid = category === 'F1' ? `${s.id}#q1` : s.id
-    const record = { qid, question_index: category === 'F1' ? 0 : undefined, rep: 0, arm: 'current', env: 'fake', answer }
+    const record = { qid, question_index: category === 'F1' ? 36 : undefined, rep: 0, arm: 'current', env: 'fake', answer }
     const outcome = scoreAttempt(record, s)
     assert.equal(outcome.verdict, 'needs_judge', `${category}: ${JSON.stringify(outcome)}`)
     const rows = judgeInput(new Map([[s.id, s]]), [record])

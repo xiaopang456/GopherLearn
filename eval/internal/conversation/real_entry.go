@@ -371,7 +371,7 @@ func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, env
 		return result, fmt.Errorf("question required")
 	}
 	for _, question := range questions {
-		if strings.TrimSpace(question) == "" {
+		if strings.TrimSpace(question.Text) == "" {
 			return result, fmt.Errorf("question required")
 		}
 	}

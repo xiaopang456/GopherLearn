@@ -41,18 +41,31 @@ func TestAttemptQIDNamesEveryQuestion(t *testing.T) {
 // TestReadQuestionsReadsTheOrder is the reading of the questions of an
 // attempt: the file holds them in the order they are asked, and the order is
 // the order of the file.
+//
+// A question may say which round of the conversation it was asked at. The
+// turn is what the scorer reads the attempt by, so it has to survive the
+// reading.
 func TestReadQuestionsReadsTheOrder(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "questions.json")
-	if err := os.WriteFile(file, []byte(`["第一问","第二问","第三问"]`), 0600); err != nil {
+	if err := os.WriteFile(file, []byte(`["第一问",{"turn":45,"question":"那第二项呢？"},{"turn":47,"question":"它的验收标准是什么？"}]`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	questions, err := readQuestions(file)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(questions) != 3 || questions[0] != "第一问" || questions[2] != "第三问" {
+	if len(questions) != 3 {
 		t.Fatalf("questions=%v", questions)
+	}
+	if questions[0].Text != "第一问" || questions[0].Turn != 0 {
+		t.Fatalf("the first question is %+v", questions[0])
+	}
+	if questions[1].Text != "那第二项呢？" || questions[1].Turn != 45 {
+		t.Fatalf("the second question is %+v", questions[1])
+	}
+	if questions[2].Turn != 47 {
+		t.Fatalf("the third question is %+v", questions[2])
 	}
 }
 

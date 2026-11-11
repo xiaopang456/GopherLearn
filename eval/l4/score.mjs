@@ -302,9 +302,14 @@ export function scoreAttempt(record, scenario, condition = 'main') {
   if (!['fake', 'real'].includes(record.env)) return result('error', 'unknown_environment')
   if (record.env === 'real' && record.backgroundAudit?.valid !== true) return result('error', 'background_unverified')
   const key = attempt.answer ?? scenario.answer
+  // The question index of the outcome is the round of the conversation the
+  // question was asked at, when the scenario names that round. The turn says
+  // where in the conversation the answer has to come from; the position in the
+  // list says only where in the file the question was written down.
+  const questionIndex = attempt?.turn ?? attempt?.index
   if (key?.mode === 'needs_judge') {
     const out = result('needs_judge', 'semantic_judgment_required')
-    if (multi) out.question_index = attempt.index
+    if (multi) out.question_index = questionIndex
     return out
   }
   // The fact reading wants the scenario shape, because it reads the
@@ -313,6 +318,6 @@ export function scoreAttempt(record, scenario, condition = 'main') {
   // for a scenario with more than one question.
   const judged = judgeFact(record.answer, multi ? { ...scenario, answer: key } : scenario)
   const out = result(judged.verdict, judged.reason)
-  if (multi) out.question_index = attempt.index
+  if (multi) out.question_index = questionIndex
   return out
 }

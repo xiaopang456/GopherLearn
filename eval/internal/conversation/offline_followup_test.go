@@ -35,10 +35,10 @@ func TestOfflineProductAsksFollowUpsInOneSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	questions := []string{
-		"第一问：这份清单的第一项练什么？",
-		"第二问：那第三项呢？",
-		"第三问：它的验收标准是什么？",
+	questions := []Question{
+		{Text: "第一问：这份清单的第一项练什么？", Turn: 30},
+		{Text: "第二问：那第三项呢？", Turn: 32},
+		{Text: "第三问：它的验收标准是什么？", Turn: 34},
 	}
 	result, err := RunOfflineProduct(ctx, repository, warmup.Snapshot, AttemptInput{Questions: questions})
 	if err != nil {
@@ -48,7 +48,7 @@ func TestOfflineProductAsksFollowUpsInOneSession(t *testing.T) {
 		t.Fatalf("questions=%d", len(result.Questions))
 	}
 	for index, asked := range result.Questions {
-		if asked.Question != questions[index] {
+		if asked.Question != questions[index].Text {
 			t.Fatalf("question %d is %q", index, asked.Question)
 		}
 		if asked.Answer == "" {
@@ -57,16 +57,21 @@ func TestOfflineProductAsksFollowUpsInOneSession(t *testing.T) {
 		if asked.Index != index {
 			t.Fatalf("question %d has the index %d", index, asked.Index)
 		}
+		// The turn of the question is the round it was asked at, and the
+		// scorer reads the attempt by it, so it has to reach the result.
+		if asked.Turn != questions[index].Turn {
+			t.Fatalf("question %d has the turn %d, want %d", index, asked.Turn, questions[index].Turn)
+		}
 	}
 	// The last question was answered in the context of the earlier ones.
 	context := ""
 	for _, message := range result.Questions[len(result.Questions)-1].ContextMessages {
 		context += message.Content + "\n"
 	}
-	if !strings.Contains(context, questions[0]) {
+	if !strings.Contains(context, questions[0].Text) {
 		t.Fatalf("the first question is not in the last question's context")
 	}
-	if !strings.Contains(context, questions[1]) {
+	if !strings.Contains(context, questions[1].Text) {
 		t.Fatalf("the second question is not in the last question's context")
 	}
 	if !strings.Contains(context, "synthetic offline answer") {
@@ -111,7 +116,7 @@ func TestOfflineProductSeedsTheProfileMemoryBeforeTheQuestion(t *testing.T) {
 	}
 	result, err := RunOfflineProduct(ctx, repository, warmup.Snapshot, AttemptInput{
 		Memories:  memories,
-		Questions: []string{"我现在用哪个编辑器？"},
+		Questions: []Question{{Text: "我现在用哪个编辑器？"}},
 	})
 	if err != nil {
 		t.Fatalf("run: %v; result=%+v", err, result)

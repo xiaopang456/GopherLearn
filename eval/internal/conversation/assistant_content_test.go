@@ -154,7 +154,7 @@ func TestOfflineProductRunsInBothSummaryModes(t *testing.T) {
 				}
 			}
 			result, err := RunOfflineProduct(ctx, repository, warmup.Snapshot, AttemptInput{
-				Questions: []string{"请回顾当前会话里的练习安排。"},
+				Questions: []Question{{Text: "请回顾当前会话里的练习安排。"}},
 			})
 			if err != nil {
 				t.Fatalf("run: %v; response=%s", err, result.Response)

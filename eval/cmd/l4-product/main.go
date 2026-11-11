@@ -148,7 +148,7 @@ func run(args []string, out io.Writer) error {
 			if *question == "" {
 				return fmt.Errorf("question required")
 			}
-			attempt.Questions = []string{*question}
+			attempt.Questions = []conversation.Question{{Text: *question}}
 		}
 		snapshot, err = conversation.ReadSnapshot(*input)
 		if err != nil {
@@ -262,7 +262,16 @@ func run(args []string, out io.Writer) error {
 				return decodeErr
 			}
 			record["qid"], record["arm"], record["rep"], record["condition"] = attemptQID(*qid, index, len(result.Questions)), *arm, *rep, *condition
-			record["question"], record["answer"], record["question_index"] = asked.Question, asked.Answer, index
+			record["question"], record["answer"] = asked.Question, asked.Answer
+			// The question index of a record is the round of the conversation the
+			// question was asked at, when the attempt says which round that is.
+			// The turn says where in the conversation the answer has to come
+			// from; the position in the list says only where in the file the
+			// question was written down.
+			record["question_index"] = index
+			if asked.Turn > 0 {
+				record["question_index"] = asked.Turn
+			}
 			if len(result.Questions) > 1 {
 				record["response"], record["run_id"], record["steps"] = asked.Response, asked.RunID, asked.Steps
 			}
@@ -380,29 +389,56 @@ func attemptQID(qid string, index, total int) string {
 // readQuestions reads the questions of one attempt, in the order they are
 // asked.
 //
-// The file is a JSON array of strings and it is read with a limit and
-// without unknown fields, because a hand-written file can carry a field the
-// command does not know.
-func readQuestions(path string) ([]string, error) {
+// The file is a JSON array, and each entry is either the text of a question
+// or an object that says which round of the conversation the question was
+// asked at:
+//
+//	["第一问", {"turn": 45, "question": "那第二项呢？"}]
+//
+// The turn is what the scorer reads the attempt by, and a question that names
+// no turn is asked at the end of the conversation.
+//
+// The file is read with a limit and without unknown fields, because a
+// hand-written file can carry a field the command does not know.
+func readQuestions(path string) ([]conversation.Question, error) {
 	raw, err := readLimitedFile(path)
 	if err != nil {
 		return nil, err
 	}
-	var questions []string
+	var entries []json.RawMessage
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&questions); err != nil {
+	if err := decoder.Decode(&entries); err != nil {
 		return nil, err
 	}
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return nil, fmt.Errorf("questions file contains trailing data")
 	}
-	if len(questions) < 1 || len(questions) > 3 {
+	if len(entries) < 1 || len(entries) > 3 {
 		return nil, fmt.Errorf("an attempt asks one to three questions")
 	}
+	questions := make([]conversation.Question, 0, len(entries))
+	for _, entry := range entries {
+		text := ""
+		if err := json.Unmarshal(entry, &text); err == nil {
+			questions = append(questions, conversation.Question{Text: text})
+			continue
+		}
+		var asked struct {
+			Turn     int    `json:"turn"`
+			Question string `json:"question"`
+		}
+		if err := json.Unmarshal(entry, &asked); err != nil {
+			return nil, fmt.Errorf("a question is neither a string nor an object")
+		}
+		if asked.Turn < 0 {
+			return nil, fmt.Errorf("a question names a turn that is not a round of the conversation")
+		}
+		questions = append(questions, conversation.Question{Text: asked.Question, Turn: asked.Turn})
+	}
 	for _, question := range questions {
-		if strings.TrimSpace(question) == "" {
+		if strings.TrimSpace(question.Text) == "" {
 			return nil, fmt.Errorf("a question cannot be empty")
 		}
 	}

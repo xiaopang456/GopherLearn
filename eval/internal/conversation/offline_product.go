@@ -73,7 +73,10 @@ type ProductResult struct {
 // a scenario with several questions has the evidence of each question next
 // to its own answer and not in one pile.
 type QuestionResult struct {
-	Index                int               `json:"index"`
+	Index int `json:"index"`
+	// Turn is the round of the conversation the question was asked at, when
+	// the attempt says so. The scorer reads the attempt by it.
+	Turn                 int               `json:"turn,omitempty"`
 	Question             string            `json:"question"`
 	Answer               string            `json:"answer"`
 	RunID                string            `json:"run_id,omitempty"`
@@ -99,7 +102,17 @@ type QuestionResult struct {
 // that the later question is answered in the context of the earlier one.
 type AttemptInput struct {
 	Memories  []SeedMemory
-	Questions []string
+	Questions []Question
+}
+
+// Question is one question of an attempt.
+//
+// The Turn is the round of the conversation the question was asked at. It is
+// zero when the attempt does not say: a question that names no turn is asked
+// at the end of the conversation, and the scorer reads it by its position.
+type Question struct {
+	Text string
+	Turn int
 }
 
 // ProductSummaryConfig mirrors the production wiring, including its context
