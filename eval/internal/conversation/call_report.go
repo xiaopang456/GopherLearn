@@ -55,6 +55,39 @@ func BindRun(calls []ModelCall, sessionID, runID string) []ModelCall {
 	return result
 }
 
+// BindRuns stamps the identity of the run every call belongs to.
+//
+// An attempt that asks one question has one run, and every call belongs to
+// it. An attempt that asks several questions has one run per question, and a
+// call belongs to the question whose window it was sent in. A call outside
+// every window - the background work that starts after the last answer came
+// back - is attributed to the last run, which is the only one it can belong
+// to.
+func BindRuns(calls []ModelCall, sessionID string, questions []QuestionResult) []ModelCall {
+	result := append([]ModelCall(nil), calls...)
+	for i := range result {
+		result[i].SessionID = sessionID
+		runID := ""
+		for _, question := range questions {
+			if question.RunID == "" || question.StartedAt.IsZero() {
+				continue
+			}
+			if result[i].Started.Before(question.StartedAt) {
+				continue
+			}
+			if !question.FinishedAt.IsZero() && result[i].Started.After(question.FinishedAt) {
+				continue
+			}
+			runID = question.RunID
+		}
+		if runID == "" && len(questions) > 0 {
+			runID = questions[len(questions)-1].RunID
+		}
+		result[i].RunID = runID
+	}
+	return result
+}
+
 // CallLedger turns the model ledger into the call ledger the attribution
 // reads: one entry per call, carrying the identity of the run it belongs to
 // and the phase it was sent in.

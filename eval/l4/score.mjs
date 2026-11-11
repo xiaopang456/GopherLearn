@@ -1,4 +1,4 @@
-import { checkScenario } from './scenarios.mjs'
+import { checkScenario, isMultiQuestion, resolveAttempt } from './scenarios.mjs'
 import { MENTION_EXPRESSION, canonicalExpression, chineseNumber, compoundMention, normalizeValue } from './normalize.mjs'
 
 // Normalize presentation differences centrally, keeping answer keys semantic.
@@ -281,16 +281,38 @@ export function judgeFact(answer, scenario) {
   return { verdict: 'needs_judge', reason: 'no_fact_value' }
 }
 
+// scoreAttempt scores one attempt.
+//
+// A scenario of the first round has one question, so the record names the
+// scenario and the scenario's own answer key decides the attempt. A scenario
+// of the second round's F1 shape has several questions, each with its own
+// key, so the record names the question it answers and the attempt is
+// scored against that question's key. The attempt id carries the question
+// number, so the three questions of one scenario are three attempts and not
+// one attempt counted thrice.
 export function scoreAttempt(record, scenario, condition = 'main') {
-  const base = { schema: 'l4.outcome.v1', id: scenario?.id, condition, rep: record?.rep, arm: record?.arm, env: record?.env }
+  const multi = isMultiQuestion(scenario)
+  const attempt = resolveAttempt(scenario, record)
+  const base = { schema: 'l4.outcome.v1', id: multi ? (attempt?.attempt ?? record?.qid ?? scenario?.id) : scenario?.id, condition, rep: record?.rep, arm: record?.arm, env: record?.env }
   const result = (verdict, reason) => ({ ...base, verdict, reason })
   if (checkScenario(scenario).length) return result('error', 'invalid_scenario')
-  if (record?.qid !== scenario.id || typeof record?.arm !== 'string' || !/^[A-Za-z0-9._-]+$/.test(record.arm) || !Number.isInteger(record?.rep) || record.rep < 0 || record.rep > 2) return result('error', 'identity_mismatch')
+  if (!attempt || typeof record?.arm !== 'string' || !/^[A-Za-z0-9._-]+$/.test(record.arm) || !Number.isInteger(record?.rep) || record.rep < 0 || record.rep > 2) return result('error', 'identity_mismatch')
   if (!(scenario.category === 'irrelevant' ? ['control', 'distractor'].includes(condition) : condition === 'main')) return result('error', 'condition_mismatch')
   if (record.error || typeof record.answer !== 'string' || !record.answer.trim()) return result('error', 'answer_unavailable')
   if (!['fake', 'real'].includes(record.env)) return result('error', 'unknown_environment')
   if (record.env === 'real' && record.backgroundAudit?.valid !== true) return result('error', 'background_unverified')
-  if (scenario.answer.mode === 'needs_judge') return result('needs_judge', 'semantic_judgment_required')
-  const judged = judgeFact(record.answer, scenario)
-  return result(judged.verdict, judged.reason)
+  const key = attempt.answer ?? scenario.answer
+  if (key?.mode === 'needs_judge') {
+    const out = result('needs_judge', 'semantic_judgment_required')
+    if (multi) out.question_index = attempt.index
+    return out
+  }
+  // The fact reading wants the scenario shape, because it reads the
+  // category: a scenario that asks about history is judged differently from
+  // one that asks about the present. Only the answer key changes, and only
+  // for a scenario with more than one question.
+  const judged = judgeFact(record.answer, multi ? { ...scenario, answer: key } : scenario)
+  const out = result(judged.verdict, judged.reason)
+  if (multi) out.question_index = attempt.index
+  return out
 }

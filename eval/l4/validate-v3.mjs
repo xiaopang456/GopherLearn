@@ -68,9 +68,17 @@ function numbers(text) {
 }
 
 // answerValues are the quantities and names the key already declares.
+//
+// A scenario of the second round's F1 shape has one key per question, so its
+// values are the union over the questions. A scenario that carries several
+// keys does not carry one value twice by accident: the follow-up questions of
+// an F1 scenario use the same list on purpose.
 function answerValues(scenario) {
  const answer = scenario.answer ?? {}
  const lists = [answer.accepted ?? [], answer.forbidden ?? [], answer.aliases ?? [], scenario.superseded_value ?? '']
+ for (const question of scenario.questions ?? []) {
+  lists.push(question.answer?.accepted ?? [], question.answer?.forbidden ?? [], question.answer?.aliases ?? [])
+ }
  const out = []
  for (const list of lists) for (const value of [].concat(list)) {
   const text = String(value ?? '').trim()
@@ -158,6 +166,50 @@ export function validateDataset(scenarios, priorTexts = []) {
     if (!original.includes(name)) add(s, `plan name absent from original turn ${s.original_turn}`)
    }
   }
+  // The second round names its key turns in an object instead of in one field,
+  // and the turn that carries the answer depends on the category: the
+  // assistant said it, or the user said it. The rule of the first round -
+  // "the declared key turn has to actually carry the answer" - is the same
+  // rule, read on the turn that carries it.
+  if (s.schema_version === 'l4.scenario.draft.v4') {
+   const keyTurns = Object.values(s.key_turns ?? {})
+   // The name has to be at the primary key turn: the one that names the
+   // thing the question is about. The other key turns carry evidence about
+   // it without having to name it.
+   const primaryTurn = keyTurns[0]
+   // Which key turn carries the accepted value, and on which side of it.
+   //
+   //   A1  the assistant's artifact turn, in the assistant's message
+   //   A2  the change turn, in the user's message
+   //   A4  the change turn, in the user's message
+   //   P1  the session turn, in the user's message
+   //
+   // The other key turns of a scenario carry the old value, or the
+   // acceptance, and are checked by the scenario rules.
+   const CARRIER = {
+    A1: ['artifact_turn', 'assistant'],
+    A2: ['change_turn', 'user'],
+    A4: ['change_turn', 'user'],
+    P1: ['session_turn', 'user'],
+   }
+   const [carrierRole, carrierSide] = CARRIER[s.category] ?? []
+   for (const keyTurn of keyTurns) {
+    if (keyTurn < 1 || keyTurn > (s.turns?.length ?? 0)) continue
+    const text = at(keyTurn)
+    if (s.answer?.mode === 'fact' && carrierRole) {
+     const carrierTurn = s.key_turns[carrierRole]
+     if (keyTurn === carrierTurn) {
+      const turn = (s.turns ?? [])[keyTurn - 1]
+      const present = carrierSide === 'assistant' ? fold(turn.assistant) : fold(turn.user)
+      const accepted = s.answer?.accepted ?? []
+      if (!accepted.some(value => present.includes(fold(value)))) {
+       add(s, `accepted value absent from the ${carrierSide} message of key turn ${keyTurn}`)
+      }
+     }
+    }
+    if (keyTurn === primaryTurn && !text.includes(name)) add(s, `name absent from key turn ${keyTurn}`)
+   }
+  }
   const seen = new Set()
   // A topic map is what lets a reader check the transitions in order, so it has
   // to describe the history it is attached to instead of drifting behind it.
@@ -232,6 +284,12 @@ export function validateDataset(scenarios, priorTexts = []) {
   }
   const question = fold(s.question)
   for (const value of values) if (value.folded && question.includes(value.folded)) add(s, 'question contains an answer')
+  // A scenario with several questions asks each of them, and each of them
+  // must be answerable from the history rather than from its own wording.
+  for (const item of s.questions ?? []) {
+   const asked = fold(item.question)
+   for (const value of values) if (value.folded && asked.includes(value.folded)) add(s, `question ${item.question} contains an answer`)
+  }
   if (middle && !question.includes(name)) add(s, 'question missing plan name')
   if (middle && /\d/.test(compact(s.question))) add(s, 'question carries a number, which hints at the answer')
   for (const required of s.answer?.required ?? []) {

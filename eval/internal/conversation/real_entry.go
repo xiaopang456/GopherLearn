@@ -236,7 +236,7 @@ func realSettings(repository, storage string, env RealEnvironment) (*entry.Setti
 // summarizer. The summary model is the provider model, reached through the
 // counting proxy, so the summaries a run restores are the summaries the
 // product would have produced.
-func PrepareRealProductReport(ctx context.Context, repository string, turns []Turn, env RealEnvironment) (report WarmupReport, resultErr error) {
+func PrepareRealProductReport(ctx context.Context, repository string, turns []Turn, env RealEnvironment, input AttemptInput) (report WarmupReport, resultErr error) {
 	if err := env.Validate(); err != nil {
 		return report, err
 	}
@@ -299,6 +299,14 @@ func PrepareRealProductReport(ctx context.Context, repository string, turns []Tu
 	if err = s.SeedProduct(ctx, model.User{ID: env.UserID, Username: env.UserName, Password: hash}, nil, env.StorageDir); err != nil {
 		return report, err
 	}
+	// The seeded profile memories are written before the conversation is
+	// prepared, so that the product sees them while the conversation is
+	// built. They are written again in the database the answer is asked in,
+	// because that database is a fresh one.
+	report.SeededMemories, _, err = seedAttemptMemories(ctx, s, env.UserID, input.Memories)
+	if err != nil {
+		return report, err
+	}
 	if err = (guardedStore{s}).with(ctx, func(tx *gorm.DB) error {
 		return tx.Create(&model.Session{ID: env.SessionID, UserID: env.UserID, UserName: env.UserName, Mode: model.SessionModeAgent, Title: "Evaluation conversation"}).Error
 	}); err != nil {
@@ -327,11 +335,11 @@ func PrepareRealProductReport(ctx context.Context, repository string, turns []Tu
 
 // RunRealProduct restores one prepared conversation into a fresh evaluation
 // database and asks the unchanged standard product entry.
-func RunRealProduct(ctx context.Context, repository string, snapshot Snapshot, question string, env RealEnvironment, seed *KnowledgeSeed) (ProductResult, error) {
-	return runRealEntry(ctx, repository, snapshot, question, env, seed)
+func RunRealProduct(ctx context.Context, repository string, snapshot Snapshot, env RealEnvironment, seed *KnowledgeSeed, input AttemptInput) (ProductResult, error) {
+	return runRealEntry(ctx, repository, snapshot, env, seed, input)
 }
 
-func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, question string, env RealEnvironment, seed *KnowledgeSeed) (result ProductResult, resultErr error) {
+func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, env RealEnvironment, seed *KnowledgeSeed, input AttemptInput) (result ProductResult, resultErr error) {
 	result.Scope = ProductScope
 	result.Environment = "real"
 	result.Entry = "gopherlearn-integrated:hybrid.Run"
@@ -358,8 +366,14 @@ func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, que
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
-	if strings.TrimSpace(question) == "" {
+	questions := input.Questions
+	if len(questions) == 0 {
 		return result, fmt.Errorf("question required")
+	}
+	for _, question := range questions {
+		if strings.TrimSpace(question) == "" {
+			return result, fmt.Errorf("question required")
+		}
 	}
 	if err := snapshot.Validate(); err != nil {
 		return result, err
@@ -397,6 +411,13 @@ func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, que
 		return result, err
 	}
 	if err = s.SeedProduct(ctx, model.User{ID: env.UserID, Username: env.UserName, Password: hash}, seed.documents(), env.StorageDir); err != nil {
+		return result, err
+	}
+	// The seeded profile memories are written into the database the answer is
+	// asked in, because that database is a fresh one and the restored
+	// conversation does not carry the learner's profile with it.
+	result.SeededMemories, result.SeededMemoryRows, err = seedAttemptMemories(ctx, s, env.UserID, input.Memories)
+	if err != nil {
 		return result, err
 	}
 	restoreStart := time.Now()
@@ -482,38 +503,15 @@ func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, que
 	if err != nil {
 		return result, err
 	}
-	body, _ := json.Marshal(map[string]any{"sessionId": snapshot.Session.ID, "requestId": "evaluation-final-question", "question": question, "knowledgePolicy": "knowledge_preferred", "enableThinking": true})
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/v1/AI/agent/run", bytes.NewReader(body))
-	if err != nil {
-		return result, err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer "+token)
-	questionStart := time.Now()
-	response, requestErr := client.Do(request)
-	if requestErr == nil {
-		result.Response, requestErr = io.ReadAll(io.LimitReader(response.Body, 4<<20+1))
-		response.Body.Close()
-		if len(result.Response) > 4<<20 {
-			requestErr = fmt.Errorf("product response exceeds limit")
-			result.Response = nil
-		}
-		if requestErr == nil && response.StatusCode != 200 {
-			requestErr = fmt.Errorf("product HTTP status %d", response.StatusCode)
-		}
-		var envelope struct {
-			Answer string `json:"answer"`
-		}
-		if requestErr == nil {
-			requestErr = json.Unmarshal(result.Response, &envelope)
-			result.Answer = envelope.Answer
-			if result.Answer == "" {
-				requestErr = fmt.Errorf("product response has no answer")
-			}
-		}
+	asked, requestErr := askProductQuestions(ctx, client, base, token, snapshot.Session.ID, questions, "evaluation-final-question")
+	result.Answer = asked[0].Answer
+	result.Response = asked[0].Response
+	result.Questions = asked
+	if err := s.readAgentSteps(ctx, env.UserID, asked); err != nil {
+		resultErr = errors.Join(resultErr, err)
 	}
 	result.Audit.Answered = time.Now().UTC()
-	result.QuestionMilliseconds = time.Since(questionStart).Milliseconds()
+	result.QuestionMilliseconds = asked[len(asked)-1].FinishedAt.Sub(asked[0].StartedAt).Milliseconds()
 	collect, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	barrierErr := journal.AnswerBarrier(collect)
@@ -535,7 +533,7 @@ func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, que
 		after.Error = indexErr.Error()
 	}
 	result.MemoryIndexEvidence.AfterAnswer = after
-	result.Calls = AttributeCalls(ledger.Calls(), result.Audit.Answered)
+	result.Calls = BindRuns(AttributeCalls(ledger.Calls(), result.Audit.Answered), snapshot.Session.ID, asked)
 	var usageErr error
 	result.UsageByRole, usageErr = SummarizeCalls(result.Calls)
 	for _, c := range result.Calls {

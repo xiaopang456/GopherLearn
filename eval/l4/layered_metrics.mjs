@@ -10,6 +10,8 @@
 // layered run: they are in the product records, and they are read from there
 // when those records are given.
 
+import { scenarioIdOf } from './scenarios.mjs'
+
 const COUNTER = /^([a-z_]+)(?:\{([^}]*)\})?$/
 
 // counterParts splits a counter name into its name and its labels.
@@ -206,7 +208,7 @@ export function productMetrics(records, scenarios = new Map()) {
     const verdict = verdictOf(row)
     if (!verdict) continue
     scored.push({ row, correct: verdict === 'pass' })
-    const category = row?.category ?? scenarios.get(row?.id)?.category ?? 'unknown'
+    const category = row?.category ?? scenarios.get(scenarioIdOf(row?.id))?.category ?? 'unknown'
     byCategory[category] ??= { attempts: 0, correct: 0 }
     byCategory[category].attempts += 1
     if (verdict === 'pass') byCategory[category].correct += 1

@@ -54,6 +54,52 @@ type ProductResult struct {
 	RestoreMilliseconds  int64 `json:"restore_ms"`
 	ShutdownComplete     bool  `json:"shutdown_complete"`
 	QuestionMilliseconds int64 `json:"question_ms"`
+	// Questions holds one entry per question the attempt asked, in the order
+	// they were asked. It is written only when the attempt asked more than
+	// one: the single-question attempt keeps its own fields, and a reader of
+	// an old attempt finds the same shape it always did.
+	Questions []QuestionResult `json:"questions,omitempty"`
+	// SeededMemories says what the seeded profile memories became, and
+	// SeededMemoryRows is what was read back from the database afterwards.
+	// The write is checked by the read: a seed that cannot be read back is
+	// not a seed.
+	SeededMemories   SeedMemoryReport       `json:"seeded_memories"`
+	SeededMemoryRows []model.LongTermMemory `json:"seeded_memory_rows,omitempty"`
+}
+
+// QuestionResult is one question of an attempt and what came back.
+//
+// The answer, the raw response and the steps are kept per question, so that
+// a scenario with several questions has the evidence of each question next
+// to its own answer and not in one pile.
+type QuestionResult struct {
+	Index                int               `json:"index"`
+	Question             string            `json:"question"`
+	Answer               string            `json:"answer"`
+	RunID                string            `json:"run_id,omitempty"`
+	Response             json.RawMessage   `json:"response,omitempty"`
+	Steps                []model.AgentStep `json:"steps,omitempty"`
+	ContextMessages      []*schema.Message `json:"context_messages,omitempty"`
+	StartedAt            time.Time         `json:"started_at"`
+	FinishedAt           time.Time         `json:"finished_at"`
+	QuestionMilliseconds int64             `json:"question_ms"`
+	Error                string            `json:"error,omitempty"`
+}
+
+// AttemptInput is what one attempt adds to the standard wiring.
+//
+// The memories are the profile memories the learner confirmed before this
+// attempt. They are written into the evaluation database before the
+// conversation is prepared and again before the question is asked, because
+// the answer is asked in a fresh database.
+//
+// The questions are asked in order, in the same session. A scenario with one
+// question has one entry; a scenario that asks a follow-up has one entry per
+// question, and the earlier question and its answer stay in the session, so
+// that the later question is answered in the context of the earlier one.
+type AttemptInput struct {
+	Memories  []SeedMemory
+	Questions []string
 }
 
 // ProductSummaryConfig mirrors the production wiring, including its context
@@ -127,14 +173,18 @@ type WarmupReport struct {
 	// summary, and SummaryDroppedItems is how many items it cut.
 	SummaryTruncations  int `json:"summary_truncations"`
 	SummaryDroppedItems int `json:"summary_dropped_items"`
+	// SeededMemories says what the seeded profile memories became. The
+	// memories are written before the conversation is prepared, so that the
+	// product sees them while the conversation is built.
+	SeededMemories SeedMemoryReport `json:"seeded_memories"`
 }
 
-func PrepareOfflineProduct(ctx context.Context, repository string, turns []Turn) (Snapshot, []ModelCall, error) {
-	report, err := PrepareOfflineProductReport(ctx, repository, turns)
+func PrepareOfflineProduct(ctx context.Context, repository string, turns []Turn, input AttemptInput) (Snapshot, []ModelCall, error) {
+	report, err := PrepareOfflineProductReport(ctx, repository, turns, input)
 	return report.Snapshot, report.Calls, err
 }
-func PrepareOfflineProductReport(ctx context.Context, repository string, turns []Turn) (report WarmupReport, resultErr error) {
-	report.Snapshot, report.Calls, resultErr = prepareOfflineProduct(ctx, repository, turns, func(prepared []PreparedTurn) {
+func PrepareOfflineProductReport(ctx context.Context, repository string, turns []Turn, input AttemptInput) (report WarmupReport, resultErr error) {
+	report.Snapshot, report.Calls, report.SeededMemories, resultErr = prepareOfflineProduct(ctx, repository, turns, input, func(prepared []PreparedTurn) {
 		report.Turns = prepared
 		SummarizeTurns(prepared, &report)
 	})
@@ -142,34 +192,41 @@ func PrepareOfflineProductReport(ctx context.Context, repository string, turns [
 	report.UsageByRole, usageErr = SummarizeCalls(report.Calls)
 	return report, errors.Join(resultErr, usageErr)
 }
-func prepareOfflineProduct(ctx context.Context, repository string, turns []Turn, observe func([]PreparedTurn)) (snapshot Snapshot, calls []ModelCall, resultErr error) {
+func prepareOfflineProduct(ctx context.Context, repository string, turns []Turn, input AttemptInput, observe func([]PreparedTurn)) (snapshot Snapshot, calls []ModelCall, memories SeedMemoryReport, resultErr error) {
 	if err := ctx.Err(); err != nil {
-		return snapshot, nil, err
+		return snapshot, nil, memories, err
 	}
 	storage, err := os.MkdirTemp("", "gl-offline-storage-")
 	if err != nil {
-		return snapshot, nil, err
+		return snapshot, nil, memories, err
 	}
 	defer os.RemoveAll(storage)
 	settings, err := offlineSettings(repository, storage)
 	if err != nil {
-		return snapshot, nil, err
+		return snapshot, nil, memories, err
 	}
 	s, err := NewSandbox(ctx)
 	if err != nil {
-		return snapshot, nil, err
+		return snapshot, nil, memories, err
 	}
 	defer func() { resultErr = errors.Join(resultErr, closeSandbox(s)) }()
 	if err = s.InitProductSchema(ctx); err != nil {
-		return snapshot, nil, err
+		return snapshot, nil, memories, err
 	}
 	if err = s.SeedProduct(ctx, model.User{ID: 7, Username: "synthetic-learner"}, nil, storage); err != nil {
-		return snapshot, nil, err
+		return snapshot, nil, memories, err
+	}
+	// The seeded profile memories are written before the conversation is
+	// prepared, so that the product sees them while the conversation is
+	// built and not only when the question is asked.
+	memories, _, err = seedAttemptMemories(ctx, s, 7, input.Memories)
+	if err != nil {
+		return snapshot, nil, memories, err
 	}
 	if err = (guardedStore{s}).with(ctx, func(tx *gorm.DB) error {
 		return tx.Create(&model.Session{ID: "synthetic-evaluation", UserID: 7, UserName: "synthetic-learner", Mode: model.SessionModeAgent, Title: "Synthetic evaluation"}).Error
 	}); err != nil {
-		return snapshot, nil, err
+		return snapshot, nil, memories, err
 	}
 	ledger := &ModelLedger{}
 	defer func() {
@@ -179,36 +236,40 @@ func prepareOfflineProduct(ctx context.Context, repository string, turns []Turn,
 	}()
 	roles, err := LoadRolePrompts(repository, memoryrecall.ReadMode(settings.Config.AgentConfig.MemoryReadMode))
 	if err != nil {
-		return snapshot, nil, err
+		return snapshot, nil, memories, err
 	}
 	chat, err := WrapModel(&offlineChat{}, ledger, roles)
 	if err != nil {
-		return snapshot, nil, err
+		return snapshot, nil, memories, err
 	}
 	policy := ProductSummaryConfig(settings.Config)
 	generator, err := agent.NewModelSummaryGenerator(chat, policy.MaxInputTokens, policy.MaxOutputTokens, policy.Budget)
 	if err != nil {
-		return snapshot, nil, err
+		return snapshot, nil, memories, err
 	}
 	prepared, err := s.Prepare(ctx, 7, "synthetic-evaluation", "synthetic-learner", turns, generator, policy)
 	observe(prepared)
 	if err != nil {
-		return snapshot, ledger.Calls(), err
+		return snapshot, ledger.Calls(), memories, err
 	}
 	snapshot, err = s.Capture(ctx, 7, "synthetic-evaluation")
-	return snapshot, ledger.Calls(), err
+	return snapshot, ledger.Calls(), memories, err
 }
 
 // RunOfflineProduct invokes the unchanged standard product entry. Its generated
 // configuration points exclusively at freshly owned databases and a loopback
 // fake model endpoint. There are no replacement product dependencies.
-func RunOfflineProduct(ctx context.Context, repository string, snapshot Snapshot, question string) (ProductResult, error) {
-	return runOfflineEntry(ctx, repository, snapshot, question)
+func RunOfflineProduct(ctx context.Context, repository string, snapshot Snapshot, input AttemptInput) (ProductResult, error) {
+	return runOfflineEntry(ctx, repository, snapshot, input)
 }
 
 type offlineChat struct {
-	mu     sync.Mutex
-	answer []*schema.Message
+	mu sync.Mutex
+	// answers holds the prompt of every answer the fake model gave, in the
+	// order it gave them. An attempt that asks several questions keeps one
+	// entry per question, so that the context of the later question can be
+	// read and compared with the earlier one.
+	answers [][]*schema.Message
 }
 
 func (m *offlineChat) WithTools([]*schema.ToolInfo) (modelcomponent.ToolCallingChatModel, error) {
@@ -223,7 +284,7 @@ func (m *offlineChat) Generate(ctx context.Context, input []*schema.Message, _ .
 	}
 	if len(input) > 0 && strings.HasPrefix(input[0].Content, "You are GopherAI") {
 		m.mu.Lock()
-		m.answer = append([]*schema.Message(nil), input...)
+		m.answers = append(m.answers, append([]*schema.Message(nil), input...))
 		m.mu.Unlock()
 		return schema.AssistantMessage("synthetic offline answer", nil), nil
 	}
@@ -240,5 +301,20 @@ func (m *offlineChat) Stream(ctx context.Context, input []*schema.Message, opts 
 func (m *offlineChat) answerInput() []*schema.Message {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return append([]*schema.Message(nil), m.answer...)
+	if len(m.answers) == 0 {
+		return nil
+	}
+	return append([]*schema.Message(nil), m.answers[len(m.answers)-1]...)
+}
+
+// answerInputs returns the prompt of every answer, in the order the answers
+// were given.
+func (m *offlineChat) answerInputs() [][]*schema.Message {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([][]*schema.Message, 0, len(m.answers))
+	for _, answer := range m.answers {
+		out = append(out, append([]*schema.Message(nil), answer...))
+	}
+	return out
 }

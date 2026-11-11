@@ -3,7 +3,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 import { assertOutsideWorktree } from '../l2l3/lib/pathguard.mjs'
-import { checkScenario } from './scenarios.mjs'
+import { attemptIds, checkScenario, resolveAttempt, scenarioIdOf } from './scenarios.mjs'
 import { scoreAttempt } from './score.mjs'
 import { pairedReport, singleReport } from './statistics.mjs'
 import { attemptKey, categoryReport, judgeCategories, judgeInput, truncationReport } from './truncation.mjs'
@@ -84,8 +84,12 @@ export function main(args) {
     const records = lines(opts.records), identities = new Set()
     const outcomes = records.map(r => {
       if (!r || typeof r !== 'object' || typeof r.arm !== 'string' || !/^[A-Za-z0-9._-]+$/.test(r.arm)) throw new Error('invalid record identity')
-      const s = byId.get(r.qid)
-      if (!s) throw new Error('record is not in selected dataset')
+      // A record of a scenario with several questions names one of its
+      // attempts, and the attempt carries the scenario's id with the
+      // question's number on it. The record has to name a question that
+      // exists, or it is not a record of this dataset.
+      const s = byId.get(scenarioIdOf(r.qid))
+      if (!s || !resolveAttempt(s, r)) throw new Error('record is not in selected dataset')
       const condition = r.condition ?? 'main', identity = JSON.stringify([r.arm, r.qid, condition, r.rep])
       if (identities.has(identity)) throw new Error('duplicate record'); identities.add(identity)
       return scoreAttempt(r, s, condition)
@@ -93,7 +97,15 @@ export function main(args) {
     const data = outcomes.map(r => JSON.stringify(r) + '\n').join('')
     fs.mkdirSync(opts.out)
     fs.writeFileSync(path.join(opts.out, 'outcomes.jsonl'), data, { flag: 'wx' })
-    fs.writeFileSync(path.join(opts.out, 'manifest.json'), JSON.stringify({ schema: 'l4.score.v1', split, dataset_sha256: hash(fs.readFileSync(opts.dataset)), records_sha256: hash(fs.readFileSync(opts.records)), outcomes_sha256: hash(data), count: outcomes.length, scenarios: scenarios.map(s => ({ id: s.id, conditions: s.category === 'irrelevant' ? ['control', 'distractor'] : ['main'] })), notice: 'Offline scoring; fake results are not quality evidence.' }, null, 2), { flag: 'wx' })
+    // The inventory holds one entry per attempt, not per scenario: a scenario
+    // with several questions is scored as several attempts, and the report
+    // groups the outcomes by the entries of this inventory.
+    const inventory = []
+    for (const s of scenarios) {
+      const conditions = s.category === 'irrelevant' ? ['control', 'distractor'] : ['main']
+      for (const attempt of attemptIds(s)) inventory.push({ id: attempt, conditions })
+    }
+    fs.writeFileSync(path.join(opts.out, 'manifest.json'), JSON.stringify({ schema: 'l4.score.v1', split, dataset_sha256: hash(fs.readFileSync(opts.dataset)), records_sha256: hash(fs.readFileSync(opts.records)), outcomes_sha256: hash(data), count: outcomes.length, scenarios: inventory, notice: 'Offline scoring; fake results are not quality evidence.' }, null, 2), { flag: 'wx' })
   } else {
     const manifest = JSON.parse(fs.readFileSync(path.join(opts.run, 'manifest.json'), 'utf8'))
     const data = fs.readFileSync(path.join(opts.run, 'outcomes.jsonl'))

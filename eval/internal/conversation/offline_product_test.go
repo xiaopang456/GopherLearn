@@ -23,7 +23,7 @@ func TestCompleteOfflineProductIntegration(t *testing.T) {
 	for i := range turns {
 		turns[i] = testTurn(i)
 	}
-	warmup, err := PrepareOfflineProductReport(ctx, repository, turns)
+	warmup, err := PrepareOfflineProductReport(ctx, repository, turns, AttemptInput{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestCompleteOfflineProductIntegration(t *testing.T) {
 	}
 	var provenance Provenance
 	for repeat := 0; repeat < 3; repeat++ {
-		result, err := RunOfflineProduct(ctx, repository, snapshot, "请回顾当前会话里的练习安排。")
+		result, err := RunOfflineProduct(ctx, repository, snapshot, AttemptInput{Questions: []string{"请回顾当前会话里的练习安排。"}})
 		writeOfflineEvidence(t, fmt.Sprintf("repeat-%d.json", repeat), result)
 		if err != nil {
 			t.Fatalf("repeat %d: %v; response=%s audit=%+v", repeat, err, result.Response, result.Audit)

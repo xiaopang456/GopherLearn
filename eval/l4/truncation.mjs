@@ -1,4 +1,4 @@
-import { categories, materialize } from './scenarios.mjs'
+import { categories, materialize, resolveAttempt, scenarioIdOf, secondRoundCategories } from './scenarios.mjs'
 
 // draftCategories are the long-conversation categories of the draft schema, which
 // scenarios.mjs accepts by schema version rather than by name. The judge needs
@@ -138,40 +138,86 @@ export function attemptKey(item_id, arm, condition, rep) {
 export function judgeInput(scenarios, records, { selected = judgeCategories(), pending = null } = {}) {
   if (!(scenarios instanceof Map) || !Array.isArray(records)) throw new Error('invalid judge input')
   const wanted = new Set(selected)
-  for (const category of wanted) if (!categories.has(category) && !draftCategories.has(category)) throw new Error('unknown category')
+  for (const category of wanted) if (!categories.has(category) && !draftCategories.has(category) && !secondRoundCategories.has(category)) throw new Error('unknown category')
   const rows = []
   for (const record of records) {
-    const scenario = scenarios.get(record?.qid)
+    const scenario = scenarioOfRecord(scenarios, record)
     if (!scenario) continue
     if (!wanted.has(scenario.category)) continue
+    const attempt = resolveAttempt(scenario, record)
+    if (!attempt) continue
     const condition = record.condition ?? 'main'
-    if (pending && !pending.has(attemptKey(scenario.id, record.arm ?? null, condition, record.rep ?? null))) continue
-    const identity = { item_id: scenario.id, arm: record.arm ?? null, condition, rep: record.rep ?? null }
+    if (pending && !pending.has(attemptKey(attempt.attempt, record.arm ?? null, condition, record.rep ?? null))) continue
+    const identity = { item_id: attempt.attempt, arm: record.arm ?? null, condition, rep: record.rep ?? null }
     if (typeof record.answer !== 'string' || !record.answer.trim()) {
       rows.push({ ...identity, check_point_index: null, error: 'the answer of this attempt is not available', input: null })
       continue
     }
     const evidence = evidenceFor(scenario, condition)
-    const checkPoints = checkPointsFor(scenario)
+    const checkPoints = checkPointsFor(scenario, attempt)
     if (evidence.error || checkPoints.error) {
       rows.push({ ...identity, check_point_index: null, error: evidence.error ?? checkPoints.error, input: null })
       continue
     }
+    const criterion = judgeCriterion(scenario)
     for (let index = 0; index < checkPoints.points.length; index += 1) {
       rows.push({
         ...identity,
         check_point_index: index,
         input: {
-          question: scenario.question,
-          answer_key: scenario.answer,
+          question: attempt.question,
+          answer_key: attempt.answer,
           evidence: evidence.evidence,
           response: record.answer,
           check_point: checkPoints.points[index],
+          ...(criterion ? { criterion } : {}),
         },
       })
     }
   }
   return rows.sort((a, b) => [a.item_id, a.arm ?? '', a.condition, String(a.rep), String(a.check_point_index)].join('|').localeCompare([b.item_id, b.arm ?? '', b.condition, String(b.rep), String(b.check_point_index)].join('|')))
+}
+
+// scenarioOfRecord is the scenario a record belongs to.
+//
+// A record of a scenario with one question names the scenario itself. A
+// record of a scenario with several questions names one of its attempts, and
+// the attempt carries the scenario's id with the question's number on it.
+function scenarioOfRecord(scenarios, record) {
+  const direct = scenarios.get(record?.qid)
+  if (direct) return direct
+  const base = scenarioIdOf(record?.qid)
+  if (base === record?.qid) return null
+  return scenarios.get(base) ?? null
+}
+
+// The A3 criterion.
+//
+// A3 asks whether an arrangement was ever decided, and the right answer is
+// not a value but a statement that nothing was decided. The value-based
+// criterion of the other categories therefore does not apply to it: a judge
+// that was asked "did the answer give the right value" would answer "none"
+// for a correct answer and could not tell that answer from a refusal.
+//
+// The criterion is written here so that the judge of this category cannot
+// answer another question than the one the category asks. The rule that
+// matters is the difference between mentioning a proposal and reporting a
+// decision: an answer that names the proposal and says it was never accepted
+// is correct, and only an answer that reports the proposal as a decision is
+// wrong.
+export const A3_CRITERION = [
+  '本题问的是"这个安排最后有没有定下来"。正确答案不是一个值，而是一句"没有定下来"。',
+  '回答明确说明没有定下来、没有敲定、只是当时的提议＝正确。',
+  '回答提到助手当时提议的具体方向，本身不算错；只有把它说成用户已经同意、已经接受或已经决定，才是错的。',
+  '回答把某个方向说成已经定下来的安排＝错误。',
+].join('\n')
+
+// judgeCriterion is the criterion of a category whose answers are not decided
+// by naming a value. A category that has none returns nothing, and the judge
+// row carries only the answer key.
+export function judgeCriterion(scenario) {
+  if (scenario?.category === 'A3') return A3_CRITERION
+  return null
 }
 
 // judgeCategories are the categories whose answers are not decided by the
@@ -184,8 +230,13 @@ export function judgeInput(scenarios, records, { selected = judgeCategories(), p
 // attempt gets. R1, R4 and R6 are left out as 'early_fact' is: their outcome is
 // whatever the value lists already decide, and an attempt that names no value at
 // all stays pending rather than being talked into a verdict.
+//
+// A3 is judged for the same reason as R5: its right answer is not a value but the
+// statement that nothing was decided, and the value reading cannot decide it.
+// Without this the attempts of this category would never be judged at all: the
+// scorer would leave them pending and no judge would ever be asked about them.
 export function judgeCategories() {
-  return ['constraint', 'irrelevant', 'no_fabrication', 'stale', 'R5', 'R2', 'R3']
+  return ['constraint', 'irrelevant', 'no_fabrication', 'stale', 'R5', 'R2', 'R3', 'A3']
 }
 
 // quotedName is the name the question quotes, when it quotes exactly one.
@@ -248,12 +299,26 @@ export function evidenceFor(scenario, condition = 'main') {
 // that was replaced. Reading the wrong side as the right one is exactly what each
 // question is about, so the check point names the direction instead of saying
 // "current".
-export function checkPointsFor(scenario) {
-  const required = scenario.answer?.required
+//
+// The second round's categories need one each as well, and each names what the
+// category is about: A2 the value that replaced the proposed one, A4 the value
+// that replaced the echoed one, P1 the value this session said rather than the
+// one the profile holds.
+//
+// The attempt is the question the record answers. A scenario with several
+// questions has its own key per question, and the checkpoints are read from
+// the key of that question.
+export function checkPointsFor(scenario, attempt) {
+  const answer = attempt?.answer ?? scenario?.answer
+  const required = answer?.required
   if (Array.isArray(required) && required.length) return { points: required }
   if (scenario.category === 'stale') return { points: ['当前答案正确且无旧值冒充当前值'] }
   if (scenario.category === 'R2') return { points: ['当前值正确，且没有拿被取代的旧值冒充当前值'] }
   if (scenario.category === 'R3') return { points: ['最初值正确，且没有拿后来的新值冒充最初值'] }
+  if (scenario.category === 'A2') return { points: ['当前值正确，且没有拿被取代的旧值冒充当前值'] }
+  if (scenario.category === 'A4') return { points: ['当前值正确，且没有拿被回声重复的旧值冒充当前值'] }
+  if (scenario.category === 'P1') return { points: ['本会话说的新值正确，且没有拿画像里的旧值冒充当前值'] }
+  if (scenario.category === 'F1') return { points: ['这一问的答案正确，且没有把清单里的其他项当成这一问的答案'] }
   return { error: 'the scenario names no check point' }
 }
 
@@ -354,13 +419,13 @@ export function categoryReport(outcomes, scenarios, { left, right, judgments = [
   if (!Array.isArray(outcomes) || !(scenarios instanceof Map)) throw new Error('invalid category report')
   if (!left?.arm || !right?.arm) throw new Error('invalid comparison selectors')
   const checkPointsOf = id => {
-    const scenario = scenarios.get(id)
+    const scenario = scenarios.get(scenarioIdOf(id))
     if (!scenario) return null
     const points = checkPointsFor(scenario)
     return points.error ? null : points.points.length
   }
   const merged = mergedOutcomes(outcomes, judgments, { checkPointsOf })
-  const withCategory = merged.map(row => ({ ...row, category: scenarios.get(row.id)?.category ?? null }))
+  const withCategory = merged.map(row => ({ ...row, category: scenarios.get(scenarioIdOf(row.id))?.category ?? null }))
   const conditionsOf = category => {
     const present = [...new Set(withCategory.filter(row => row.category === category).map(row => row.condition))].sort()
     if (present.includes(left.condition)) return [left.condition]

@@ -6,6 +6,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -31,6 +32,8 @@ func run(args []string, out io.Writer) error {
 	output := flags.String("output-dir", "", "new private output directory")
 	question := flags.String("question", "", "final question for answer phase")
 	questionFile := flags.String("question-file", "", "file holding the final question (UTF-8)")
+	questionsFile := flags.String("questions", "", "file holding the questions of the attempt, in order (JSON array of strings)")
+	seedMemory := flags.String("seed-memory", "", "file holding the profile memories the learner confirmed earlier (JSON array)")
 	runID := flags.String("run-id", "", "evaluation run identifier")
 	qid := flags.String("qid", "synthetic-offline", "scenario identifier for the scoring record")
 	arm := flags.String("arm", "current", "configuration identifier")
@@ -69,6 +72,12 @@ func run(args []string, out io.Writer) error {
 	if *phase != "index" {
 		guarded["input"] = *input
 	}
+	if *seedMemory != "" {
+		guarded["seed-memory"] = *seedMemory
+	}
+	if *questionsFile != "" {
+		guarded["questions"] = *questionsFile
+	}
 	if err := pathguard.CheckAll(guarded); err != nil {
 		return err
 	}
@@ -85,6 +94,7 @@ func run(args []string, out io.Writer) error {
 	var turns []conversation.Turn
 	var snapshot conversation.Snapshot
 	var err error
+	var attempt conversation.AttemptInput
 	inputDigest := ""
 	if *phase != "index" {
 		inputDigest, err = fileDigest(*input)
@@ -125,13 +135,32 @@ func run(args []string, out io.Writer) error {
 			}
 			*question = strings.TrimSpace(string(raw))
 		}
-		if *question == "" {
-			return fmt.Errorf("question required")
+		if *questionsFile != "" && (*question != "" || *questionFile != "") {
+			return fmt.Errorf("the questions of an attempt come either from -questions or from -question")
+		}
+		if *questionsFile != "" {
+			asked, readErr := readQuestions(*questionsFile)
+			if readErr != nil {
+				return readErr
+			}
+			attempt.Questions = asked
+		} else {
+			if *question == "" {
+				return fmt.Errorf("question required")
+			}
+			attempt.Questions = []string{*question}
 		}
 		snapshot, err = conversation.ReadSnapshot(*input)
 		if err != nil {
 			return err
 		}
+	}
+	if *seedMemory != "" {
+		memories, readErr := readSeedMemories(*seedMemory)
+		if readErr != nil {
+			return readErr
+		}
+		attempt.Memories = memories
 	}
 	real := *env == "real"
 	var environment conversation.RealEnvironment
@@ -188,9 +217,9 @@ func run(args []string, out io.Writer) error {
 	} else if *phase == "prepare" {
 		var warmup conversation.WarmupReport
 		if real {
-			warmup, err = conversation.PrepareRealProductReport(ctx, *repository, turns, environment)
+			warmup, err = conversation.PrepareRealProductReport(ctx, *repository, turns, environment, attempt)
 		} else {
-			warmup, err = conversation.PrepareOfflineProductReport(ctx, *repository, turns)
+			warmup, err = conversation.PrepareOfflineProductReport(ctx, *repository, turns, attempt)
 		}
 		snapshot = warmup.Snapshot
 		paidCalls = len(warmup.Calls)
@@ -201,9 +230,9 @@ func run(args []string, out io.Writer) error {
 	} else {
 		var result conversation.ProductResult
 		if real {
-			result, err = conversation.RunRealProduct(ctx, *repository, snapshot, *question, environment, seed)
+			result, err = conversation.RunRealProduct(ctx, *repository, snapshot, environment, seed, attempt)
 		} else {
-			result, err = conversation.RunOfflineProduct(ctx, *repository, snapshot, *question)
+			result, err = conversation.RunOfflineProduct(ctx, *repository, snapshot, attempt)
 		}
 		if cause := context.Cause(ctx); cause != nil {
 			err = errors.Join(err, cause)
@@ -213,22 +242,39 @@ func run(args []string, out io.Writer) error {
 		}
 		paidCalls = len(result.Calls)
 		err = errors.Join(err, write("result.json", result))
+		// The model ledger of this attempt is written next to the result.
+		// Every call carries the role it was made in and the purpose it was
+		// made for, and a ledger that is only inside the result file cannot
+		// be read by anything that does not parse the whole result.
+		err = errors.Join(err, write("model-calls.json", result.Calls))
+		// One record per question. An attempt that asks one question writes
+		// one record, and an attempt that asks several questions in one
+		// session writes one record per question, each with its own answer
+		// and its own question number.
 		encoded, encodeResultErr := json.Marshal(result)
 		if encodeResultErr != nil {
 			return errors.Join(err, encodeResultErr)
 		}
-		var record map[string]any
-		if decodeErr := json.Unmarshal(encoded, &record); decodeErr != nil {
-			return decodeErr
-		}
-		record["qid"], record["arm"], record["rep"], record["condition"] = *qid, *arm, *rep, *condition
-		data, encodeErr := json.Marshal(record)
-		if encodeErr != nil {
-			return encodeErr
+		var records bytes.Buffer
+		for index, asked := range result.Questions {
+			var record map[string]any
+			if decodeErr := json.Unmarshal(encoded, &record); decodeErr != nil {
+				return decodeErr
+			}
+			record["qid"], record["arm"], record["rep"], record["condition"] = attemptQID(*qid, index, len(result.Questions)), *arm, *rep, *condition
+			record["question"], record["answer"], record["question_index"] = asked.Question, asked.Answer, index
+			if len(result.Questions) > 1 {
+				record["response"], record["run_id"], record["steps"] = asked.Response, asked.RunID, asked.Steps
+			}
+			data, encodeErr := json.Marshal(record)
+			if encodeErr != nil {
+				return encodeErr
+			}
+			records.Write(append(data, '\n'))
 		}
 		file, fileErr := os.OpenFile(filepath.Join(*output, "record.jsonl"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 		if fileErr == nil {
-			_, fileErr = file.Write(append(data, '\n'))
+			_, fileErr = file.Write(records.Bytes())
 			fileErr = errors.Join(fileErr, file.Close())
 		}
 		err = errors.Join(err, fileErr)
@@ -316,6 +362,93 @@ func realEnvironment(flags *flag.FlagSet, proxy, redis, redisPassword, storage, 
 		SummarySegmentMode: mode,
 	}
 	return environment, environment.Validate()
+}
+
+// attemptQID names one attempt of one scenario.
+//
+// An attempt that asked one question is the scenario. An attempt that asked
+// several questions in one session is one attempt per question, and the
+// question's number is on the identifier, so that the scorer can tell which
+// answer key the attempt belongs to.
+func attemptQID(qid string, index, total int) string {
+	if total <= 1 {
+		return qid
+	}
+	return fmt.Sprintf("%s#q%d", qid, index+1)
+}
+
+// readQuestions reads the questions of one attempt, in the order they are
+// asked.
+//
+// The file is a JSON array of strings and it is read with a limit and
+// without unknown fields, because a hand-written file can carry a field the
+// command does not know.
+func readQuestions(path string) ([]string, error) {
+	raw, err := readLimitedFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var questions []string
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&questions); err != nil {
+		return nil, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return nil, fmt.Errorf("questions file contains trailing data")
+	}
+	if len(questions) < 1 || len(questions) > 3 {
+		return nil, fmt.Errorf("an attempt asks one to three questions")
+	}
+	for _, question := range questions {
+		if strings.TrimSpace(question) == "" {
+			return nil, fmt.Errorf("a question cannot be empty")
+		}
+	}
+	return questions, nil
+}
+
+// readSeedMemories reads the profile memories one attempt seeds.
+//
+// The file is a JSON array of the memories, and it is read with a limit and
+// without unknown fields, for the same reason the questions file is.
+func readSeedMemories(path string) ([]conversation.SeedMemory, error) {
+	raw, err := readLimitedFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var memories []conversation.SeedMemory
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&memories); err != nil {
+		return nil, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return nil, fmt.Errorf("seed memory file contains trailing data")
+	}
+	if len(memories) < 1 || len(memories) > 8 {
+		return nil, fmt.Errorf("an attempt seeds one to eight profile memories")
+	}
+	return memories, nil
+}
+
+// readLimitedFile reads a private input file with a size limit.
+func readLimitedFile(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > 1<<20 {
+		return nil, fmt.Errorf("input file exceeds limit")
+	}
+	return io.ReadAll(io.LimitReader(file, 1<<20))
 }
 
 func main() {

@@ -129,7 +129,11 @@ test('a fabrication scenario that matches no turn stops instead of guessing', ()
 })
 
 test('the judge asks about the v2 categories that need asking', () => {
-  assert.deepEqual(judgeCategories().slice().sort(), ['R2', 'R3', 'R5', 'constraint', 'irrelevant', 'no_fabrication', 'stale'].sort())
+  // A3 is in the list because its right answer is not a value but the
+  // statement that nothing was decided: the value reading cannot decide it,
+  // and without the judge the attempts of this category would stay pending
+  // forever and no report would show them as anything at all.
+  assert.deepEqual(judgeCategories().slice().sort(), ['A3', 'R2', 'R3', 'R5', 'constraint', 'irrelevant', 'no_fabrication', 'stale'].sort())
 })
 
 test('each update category is asked about the value its question wants', () => {

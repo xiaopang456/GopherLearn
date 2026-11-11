@@ -22,6 +22,7 @@ import (
 	"GopherAI/utils"
 	"github.com/BurntSushi/toml"
 	hybrid "gopherlearn-v2-hybrid"
+	"gorm.io/gorm"
 )
 
 // writeEntryConfig writes the configuration the product is started with.
@@ -119,7 +120,115 @@ func loginStandardProduct(ctx context.Context, p *standardProduct, client *http.
 	}
 }
 
-func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, question string) (result ProductResult, resultErr error) {
+// askProductQuestion asks one question of the restored conversation.
+//
+// The questions of an attempt are asked in the same session, one after the
+// other, so that a follow-up is answered in the context of the question
+// before it. Every question keeps its own answer, its own raw response and
+// its own identifier.
+//
+// The request id is the product's own idempotency key. An attempt that asks
+// one question keeps the key it always used; an attempt that asks several
+// gives each of them its own, because one key would make the second
+// question a replay of the first.
+func askProductQuestion(ctx context.Context, client *http.Client, base, token, sessionID, question, requestID string, index int) (QuestionResult, error) {
+	entry := QuestionResult{Index: index, Question: question}
+	if index > 0 {
+		requestID = fmt.Sprintf("%s-%d", requestID, index+1)
+	}
+	body, _ := json.Marshal(map[string]any{"sessionId": sessionID, "requestId": requestID, "question": question, "knowledgePolicy": "knowledge_preferred", "enableThinking": true})
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/v1/AI/agent/run", bytes.NewReader(body))
+	if err != nil {
+		return entry, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+token)
+	entry.StartedAt = time.Now().UTC()
+	started := time.Now()
+	response, requestErr := client.Do(request)
+	if requestErr == nil {
+		entry.Response, requestErr = io.ReadAll(io.LimitReader(response.Body, 4<<20+1))
+		response.Body.Close()
+		if len(entry.Response) > 4<<20 {
+			requestErr = fmt.Errorf("product response exceeds limit")
+			entry.Response = nil
+		}
+		if requestErr == nil && response.StatusCode != 200 {
+			requestErr = fmt.Errorf("product HTTP status %d", response.StatusCode)
+		}
+		var envelope struct {
+			Answer string `json:"answer"`
+			RunID  string `json:"runId"`
+		}
+		if requestErr == nil {
+			requestErr = json.Unmarshal(entry.Response, &envelope)
+			entry.Answer = envelope.Answer
+			entry.RunID = envelope.RunID
+			if entry.Answer == "" {
+				requestErr = fmt.Errorf("product response has no answer")
+			}
+		}
+	}
+	entry.QuestionMilliseconds = time.Since(started).Milliseconds()
+	entry.FinishedAt = time.Now().UTC()
+	if requestErr != nil {
+		entry.Error = requestErr.Error()
+		return entry, requestErr
+	}
+	return entry, nil
+}
+
+// askProductQuestions asks the questions of an attempt, in order, in the one
+// session.
+//
+// The questions are asked one after the other and not one session per
+// question: a follow-up is only a follow-up when the earlier question and
+// its answer are still in the conversation. The first failure ends the
+// attempt, because a later question asked without the earlier one would not
+// be the question the scenario asks.
+func askProductQuestions(ctx context.Context, client *http.Client, base, token, sessionID string, questions []string, requestID string) ([]QuestionResult, error) {
+	asked := make([]QuestionResult, 0, len(questions))
+	for index, question := range questions {
+		entry, err := askProductQuestion(ctx, client, base, token, sessionID, question, requestID, index)
+		asked = append(asked, entry)
+		if err != nil {
+			return asked, err
+		}
+	}
+	return asked, nil
+}
+
+// readAgentSteps reads the steps of the given runs back from the product's
+// own table, so that the evidence of every question is kept with that
+// question and not in one pile.
+func (s *Sandbox) readAgentSteps(ctx context.Context, userID int64, questions []QuestionResult) error {
+	runIDs := make([]string, 0, len(questions))
+	for _, question := range questions {
+		if question.RunID != "" {
+			runIDs = append(runIDs, question.RunID)
+		}
+	}
+	if len(runIDs) == 0 {
+		return nil
+	}
+	var rows []model.AgentStep
+	err := (guardedStore{s}).with(ctx, func(tx *gorm.DB) error {
+		return tx.Where("user_id = ? AND run_id IN ?", userID, runIDs).Order("run_id ASC, sequence ASC").Find(&rows).Error
+	})
+	if err != nil {
+		return err
+	}
+	byRun := map[string][]model.AgentStep{}
+	for _, row := range rows {
+		byRun[row.RunID] = append(byRun[row.RunID], row)
+	}
+	for i := range questions {
+		questions[i].Steps = byRun[questions[i].RunID]
+	}
+	return nil
+}
+
+func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, input AttemptInput) (result ProductResult, resultErr error) {
 	result.Scope = ProductScope
 	result.Environment = "fake"
 	result.Entry = "gopherlearn-integrated:hybrid.Run"
@@ -138,8 +247,14 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
-	if strings.TrimSpace(question) == "" {
+	questions := input.Questions
+	if len(questions) == 0 {
 		return result, fmt.Errorf("question required")
+	}
+	for _, question := range questions {
+		if strings.TrimSpace(question) == "" {
+			return result, fmt.Errorf("question required")
+		}
 	}
 	if err := snapshot.Validate(); err != nil {
 		return result, err
@@ -174,6 +289,13 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 		return result, err
 	}
 	if err = s.SeedProduct(ctx, model.User{ID: snapshot.Session.UserID, Username: snapshot.Session.UserName, Password: hash}, nil, settings.Config.StorageDir); err != nil {
+		return result, err
+	}
+	// The seeded profile memories are written into the database the answer is
+	// asked in, because that database is a fresh one and the restored
+	// conversation does not carry the learner's profile with it.
+	result.SeededMemories, result.SeededMemoryRows, err = seedAttemptMemories(ctx, s, snapshot.Session.UserID, input.Memories)
+	if err != nil {
 		return result, err
 	}
 	restoreStart := time.Now()
@@ -276,41 +398,15 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 	if err != nil {
 		return result, err
 	}
-	body, _ := json.Marshal(map[string]any{"sessionId": snapshot.Session.ID, "requestId": "offline-final-question", "question": question, "knowledgePolicy": "knowledge_preferred", "enableThinking": true})
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/v1/AI/agent/run", bytes.NewReader(body))
-	if err != nil {
-		return result, err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer "+token)
-	questionStart := time.Now()
-	response, requestErr := client.Do(request)
-	runID := ""
-	if requestErr == nil {
-		result.Response, requestErr = io.ReadAll(io.LimitReader(response.Body, 4<<20+1))
-		response.Body.Close()
-		if len(result.Response) > 4<<20 {
-			requestErr = fmt.Errorf("product response exceeds limit")
-			result.Response = nil
-		}
-		if requestErr == nil && response.StatusCode != 200 {
-			requestErr = fmt.Errorf("product HTTP status %d", response.StatusCode)
-		}
-		var envelope struct {
-			Answer string `json:"answer"`
-			RunID  string `json:"runId"`
-		}
-		if requestErr == nil {
-			requestErr = json.Unmarshal(result.Response, &envelope)
-			result.Answer = envelope.Answer
-			runID = envelope.RunID
-			if result.Answer == "" {
-				requestErr = fmt.Errorf("product response has no answer")
-			}
-		}
+	asked, requestErr := askProductQuestions(ctx, client, base, token, snapshot.Session.ID, questions, "offline-final-question")
+	result.Answer = asked[0].Answer
+	result.Response = asked[0].Response
+	result.Questions = asked
+	if err := s.readAgentSteps(ctx, snapshot.Session.UserID, asked); err != nil {
+		resultErr = errors.Join(resultErr, err)
 	}
 	result.Audit.Answered = time.Now().UTC()
-	result.QuestionMilliseconds = time.Since(questionStart).Milliseconds()
+	result.QuestionMilliseconds = asked[len(asked)-1].FinishedAt.Sub(asked[0].StartedAt).Milliseconds()
 	collect, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	barrierErr := journal.AnswerBarrier(collect)
@@ -321,10 +417,18 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 	var stoppedErr error
 	_, result.StoppedCounts, stoppedErr = s.ObserveJobs(collect)
 	result.Events, result.Audit.ExecutedBeforeAnswer, resultErr = journal.Finish(collect)
-	result.Calls = BindRun(AttributeCalls(ledger.Calls(), result.Audit.Answered), snapshot.Session.ID, runID)
+	result.Calls = BindRuns(AttributeCalls(ledger.Calls(), result.Audit.Answered), snapshot.Session.ID, asked)
 	var usageErr error
 	result.UsageByRole, usageErr = SummarizeCalls(result.Calls)
 	result.ContextMessages = stub.answerInput()
+	// The context of every question is kept with that question, so that a
+	// reader can see what the later question was answered against.
+	inputs := stub.answerInputs()
+	for index := range result.Questions {
+		if index < len(inputs) {
+			result.Questions[index].ContextMessages = inputs[index]
+		}
+	}
 	for _, c := range result.Calls {
 		result.Audit.Calls = append(result.Audit.Calls, BackgroundCall{Role: c.Role, Started: c.Started})
 	}
