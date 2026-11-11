@@ -7,8 +7,12 @@ import (
 	"errors"
 	modelcomponent "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -109,6 +113,71 @@ func TestRolePromptsLoadCheckout(t *testing.T) {
 	if counts["answer"] < 4 {
 		t.Fatalf("the answer role holds %d prompts, want at least 4: %v", counts["answer"], counts)
 	}
+}
+
+// The summary that also records what the assistant produced answers under
+// its own prompts. A deployment that turns the mode on sends those, and a
+// role table that held only the mode that records nothing but the learner's
+// statements refused them as unclassified: the summary call was refused and
+// the turn ended before the answer existed.
+//
+// The test reads the prompts out of the checkout the same way the harness
+// does, so it states the same claim the harness makes.
+func TestRolePromptsHoldTheSummaryPromptsOfTheAssistantContentMode(t *testing.T) {
+	roles, err := LoadRolePrompts(filepath.Join("..", "..", ".."), memoryrecall.ReadMode("legacy_v2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"segmentAssistantSystemPrompt",
+		"segmentDeltaAssistantSystemPrompt",
+	} {
+		prompt, ok := literalPrompt(t, filepath.Join("..", "..", "..", "v2", "service", "agent", "segment_generator.go"), name)
+		if !ok {
+			t.Fatalf("%s is not a literal in the checkout", name)
+		}
+		role, known := roles[prompt]
+		if !known || role != "summary" {
+			t.Fatalf("%s is not classified as a summary prompt: %q", name, role)
+		}
+	}
+}
+
+// literalPrompt reads one string constant out of a Go file.
+//
+// The harness reads the product's prompts out of the checkout rather than
+// holding copies of them, so the test reads them the same way: a copy in the
+// test would prove nothing about the checkout the harness runs against.
+func literalPrompt(t *testing.T, path, name string) (string, bool) {
+	t.Helper()
+	f, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := ""
+	ok := false
+	ast.Inspect(f, func(n ast.Node) bool {
+		v, isSpec := n.(*ast.ValueSpec)
+		if !isSpec {
+			return true
+		}
+		for i, identifier := range v.Names {
+			if identifier.Name != name || i >= len(v.Values) {
+				continue
+			}
+			literal, isLiteral := v.Values[i].(*ast.BasicLit)
+			if !isLiteral || literal.Kind != token.STRING {
+				continue
+			}
+			value, unquoteErr := strconv.Unquote(literal.Value)
+			if unquoteErr == nil {
+				found = value
+				ok = true
+			}
+		}
+		return true
+	})
+	return found, ok
 }
 
 // The trimming must not turn the role table into an open door. A prompt that

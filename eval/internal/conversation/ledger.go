@@ -148,6 +148,17 @@ func LoadRolePrompts(repository string, mode memoryrecall.ReadMode) (RolePrompts
 		// The changes-only call is the same role: it is the same batch,
 		// answered in the shape that fits when the board no longer does.
 		{"agent/segment_generator.go", "segmentDeltaSystemPrompt", "summary"},
+		// The summary that also records what the assistant produced answers
+		// under its own prompts, one for the rewrite call and one for the
+		// changes-only call. They are separate literals rather than one
+		// prompt with a switch in it, so the mode that does not record the
+		// assistant's products sends exactly the bytes it was measured
+		// against. A deployment that turns the mode on sends the other two,
+		// and a table that held only the first pair refused them as
+		// unclassified: the summary call was refused and the turn ended
+		// before the answer existed.
+		{"agent/segment_generator.go", "segmentAssistantSystemPrompt", "summary"},
+		{"agent/segment_generator.go", "segmentDeltaAssistantSystemPrompt", "summary"},
 		{"agent/runner.go", "generalKnowledgeSystemPrompt", "answer"},
 		{"agent/runner.go", "citationRepairSystemPrompt", "answer"},
 		{"agent/runner.go", "memoryRepairSystemPrompt", "answer"},
