@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -206,6 +207,15 @@ type LayeredRead struct {
 	Verdict          string `json:"verdict"`
 	PromptTokens     int    `json:"prompt_tokens"`
 	CompletionTokens int    `json:"completion_tokens"`
+	// Calls is the ledger of every model call this run made: the role it was
+	// made in, the purpose it was made for, when it was sent and what the
+	// provider reported.
+	//
+	// It is written next to the result as its own file, so that a call can be
+	// read without parsing the whole result - and so that the calls which no
+	// run claims are still visible. A ledger that only exists inside the
+	// result file cannot be used to ask which calls had no owner.
+	Calls []ModelCall `json:"model_calls,omitempty"`
 	// AgentLoop is the product runner's own accounting of the answer phase:
 	// how many model calls it made and how many tool calls the model spent.
 	// A turn that never reached a tool is a fact about the arm, and a turn
@@ -357,6 +367,10 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	}
 	ledger := &ModelLedger{}
 	defer func() {
+		// The ledger belongs to the result of every exit, including the
+		// failed ones: a run that stopped half way still made calls, and
+		// those calls are what says where it stopped.
+		read.Calls = ledger.Calls()
 		if !ledger.Complete() {
 			resultErr = errors.Join(resultErr, fmt.Errorf("layered read model telemetry incomplete"))
 		}
@@ -2025,6 +2039,32 @@ func WriteLayeredRead(path string, read LayeredRead) error {
 		return err
 	}
 	return os.WriteFile(path, encoded, 0o600)
+}
+
+// WriteLayeredReadFiles writes one read-side run: the result and the ledger
+// of its model calls.
+//
+// The two are separate files on purpose. The result says what the run found;
+// the ledger says which model calls it made, in which role and for which
+// purpose. A reader that wants to attribute a call - or to find the calls
+// that no run claims - must not have to parse the whole result to find them,
+// and a run that stopped half way still has calls that have to be written.
+//
+// The ledger is written even when it is empty, so that a reader can tell a run
+// that made no calls from a run whose ledger was never written.
+func WriteLayeredReadFiles(dir string, read LayeredRead) error {
+	encoded, err := json.MarshalIndent(read, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err = os.WriteFile(filepath.Join(dir, "read.json"), append(encoded, '\n'), 0o600); err != nil {
+		return err
+	}
+	calls, err := json.MarshalIndent(read.Calls, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "model-calls.json"), append(calls, '\n'), 0o600)
 }
 
 // LayeredReadTimeout is the deadline one read-side run is given.

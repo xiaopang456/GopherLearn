@@ -144,7 +144,7 @@ func TestOfflineProductRunsInBothSummaryModes(t *testing.T) {
 			for i := range turns {
 				turns[i] = testTurn(i)
 			}
-			warmup, err := PrepareOfflineProductReport(ctx, repository, turns)
+			warmup, err := PrepareOfflineProductReport(ctx, repository, turns, AttemptInput{})
 			if err != nil {
 				t.Fatalf("warmup: %v", err)
 			}
@@ -153,7 +153,9 @@ func TestOfflineProductRunsInBothSummaryModes(t *testing.T) {
 					t.Fatalf("a model call was not classified: %+v", call)
 				}
 			}
-			result, err := RunOfflineProduct(ctx, repository, warmup.Snapshot, "请回顾当前会话里的练习安排。")
+			result, err := RunOfflineProduct(ctx, repository, warmup.Snapshot, AttemptInput{
+				Questions: []string{"请回顾当前会话里的练习安排。"},
+			})
 			if err != nil {
 				t.Fatalf("run: %v; response=%s", err, result.Response)
 			}

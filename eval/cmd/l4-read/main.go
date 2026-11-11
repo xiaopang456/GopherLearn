@@ -27,7 +27,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -153,11 +152,11 @@ func run(args []string, out io.Writer) error {
 		fmt.Fprintf(out, "authority_checks=%d authorised=%d pending=%d tools_exercised=%d grants=%d\n",
 			len(read.ToolChecks), authorised, pending, exercised, read.Grants)
 	}
-	body, err := json.MarshalIndent(read, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err = os.WriteFile(filepath.Join(*output, "read.json"), append(body, '\n'), 0600); err != nil {
+	// The result and the ledger of the model calls of this run, written next
+	// to each other. Every call carries the role it was made in and the
+	// purpose it was made for, and a ledger that only exists inside the result
+	// file cannot be read by anything that does not parse the whole result.
+	if err = conversation.WriteLayeredReadFiles(*output, read); err != nil {
 		return err
 	}
 	return runErr
