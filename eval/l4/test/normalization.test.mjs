@@ -112,11 +112,30 @@ test('the answer key compares its own values after the same folding', () => {
   // wrong at once, so it has to see the two spellings of a value as one value.
   assert.equal(normalizeValue('别名' + FULLWIDTH_COMMA + '乙'), normalizeValue('别名,乙'))
   assert.equal(fold('别名' + FULLWIDTH_COMMA + '乙'), foldText('别名,乙'))
-  // The answer is folded by the same folding: the haystack the mentions are
-  // looked for in is the folded text.
+  // The width and the spacing are folded the same way on both sides: the
+  // haystack the mentions are looked for in is the folded text.
   assert.equal(foldCharacters('别名' + FULLWIDTH_COMMA + '乙').text, foldText('别名,乙'))
   // A value may carry a sentence mark at its end, and the mark is not part of
   // it. The text it is looked for in keeps its own mark.
   assert.equal(fold('别名。'), '别名')
   assert.equal(foldText('别名。'), '别名。')
+})
+
+// The Greek sigma that ends a word is written "ς", and folded on its own it is
+// "σ". A value is therefore folded as a whole word and the answer is folded
+// letter by letter, and the two do not meet in Greek text unless the answer is
+// written the folded way.
+//
+// The two folds are kept apart on purpose - they are what the frozen datasets
+// were written against - and these two answers pin them.
+test('a value is folded as a word and the answer is folded letter by letter', () => {
+  assert.equal(foldText('ΟΣ'), 'ος')
+  assert.equal(foldCharacters('ΟΣ').text, 'οσ')
+  const scenario = {answer:{accepted:['ΟΣ'], forbidden:[], aliases:[]}}
+  // The answer writes the sigma as it stands at the end of a word, so it is
+  // read as "οσ" and the value "ος" is not in it.
+  assert.equal(judgeFact('ΟΣ', scenario).verdict, 'needs_judge')
+  // The answer writes the sigma the other way, so it is read as "ος" and the
+  // value is in it.
+  assert.equal(judgeFact('ος', scenario).verdict, 'pass')
 })

@@ -208,43 +208,76 @@ const QUANTITY_EXPRESSION = new RegExp(`^(${NUM})(${UNIT_ALTERNATION})$`, 'iu')
 
 // The one folding of a text.
 //
-// A character is normalized to its half-width form and lower-cased, the spacing
-// is dropped, and every character keeps the index it had in the text it came
-// from. The indices are what lets the scorer point at a mention in the answer.
+// A character is normalized to its half-width form, the spacing is dropped, and
+// every character keeps the index it had in the text it came from. The indices
+// are what lets the scorer point at a mention in the answer.
 //
 // Three things are folded with it: the answer the scorer looks a value in, the
 // values of the answer key (the accepted values, the aliases and the forbidden
 // values alike), and the history the second round's checks read a value out of.
-// They are folded the same way, so that a value and the text that states it are
-// written the same way on both sides.
+//
+// The width and the spacing are folded the same way on all of them. The case is
+// not: it is folded two ways, and the difference is kept on purpose. It is
+// written down at the two functions that fold it.
 //
 // The scorer's normalization answers a different question and is not this one:
 // it names a quantity canonically ("38 minutes" and "2280 seconds" are one
 // value) instead of folding a whole sentence. A value that is not an
 // expression is looked for literally in the folded text, which is what the
 // datasets were written against.
-export function foldCharacters(text) {
+
+// foldWidth is the width folding the two folds below share: the characters are
+// normalized to their half-width form and the spacing is dropped. Every
+// character keeps the index it had in the text it came from.
+function foldWidth(text) {
   const base = String(text ?? '').normalize('NFKC')
   let out = ''
   const map = []
   for (let i = 0; i < base.length; i += 1) {
     if (/\s/u.test(base[i])) continue
+    out += base[i]
+    map.push(i)
+  }
+  return { text: out, map }
+}
+
+// foldText is the folding of a value and of a text: the width folding, and the
+// case folded as a whole.
+//
+// The whole string is folded at once, so a letter that ends a word is folded as
+// the letter that ends a word: the sigma at the end of "ΟΣ" is "ς". The answer
+// the scorer looks a value in is folded letter by letter (foldCharacters), so
+// the same sigma is "σ" there. The two folds differ, and both are kept as they
+// were - the tests in test/normalization.test.mjs pin them.
+export function foldText(text) {
+  return foldWidth(text).text.toLowerCase()
+}
+
+// foldCharacters is the folding of the answer the scorer looks a value in: the
+// width folding, and the case folded letter by letter.
+//
+// Every letter is folded as if it stood alone, while a value is folded as a
+// whole word (foldText). The two differ in Greek, where a sigma that ends a
+// word is written "ς" and folded on its own it is "σ". The difference is kept,
+// because it is what the frozen datasets were written against, and it is
+// visible in the verdict: the value "ΟΣ" is looked for as "ος", while the
+// answer "ΟΣ" is read as "οσ" - so the two meet only when the answer is
+// written "ος".
+export function foldCharacters(text) {
+  const { text: base, map: baseMap } = foldWidth(text)
+  let out = ''
+  const map = []
+  for (let i = 0; i < base.length; i += 1) {
     for (const character of base[i].toLowerCase()) {
       out += character
-      map.push(i)
+      map.push(baseMap[i])
     }
   }
   return { text: out, map }
 }
 
-// foldText is the same folding as one string: the full-width characters become
-// half-width, the spacing disappears and the result is lower-cased.
-export function foldText(text) {
-  return foldCharacters(text).text
-}
-
-// fold is the folding of a value: the same folding, and a sentence mark at the
-// end of the value is not part of it.
+// fold is the folding of a value: the same folding as foldText, and a sentence
+// mark at the end of the value is not part of it.
 export function fold(s) {
   return foldText(s).replace(/[。.!！]$/u, '')
 }
