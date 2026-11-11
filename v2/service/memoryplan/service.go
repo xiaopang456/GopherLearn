@@ -304,10 +304,16 @@ func (s *Service) Recall(ctx context.Context, request Request) (Result, error) {
 // The tag is the difference between "the learner believes this" and "this is
 // how the answer should be pitched". Flattening them is how a personalisation
 // note gets read back to the learner as a technical fact.
+//
+// The line carries the day the memory was last confirmed or changed as well.
+// A topic note is a long-term default, and a default that may have been
+// overtaken needs to look like it: the recall path writes the same day on
+// the same memory, and a line that showed it on one path and not on the
+// other would make the age of a value depend on how it was fetched.
 func renderTopicMemory(memory model.LongTermMemory, relation Relation) string {
 	label := RelationLabel(relation)
-	return fmt.Sprintf("[%s; tags=%s; %s] %s: %s", memory.Scope, strings.Join(memory.Tags, ","),
-		label, strings.TrimSpace(memory.Subject), strings.TrimSpace(memory.Content))
+	return fmt.Sprintf("[%s; tags=%s; %s%s] %s: %s", memory.Scope, strings.Join(memory.Tags, ","),
+		label, model.MemorySavedOnLabel(memory), strings.TrimSpace(memory.Subject), strings.TrimSpace(memory.Content))
 }
 
 func (s *Service) plan(ctx context.Context, request Request, snapshot MemoryCatalogueSnapshot) (MemoryReadPlan, int, error) {

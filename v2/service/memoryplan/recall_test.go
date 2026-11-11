@@ -14,6 +14,7 @@ import (
 	episodedao "GopherAI/dao/episode"
 	memorydao "GopherAI/dao/memory"
 	"GopherAI/model"
+	memoryservice "GopherAI/service/memory"
 
 	modelcomponent "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
@@ -982,6 +983,53 @@ func TestTheInjectedLineNamesItsRelation(t *testing.T) {
 	}
 	if !strings.HasPrefix(line, "[topic;") {
 		t.Fatalf("the legacy line shape must be kept: %q", line)
+	}
+}
+
+// The rendered topic line names the day the memory was last confirmed or
+// changed.
+//
+// A topic note is a long-term default, and the recall path writes the same
+// day on the same memory. A line that showed the age on one path and not on
+// the other would make the age of a value depend on how it was fetched.
+func TestTheInjectedLineNamesTheDayItWasSaved(t *testing.T) {
+	memory := memoryFixture("m-1", "漏桶算法", model.LongTermMemoryActive, owner)
+	line := renderTopicMemory(memory, RelationPersonalization)
+	if !strings.Contains(line, "保存于 2026-09-02") {
+		t.Fatalf("the line does not name the day: %q", line)
+	}
+	if !strings.Contains(line, "personalisation only") {
+		t.Fatalf("the line lost its relation: %q", line)
+	}
+}
+
+// A memory with no timestamps carries no date.
+//
+// An invented date is worse than an absent one: it looks like a fact about
+// when the learner said it.
+func TestTheInjectedLineCarriesNoDateWhenThereIsNone(t *testing.T) {
+	memory := memoryFixture("m-2", "漏桶算法", model.LongTermMemoryActive, owner)
+	memory.UpdatedAt = time.Time{}
+	memory.CreatedAt = time.Time{}
+	line := renderTopicMemory(memory, RelationPersonalization)
+	if strings.Contains(line, "保存于") {
+		t.Fatalf("the line carries a date it cannot know: %q", line)
+	}
+}
+
+// The two paths that inject a topic memory write the same day.
+//
+// The recall path and the planner path are two ways for the same memory to
+// reach the window. A value whose age depends on the way it was fetched is a
+// value the model cannot reason about.
+func TestTheTwoPathsThatInjectATopicMemoryWriteTheSameDay(t *testing.T) {
+	memory := memoryFixture("m-3", "漏桶算法", model.LongTermMemoryActive, owner)
+	planned := renderTopicMemory(memory, RelationPersonalization)
+	recalled := memoryservice.RenderMemoryLine(memory)
+	for _, line := range []string{planned, recalled} {
+		if !strings.Contains(line, "保存于 2026-09-02") {
+			t.Fatalf("the line does not name the day: %q", line)
+		}
 	}
 }
 

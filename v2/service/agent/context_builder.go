@@ -235,16 +235,138 @@ var ErrRequiredContextExceedsBudget = errors.New("required agent context exceeds
 // the two blocks themselves and stays.
 const layeredSummaryPrompt = `
 
-Trust order (when two sources disagree, this order decides which one is right):
-1. Recent Messages - what the learner just said.
-2. Current state - what is true now.
-3. Summary segments - what was true then.
-
 Current state is this session's board. A value under it that carries 〔…已改为…〕 was changed later: the unmarked value is the current one, and the marked one is what it used to be.
 Summary segments are compressed records of earlier turns in this session, not transcripts. When a segment and Current state disagree, Current state wins; when a segment and Recent Messages disagree, Recent Messages wins.
 
 To read the learner's own words behind a board entry or a segment point, call read_history_message with the message_ids it shows. Those ids are the only ones readable.
 browse_summary_segments opens this session's older segments when the ones in front of you do not cover what the learner is asking about. It returns compressed records, not transcripts.`
+
+// The levels of the trust order, one per source the window can carry.
+//
+// The order is the same in every deployment. Which of the five are written
+// down is decided per turn, by what the window actually holds: a rule that
+// names a source the model cannot see is a rule the model cannot obey, and a
+// rule that leaves out a source it can see leaves it to choose between two
+// contradicting values on its own.
+const (
+	// trustOrderRecentMessages is the learner's own words, just said.
+	trustOrderRecentMessages = "Recent Messages - what the learner just said."
+	// trustOrderCurrentState is the board: what is true now.
+	trustOrderCurrentState = "Current state - what is true now."
+	// trustOrderSummarySegments is what was true earlier in this session.
+	trustOrderSummarySegments = "Summary segments - what was true then."
+	// trustOrderLongTermMemory is the profile and the topic notes.
+	trustOrderLongTermMemory = "User profile and topic memories - long-term defaults."
+	// trustOrderEpisodeMemory is what happened in earlier conversations.
+	trustOrderEpisodeMemory = "Past-session episodes - what happened in earlier conversations."
+)
+
+// TrustOrderBlocks says which sources this turn's window carries.
+type TrustOrderBlocks struct {
+	// RecentMessages is the raw conversation.
+	RecentMessages bool
+	// CurrentState is the session's board.
+	CurrentState bool
+	// SummarySegments are this session's earlier turns, compressed.
+	SummarySegments bool
+	// LongTermMemory is the learner's profile and topic notes.
+	LongTermMemory bool
+	// EpisodeMemory is what earlier conversations left behind.
+	EpisodeMemory bool
+}
+
+// renderTrustOrder writes the trust order for the sources this turn carries.
+//
+// The order decides which of two contradicting sources is right, so it is
+// written for the sources that are really in the window: naming one that is
+// not there would tell the model to arbitrate between a block it cannot see
+// and one it can, and leaving one out would leave it to guess.
+//
+// The levels are numbered from one without gaps. A gap would read as a level
+// that was skipped rather than one that does not exist.
+func renderTrustOrder(blocks TrustOrderBlocks) string {
+	levels := make([]string, 0, 5)
+	if blocks.RecentMessages {
+		levels = append(levels, trustOrderRecentMessages)
+	}
+	if blocks.CurrentState {
+		levels = append(levels, trustOrderCurrentState)
+	}
+	if blocks.SummarySegments {
+		levels = append(levels, trustOrderSummarySegments)
+	}
+	if blocks.LongTermMemory {
+		levels = append(levels, trustOrderLongTermMemory)
+	}
+	if blocks.EpisodeMemory {
+		levels = append(levels, trustOrderEpisodeMemory)
+	}
+	if len(levels) == 0 {
+		return ""
+	}
+	var out strings.Builder
+	out.WriteString("\n\nTrust order (when two sources disagree, this order decides which one is right):")
+	for index, level := range levels {
+		fmt.Fprintf(&out, "\n%d. %s", index+1, level)
+	}
+	if blocks.LongTermMemory {
+		// The profile and the topic notes are defaults, not facts about this
+		// session. They are written once, when the learner confirms them, and
+		// they keep saying what they said then until something changes them -
+		// so the rule that settles a conflict between them and this session
+		// has to be stated here rather than left to the model.
+		out.WriteString("\n\nThe user profile and topic memories are long-term defaults, recorded on an earlier day. If the learner says something different in this session, this session wins; when it matters, add one short line saying the profile still records the older value.")
+	}
+	if blocks.EpisodeMemory {
+		out.WriteString("\n\nPast-session episodes describe earlier conversations. They never override what happened in this session.")
+	}
+	return out.String()
+}
+
+// trustOrderBlocks reports which of the window's sources this turn carries.
+//
+// The list is built from what the turn really holds rather than from what the
+// deployment could have put in it. Two of the sources are already gated by
+// the deployment - the episodes only reach the window when the recall mode
+// injects them, and the layered blocks only exist when the layered summary
+// is read - and the rest are gated by what the readers returned.
+//
+// The board counts as present when it carries a statement, not when it
+// exists: an empty board renders its header and nothing else, and a trust
+// order that pointed the model at an empty block would be asking it to
+// arbitrate against nothing.
+func (b *DatabaseContextBuilder) trustOrderBlocks(history []model.Message, layered LayeredSummarySnapshot,
+	memories MemoryRecall, episodes []model.EpisodeMemory, confirmedStates []ConfirmedTopicLearningState,
+	confirmedRecords []TopicMemoryRecord, bootstrapTopics []TopicMemoryRecord) TrustOrderBlocks {
+	blocks := TrustOrderBlocks{
+		RecentMessages: len(history) > 0,
+		CurrentState:   b.layered != nil && whiteboardHasStatements(layered.BoardDocument),
+		SummarySegments: b.layered != nil &&
+			(len(layered.Resident) > 0 || len(layered.Retrieved) > 0),
+		LongTermMemory: len(memories.Global) > 0 || len(memories.Topic) > 0 ||
+			len(confirmedStates) > 0 || len(confirmedRecords) > 0 || len(bootstrapTopics) > 0,
+		// The episodes are only read when the recall mode injects them, so
+		// a non-empty list already means the block is in the window.
+		EpisodeMemory: len(episodes) > 0,
+	}
+	return blocks
+}
+
+// whiteboardHasStatements reports whether the board carries anything the
+// model could read a fact out of.
+func whiteboardHasStatements(document model.SessionWhiteboardDocument) bool {
+	if document.Goal != nil && strings.TrimSpace(document.Goal.Text) != "" {
+		return true
+	}
+	for _, group := range [][]model.SessionWhiteboardEntry{document.Constraints, document.Plan, document.OpenItems} {
+		for _, entry := range group {
+			if strings.TrimSpace(entry.Text) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // LayeredSummaryPrompt is the contract the board and the summary segments are
 // read under, appended to the mode's base prompt.
@@ -255,6 +377,9 @@ browse_summary_segments opens this session's older segments when the ones in fro
 // base + this rather than the base prompt alone. A harness that held only the
 // base prompt would refuse the product's own request as unclassified, and the
 // turn would end before the answer existed.
+//
+// The trust order is not part of it: that half of the contract is written per
+// turn, because it names only the sources the turn's window carries.
 func LayeredSummaryPrompt() string {
 	return layeredSummaryPrompt
 }
@@ -1341,6 +1466,13 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		// The board and the segments are only read under the layered
 		// summary's own contract, and the contract is only true when the
 		// blocks are really there.
+		//
+		// The trust order is written per turn because the sources it
+		// arbitrates between are the ones this turn's window carries. The
+		// presence test reads the same sources the blocks are rendered from,
+		// so the order and the window cannot disagree about what is there.
+		systemPrompt += renderTrustOrder(b.trustOrderBlocks(history, layered, memories, episodes,
+			confirmedStates, confirmedRecords, bootstrapTopics))
 		systemPrompt += layeredSummaryPrompt
 	}
 	systemPrompt = systemPromptForTurn(systemPrompt, input)

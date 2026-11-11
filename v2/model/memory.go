@@ -504,6 +504,47 @@ func SemanticMemoryVersion(memory LongTermMemory) uint64 {
 	return uint64(memory.UpdatedAt.UTC().Unix())
 }
 
+// MemorySavedOn is the day this memory was last confirmed or changed.
+//
+// UpdatedAt is the row's own last-write time, and every path that confirms a
+// memory or changes one rewrites the row: the draft confirmation creates it,
+// and a merge, a supersede or a user correction rewrites it. It is therefore
+// the moment the content last became what it is now.
+//
+// The two timestamps that are not it say something else. CreatedAt is when
+// the memory first appeared, which is not when a later correction landed.
+// LastUsedAt is when the memory was last recalled, which says how often the
+// learner asked about it and nothing about how old it is.
+//
+// The day is enough for the reader. A value that may have been overtaken
+// needs to look like it may have been overtaken; it does not need the second.
+func MemorySavedOn(memory LongTermMemory) time.Time {
+	if !memory.UpdatedAt.IsZero() {
+		return memory.UpdatedAt
+	}
+	return memory.CreatedAt
+}
+
+// MemorySavedOnLabel is the date part of the line a memory reaches the
+// model as.
+//
+// There is more than one path that renders a memory into the window, and
+// the date is only useful if it is on all of them: a memory that shows its
+// age on one path and not on another reads as "how old this is depends on
+// the path", which is worse than not showing it at all. So the label lives
+// here, next to the day it names, and every renderer writes the same one.
+//
+// A memory whose timestamps are both missing carries no date rather than a
+// fabricated one: an invented date is worse than an absent one, because it
+// looks like a fact about when the learner said it.
+func MemorySavedOnLabel(memory LongTermMemory) string {
+	saved := MemorySavedOn(memory)
+	if saved.IsZero() {
+		return ""
+	}
+	return "; 保存于 " + saved.UTC().Format("2006-01-02")
+}
+
 func (m LongTermMemory) ExpiredAt(now time.Time) bool {
 	return m.Durability == MemoryDurabilityTimeBound && m.ValidUntil != nil && !m.ValidUntil.After(now)
 }

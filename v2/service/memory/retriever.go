@@ -383,13 +383,39 @@ func memoryTypePriority(memoryType model.MemoryScope, _ bool) int {
 	return 0
 }
 
+// renderMemory is the line a long-term memory reaches the model as.
+//
+// The line carries the scope, the tags and the day the memory was last
+// confirmed or changed. The day is the third thing because a memory with no
+// date on it reads as exactly as current as one written this morning, and the
+// model has no other way to tell that a stored value may have been overtaken
+// by something the learner said since.
 func renderMemory(memory model.LongTermMemory) string {
-	return fmt.Sprintf("[%s; tags=%s] %s: %s", memory.Scope, strings.Join(memory.Tags, ","), strings.TrimSpace(memory.Subject), strings.TrimSpace(memory.Content))
+	return fmt.Sprintf("[%s; tags=%s%s] %s: %s", memory.Scope, strings.Join(memory.Tags, ","),
+		renderMemorySavedOn(memory), strings.TrimSpace(memory.Subject), strings.TrimSpace(memory.Content))
+}
+
+// renderMemorySavedOn is the date part of a memory line.
+//
+// It is written inside the bracket, after the tags, so the line stays one
+// record: the reader that maps a line back to a memory reads the same shape
+// it always did, with one more field in it. The day is enough - what the
+// model has to know is that a value may be out of date, not what second it
+// was written.
+//
+// The label itself lives in the model package, because more than one path
+// renders a memory into the window and they have to agree on it.
+func renderMemorySavedOn(memory model.LongTermMemory) string {
+	return model.MemorySavedOnLabel(memory)
 }
 
 // RenderMemoryLine exposes renderMemory so the M1/M2 paired harness can map
 // an injected line back to its memory id without writing a second copy of
 // the format. It adds no behavior: recall paths keep calling renderMemory.
+//
+// The harness renders the line it expects and finds that line in the window,
+// so the date the line carries is the date of the row the harness holds: the
+// two agree because both come from the same function.
 func RenderMemoryLine(memory model.LongTermMemory) string { return renderMemory(memory) }
 
 func hasTag(tags []string, target string) bool {
