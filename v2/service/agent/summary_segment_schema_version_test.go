@@ -2,11 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
-	"strings"
 	"testing"
 
 	"GopherAI/model"
@@ -26,11 +21,11 @@ import (
 // wrote. The version the documents carry is the whole of that difference,
 // which is why it follows the mode.
 
-// baselineSegmentContent is the segment f1996a0 wrote for the batch below.
-const baselineSegmentContent = `{"schema_version":1,"topic":"拆包","points":[{"text":"用户要学 net 包","evidence_message_ids":[30]},{"text":"用户说基础不牢","evidence_message_ids":[32]}],"names":["net"],"numbers":["416"]}`
+// baselineSegmentContentBytes is the segment f1996a0 wrote for the batch below.
+const baselineSegmentContentBytes = `{"schema_version":1,"topic":"拆包","points":[{"text":"用户要学 net 包","evidence_message_ids":[30]},{"text":"用户说基础不牢","evidence_message_ids":[32]}],"names":["net"],"numbers":["416"]}`
 
-// baselineWhiteboardContent is the board f1996a0 wrote for the same batch.
-const baselineWhiteboardContent = `{"schema_version":1,"goal":{"text":"学会拆包","source_message_ids":[30],"updated_at_message_id":33},"constraints":[{"key":"c1","text":"先看粘包","value":"粘包","source_message_ids":[32],"updated_at_message_id":33}],"plan":[{"key":"p1","text":"写一个 demo","value":"demo","state":"open","source_message_ids":[32],"updated_at_message_id":33}],"open_items":[{"key":"o1","text":"半包还没懂","source_message_ids":[32],"updated_at_message_id":33}]}`
+// baselineWhiteboardContentBytes is the board f1996a0 wrote for the same batch.
+const baselineWhiteboardContentBytes = `{"schema_version":1,"goal":{"text":"学会拆包","source_message_ids":[30],"updated_at_message_id":33},"constraints":[{"key":"c1","text":"先看粘包","value":"粘包","source_message_ids":[32],"updated_at_message_id":33}],"plan":[{"key":"p1","text":"写一个 demo","value":"demo","state":"open","source_message_ids":[32],"updated_at_message_id":33}],"open_items":[{"key":"o1","text":"半包还没懂","source_message_ids":[32],"updated_at_message_id":33}]}`
 
 // baselineModelAnswer is the answer the model gives for the batch below.
 //
@@ -77,11 +72,11 @@ func baselineDocuments(t *testing.T, assistantContent bool) (string, string) {
 // the code is the code.
 func TestTheModeThatIsOffWritesTheDocumentsTheBaselineWrote(t *testing.T) {
 	segment, board := baselineDocuments(t, false)
-	if segment != baselineSegmentContent {
-		t.Fatalf("the segment is not the one the baseline wrote:\n got %s\nwant %s", segment, baselineSegmentContent)
+	if segment != baselineSegmentContentBytes {
+		t.Fatalf("the segment is not the one the baseline wrote:\n got %s\nwant %s", segment, baselineSegmentContentBytes)
 	}
-	if board != baselineWhiteboardContent {
-		t.Fatalf("the board is not the one the baseline wrote:\n got %s\nwant %s", board, baselineWhiteboardContent)
+	if board != baselineWhiteboardContentBytes {
+		t.Fatalf("the board is not the one the baseline wrote:\n got %s\nwant %s", board, baselineWhiteboardContentBytes)
 	}
 }
 
@@ -111,21 +106,21 @@ func TestTheModeThatIsOnWritesTheVersionThatHoldsTheAssistantsProducts(t *testin
 // The decoder of the version before this change reads what the mode that is
 // off writes.
 //
-// The decoder below is the one from f1996a0, copied: it refuses a schema
-// version it does not know, it refuses a field it does not know, and it
-// refuses trailing JSON. A deployment that rolls back to that version has to
-// be able to read the documents this one wrote, and this is that claim made
-// executable.
+// The decoder is the one from f1996a0, copied into the test with its
+// structures and its checks: it refuses a schema version it does not know, it
+// refuses a field it does not know, and it refuses trailing JSON. A
+// deployment that rolls back to that version has to be able to read the
+// documents this one writes, and this is that claim made executable.
 func TestTheBaselineDecoderReadsWhatTheModeThatIsOffWrites(t *testing.T) {
 	segment, board := baselineDocuments(t, false)
-	decodedSegment, err := decodeSegmentContentAsOfBaseline(segment)
+	decodedSegment, err := decodeBaselineSegmentContent(segment)
 	if err != nil {
 		t.Fatalf("the baseline decoder refused the segment: %v", err)
 	}
 	if decodedSegment.Topic != "拆包" || len(decodedSegment.Points) != 2 {
 		t.Fatalf("the baseline decoder read the segment as %+v", decodedSegment)
 	}
-	decodedBoard, err := decodeBoardAsOfBaseline(board)
+	decodedBoard, err := decodeBaselineBoardDocument(board)
 	if err != nil {
 		t.Fatalf("the baseline decoder refused the board: %v", err)
 	}
@@ -141,94 +136,42 @@ func TestTheBaselineDecoderReadsWhatTheModeThatIsOffWrites(t *testing.T) {
 // what turning the mode on means, and it is why the mode is off by default.
 func TestTheBaselineDecoderRefusesWhatTheModeThatIsOnWrites(t *testing.T) {
 	segment, board := baselineDocuments(t, true)
-	if _, err := decodeSegmentContentAsOfBaseline(segment); err == nil {
+	if _, err := decodeBaselineSegmentContent(segment); err == nil {
 		t.Fatal("the baseline decoder read a version 2 segment")
 	}
-	if _, err := decodeBoardAsOfBaseline(board); err == nil {
+	if _, err := decodeBaselineBoardDocument(board); err == nil {
 		t.Fatal("the baseline decoder read a version 2 board")
 	}
 }
 
-// decodeSegmentContentAsOfBaseline is the segment decoder of f1996a0.
+// A version 1 document that carries one of the new fields is refused by the
+// version that was in the field last week.
 //
-// It is a copy, not a call: the point of the test is what that version's
-// code did, and a call into today's code would only say what today's code
-// does.
-func decodeSegmentContentAsOfBaseline(content string) (model.SessionSummarySegmentContent, error) {
-	content = strings.TrimSpace(content)
-	if content == "" {
-		return model.SessionSummarySegmentContent{}, fmt.Errorf("summary segment content is empty")
-	}
-	if !strings.HasPrefix(content, "{") {
-		return model.SessionSummarySegmentContent{}, fmt.Errorf("summary segment must be a JSON object")
-	}
-	decoder := json.NewDecoder(strings.NewReader(content))
-	decoder.DisallowUnknownFields()
-	var document model.SessionSummarySegmentContent
-	if err := decoder.Decode(&document); err != nil {
-		return model.SessionSummarySegmentContent{}, fmt.Errorf("decode summary segment: %w", err)
-	}
-	if err := ensureSegmentJSONEOFAsOfBaseline(decoder); err != nil {
-		return model.SessionSummarySegmentContent{}, err
-	}
-	if document.SchemaVersion != model.SessionSummarySegmentSchemaV1 {
-		return model.SessionSummarySegmentContent{}, fmt.Errorf("unsupported summary segment schema version %d", document.SchemaVersion)
-	}
-	if err := document.Validate(); err != nil {
-		return model.SessionSummarySegmentContent{}, err
-	}
-	return document, nil
-}
+// The two fields are written only when they say something other than the
+// default, and this is the check that proves it. A document that carried
+// "source":"user" would be read by today's code - the field exists today -
+// and refused by that one, because the structure it decodes into has no such
+// field. A decoder that accepted it would be today's decoder with a
+// different name, and the test would say nothing.
+func TestTheBaselineDecoderRefusesTheNewFieldsInAVersion1Document(t *testing.T) {
+	segment := `{"schema_version":1,"topic":"拆包","points":[{"text":"用户要学 net 包","evidence_message_ids":[30],"source":"user"}]}`
+	board := `{"schema_version":1,"goal":{"text":"学会拆包","source_message_ids":[30],"updated_at_message_id":33},` +
+		`"constraints":[{"key":"c1","text":"先看粘包","value":"粘包","source_message_ids":[32],"origin":"user","updated_at_message_id":33}]}`
 
-// decodeBoardAsOfBaseline is the board decoder of f1996a0.
-func decodeBoardAsOfBaseline(content string) (model.SessionWhiteboardDocument, error) {
-	content = strings.TrimSpace(content)
-	if content == "" {
-		return model.SessionWhiteboardDocument{}, fmt.Errorf("session whiteboard is empty")
+	if _, err := decodeBaselineSegmentContent(segment); err == nil {
+		t.Fatal("the baseline decoder read a version 1 segment with a source field")
 	}
-	if !strings.HasPrefix(content, "{") {
-		return model.SessionWhiteboardDocument{}, fmt.Errorf("session whiteboard must be a JSON object")
+	if _, err := decodeBaselineBoardDocument(board); err == nil {
+		t.Fatal("the baseline decoder read a version 1 board with an origin field")
 	}
-	decoder := json.NewDecoder(strings.NewReader(content))
-	decoder.DisallowUnknownFields()
-	var document model.SessionWhiteboardDocument
-	if err := decoder.Decode(&document); err != nil {
-		return model.SessionWhiteboardDocument{}, fmt.Errorf("decode session whiteboard: %w", err)
-	}
-	if err := ensureWhiteboardJSONEOFAsOfBaseline(decoder); err != nil {
-		return model.SessionWhiteboardDocument{}, err
-	}
-	if document.SchemaVersion != model.SessionWhiteboardSchemaV1 {
-		return model.SessionWhiteboardDocument{}, fmt.Errorf("unsupported session whiteboard schema version %d", document.SchemaVersion)
-	}
-	if err := document.Validate(); err != nil {
-		return model.SessionWhiteboardDocument{}, err
-	}
-	return document, nil
-}
 
-// ensureSegmentJSONEOFAsOfBaseline is the trailing-JSON check of f1996a0.
-func ensureSegmentJSONEOFAsOfBaseline(decoder *json.Decoder) error {
-	var extra any
-	err := decoder.Decode(&extra)
-	if errors.Is(err, io.EOF) {
-		return nil
+	// Today's decoder reads both, because the fields exist today. The
+	// difference between the two decoders is the frozen structures, and not
+	// a rule that happens to refuse everything.
+	if _, err := model.DecodeSessionSummarySegmentContent(segment); err != nil {
+		t.Fatalf("today's decoder refused a segment it knows: %v", err)
 	}
-	if err != nil {
-		return fmt.Errorf("decode trailing summary segment: %w", err)
+	if _, err := model.DecodeSessionWhiteboardDocument(board); err != nil {
+		t.Fatalf("today's decoder refused a board it knows: %v", err)
 	}
-	return fmt.Errorf("summary segment contains trailing JSON")
-}
-
-// ensureWhiteboardJSONEOFAsOfBaseline is the trailing-JSON check of f1996a0.
-func ensureWhiteboardJSONEOFAsOfBaseline(decoder *json.Decoder) error {
-	var extra any
-	err := decoder.Decode(&extra)
-	if errors.Is(err, io.EOF) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("decode trailing session whiteboard: %w", err)
-	}
-	return fmt.Errorf("session whiteboard contains trailing JSON")
 }
