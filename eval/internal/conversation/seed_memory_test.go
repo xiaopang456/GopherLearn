@@ -166,24 +166,33 @@ func TestSeededMemoryOfAnotherUserIsNotRead(t *testing.T) {
 
 // TestBindRunsGivesEveryCallItsRun is the attribution rule of an attempt with
 // several questions: a call belongs to the question whose window it was sent
-// in, and a call of the background work belongs to the last run.
+// in, and a call that falls outside every window belongs to no question.
+//
+// The call between the two questions is the background work that starts after
+// the first answer came back. It is not part of the second question's turn,
+// and counting it there would move the first question's aftermath onto the
+// question after it.
 func TestBindRunsGivesEveryCallItsRun(t *testing.T) {
 	start := time.Date(2026, time.January, 14, 10, 0, 0, 0, time.UTC)
 	questions := []QuestionResult{
 		{Index: 0, RunID: "run-1", StartedAt: start, FinishedAt: start.Add(time.Minute)},
-		{Index: 1, RunID: "run-2", StartedAt: start.Add(time.Minute), FinishedAt: start.Add(2 * time.Minute)},
+		{Index: 1, RunID: "run-2", StartedAt: start.Add(2 * time.Minute), FinishedAt: start.Add(3 * time.Minute)},
 	}
 	calls := []ModelCall{
 		{ID: 1, Started: start.Add(10 * time.Second)},
 		{ID: 2, Started: start.Add(70 * time.Second)},
-		{ID: 3, Started: start.Add(3 * time.Minute)},
+		{ID: 3, Started: start.Add(150 * time.Second)},
 	}
 	bound := BindRuns(calls, "session-1", questions)
-	if bound[0].RunID != "run-1" || bound[1].RunID != "run-2" {
-		t.Fatalf("bound=%+v", bound)
+	if bound[0].RunID != "run-1" {
+		t.Fatalf("the first call=%+v", bound[0])
 	}
 	if bound[2].RunID != "run-2" {
-		t.Fatalf("background call=%+v", bound[2])
+		t.Fatalf("the second question's call=%+v", bound[2])
+	}
+	// The call between the two questions belongs to neither of them.
+	if bound[1].RunID != "" {
+		t.Fatalf("the call between the questions was counted to %q: %+v", bound[1].RunID, bound[1])
 	}
 	for _, call := range bound {
 		if call.SessionID != "session-1" {

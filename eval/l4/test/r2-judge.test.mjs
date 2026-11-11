@@ -15,7 +15,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { judgeCategories, judgeInput } from '../truncation.mjs'
 import { scoreAttempt } from '../score.mjs'
-import { splitForId } from '../scenarios.mjs'
+import { resolveAttempt, splitForId } from '../scenarios.mjs'
 
 const TURNS = 70
 const FILLER = '这是一段用于把历史撑到足够长的填充文字，它本身不承载任何答案。'
@@ -253,6 +253,51 @@ test('a record that names another round is not scored against that key', () => {
   const wrong = scoreAttempt({ qid: `${s.id}#q1`, question_index: 45, rep: 0, arm: 'current', env: 'fake', answer: '甲' }, s)
   assert.equal(wrong.verdict, 'error')
   assert.equal(wrong.reason, 'identity_mismatch')
+})
+
+// A scenario that names the rounds is read strictly by the round.
+//
+// The position of a question in the list is a different fact from the round it
+// was asked at: the first question of the list was asked at its round, not at
+// the zero-th round of the conversation. A record that carries the position
+// has been written by something that did not read the scenario, and it is
+// refused rather than scored against the key of the question it happens to
+// point at.
+test('a scenario that names the rounds is not read by the position', () => {
+  const s = f1Scenario()
+  assert.equal(s.questions[0].turn, 36)
+  const byPosition = scoreAttempt({ qid: `${s.id}#q1`, question_index: 0, rep: 0, arm: 'current', env: 'fake', answer: '甲' }, s)
+  assert.equal(byPosition.verdict, 'error', JSON.stringify(byPosition))
+  assert.equal(byPosition.reason, 'identity_mismatch')
+  // The same record without the attempt's number is refused as well.
+  const bare = scoreAttempt({ qid: s.id, question_index: 0, rep: 0, arm: 'current', env: 'fake', answer: '甲' }, s)
+  assert.equal(bare.verdict, 'error', JSON.stringify(bare))
+  assert.equal(bare.reason, 'identity_mismatch')
+  // The round is what the record has to carry.
+  const byTurn = scoreAttempt({ qid: `${s.id}#q1`, question_index: 36, rep: 0, arm: 'current', env: 'fake', answer: '甲' }, s)
+  assert.equal(byTurn.verdict, 'pass', JSON.stringify(byTurn))
+})
+
+// A scenario of the old shape names no rounds, so the position is the only
+// thing it offers, and the position keeps being read.
+//
+// The old shape is read here through the resolver and not through the scorer:
+// a new scenario of the second round has to name its rounds, and the scorer
+// refuses a scenario that does not. The old shape is what records written
+// before the rounds existed carry, and those records are read by the position.
+test('a scenario that names no rounds is still read by the position', () => {
+  const s = f1Scenario()
+  for (const question of s.questions) delete question.turn
+  const first = resolveAttempt(s, { qid: `${s.id}#q1`, question_index: 0 })
+  assert.ok(first, 'the first question was not resolved by its position')
+  assert.equal(first.index, 0)
+  const second = resolveAttempt(s, { qid: `${s.id}#q2`, question_index: 1 })
+  assert.ok(second, 'the second question was not resolved by its position')
+  assert.equal(second.index, 1)
+  // A round is still refused: the old shape names no rounds, so a record
+  // that carries one names a question of a different scenario.
+  const byTurn = resolveAttempt(s, { qid: s.id, question_index: 36 })
+  assert.equal(byTurn, null)
 })
 
 // An answer the scorer cannot decide waits for a judge. A category the judge

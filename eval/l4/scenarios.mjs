@@ -198,11 +198,18 @@ export function questionIndexOf(attempt) {
 // The question index of a record is the turn the question was asked at, when
 // the scenario says which turn that is. The turn is the better name: it says
 // where in the conversation the question was asked, while the position in the
-// list says only where in the file it was written down. A scenario that does
-// not name the turn keeps the position, and a record may carry either where
-// the two cannot be confused - the turn is at least as large as the number of
-// questions, so a turn of three and a position of three cannot both be right
-// for the same question.
+// list says only where in the file it was written down.
+//
+// A scenario that names the turns is read strictly by the turn. A record that
+// carries the position instead is not resolved: it names a question of a
+// scenario that names its turns, and the two readings are different facts. A
+// position of zero is the first question of the list, and the first question
+// of the list was asked at its turn, not at the zero-th round of the
+// conversation - a record that carries the position has been written by
+// something that did not read the scenario.
+//
+// A scenario that does not name the turns keeps the position, because the
+// position is the only thing it offers.
 export function resolveAttempt(scenario, record) {
   const list = scenarioQuestions(scenario)
   if (!isMultiQuestion(scenario)) {
@@ -217,27 +224,38 @@ export function resolveAttempt(scenario, record) {
   }
   if (record?.qid === scenario?.id) {
     const index = Number.isInteger(record?.question_index) ? record.question_index : 0
-    const byPosition = list[index] ?? null
-    const byTurn = list.find(question => question.turn !== null && question.turn === index) ?? null
-    // The two readings may disagree, and then the record names two questions
-    // at once. It is not resolved: scoring it would mean guessing which of the
-    // two keys the answer was read against.
-    if (byPosition && byTurn && byPosition !== byTurn) return null
-    return byTurn ?? byPosition
+    if (namesTurns(list)) {
+      // The scenario says which round each question was asked at, so the
+      // record has to say the same. The position is not a second reading of
+      // the turn: it is a different fact, and reading it as one would score
+      // the answer against a key it does not belong to.
+      return list.find(question => question.turn === index) ?? null
+    }
+    return list[index] ?? null
   }
   return null
+}
+
+// namesTurns says whether the scenario names the round each of its questions
+// was asked at.
+//
+// A scenario that names the turns of some of its questions but not of others
+// is read by the turn as well: a record of a question whose turn is known
+// may only carry that turn, and the questions whose turn is not known keep
+// the position.
+function namesTurns(list) {
+  return list.some(question => question.turn !== null)
 }
 
 // namesThisQuestion says whether a record's question index names the question
 // it is asked about.
 //
 // The index is the turn of the question when the scenario names it, and the
-// position in the list otherwise. A record that carries the other one is
-// accepted too, because a scenario whose questions do not name their turns
-// has only the position to offer, and a record written before the turns
-// existed still carries it.
+// position in the list otherwise. When the scenario names the turn, the
+// position is not accepted: the two are different facts, and a record that
+// carries the position has not read the scenario.
 function namesThisQuestion(question, index) {
-  if (question.turn !== null && index === question.turn) return true
+  if (question.turn !== null) return index === question.turn
   return index === question.index
 }
 

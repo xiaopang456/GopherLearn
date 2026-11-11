@@ -59,10 +59,22 @@ func BindRun(calls []ModelCall, sessionID, runID string) []ModelCall {
 //
 // An attempt that asks one question has one run, and every call belongs to
 // it. An attempt that asks several questions has one run per question, and a
-// call belongs to the question whose window it was sent in. A call outside
-// every window - the background work that starts after the last answer came
-// back - is attributed to the last run, which is the only one it can belong
-// to.
+// call belongs to the question whose window it was sent in.
+//
+// A call outside every window belongs to no question, and it is left without a
+// run. That is the background work that starts after one answer came back and
+// before the next question was asked: it is part of the attempt, and it is
+// not part of any question's turn. Counting it to the last question would
+// move one question's aftermath onto the question after it, and a report that
+// says "the second question cost this much" would be reporting the first
+// question's background work.
+//
+// The call cannot be attributed by its own identity instead: the run id is
+// the server's, and the request the model receives does not carry it. A
+// provider that knew the run id would know the server's internal identity of
+// a conversation, and the product has no reason to hand that out. So the call
+// is left as it is, and the attribution reads a call without a run as a call
+// of unknown identity and counts it apart rather than folding it into a run.
 func BindRuns(calls []ModelCall, sessionID string, questions []QuestionResult) []ModelCall {
 	result := append([]ModelCall(nil), calls...)
 	for i := range result {
@@ -79,9 +91,6 @@ func BindRuns(calls []ModelCall, sessionID string, questions []QuestionResult) [
 				continue
 			}
 			runID = question.RunID
-		}
-		if runID == "" && len(questions) > 0 {
-			runID = questions[len(questions)-1].RunID
 		}
 		result[i].RunID = runID
 	}
