@@ -1,5 +1,5 @@
 import { checkScenario, isMultiQuestion, resolveAttempt } from './scenarios.mjs'
-import { MENTION_EXPRESSION, canonicalExpression, chineseNumber, compoundMention, normalizeValue } from './normalize.mjs'
+import { MENTION_EXPRESSION, canonicalExpression, chineseNumber, compoundMention, foldCharacters, normalizeValue } from './normalize.mjs'
 
 // Normalize presentation differences centrally, keeping answer keys semantic.
 // Only a complete quantity is converted; numbers inside narrative answers still
@@ -109,23 +109,6 @@ function compact(text) {
   return { text: out, map }
 }
 
-// compactFolded is the haystack the mentions are looked for in: the same folding the
-// answer key's values get, so that a value and the answer that states it are written
-// the same way. Every character keeps the index it had in the original text, so a
-// mention can still be pointed at in the original.
-function compactFolded(text) {
-  let out = ''
-  const map = []
-  for (let i = 0; i < text.length; i += 1) {
-    if (/\s/u.test(text[i])) continue
-    for (const character of text[i].toLowerCase()) {
-      out += character
-      map.push(i)
-    }
-  }
-  return { text: out, map }
-}
-
 function hasMarker(window, markers) {
   return markers.some(marker => (typeof marker === 'string' ? window.includes(marker) : marker.test(window)))
 }
@@ -169,7 +152,10 @@ function mentionsOf(text, value) {
   // canonical form, and every mention the answer contains is put into the same form
   // before the two are compared.
   const canonical = normalizeValue(value)
-  const haystack = compactFolded(text)
+  // The haystack is the answer, folded by the folding of normalize.mjs - the same one
+  // the values of the answer key go through. Every character keeps the index it had
+  // in the folded text, so a mention can still be pointed at.
+  const haystack = foldCharacters(text)
   if (!canonical.startsWith('text:')) {
     FACT_EXPR.lastIndex = 0
     for (let match = FACT_EXPR.exec(haystack.text); match; match = FACT_EXPR.exec(haystack.text)) {

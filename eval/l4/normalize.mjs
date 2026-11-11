@@ -206,11 +206,47 @@ const CLOCK_EXPRESSION = new RegExp(`^(凌晨|早上|上午|中午|下午|晚上
 // A value that is exactly one quantity.
 const QUANTITY_EXPRESSION = new RegExp(`^(${NUM})(${UNIT_ALTERNATION})$`, 'iu')
 
-// fold is the presentation folding every value goes through before it is compared:
-// full-width characters become half-width, spacing disappears, a trailing sentence
-// mark is dropped, and the result is lower-cased.
+// The one folding of a text.
+//
+// A character is normalized to its half-width form and lower-cased, the spacing
+// is dropped, and every character keeps the index it had in the text it came
+// from. The indices are what lets the scorer point at a mention in the answer.
+//
+// Three things are folded with it: the answer the scorer looks a value in, the
+// values of the answer key (the accepted values, the aliases and the forbidden
+// values alike), and the history the second round's checks read a value out of.
+// They are folded the same way, so that a value and the text that states it are
+// written the same way on both sides.
+//
+// The scorer's normalization answers a different question and is not this one:
+// it names a quantity canonically ("38 minutes" and "2280 seconds" are one
+// value) instead of folding a whole sentence. A value that is not an
+// expression is looked for literally in the folded text, which is what the
+// datasets were written against.
+export function foldCharacters(text) {
+  const base = String(text ?? '').normalize('NFKC')
+  let out = ''
+  const map = []
+  for (let i = 0; i < base.length; i += 1) {
+    if (/\s/u.test(base[i])) continue
+    for (const character of base[i].toLowerCase()) {
+      out += character
+      map.push(i)
+    }
+  }
+  return { text: out, map }
+}
+
+// foldText is the same folding as one string: the full-width characters become
+// half-width, the spacing disappears and the result is lower-cased.
+export function foldText(text) {
+  return foldCharacters(text).text
+}
+
+// fold is the folding of a value: the same folding, and a sentence mark at the
+// end of the value is not part of it.
 export function fold(s) {
-  return String(s ?? '').normalize('NFKC').replace(/\s+/gu, '').replace(/[。.!！]$/u, '').toLowerCase()
+  return foldText(s).replace(/[。.!！]$/u, '')
 }
 
 // A rational number, as the lowest terms. A duration is compared as an exact
