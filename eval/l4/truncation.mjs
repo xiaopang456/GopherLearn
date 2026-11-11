@@ -235,8 +235,16 @@ export function judgeCriterion(scenario) {
 // statement that nothing was decided, and the value reading cannot decide it.
 // Without this the attempts of this category would never be judged at all: the
 // scorer would leave them pending and no judge would ever be asked about them.
+//
+// The second round's fact categories are judged for the same reason as 'stale':
+// the value lists decide the clear answers, and the answers that mention both
+// the right value and the wrong one, or that name no value at all, come back
+// undecided. An undecided attempt of a category that is not asked about waits
+// for a judge that never comes: it counts as neither a pass nor a fail, and
+// no report ever settles it. A1, A2, A4, P1 and F1 are therefore asked about,
+// and F1 is asked about once per question.
 export function judgeCategories() {
-  return ['constraint', 'irrelevant', 'no_fabrication', 'stale', 'R5', 'R2', 'R3', 'A3']
+  return ['constraint', 'irrelevant', 'no_fabrication', 'stale', 'R5', 'R2', 'R3', 'A3', 'A1', 'A2', 'A4', 'P1', 'F1']
 }
 
 // quotedName is the name the question quotes, when it quotes exactly one.
@@ -301,9 +309,10 @@ export function evidenceFor(scenario, condition = 'main') {
 // "current".
 //
 // The second round's categories need one each as well, and each names what the
-// category is about: A2 the value that replaced the proposed one, A4 the value
-// that replaced the echoed one, P1 the value this session said rather than the
-// one the profile holds.
+// category is about: A1 the item the assistant produced, A2 the value that
+// replaced the proposed one, A4 the value that replaced the echoed one, P1 the
+// value this session said rather than the one the profile holds, and F1 the
+// item this one question asks about.
 //
 // The attempt is the question the record answers. A scenario with several
 // questions has its own key per question, and the checkpoints are read from
@@ -315,6 +324,7 @@ export function checkPointsFor(scenario, attempt) {
   if (scenario.category === 'stale') return { points: ['当前答案正确且无旧值冒充当前值'] }
   if (scenario.category === 'R2') return { points: ['当前值正确，且没有拿被取代的旧值冒充当前值'] }
   if (scenario.category === 'R3') return { points: ['最初值正确，且没有拿后来的新值冒充最初值'] }
+  if (scenario.category === 'A1') return { points: ['助手列出的那一项正确，且没有把同一份清单里的其他项当成这一项'] }
   if (scenario.category === 'A2') return { points: ['当前值正确，且没有拿被取代的旧值冒充当前值'] }
   if (scenario.category === 'A4') return { points: ['当前值正确，且没有拿被回声重复的旧值冒充当前值'] }
   if (scenario.category === 'P1') return { points: ['本会话说的新值正确，且没有拿画像里的旧值冒充当前值'] }

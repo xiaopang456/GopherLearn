@@ -84,6 +84,86 @@ function f1Scenario() {
   }
 }
 
+// a1Scenario is a valid second-round A1 scenario: the assistant produced a
+// list, and the question asks for one of its items.
+function a1Scenario() {
+  counter += 1
+  const id = `l4r2-a1-${counter}`
+  return {
+    id, category: 'A1', split: splitForId(id), schema_version: 'l4.scenario.draft.v4',
+    entity_name: '测试物',
+    key_turns: { artifact_turn: 30 },
+    evidence_turns: [30],
+    distance_to_question: TURNS + 1 - 30,
+    turns: secondRoundTurns({
+      30: { assistant: '我整理了「测试物」的清单，第一项是甲，第二项是乙。' },
+    }),
+    question: '「测试物」这份清单的第一项练什么？',
+    answer: { mode: 'fact', accepted: ['甲'], forbidden: ['乙'], aliases: [] },
+  }
+}
+
+// a2Scenario is a valid second-round A2 scenario: the assistant proposed a
+// value, the learner accepted it and then changed it.
+function a2Scenario() {
+  counter += 1
+  const id = `l4r2-a2-${counter}`
+  return {
+    id, category: 'A2', split: splitForId(id), schema_version: 'l4.scenario.draft.v4',
+    entity_name: '测试物',
+    key_turns: { proposal_turn: 28, change_turn: 30 },
+    evidence_turns: [28, 30],
+    distance_to_question: TURNS + 1 - 28,
+    turns: secondRoundTurns({
+      28: { assistant: '我提议用甲来做「测试物」这一步。' },
+      30: { user: '好的，那就改用丙来跑这一轮。', assistant: '嗯，那就用丙。' },
+    }),
+    question: '「测试物」这一步最后用的是什么？',
+    answer: { mode: 'fact', accepted: ['丙'], forbidden: ['甲'], aliases: [] },
+  }
+}
+
+// a4Scenario is a valid second-round A4 scenario: the learner said a value,
+// the assistant repeated it, and the learner changed it.
+function a4Scenario() {
+  counter += 1
+  const id = `l4r2-a4-${counter}`
+  return {
+    id, category: 'A4', split: splitForId(id), schema_version: 'l4.scenario.draft.v4',
+    entity_name: '测试物',
+    key_turns: { said_turn: 27, echo_turn: 28, change_turn: 30 },
+    evidence_turns: [27, 28, 30],
+    distance_to_question: TURNS + 1 - 27,
+    turns: secondRoundTurns({
+      27: { user: '这一轮「测试物」按甲来。' },
+      28: { assistant: '好的，这一轮按甲来。' },
+      30: { user: '改成按乙来。', assistant: '明白了。' },
+    }),
+    question: '「测试物」这一轮最后按哪个来？',
+    answer: { mode: 'fact', accepted: ['乙'], forbidden: ['甲'], aliases: [] },
+  }
+}
+
+// p1Scenario is a valid second-round P1 scenario: a profile memory from an
+// earlier day says one thing and the session says another.
+function p1Scenario() {
+  counter += 1
+  const id = `l4r2-p1-${counter}`
+  return {
+    id, category: 'P1', split: splitForId(id), schema_version: 'l4.scenario.draft.v4',
+    entity_name: '测试物',
+    key_turns: { session_turn: 30 },
+    evidence_turns: [30],
+    distance_to_question: TURNS + 1 - 30,
+    turns: secondRoundTurns({
+      30: { user: '「测试物」我最近换成用丙了。', assistant: '明白了。' },
+    }),
+    question: '「测试物」我现在用哪个编辑器？',
+    answer: { mode: 'fact', accepted: ['丙'], forbidden: ['旧值'], aliases: [] },
+    seed_memories: [{ scope: 'global', subject: '常用编辑器', content: '常用编辑器: 旧值', tags: [], confirmed: true, saved_at: '2026-01-14' }],
+  }
+}
+
 const attempt = (qid, overrides = {}) => ({ qid, arm: 'truncation', condition: 'main', rep: 0, env: 'real', answer: '这是答案。', ...overrides })
 
 test('A3 is among the categories the judge is asked about', () => {
@@ -149,4 +229,40 @@ test('the questions of one scenario are scored one at a time, each against its o
   assert.equal(second.verdict, 'fail')
   assert.equal(second.id, `${s.id}#q2`)
   assert.equal(second.question_index, 1)
+})
+
+// An answer the scorer cannot decide waits for a judge. A category the judge
+// is never asked about leaves that answer waiting forever: it counts as
+// neither a pass nor a fail, and no report ever settles it.
+//
+// Every second-round category is therefore checked on the path an undecided
+// answer takes: the scorer leaves it undecided, the judge input carries it,
+// and the judge row names the check point to decide.
+test('an undecided answer of every second-round category reaches the judge', () => {
+  const cases = [
+    ['A1', a1Scenario, '第一项是甲，第二项是乙。'],
+    ['A2', a2Scenario, '改用丙，甲也可以。'],
+    ['A3', a3Scenario, '这个安排当时只是提议，还没有定下来。'],
+    ['A4', a4Scenario, '改成按乙来，甲那个也行。'],
+    ['P1', p1Scenario, '我现在用丙，旧值也算。'],
+    ['F1', f1Scenario, '第一项是甲，第二项是乙。'],
+  ]
+  for (const [category, build, answer] of cases) {
+    const s = build()
+    const qid = category === 'F1' ? `${s.id}#q1` : s.id
+    const record = { qid, question_index: category === 'F1' ? 0 : undefined, rep: 0, arm: 'current', env: 'fake', answer }
+    const outcome = scoreAttempt(record, s)
+    assert.equal(outcome.verdict, 'needs_judge', `${category}: ${JSON.stringify(outcome)}`)
+    const rows = judgeInput(new Map([[s.id, s]]), [record])
+    assert.ok(rows.length >= 1, `${category}: no judge row`)
+    for (const row of rows) {
+      assert.equal(row.error, undefined, `${category}: ${row.error}`)
+      assert.ok(row.input, `${category}: the judge row carries no input`)
+      assert.ok(row.input.check_point, `${category}: the judge row names no check point`)
+      assert.ok(row.input.question, `${category}: the judge row carries no question`)
+      assert.ok(row.input.answer_key, `${category}: the judge row carries no answer key`)
+      assert.ok(row.input.evidence?.length, `${category}: the judge row carries no evidence`)
+    }
+    assert.equal(rows[0].item_id, qid, `${category}: the judge row names another attempt`)
+  }
 })
