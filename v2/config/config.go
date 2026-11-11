@@ -506,6 +506,20 @@ type AgentConfig struct {
 	// contextMaxSegmentTokens raised to 450, because a segment that carries
 	// the products as well as the learner's statements needs more room.
 	SummaryAssistantContent string `toml:"summaryAssistantContent"`
+	// SummarySegmentDebugDump says whether the model's raw answer is kept
+	// beside the segment it produced.
+	//
+	// The answer is the one thing that cannot be reconstructed: what the
+	// model actually wrote - the origin it gave an entry, the wording it used
+	// for a decision - is gone once the program has checked it and kept or
+	// dropped it. The dump keeps it, so a run that produced a surprising
+	// summary can be looked at instead of guessed at.
+	//
+	// It is off by default: the dump is the size of the model's answer for
+	// every batch, and a deployment that is not looking for one does not pay
+	// for it. It lives in the segment's own row and goes away with the
+	// session.
+	SummarySegmentDebugDump bool `toml:"summarySegmentDebugDump"`
 	// SummarySegmentWorkerCount is how many segment jobs are processed at the
 	// same time.
 	SummarySegmentWorkerCount int `toml:"summarySegmentWorkerCount"`
@@ -539,6 +553,12 @@ type AgentConfig struct {
 	// SummarySegmentMaxMessages is how many turns one segment may cover.
 	SummarySegmentMaxMessages int `toml:"summarySegmentMaxMessages"`
 	// SummarySegmentMaxInputTokens is the segment generator's input budget.
+	//
+	// The default is what the mode that does not record the assistant's
+	// products needs: with the assistant's body replaced by a placeholder,
+	// a batch of sixty-four turns fits in eight thousand tokens. The mode
+	// that does record them reads far more, and the effective budget
+	// follows the mode - see EffectiveSummarySegmentMaxInputTokens.
 	SummarySegmentMaxInputTokens int `toml:"summarySegmentMaxInputTokens"`
 	// SummarySegmentMaxOutputTokens is the segment generator's output budget.
 	SummarySegmentMaxOutputTokens int `toml:"summarySegmentMaxOutputTokens"`
@@ -623,6 +643,43 @@ const (
 	// what makes it longer. The resident budget is divided by this number,
 	// so a larger segment means fewer of them travel with every turn.
 	defaultAssistantSegmentTokens = 450
+	// defaultSummarySegmentMaxInputTokens is what the segment generator's
+	// input budget is when the assistant's body is a placeholder.
+	defaultSummarySegmentMaxInputTokens = 8000
+	// defaultAssistantSegmentMaxInputTokens is what the segment generator's
+	// input budget is when the summary also records what the assistant
+	// produced.
+	//
+	// The budget of eight thousand was set for a batch whose assistant
+	// messages were placeholders. It was never the model's limit: the
+	// configuration allows a hundred thousand, and the model the generator
+	// writes with reads far more than that - the chat model this product
+	// ships against (Qwen3.8-Max on Alibaba Cloud Model Studio) has a
+	// context of four hundred thousand tokens and more, and the older
+	// Qwen3-Max reads 262,144.
+	//
+	// So the budget is the program's own, and it was set for a shape of
+	// input the mode no longer has. With the assistant's own words in the
+	// input, a batch of sixty-four turns is about twenty-four thousand
+	// tokens - three times the old budget - and every batch of it failed
+	// before the model was asked anything. The budget is raised to what
+	// the model can read, so a normal batch is one call again and the two
+	// modes batch the same turns the same way.
+	//
+	// A hundred thousand is a quarter of what the model can read, and it is
+	// also the ceiling the configuration allows. The margin is the room
+	// for the output, for the provider's own overhead and for a deployment
+	// that runs against a smaller model: a deployment whose model reads
+	// less sets the budget itself, and an explicitly configured value is
+	// left alone.
+	defaultAssistantSegmentMaxInputTokens = 100000
+	// summarySegmentBlockHeaderTokens is what a summary-segment block spends on
+	// its own header before any segment is rendered.
+	//
+	// It is restated here for the same reason the block budgets are: the agent
+	// package imports this one, so the renderer cannot be imported here. A test
+	// in internal/isolated asserts the two still agree.
+	summarySegmentBlockHeaderTokens = 59
 )
 
 // EffectiveSegmentTokens is what one summary segment may cost.
@@ -639,10 +696,67 @@ func (c AgentConfig) EffectiveSegmentTokens() int {
 	return c.ContextMaxSegmentTokens
 }
 
+// EffectiveResidentSegmentTokens is what the resident segment block may cost.
+//
+// A segment block has to carry one whole segment, and a segment that does not
+// fit is not trimmed - it is dropped, and the stretch it covered is a hole in
+// the session's memory. So the block's budget has to be at least what one
+// maximum-size segment costs, header included.
+//
+// The deployment's own number is left alone when it is already big enough.
+// When it is not, the block is raised to what the segment needs, and the room
+// comes out of the window's free space: the blocks are charged before the raw
+// conversation is selected, so a larger segment block leaves less room for the
+// learner's own recent words. A configuration where the raised blocks do not
+// fit is refused at startup rather than silently squeezed.
+func (c AgentConfig) EffectiveResidentSegmentTokens() int {
+	return c.effectiveSegmentBlockTokens(c.ContextMaxResidentSegmentTokens)
+}
+
+// EffectiveRetrievedSegmentTokens is what the retrieved segment block may
+// cost. It follows the same rule as the resident block: one whole segment has
+// to fit.
+func (c AgentConfig) EffectiveRetrievedSegmentTokens() int {
+	return c.effectiveSegmentBlockTokens(c.ContextMaxRetrievedSegmentTokens)
+}
+
+// effectiveSegmentBlockTokens raises a segment block's budget to what one
+// maximum-size segment costs, when the deployment's own number is smaller.
+func (c AgentConfig) effectiveSegmentBlockTokens(configured int) int {
+	if !c.SummaryAssistantContentEnabled() {
+		return configured
+	}
+	needed := c.EffectiveSegmentTokens() + summarySegmentBlockHeaderTokens
+	if configured >= needed {
+		return configured
+	}
+	return needed
+}
+
 // SummaryAssistantContentEnabled reports whether the summary records what the
 // assistant produced.
 func (c AgentConfig) SummaryAssistantContentEnabled() bool {
 	return c.SummaryAssistantContent == "on"
+}
+
+// EffectiveSummarySegmentMaxInputTokens is what the segment generator's
+// input budget is.
+//
+// The budget of eight thousand was set for the mode that does not record the
+// assistant's products, where the assistant's message is a placeholder. In
+// the mode that does record them the same batch is about three times as
+// long, and every batch of it failed before the model was asked anything -
+// so the mode gets the budget the model can actually read.
+//
+// A configured value that is not the default is the deployment's own
+// decision and is left alone: a deployment that runs against a smaller model,
+// or that pays for every token, says so.
+func (c AgentConfig) EffectiveSummarySegmentMaxInputTokens() int {
+	if c.SummaryAssistantContent == "on" &&
+		c.SummarySegmentMaxInputTokens == defaultSummarySegmentMaxInputTokens {
+		return defaultAssistantSegmentMaxInputTokens
+	}
+	return c.SummarySegmentMaxInputTokens
 }
 
 func defaultConfig() *Config {
@@ -1051,6 +1165,13 @@ func applyAgentEnv(c *AgentConfig) error {
 	if value, ok := os.LookupEnv("AGENT_SUMMARY_ASSISTANT_CONTENT"); ok {
 		c.SummaryAssistantContent = strings.TrimSpace(value)
 	}
+	if value, ok := os.LookupEnv("AGENT_SUMMARY_SEGMENT_DEBUG_DUMP"); ok {
+		parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+		if err != nil {
+			return fmt.Errorf("AGENT_SUMMARY_SEGMENT_DEBUG_DUMP must be true or false")
+		}
+		c.SummarySegmentDebugDump = parsed
+	}
 	for name, set := range map[string]func(string){
 		"MEMORY_PLANNER_MODEL":    func(value string) { c.MemoryPlannerModel = value },
 		"MEMORY_PLANNER_BASE_URL": func(value string) { c.MemoryPlannerBaseURL = value },
@@ -1334,10 +1455,22 @@ func (c AgentConfig) Validate() error {
 	softBudget := c.ContextMaxGlobalUserMemoryTokens + c.ContextMaxTopicUserMemoryTokens +
 		c.ContextMaxSummaryTokens + c.ContextMaxMasteryTokens + c.ContextMaxEpisodeTokens
 	if c.SummarySegmentMode == "on" {
-		softBudget += c.ContextMaxWhiteboardTokens + c.ContextMaxResidentSegmentTokens + c.ContextMaxRetrievedSegmentTokens
-	}
-	if softBudget >= c.ContextInputTargetTokens-c.KnowledgeMaxRunTokens {
-		return fmt.Errorf("context profile, topic note, episode, summary, mastery, board and segment budgets leave no room for required context")
+		residentTokens := c.EffectiveResidentSegmentTokens()
+		retrievedTokens := c.EffectiveRetrievedSegmentTokens()
+		softBudget += c.ContextMaxWhiteboardTokens + residentTokens + retrievedTokens
+		if softBudget >= c.ContextInputTargetTokens-c.KnowledgeMaxRunTokens {
+			if residentTokens != c.ContextMaxResidentSegmentTokens || retrievedTokens != c.ContextMaxRetrievedSegmentTokens {
+				// The blocks were raised to fit one maximum-size segment, and
+				// the raise is what does not fit. The numbers are in the
+				// message because the fix is a configuration change and the
+				// configuration is what has to change.
+				return fmt.Errorf("the summary's assistant products raise the resident segment block to %d and the retrieved segment block to %d tokens; with the board (%d), the summary (%d), the mastery (%d), the episode (%d), the profile (%d) and the topic note (%d) the soft budgets (%d) leave no room for the required context (%d)",
+					residentTokens, retrievedTokens, c.ContextMaxWhiteboardTokens, c.ContextMaxSummaryTokens,
+					c.ContextMaxMasteryTokens, c.ContextMaxEpisodeTokens, c.ContextMaxGlobalUserMemoryTokens,
+					c.ContextMaxTopicUserMemoryTokens, softBudget, c.ContextInputTargetTokens-c.KnowledgeMaxRunTokens)
+			}
+			return fmt.Errorf("context profile, topic note, episode, summary, mastery, board and segment budgets leave no room for required context")
+		}
 	}
 	if c.ContextMaxMasteryTokens > 2000 {
 		return fmt.Errorf("contextMaxMasteryTokens must not exceed 2000")

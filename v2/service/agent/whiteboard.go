@@ -99,7 +99,8 @@ func (b WhiteboardBatch) allowed(origin string) map[uint]struct{} {
 			allowed[id] = struct{}{}
 		}
 	}
-	if origin != model.SessionWhiteboardOriginAssistantAccepted {
+	if origin != model.SessionWhiteboardOriginAssistant &&
+		origin != model.SessionWhiteboardOriginAssistantAccepted {
 		return allowed
 	}
 	for _, id := range b.AssistantMessageIDs {
@@ -153,6 +154,46 @@ func acceptedAssistantProposal(ids []uint, batch WhiteboardBatch) bool {
 		}
 	}
 	return false
+}
+
+// citesAssistantMessage reports whether the citations name a message of the
+// assistant's.
+//
+// It is the question that decides what a claim is worth: an entry that claims
+// to be the assistant's and cites nothing of the assistant's is not the
+// assistant's - whatever it says, it was drawn from the learner's own words.
+func citesAssistantMessage(ids []uint, batch WhiteboardBatch) bool {
+	for _, id := range ids {
+		if batch.KnownMessages[id] == WhiteboardMessageRoleAssistant {
+			return true
+		}
+	}
+	return false
+}
+
+// whiteboardOriginForProposal is the origin a proposed entry is read under.
+//
+// The empty origin is the learner's, and the case of the label does not
+// change what it means: "User" and "user" are the same claim.
+//
+// A board that cannot name an assistant's origin cannot hold one. The mode
+// that does not record the assistant's products never asked for an origin, so
+// a label naming one there is the model writing something it was not asked
+// for, and it is refused the way it always was.
+func whiteboardOriginForProposal(origin string, schemaVersion int) (string, bool) {
+	trimmed := strings.ToLower(strings.TrimSpace(origin))
+	switch trimmed {
+	case "", model.SessionWhiteboardOriginUser:
+		return model.SessionWhiteboardOriginUser, true
+	case model.SessionWhiteboardOriginAssistant:
+		if schemaVersion == model.SessionWhiteboardSchemaV1 {
+			return "", false
+		}
+		return model.SessionWhiteboardOriginAssistant, true
+	case model.SessionWhiteboardOriginAssistantAccepted:
+		return model.SessionWhiteboardOriginAssistantAccepted, true
+	}
+	return "", false
 }
 
 // WhiteboardProposal is what the generator proposed for the board.
@@ -211,6 +252,21 @@ type WhiteboardDiagnostics struct {
 	// UnknownOrigins is how many entries were dropped because they named an
 	// origin the engine does not know.
 	UnknownOrigins int
+	// MislabeledOrigins is how many entries claimed an assistant origin and
+	// cited nothing of the assistant's, and were kept as the learner's own.
+	//
+	// It is a count of its own because it is the one intervention that says
+	// something about the model: a generator that keeps labelling the
+	// learner's own words as somebody else's has learned the wrong rule, and
+	// the count is what shows it.
+	MislabeledOrigins int
+	// AssistantProposals is how many entries were the assistant's own
+	// proposal, which the learner did not take on.
+	//
+	// They do not reach the board: a proposal nobody agreed to is not a
+	// current fact. They go to the summary segment instead, labelled as the
+	// assistant's, which is where a reader can still find them.
+	AssistantProposals int
 }
 
 // WhiteboardResult is the outcome of applying one proposal.
@@ -320,6 +376,8 @@ func (d *WhiteboardDiagnostics) add(other WhiteboardDiagnostics) {
 	d.DroppedDonePlan += other.DroppedDonePlan
 	d.UnprovenAcceptances += other.UnprovenAcceptances
 	d.UnknownOrigins += other.UnknownOrigins
+	d.MislabeledOrigins += other.MislabeledOrigins
+	d.AssistantProposals += other.AssistantProposals
 }
 
 // applyWhiteboardGoal decides what the board's goal becomes.
@@ -437,10 +495,11 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 			text = string([]rune(text)[:model.SessionWhiteboardTextMaxRunes])
 			diagnostics.TruncatedTexts++
 		}
-		origin := entry.EntryOrigin()
-		if !model.ValidSessionWhiteboardOrigin(origin) {
-			// An origin the engine does not know is an origin it cannot
-			// check, and an entry it cannot check does not go on the board.
+		origin, originKnown := whiteboardOriginForProposal(entry.Origin, schemaVersion)
+		if !originKnown {
+			// The model named an origin the program does not know. It is an
+			// origin it cannot check, and an entry it cannot check does not
+			// go on the board.
 			diagnostics.UnknownOrigins++
 			continue
 		}
@@ -461,13 +520,55 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 			diagnostics.FabricatedEntries++
 			continue
 		}
-		if origin == model.SessionWhiteboardOriginAssistantAccepted && !acceptedAssistantProposal(ids, batch) {
-			// The entry says the learner took a proposal on, and the
-			// citations do not show it. A proposal nobody accepted is not a
-			// current fact, so it stays in the summary segment and never
-			// reaches the board.
-			diagnostics.UnprovenAcceptances++
-			continue
+		if origin != model.SessionWhiteboardOriginUser {
+			if schemaVersion == model.SessionWhiteboardSchemaV1 {
+				// The board that cannot name an assistant's origin. The
+				// acceptance is checked the way it always was, and an
+				// entry that cannot show it does not go on the board.
+				if origin == model.SessionWhiteboardOriginAssistantAccepted &&
+					!acceptedAssistantProposal(ids, batch) {
+					diagnostics.UnprovenAcceptances++
+					continue
+				}
+			} else {
+				// The citations decide what the entry is, not the label the
+				// model wrote on it. A label the citations do not support
+				// is the model's mistake, and the entry is not thrown away
+				// with it.
+				switch {
+				case !citesAssistantMessage(ids, batch) &&
+					origin == model.SessionWhiteboardOriginAssistantAccepted:
+					// The entry says the learner took a proposal on, and
+					// what it cites is the learner's own words about it.
+					// The label was wrong; the words were the learner's,
+					// and they stay on the board as the learner's.
+					origin = model.SessionWhiteboardOriginUser
+					diagnostics.MislabeledOrigins++
+				case !citesAssistantMessage(ids, batch):
+					// The entry claims to be the assistant's and cites
+					// nothing of the assistant's. It cannot be placed,
+					// and a proposal that cannot be placed is not a
+					// product.
+					diagnostics.AssistantProposals++
+					continue
+				case origin == model.SessionWhiteboardOriginAssistantAccepted &&
+					!acceptedAssistantProposal(ids, batch):
+					// The entry says the learner took a proposal on, and
+					// the citations do not show it. A proposal nobody
+					// accepted is not a current fact, so it stays in the
+					// summary segment as one of the assistant's products
+					// and never reaches the board.
+					diagnostics.UnprovenAcceptances++
+					continue
+				case origin == model.SessionWhiteboardOriginAssistant:
+					// The assistant's own proposal, which the learner did
+					// not take on. It is the same place as the one above:
+					// the segment carries it as a product, the board does
+					// not.
+					diagnostics.AssistantProposals++
+					continue
+				}
+			}
 		}
 		updated := entry
 		updated.Text = text

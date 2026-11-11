@@ -73,6 +73,23 @@ type SegmentGenerationResult struct {
 	Changes []model.SessionSummarySegmentChange
 	// Diagnostics counts the whiteboard engine's interventions.
 	Diagnostics WhiteboardDiagnostics
+	// RawOutput is what the model answered, before the program checked it.
+	//
+	// It is the one thing that cannot be reconstructed: the origin the model
+	// gave an entry and the wording it used for a decision are gone once the
+	// program has kept or dropped them. A deployment that keeps the raw
+	// answer can look at a surprising summary instead of guessing at it.
+	RawOutput string
+	// Calls is how many model calls the batch took. A batch that was too big
+	// for one call is summarized in pieces.
+	Calls int
+	// Degraded is how many of the assistant's messages were reduced to a
+	// placeholder because the batch did not fit otherwise.
+	Degraded int
+	// Shortened is how many of the learner's own turns were cut to make a
+	// call fit. It is a count of a loss, not of a thing that was produced:
+	// a turn that was shortened is a turn the summary saw less of.
+	Shortened int
 }
 
 // ModelSegmentGenerator generates a segment and a whiteboard with a chat
@@ -320,19 +337,21 @@ Output object:
   "whiteboard": {
     "schema_version": 1,
     "goal": {"text": "...", "source_message_ids": [...]},
-    "constraints": [{"key": "<stable key>", "text": "...", "value": "...", "source_message_ids": [...], "origin": "user|assistant_accepted"}],
-    "plan": [{"key": "...", "text": "...", "value": "...", "state": "open|done", "source_message_ids": [...], "origin": "user|assistant_accepted"}],
-    "open_items": [{"key": "...", "text": "...", "source_message_ids": [...], "origin": "user|assistant_accepted"}]
+    "constraints": [{"key": "<stable key>", "text": "...", "value": "...", "source_message_ids": [...], "origin": "assistant|assistant_accepted"}],
+    "plan": [{"key": "...", "text": "...", "value": "...", "state": "open|done", "source_message_ids": [...], "origin": "assistant|assistant_accepted"}],
+    "open_items": [{"key": "...", "text": "...", "source_message_ids": [...], "origin": "assistant|assistant_accepted"}]
   }
 }
 
 Rules:
 - The whiteboard answers "what is true now"; the segment answers "what happened in this batch".
 - Every point carries a "source". "user" is what the learner said. "assistant" is something you produced and the learner did not take a position on. "assistant_accepted" is something you proposed and the learner explicitly took on. A point about your own words is never "user".
+- A whiteboard entry that is the learner's own carries no "origin" at all: "origin" is only for your own words. Use "assistant" for a proposal of yours the learner did not take on, and "assistant_accepted" for one the learner explicitly took on.
 - Record only products: exercises, plan items, recommendations, names you made up, the specific numbers and lists you gave, and the arrangements you settled on. Do not record explanations, do not record general knowledge, and do not record anything you retrieved from the documents.
 - "assistant_accepted" needs the learner to have said so: "good", "let's do it that way", "as you said", or they went and did it ("I finished the first one"). A polite reply ("thanks", "mm") is not acceptance, and neither is asking about something else. When you are not sure, write "assistant". Most of your products should be "assistant".
 - Do not record an echo: when you only repeat or confirm what the learner already said ("okay, then your seven points"), it stays the learner's point and gets no product of its own.
 - Keep numbers, counts and names exactly as they were written. Do not round them and do not rewrite them: "416 pages" does not become "about 400 pages".
+- Keep the learner's own hedging. If the learner said "主要是", "打算", "可能" or "先试试", the point says the same thing and not "已定", "确定" or "决定". When you are not sure what the learner settled, quote the learner's own words instead of naming a decision.
 - Your guesses and your assessments ("you seem to prefer...") are not facts about the learner and never become one.
 - The whiteboard's goal is always the learner's.
 - Only USER messages are authority for goals, constraints, decisions and corrections, and you never promote your analysis, retrieved knowledge or tool conclusions. The one exception is a proposal of yours the learner explicitly accepted: it may reach the board, and then it must carry "origin": "assistant_accepted" and cite both your message and the learner's message after it.
@@ -374,9 +393,9 @@ Output object:
   },
   "whiteboard_changes": {
     "goal": {"text": "...", "source_message_ids": [...]},
-    "constraints": [{"op": "add|update|remove", "key": "<stable key>", "text": "...", "value": "...", "source_message_ids": [...], "origin": "user|assistant_accepted"}],
-    "plan": [{"op": "add|update|remove", "key": "...", "text": "...", "value": "...", "state": "open|done", "source_message_ids": [...], "origin": "user|assistant_accepted"}],
-    "open_items": [{"op": "add|update|remove", "key": "...", "text": "...", "source_message_ids": [...], "origin": "user|assistant_accepted"}]
+    "constraints": [{"op": "add|update|remove", "key": "<stable key>", "text": "...", "value": "...", "source_message_ids": [...], "origin": "assistant|assistant_accepted"}],
+    "plan": [{"op": "add|update|remove", "key": "...", "text": "...", "value": "...", "state": "open|done", "source_message_ids": [...], "origin": "assistant|assistant_accepted"}],
+    "open_items": [{"op": "add|update|remove", "key": "...", "text": "...", "source_message_ids": [...], "origin": "assistant|assistant_accepted"}]
   }
 }
 
@@ -389,7 +408,9 @@ Rules:
 - Record only products: exercises, plan items, recommendations, names you made up, the specific numbers and lists you gave, and the arrangements you settled on. Do not record explanations, do not record general knowledge, and do not record anything you retrieved from the documents.
 - "assistant_accepted" needs the learner to have said so: "good", "let's do it that way", "as you said", or they went and did it ("I finished the first one"). A polite reply ("thanks", "mm") is not acceptance, and neither is asking about something else. When you are not sure, write "assistant". Most of your products should be "assistant".
 - Do not record an echo: when you only repeat or confirm what the learner already said, it stays the learner's point and gets no product of its own.
+- A whiteboard entry that is the learner's own carries no "origin" at all: "origin" is only for your own words. Use "assistant" for a proposal of yours the learner did not take on, and "assistant_accepted" for one the learner explicitly took on.
 - Keep numbers, counts and names exactly as they were written. Do not round them and do not rewrite them.
+- Keep the learner's own hedging. If the learner said "主要是", "打算", "可能" or "先试试", the point says the same thing and not "已定", "确定" or "决定". When you are not sure what the learner settled, quote the learner's own words instead of naming a decision.
 - Your guesses and your assessments are not facts about the learner and never become one.
 - The whiteboard's goal is always the learner's.
 - Only USER messages are authority for goals, constraints, decisions and corrections, and you never promote your analysis, retrieved knowledge or tool conclusions. The one exception is a proposal of yours the learner explicitly accepted: it may reach the board, and then it must carry "origin": "assistant_accepted" and cite both your message and the learner's message after it.
@@ -546,17 +567,46 @@ func (g *ModelSegmentGenerator) GenerateSegment(ctx context.Context, input Segme
 				}
 			}
 			observability.Memory.SummarySegmentAssistant(products, accepted)
+			// The two counts a measurement of this mode's input needs: how
+			// many model calls the batch took, and how many of the
+			// assistant's messages were given up to make it fit.
+			observability.Memory.SummarySegmentCalls(result.Calls)
+			observability.Memory.SummarySegmentBatchSplit(result.Calls)
+			observability.Memory.SummarySegmentAssistantDegraded(result.Degraded)
+			observability.Memory.SummarySegmentInputTruncated(result.Shortened)
 		}
 	}
 	return result, err
 }
 
 // generateSegment is GenerateSegment without the counting.
+//
+// The two modes take different paths, and that is deliberate. The mode that
+// does not record the assistant's products takes the path it has always
+// taken: one call, one payload, and a batch that does not fit is a batch that
+// failed. The mode that does record them takes the path that can cut a batch
+// into calls, because the assistant's words make the input bigger and a
+// bigger input is what has to be dealt with.
 func (g *ModelSegmentGenerator) generateSegment(ctx context.Context, input SegmentGenerationInput) (SegmentGenerationResult, error) {
 	if len(input.Messages) == 0 {
 		return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInputTooLarge,
 			err: fmt.Errorf("segment messages are required")}
 	}
+	if !g.assistantContent {
+		return g.generateOneCall(ctx, input)
+	}
+	return g.generateCalls(ctx, input)
+}
+
+// generateOneCall summarizes a batch with a single model call.
+//
+// It is the mode that does not record the assistant's products, and it is the
+// path that mode has always taken: the batch is rendered as it was, and a
+// batch whose input does not fit fails. Nothing here is cut and nothing here
+// is shortened, because the input of this mode is the same input it has
+// always sent.
+func (g *ModelSegmentGenerator) generateOneCall(ctx context.Context,
+	input SegmentGenerationInput) (SegmentGenerationResult, error) {
 	payload := renderSegmentInput(input, g.maxInputTokens, g.assistantContent)
 	if rag.EstimateTokens(payload) > g.maxInputTokens {
 		return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInputTooLarge,
@@ -586,7 +636,8 @@ func (g *ModelSegmentGenerator) generateSegment(ctx context.Context, input Segme
 	// the rendered block. The alternative was to keep every point and let the
 	// renderer drop the tail, which spent the model's tokens on points nobody
 	// would ever read and reported nothing about it.
-	segment, trimmedPoints := trimSegmentToRenderedBudget(segment, input.FirstMessageID, input.LastMessageID, g.segmentBudget(), g.assistantContent)
+	segment, trimmedPoints := trimSegmentToRenderedBudget(segment, input.FirstMessageID, input.LastMessageID,
+		g.segmentBudget(), g.assistantContent)
 	droppedPoints += trimmedPoints
 	segmentContent, err := model.MarshalSessionSummarySegmentContent(segment)
 	if err != nil {
@@ -617,7 +668,8 @@ func (g *ModelSegmentGenerator) generateSegment(ctx context.Context, input Segme
 			applied.Diagnostics.FabricatedEntries, applied.Diagnostics.SuspiciousDeletes,
 			applied.Diagnostics.MissedUpdates, applied.Diagnostics.TruncatedTexts,
 			applied.Diagnostics.DroppedEntries, applied.Diagnostics.DroppedDonePlan,
-			applied.Diagnostics.UnprovenAcceptances, applied.Diagnostics.UnknownOrigins)
+			applied.Diagnostics.UnprovenAcceptances, applied.Diagnostics.UnknownOrigins,
+			applied.Diagnostics.MislabeledOrigins, applied.Diagnostics.AssistantProposals)
 	}()
 
 	// A board that does not fit the output budget is not a batch that failed.
@@ -631,9 +683,10 @@ func (g *ModelSegmentGenerator) generateSegment(ctx context.Context, input Segme
 		applied.Diagnostics.DroppedPoints = droppedPoints
 	}
 	if storedWhiteboardTokens(applied.Board) > g.maxOutputTokens {
-		// The floor under the floor. A board that was already at the limit
-		// when the batch started still has to be stored, and giving up here
-		// would mean the batch wrote nothing after paying for both calls.
+		// The floor under the floor. A board that was already at the
+		// limit when the batch started still has to be stored, and
+		// giving up here would mean the batch wrote nothing after
+		// paying for both calls.
 		dropped := trimWhiteboardToOutputLimit(&applied.Board, g.maxOutputTokens)
 		applied.Changes = append(applied.Changes, dropped...)
 		applied.Diagnostics.DroppedEntries += len(dropped)
@@ -652,6 +705,204 @@ func (g *ModelSegmentGenerator) generateSegment(ctx context.Context, input Segme
 		WhiteboardContent: whiteboardContent,
 		Changes:           applied.Changes,
 		Diagnostics:       applied.Diagnostics,
+		RawOutput:         response.Content,
+		Calls:             1,
+	}, nil
+}
+
+// generateCalls runs the calls of one batch and merges what they produced.
+//
+// The batch is cut into calls as it goes, and each call is measured against
+// the board and the segment it will really carry - the board grows as the
+// batch goes on, so a call measured against the board the batch started with
+// is a call that does not fit.
+//
+// The board is carried from one call to the next: a call sees the board the
+// call before it wrote and the segment before it, so the model summarizes the
+// stretch in front of it rather than the whole conversation again.
+//
+// The segment is one segment. A batch too big for a single call is
+// summarized in pieces and the pieces are put together, because a batch is
+// accounted for by one segment and one board: two segments for one stretch
+// would leave the reader with two records of the same turns and no way to
+// tell which one is the whole of it.
+//
+// What the pieces lose is what a segment loses anyway - the oldest points,
+// and the assistant's products nobody took on - and the count of it travels
+// with the result.
+func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
+	input SegmentGenerationInput) (SegmentGenerationResult, error) {
+	current, err := decodeCurrentWhiteboard(input.Whiteboard, g.boardSchemaVersion())
+	if err != nil {
+		return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInvalidOutput, err: err}
+	}
+	whiteboardContent := input.Whiteboard
+	previousSegment := input.PreviousSegment
+	merged := model.SessionSummarySegmentContent{SchemaVersion: g.segmentSchemaVersion()}
+	var (
+		points      []model.SessionSummarySegmentPoint
+		names       []string
+		numbers     []string
+		dropped     int
+		changes     []model.SessionSummarySegmentChange
+		diagnostics WhiteboardDiagnostics
+		rawOutputs  []string
+		degraded    int
+		shortened   int
+		callsMade   int
+	)
+	// The board counters are reported even when the generation fails after
+	// the engine ran. A proposal that had to be trimmed and then failed for
+	// another reason still cost the engine work, and that work is what the
+	// counters exist to show.
+	defer func() {
+		observability.Memory.Whiteboard(diagnostics.AppliedEntries, diagnostics.ChangedEntries,
+			diagnostics.FabricatedEntries, diagnostics.SuspiciousDeletes,
+			diagnostics.MissedUpdates, diagnostics.TruncatedTexts,
+			diagnostics.DroppedEntries, diagnostics.DroppedDonePlan,
+			diagnostics.UnprovenAcceptances, diagnostics.UnknownOrigins,
+			diagnostics.MislabeledOrigins, diagnostics.AssistantProposals)
+	}()
+	remaining := input.Messages
+	for len(remaining) > 0 {
+		// The call is cut against the board and the segment as they are
+		// now, because that is what the call will carry.
+		call, rest := g.nextCall(remaining, whiteboardContent, previousSegment)
+		if len(call.messages) == 0 {
+			break
+		}
+		callInput := SegmentGenerationInput{
+			Whiteboard:      whiteboardContent,
+			PreviousSegment: previousSegment,
+			Messages:        call.messages,
+			// The range the segment will carry is the range of the whole
+			// batch, so the budget the points are measured against is the
+			// one the finished segment is read under.
+			FirstMessageID: input.FirstMessageID,
+			LastMessageID:  input.LastMessageID,
+		}
+		payload := g.renderCall(whiteboardContent, previousSegment, call)
+		if rag.EstimateTokens(payload) > g.maxInputTokens {
+			return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInputTooLarge,
+				err: fmt.Errorf("segment input exceeds token limit")}
+		}
+		response, err := g.model.Generate(ctx, []*schema.Message{
+			schema.SystemMessage(g.segmentPrompt()),
+			schema.UserMessage(payload),
+		})
+		if err != nil {
+			return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonModelError,
+				err: fmt.Errorf("generate summary segment: %w", err)}
+		}
+		if response == nil {
+			return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonEmptyOutput, err: ErrEmptySessionSummary}
+		}
+		callsMade++
+		degraded += call.degraded
+		shortened += call.shortened
+		rawOutputs = append(rawOutputs, response.Content)
+		document, err := decodeSegmentGenerationDocument(response.Content)
+		if err != nil {
+			return SegmentGenerationResult{}, err
+		}
+		batch := whiteboardBatchFor(callInput, g.assistantContent)
+		segment, droppedPoints, err := buildSegmentContent(document, callInput, batch, g.assistantContent)
+		if err != nil {
+			return SegmentGenerationResult{}, err
+		}
+		dropped += droppedPoints
+		if len(points) == 0 {
+			merged.Topic = segment.Topic
+		}
+		points = append(points, segment.Points...)
+		names = append(names, segment.Names...)
+		numbers = append(numbers, segment.Numbers...)
+
+		applied, err := ApplyWhiteboardProposal(current, WhiteboardProposal{
+			Goal:        document.Whiteboard.Goal,
+			Constraints: document.Whiteboard.Constraints,
+			Plan:        document.Whiteboard.Plan,
+			OpenItems:   document.Whiteboard.OpenItems,
+		}, batch, g.boardSchemaVersion())
+		if err != nil {
+			return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInvalidOutput, err: err}
+		}
+		diagnostics.add(applied.Diagnostics)
+
+		// A board that does not fit the output budget is not a batch that
+		// failed. The rewrite was the wrong shape for this batch, so the
+		// batch is asked for its changes and the program merges them.
+		if storedWhiteboardTokens(applied.Board) > g.maxOutputTokens {
+			applied, err = g.applyChangesOnly(ctx, payload, current, batch, applied)
+			if err != nil {
+				return SegmentGenerationResult{}, err
+			}
+		}
+		if storedWhiteboardTokens(applied.Board) > g.maxOutputTokens {
+			// The floor under the floor. A board that was already at the
+			// limit when the batch started still has to be stored, and
+			// giving up here would mean the batch wrote nothing after
+			// paying for both calls.
+			droppedBoard := trimWhiteboardToOutputLimit(&applied.Board, g.maxOutputTokens)
+			applied.Changes = append(applied.Changes, droppedBoard...)
+			applied.Diagnostics.DroppedEntries += len(droppedBoard)
+		}
+		changes = append(changes, applied.Changes...)
+		current = applied.Board
+		boardContent, err := model.MarshalSessionWhiteboardDocument(applied.Board)
+		if err != nil {
+			return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInvalidOutput,
+				droppedPoints: dropped, err: err}
+		}
+		whiteboardContent = boardContent
+		segmentContent, err := model.MarshalSessionSummarySegmentContent(segment)
+		if err != nil {
+			return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInvalidOutput,
+				droppedPoints: dropped, err: err}
+		}
+		previousSegment = segmentContent
+		// The turns this call covered are done with. What is left is
+		// summarized by the calls that follow, against the board this call
+		// left behind.
+		remaining = rest
+	}
+	if len(points) == 0 {
+		return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonPointSource,
+			droppedPoints: dropped, err: fmt.Errorf("summary segment has no usable point")}
+	}
+	merged.Points = trimSegmentPoints(points)
+	dropped += len(points) - len(merged.Points)
+	merged.Names = trimSegmentTerms(names)
+	merged.Numbers = trimSegmentTerms(numbers)
+	// The segment is trimmed to what a segment's block may carry, measured on
+	// the rendered block. The alternative was to keep every point and let the
+	// renderer drop the tail, which spent the model's tokens on points nobody
+	// would ever read and reported nothing about it.
+	merged, trimmedPoints := trimSegmentToRenderedBudget(merged, input.FirstMessageID, input.LastMessageID,
+		g.segmentBudget(), g.assistantContent)
+	dropped += trimmedPoints
+	segmentContent, err := model.MarshalSessionSummarySegmentContent(merged)
+	if err != nil {
+		return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInvalidOutput,
+			droppedPoints: dropped, err: err}
+	}
+	whiteboardContent, err = model.MarshalSessionWhiteboardDocument(current)
+	if err != nil {
+		return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInvalidOutput,
+			droppedPoints: dropped, err: err}
+	}
+	diagnostics.DroppedPoints = dropped
+	return SegmentGenerationResult{
+		Segment:           merged,
+		SegmentContent:    segmentContent,
+		Whiteboard:        current,
+		WhiteboardContent: whiteboardContent,
+		Changes:           changes,
+		Diagnostics:       diagnostics,
+		RawOutput:         strings.Join(rawOutputs, "\n"),
+		Calls:             callsMade,
+		Degraded:          degraded,
+		Shortened:         shortened,
 	}, nil
 }
 
@@ -1000,6 +1251,10 @@ func decodeSegmentGenerationDocument(content string) (segmentGenerationDocument,
 // an assistant message. A point that claims the learner accepted a proposal
 // has to prove it, and one that cannot is kept as what it really is - a
 // product the learner did not take on.
+//
+// A point that claims the learner took a proposal on and cites only the
+// learner's own words is the learner's statement about that proposal, and it
+// is kept as the learner's. The label was wrong; the words were not.
 func buildSegmentContent(document segmentGenerationDocument, input SegmentGenerationInput,
 	batch WhiteboardBatch, assistantContent bool) (model.SessionSummarySegmentContent, int, error) {
 	content := model.SessionSummarySegmentContent{
@@ -1025,21 +1280,27 @@ func buildSegmentContent(document segmentGenerationDocument, input SegmentGenera
 		}
 		source := model.SessionSummarySegmentSourceUser
 		if assistantContent {
-			source = point.PointSource()
+			source = normalizeSegmentSource(point.Source)
 		}
-		ids, usable := usableSegmentEvidence(point.EvidenceMessageIDs, source, batch, assistantContent)
+		ids, usable, assistantCited := segmentEvidence(point.EvidenceMessageIDs, source, batch, assistantContent)
 		if !usable {
-			// The point cites something this batch never contained, so it
-			// is dropped on its own. The rest of the segment is still good.
+			// The point cites something this batch never contained, or it
+			// claims the learner said something the citations do not show.
+			// It is dropped on its own. The rest of the segment is still
+			// good.
 			dropped++
 			continue
 		}
-		if assistantContent && source == model.SessionSummarySegmentSourceAssistantAccepted &&
-			!acceptedAssistantProposal(ids, batch) {
-			// The point claims the learner took a proposal on and the
-			// citations do not show it. It is kept as what it really is:
-			// a product nobody accepted.
-			source = model.SessionSummarySegmentSourceAssistant
+		if assistantContent {
+			resolved, counted := resolveSegmentSource(source, ids, assistantCited, batch)
+			dropped += counted
+			if resolved == "" {
+				// The point's source is one the program cannot read and
+				// the citations do not place it. It is dropped on its own.
+				dropped++
+				continue
+			}
+			source = resolved
 		}
 		limit := model.SessionSummarySegmentPointMaxRunes
 		if source != model.SessionSummarySegmentSourceUser {
@@ -1051,6 +1312,17 @@ func buildSegmentContent(document segmentGenerationDocument, input SegmentGenera
 		points = append(points, model.SessionSummarySegmentPoint{
 			Text: text, EvidenceMessageIDs: ids, Source: segmentSourceForVersion(source, assistantContent),
 		})
+	}
+	// The board's own proposal of the assistant's products is a product too.
+	//
+	// The model may put an assistant's proposal in the board rather than in
+	// the segment's points. The board cannot hold it - a proposal nobody
+	// took on is not a current fact - so it would be dropped and lost. It is
+	// carried into the segment instead, where it is labelled as the
+	// assistant's and can still be found.
+	if assistantContent {
+		products := assistantProductsFromProposal(document, batch)
+		points = append(points, products...)
 	}
 	content.Points = trimSegmentPoints(points)
 	dropped += len(points) - len(content.Points)
@@ -1071,6 +1343,168 @@ func buildSegmentContent(document segmentGenerationDocument, input SegmentGenera
 			droppedPoints: dropped, err: fmt.Errorf("summary segment has no usable point")}
 	}
 	return content, dropped, nil
+}
+
+// normalizeSegmentSource is the source a point's label names.
+//
+// The label says whose words the point holds. An empty label is the
+// learner's, and the case of the label does not change what it means: the
+// program reads "User" and "user" as the same claim.
+func normalizeSegmentSource(source string) string {
+	trimmed := strings.ToLower(strings.TrimSpace(source))
+	switch trimmed {
+	case "":
+		return model.SessionSummarySegmentSourceUser
+	case model.SessionSummarySegmentSourceUser,
+		model.SessionSummarySegmentSourceAssistant,
+		model.SessionSummarySegmentSourceAssistantAccepted:
+		return trimmed
+	}
+	return ""
+}
+
+// resolveSegmentSource is the source a point is finally read under.
+//
+// The label says whose words the point holds and the citations say where
+// they came from. When the two disagree, the citations decide:
+//
+//   - a point that claims the learner took a proposal on and cites only the
+//     learner's own words is the learner's statement about that proposal;
+//   - a point that claims to be the assistant's and cites the assistant's
+//     message is a product;
+//   - a point that claims the learner took a proposal on and cites the
+//     assistant's message without an acceptance after it is a product
+//     nobody took on.
+//
+// The empty source is returned for a point that cannot be placed: a label
+// the program does not know and citations that do not say whose words these
+// are. The count that comes back says how many points were dropped for it.
+func resolveSegmentSource(claimed string, ids []uint, assistantCited bool,
+	batch WhiteboardBatch) (string, int) {
+	switch claimed {
+	case model.SessionSummarySegmentSourceUser:
+		return model.SessionSummarySegmentSourceUser, 0
+	case model.SessionSummarySegmentSourceAssistant:
+		if !assistantCited {
+			// The point claims to be the assistant's and cites nothing of
+			// the assistant's. It cannot be placed, and a proposal that
+			// cannot be placed is not a product.
+			return "", 0
+		}
+		return model.SessionSummarySegmentSourceAssistant, 0
+	case model.SessionSummarySegmentSourceAssistantAccepted:
+		if !assistantCited {
+			// The learner took a proposal on, and what the point cites is
+			// the learner's own words about it. The label was wrong; the
+			// words were the learner's.
+			return model.SessionSummarySegmentSourceUser, 0
+		}
+		if !acceptedAssistantProposal(ids, batch) {
+			// The point claims the learner took a proposal on and the
+			// citations do not show it. It is kept as what it really is:
+			// a product nobody accepted.
+			return model.SessionSummarySegmentSourceAssistant, 0
+		}
+		return model.SessionSummarySegmentSourceAssistantAccepted, 0
+	}
+	// A source the program does not know. It is counted as a dropped point:
+	// a label that cannot be read is a claim that cannot be checked.
+	return "", 0
+}
+
+// assistantProductsFromProposal reads the assistant's products out of the
+// board the model proposed.
+//
+// The board cannot hold them - a proposal nobody took on is not a current
+// fact - so they would be dropped with the rest of the proposal. They are
+// carried into the segment instead, where they are labelled as the
+// assistant's.
+func assistantProductsFromProposal(document segmentGenerationDocument,
+	batch WhiteboardBatch) []model.SessionSummarySegmentPoint {
+	products := make([]model.SessionSummarySegmentPoint, 0, 4)
+	for _, group := range [][]model.SessionWhiteboardEntry{
+		document.Whiteboard.Constraints, document.Whiteboard.Plan, document.Whiteboard.OpenItems,
+	} {
+		for _, entry := range group {
+			origin := strings.ToLower(strings.TrimSpace(entry.Origin))
+			if origin != model.SessionWhiteboardOriginAssistant &&
+				origin != model.SessionWhiteboardOriginAssistantAccepted {
+				continue
+			}
+			ids, usable, assistantCited := segmentEvidence(entry.SourceMessageIDs,
+				model.SessionSummarySegmentSourceAssistant, batch, true)
+			if !usable || !assistantCited {
+				// The entry does not say whose words these are: it names
+				// the assistant's and cites nothing of the assistant's.
+				continue
+			}
+			text := strings.TrimSpace(entry.Text)
+			if text == "" {
+				continue
+			}
+			if len([]rune(text)) > model.SessionSummarySegmentAssistantItemMaxRunes {
+				text = string([]rune(text)[:model.SessionSummarySegmentAssistantItemMaxRunes])
+			}
+			products = append(products, model.SessionSummarySegmentPoint{
+				Text: text, EvidenceMessageIDs: ids,
+				Source: model.SessionSummarySegmentSourceAssistant,
+			})
+		}
+	}
+	return products
+}
+
+// segmentEvidence decides which of a point's citations survive and whether
+// they name the assistant's.
+//
+// The rule is the point's source. A point about the learner cites learner
+// messages, and a point about the assistant cites assistant messages, because
+// a product the assistant produced is not something the learner said.
+//
+// The mode that does not record the assistant's products has only the first
+// rule, and it is the rule it always had.
+func segmentEvidence(cited []uint, source string, batch WhiteboardBatch,
+	assistantContent bool) ([]uint, bool, bool) {
+	ids := make([]uint, 0, len(cited))
+	seen := make(map[uint]struct{}, len(cited))
+	assistantCited := false
+	for _, id := range cited {
+		if id == 0 {
+			return nil, false, false
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return nil, false, false
+		}
+		seen[id] = struct{}{}
+		role, known := batch.KnownMessages[id]
+		if !assistantContent {
+			// Without the assistant's products, only the learner's own
+			// messages are in the batch at all.
+			if _, inBatch := batch.learnerMessage(id); !inBatch {
+				return nil, false, false
+			}
+			ids = append(ids, id)
+			continue
+		}
+		if !known {
+			return nil, false, false
+		}
+		switch source {
+		case model.SessionSummarySegmentSourceUser:
+			if role != WhiteboardMessageRoleUser {
+				return nil, false, false
+			}
+		default:
+			if role == WhiteboardMessageRoleAssistant {
+				assistantCited = true
+			}
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil, false, false
+	}
+	return ids, true, assistantCited
 }
 
 // segmentSourceForVersion is the source a point is written with.
@@ -1248,28 +1682,13 @@ func trimSegmentTerms(terms []string) []string {
 // mode off they are replaced by a placeholder, because a segment that
 // recorded them would be recording something the learner never said. With the
 // mode on they are shown, trimmed down to what a product is made of.
+//
+// This is the payload of a batch that fits in one call. A batch that does not
+// fit is split first, and each of its calls renders its own payload with the
+// assistant's excerpts cut to what that call can afford.
 func renderSegmentInput(input SegmentGenerationInput, maxTokens int, assistantContent bool) string {
-	var out strings.Builder
-	out.WriteString("[WHITEBOARD] current effective state (empty on the first batch):\n")
-	out.WriteString(prefixWithinTokens(strings.TrimSpace(input.Whiteboard), maxTokens/3))
-	out.WriteString("\n[PREVIOUS SEGMENT] the previous segment, do not repeat it (empty on the first batch):\n")
-	out.WriteString(prefixWithinTokens(strings.TrimSpace(input.PreviousSegment), maxTokens/3))
-	out.WriteString("\n[MESSAGES] the turns to summarize now, in order:\n")
-	for _, message := range input.Messages {
-		role := "user"
-		content := strings.TrimSpace(message.Content)
-		if !message.IsUser {
-			role = "assistant_sources_only"
-			content = "[assistant body omitted: not authoritative durable user state]"
-			if assistantContent {
-				role = "assistant"
-				content = renderAssistantBody(message.Content)
-			}
-		}
-		out.WriteString(fmt.Sprintf("[message_id=%d role=%s] %s", message.ID, role, content))
-		out.WriteByte('\n')
-	}
-	return out.String()
+	return renderSegmentInputWithExcerpts(input.Whiteboard, input.PreviousSegment, input.Messages,
+		maxTokens, assistantContent, nil)
 }
 
 // assistantBodyTokens is how much of one assistant message the generator sees.
@@ -1294,7 +1713,14 @@ const assistantBodyTokens = 600
 // number inside an assistant message points at a document passage, and in a
 // summary it would read as a conversation message id, which is a different
 // thing that means something else.
-func renderAssistantBody(content string) string {
+//
+// The cap is what the message may cost. It is the limit of one message, and
+// in a batch that does not fit it is the smaller share the batch could
+// afford.
+func renderAssistantBody(content string, cap int) string {
+	if cap <= 0 {
+		return ""
+	}
 	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
 	kept := make([]string, 0, len(lines))
 	inCode := false
@@ -1339,7 +1765,10 @@ func renderAssistantBody(content string) string {
 	}
 	body := strings.Join(kept, "\n")
 	body = stripCitationMarkers(body)
-	return prefixWithinTokens(body, assistantBodyTokens)
+	if cap > assistantBodyTokens {
+		cap = assistantBodyTokens
+	}
+	return prefixWithinTokens(body, cap)
 }
 
 // isProductLine reports whether a line is one a product is made of.

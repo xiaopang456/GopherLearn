@@ -71,16 +71,25 @@ const (
 	// SessionWhiteboardOriginAssistantAccepted is something the assistant
 	// proposed and the learner explicitly took on.
 	//
-	// It is the only other origin there is. An assistant proposal nobody
-	// accepted is not a current fact, so it stays in the summary segments
-	// and never reaches the board.
+	// It is the only other origin that may reach the board, and only with the
+	// evidence that says so: the assistant's message and the learner's
+	// message after it.
 	SessionWhiteboardOriginAssistantAccepted = "assistant_accepted"
+	// SessionWhiteboardOriginAssistant is something the assistant produced
+	// that the learner did not take a position on.
+	//
+	// It never reaches the board: a proposal nobody agreed to is not a
+	// current fact. The program reads it as "this belongs in the summary
+	// segment as one of the assistant's products", which is where it goes.
+	SessionWhiteboardOriginAssistant = "assistant"
 )
 
-// ValidSessionWhiteboardOrigin reports whether an origin is one of the two.
+// ValidSessionWhiteboardOrigin reports whether an origin is one the program
+// knows.
 func ValidSessionWhiteboardOrigin(origin string) bool {
 	switch origin {
-	case SessionWhiteboardOriginUser, SessionWhiteboardOriginAssistantAccepted:
+	case SessionWhiteboardOriginUser, SessionWhiteboardOriginAssistant,
+		SessionWhiteboardOriginAssistantAccepted:
 		return true
 	default:
 		return false
@@ -248,7 +257,7 @@ func (d *SessionWhiteboardDocument) Validate() error {
 				return err
 			}
 			if d.SchemaVersion == SessionWhiteboardSchemaV1 &&
-				entry.EntryOrigin() == SessionWhiteboardOriginAssistantAccepted {
+				entry.EntryOrigin() != SessionWhiteboardOriginUser {
 				// A version 1 board could only hold what the learner said,
 				// so an entry that names an assistant proposal is a body this
 				// schema cannot describe.

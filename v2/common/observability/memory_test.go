@@ -58,10 +58,13 @@ func TestMemoryRecorderBoundsTheWhiteboardAndSegmentLabels(t *testing.T) {
 	secret := "private-board-body"
 	var logs []string
 	recorder := NewMemoryRecorder(func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) })
-	recorder.Whiteboard(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+	recorder.Whiteboard(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
 	recorder.SummarySegment("failed", secret, 0, 0)
 	recorder.SummarySegment("generated", "none", 4, 2)
 	recorder.SummarySegmentAssistant(3, 1)
+	recorder.SummarySegmentDropped("block_budget", 2)
+	recorder.SummarySegmentAssistantDegraded(3)
+	recorder.SummarySegmentCalls(2)
 
 	snapshot := recorder.Snapshot()
 	if snapshot.Totals["whiteboard_applied_total"] != 1 ||
@@ -73,8 +76,15 @@ func TestMemoryRecorderBoundsTheWhiteboardAndSegmentLabels(t *testing.T) {
 		snapshot.Totals["whiteboard_dropped_total"] != 7 ||
 		snapshot.Totals["whiteboard_dropped_done_total"] != 8 ||
 		snapshot.Totals["whiteboard_unproven_acceptance_total"] != 9 ||
-		snapshot.Totals["whiteboard_unknown_origin_total"] != 10 {
+		snapshot.Totals["whiteboard_unknown_origin_total"] != 10 ||
+		snapshot.Totals["whiteboard_mislabeled_origin_total"] != 11 ||
+		snapshot.Totals["whiteboard_assistant_proposal_total"] != 12 {
 		t.Fatalf("unexpected whiteboard totals: %#v", snapshot.Totals)
+	}
+	if snapshot.Totals["summary_segment_dropped_total"] != 2 ||
+		snapshot.Totals["summary_segment_assistant_degraded_total"] != 3 ||
+		snapshot.Totals["summary_segment_model_calls_total"] != 2 {
+		t.Fatalf("unexpected segment totals: %#v", snapshot.Totals)
 	}
 	if snapshot.Totals["summary_segment_assistant_products_total"] != 3 ||
 		snapshot.Totals["summary_segment_assistant_accepted_total"] != 1 {

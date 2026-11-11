@@ -807,7 +807,7 @@ func seedLayeredState(ctx context.Context, s *Sandbox, messages []model.Message,
 	// The model is wrapped before the generator sees it: the body is decided
 	// inside the product's generator and dropped with the error there.
 	recorder := &recordingChatModel{inner: chat}
-	generator, err := agent.NewModelSegmentGenerator(recorder, agentConfig.SummarySegmentMaxInputTokens,
+	generator, err := agent.NewModelSegmentGenerator(recorder, agentConfig.EffectiveSummarySegmentMaxInputTokens(),
 		agentConfig.SummarySegmentMaxOutputTokens)
 	if err != nil {
 		return seededLayered{}, outcome, err
@@ -882,6 +882,12 @@ func seedLayeredState(ctx context.Context, s *Sandbox, messages []model.Message,
 			WhiteboardChanges: mustMarshalChanges(result.Changes),
 			TokenEstimate:     agent.RenderedSegmentTokens(model.SessionSummarySegment{Content: result.SegmentContent, EndMessageID: batch[len(batch)-1].ID}),
 			IndexStatus:       model.SessionSummarySegmentIndexPending,
+		}
+		if agentConfig.SummarySegmentDebugDump {
+			// The model's own answer, kept beside what the program made of
+			// it. It is what a run that produced a surprising summary is
+			// read with.
+			row.RawOutput = result.RawOutput
 		}
 		if err := (guardedStore{s}).with(ctx, func(tx *gorm.DB) error { return tx.Create(&row).Error }); err != nil {
 			return seeded, outcome, err
@@ -1087,9 +1093,10 @@ func windowContextConfig(settings *entry.Settings) agent.ContextConfig {
 		MaxMasteryTokens:          agentConfig.ContextMaxMasteryTokens,
 		MaxEpisodeTokens:          agentConfig.ContextMaxEpisodeTokens,
 		MaxWhiteboardTokens:       agentConfig.ContextMaxWhiteboardTokens,
-		MaxResidentSegmentTokens:  agentConfig.ContextMaxResidentSegmentTokens,
-		MaxRetrievedSegmentTokens: agentConfig.ContextMaxRetrievedSegmentTokens,
+		MaxResidentSegmentTokens:  agentConfig.EffectiveResidentSegmentTokens(),
+		MaxRetrievedSegmentTokens: agentConfig.EffectiveRetrievedSegmentTokens(),
 		MaxSegmentTokens:          agentConfig.EffectiveSegmentTokens(),
+		AssistantContent:          agentConfig.SummaryAssistantContentEnabled(),
 		MinRecentMessages:         agentConfig.ContextMinRecentMessages,
 		EpisodeRecallMode:         agent.EpisodeRecallMode(agentConfig.EpisodeRecallMode),
 		HistoryFetchLimit:         agentConfig.ContextHistoryFetchLimit,
@@ -1227,11 +1234,11 @@ func buildLayeredReadRunner(s *Sandbox, settings *entry.Settings,
 			return nil, nil, err
 		}
 		preselector.UseLimits(agent.SummarySegmentPreselectLimits(
-			settings.Config.AgentConfig.ContextMaxRetrievedSegmentTokens,
+			settings.Config.AgentConfig.EffectiveRetrievedSegmentTokens(),
 			settings.Config.AgentConfig.EffectiveSegmentTokens()))
 		provider, err := agent.NewDatabaseLayeredSummaryProvider(
 			sessiondao.NewRepository(s.db), preselector,
-			agent.ResidentSegmentCount(settings.Config.AgentConfig.ContextMaxResidentSegmentTokens,
+			agent.ResidentSegmentCount(settings.Config.AgentConfig.EffectiveResidentSegmentTokens(),
 				settings.Config.AgentConfig.EffectiveSegmentTokens()))
 		if err != nil {
 			return nil, nil, err
@@ -1420,12 +1427,18 @@ func buildLayeredReadWindow(ctx context.Context, s *Sandbox, repository string,
 	// answer, exactly as the product entry does. Left at its own defaults it
 	// would hand the renderer more segments than fit, and the renderer keeps the
 	// newest rather than the highest ranked.
+	//
+	// The numbers are the effective ones: the block that renders the
+	// segments is the effective block, and a segment is the effective
+	// segment. A preselector that measured against the configured numbers
+	// would select a segment the renderer had no room for, and the
+	// selection would be reported and then dropped without a word.
 	preselector.UseLimits(agent.SummarySegmentPreselectLimits(
-		settings.Config.AgentConfig.ContextMaxRetrievedSegmentTokens,
-		settings.Config.AgentConfig.ContextMaxSegmentTokens))
+		settings.Config.AgentConfig.EffectiveRetrievedSegmentTokens(),
+		settings.Config.AgentConfig.EffectiveSegmentTokens()))
 	provider, err := agent.NewDatabaseLayeredSummaryProvider(
 		sessiondao.NewRepository(s.db), preselector,
-		agent.ResidentSegmentCount(settings.Config.AgentConfig.ContextMaxResidentSegmentTokens,
+		agent.ResidentSegmentCount(settings.Config.AgentConfig.EffectiveResidentSegmentTokens(),
 			settings.Config.AgentConfig.EffectiveSegmentTokens()))
 	if err != nil {
 		return agent.ContextWindow{}, nil, err

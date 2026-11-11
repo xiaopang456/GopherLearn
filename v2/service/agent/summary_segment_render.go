@@ -210,10 +210,15 @@ func whiteboardOriginLabel(entry model.SessionWhiteboardEntry) string {
 // same thing in the text the model reads: a product the assistant produced
 // and a statement the learner made are read very differently once the model
 // knows which is which.
+//
+// The label of a product nobody took on says that nobody took it on. A
+// proposal the learner did not agree to is not a decision, and a label that
+// only says "the assistant gave this" leaves the model to decide what a
+// proposal is worth.
 func segmentPointLabel(point model.SessionSummarySegmentPoint) string {
 	switch point.PointSource() {
 	case model.SessionSummarySegmentSourceAssistant:
-		return "（助手给出）"
+		return "（助手提议，用户未表示同意）"
 	case model.SessionSummarySegmentSourceAssistantAccepted:
 		return "（助手提议，用户已同意）"
 	default:
@@ -263,6 +268,13 @@ type renderedSummarySegments struct {
 	// grants are drawn from these and not from the ones that were offered:
 	// a segment the budget trimmed away is a segment the model never saw.
 	Segments []renderedSummarySegment
+	// DroppedSegments is how many segments the block could not carry at
+	// all.
+	//
+	// A segment that does not fit is trimmed, and only a segment that
+	// cannot be trimmed is dropped. The count says how often the window had
+	// no room for a piece of the session's own memory.
+	DroppedSegments int
 }
 
 // renderSummarySegments renders the segments under a token budget.
@@ -271,6 +283,11 @@ type renderedSummarySegments struct {
 // for each segment. A block that is one long segment would spend everything
 // on the oldest stretch and leave the newest one - the part the learner is
 // actually talking about - out of the window.
+//
+// A segment that does not fit is trimmed to the room that is left rather
+// than dropped. A dropped segment is a hole in what the model can be told
+// about the session it is in, and the hole is invisible from the outside:
+// the block simply does not mention the stretch.
 func renderSummarySegments(segments []model.SessionSummarySegment, document model.SessionWhiteboardDocument,
 	budget, perSegmentTokens int) renderedSummarySegments {
 	out := renderedSummarySegments{}
@@ -300,6 +317,24 @@ func renderSummarySegments(segments []model.SessionSummarySegment, document mode
 		}
 		cost := rag.EstimateTokens(block) + 4
 		if used+cost > budget {
+			// The segment does not fit whole. It is trimmed to the room
+			// that is left rather than dropped.
+			room := budget - used - 4
+			trimmedBlock, trimmedEvidence, wasTrimmed := renderSummarySegment(segment, document, latest, room)
+			if trimmedBlock != "" {
+				trimmedCost := rag.EstimateTokens(trimmedBlock) + 4
+				if used+trimmedCost <= budget {
+					used += trimmedCost
+					out.Segments = append(out.Segments, renderedSummarySegment{
+						Segment: segment, Text: trimmedBlock,
+						EvidenceMessageIDs: trimmedEvidence, Trimmed: trimmed || wasTrimmed,
+					})
+					continue
+				}
+			}
+			// There is no room for even the smallest form of this
+			// segment. It is dropped, and the count says so.
+			out.DroppedSegments++
 			continue
 		}
 		used += cost
@@ -328,6 +363,12 @@ func renderSummarySegments(segments []model.SessionSummarySegment, document mode
 // line that says the old value without saying it was replaced afterwards is
 // worse than no line at all, because it invites the model to quote a value
 // that is not current any more.
+//
+// When the points do not fit, the assistant's products nobody took on are
+// given up first, oldest first: nobody agreed to them, so they are the least
+// the segment is worth keeping. The learner's own points and the products
+// the learner took on are not given up here - they are trimmed for display,
+// which is a different thing from the segment giving them up.
 func renderSummarySegment(segment model.SessionSummarySegment, document model.SessionWhiteboardDocument,
 	latestEndMessageID uint, perSegmentTokens int) (string, []uint, bool) {
 	content, err := model.DecodeSessionSummarySegmentContent(segment.Content)
@@ -348,9 +389,13 @@ func renderSummarySegment(segment model.SessionSummarySegment, document model.Se
 		fmt.Fprintf(&out, "\n话题：%s", topic)
 	}
 	used := rag.EstimateTokens(out.String())
-	var evidence []uint
+	points := content.Points
 	trimmed := false
-	for index, point := range content.Points {
+	if perSegmentTokens > 0 {
+		points, pointMarks = dropUnacceptedProducts(points, pointMarks, perSegmentTokens, used)
+	}
+	var evidence []uint
+	for index, point := range points {
 		text := strings.TrimSpace(point.Text)
 		line := "- " + segmentPointLabel(point) + text +
 			renderEvidenceIDs(point.EvidenceMessageIDs) + pointMarks[index]
@@ -375,6 +420,54 @@ func renderSummarySegment(segment model.SessionSummarySegment, document model.Se
 		used += cost
 	}
 	return out.String(), evidence, trimmed
+}
+
+// dropUnacceptedProducts gives up the assistant's products nobody took on
+// when the segment does not fit.
+//
+// The oldest goes first, for the same reason the tail does in the mode that
+// does not record the assistant's products: a segment describes what
+// happened last, and the product closest to now is the one the learner is
+// most likely to ask about.
+//
+// The learner's own points and the products the learner took on are not
+// given up here.
+func dropUnacceptedProducts(points []model.SessionSummarySegmentPoint, marks []string,
+	budget, used int) ([]model.SessionSummarySegmentPoint, []string) {
+	kept := points
+	keptMarks := marks
+	for {
+		if segmentPointsFit(kept, keptMarks, budget, used) {
+			return kept, keptMarks
+		}
+		victim, found := oldestUnacceptedAssistantPoint(kept)
+		if !found {
+			return kept, keptMarks
+		}
+		kept = append(kept[:victim], kept[victim+1:]...)
+		if victim < len(keptMarks) {
+			keptMarks = append(keptMarks[:victim], keptMarks[victim+1:]...)
+		}
+	}
+}
+
+// segmentPointsFit reports whether the points fit the segment's budget.
+func segmentPointsFit(points []model.SessionSummarySegmentPoint, marks []string, budget, used int) bool {
+	if budget <= 0 {
+		return true
+	}
+	for index, point := range points {
+		mark := ""
+		if index < len(marks) {
+			mark = marks[index]
+		}
+		line := "- " + segmentPointLabel(point) + strings.TrimSpace(point.Text) +
+			renderEvidenceIDs(point.EvidenceMessageIDs) + mark
+		if used+rag.EstimateTokens(line)+1 > budget {
+			return false
+		}
+	}
+	return true
 }
 
 // trimPointLine shortens one point so that the whole line fits a budget.
@@ -408,13 +501,17 @@ func trimPointLine(text, label string, ids []uint, mark string, budget int) (str
 // A mark is only written when the board disagrees with what the segment set.
 // A value the board still holds is not marked: a mark on every value would be
 // noise, and the model's rule is "an unmarked value is the current one".
+//
+// The marks are a list parallel to the points rather than a map of the point
+// numbers: a point that is given up takes its mark with it, and a list cannot
+// be left pointing at the wrong point.
 func summarySegmentSupersession(segment model.SessionSummarySegment, content model.SessionSummarySegmentContent,
-	document model.SessionWhiteboardDocument, latestEndMessageID uint) (map[int]string, string) {
+	document model.SessionWhiteboardDocument, latestEndMessageID uint) ([]string, string) {
 	changes := decodeSummarySegmentChanges(segment.WhiteboardChanges)
+	pointMarks := make([]string, len(content.Points))
 	if len(changes) == 0 {
-		return nil, ""
+		return pointMarks, ""
 	}
-	pointMarks := make(map[int]string)
 	var headerMark string
 	for _, change := range changes {
 		key := strings.TrimSpace(change.Key)

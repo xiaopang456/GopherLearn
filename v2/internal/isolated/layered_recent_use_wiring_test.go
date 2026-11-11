@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"GopherAI/common/rag"
 	"GopherAI/model"
 	agentService "GopherAI/service/agent"
 
@@ -93,11 +94,37 @@ func TestTheRecentUseRecordDoesNotPushTheNewestSegmentsOut(t *testing.T) {
 			t.Fatalf("the newest segment %d was pushed out of the resident block: %s", seq, last)
 		}
 	}
-	// And the record's segment is the one that was cut, not one of the
-	// newest ones.
-	if strings.Contains(last, segmentMarker(1)) {
-		t.Fatalf("the resident block holds a segment the budget had no room for: %s", last)
+	// And the record's segment is the one that gives way, not one of the
+	// newest ones. A segment that does not fit whole is trimmed to what the
+	// block had left rather than dropped: what the learner opened is still
+	// in the window, and what the block cannot afford is gone.
+	//
+	// What the block may never do is carry more than its budget.
+	if cost := rag.EstimateTokens(last); cost > s.Config.AgentConfig.ContextMaxResidentSegmentTokens {
+		t.Fatalf("the resident block costs %d tokens, over its budget of %d: %s",
+			cost, s.Config.AgentConfig.ContextMaxResidentSegmentTokens, last)
 	}
+	if part := segmentPart(last, 1); part != "" {
+		if points := strings.Count(part, "[message_ids="); points >= 12 {
+			t.Fatalf("the record's segment was carried whole, %d points: %s", points, part)
+		}
+	}
+}
+
+// segmentPart returns the part of a block that belongs to one segment.
+//
+// The segments are in the block in the order they were written, so the part
+// of one runs until the next one starts.
+func segmentPart(block string, seq int) string {
+	start := strings.Index(block, segmentMarker(seq))
+	if start < 0 {
+		return ""
+	}
+	rest := block[start:]
+	if next := strings.Index(rest[1:], "[第 "); next >= 0 {
+		return rest[:next+1]
+	}
+	return rest
 }
 
 // A segment the learner opened is in the resident set on the next turn.

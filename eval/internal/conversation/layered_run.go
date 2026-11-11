@@ -408,7 +408,7 @@ func runOldSummary(ctx context.Context, guard guardedStore, sessionID string, tu
 func runLayeredSegments(ctx context.Context, sessionID string, messages []model.Message,
 	settings *entry.Settings, chat modelcomponent.ToolCallingChatModel, run *LayeredRun) error {
 	agentConfig := settings.Config.AgentConfig
-	generator, err := agent.NewModelSegmentGenerator(chat, agentConfig.SummarySegmentMaxInputTokens,
+	generator, err := agent.NewModelSegmentGenerator(chat, agentConfig.EffectiveSummarySegmentMaxInputTokens(),
 		agentConfig.SummarySegmentMaxOutputTokens)
 	if err != nil {
 		return err

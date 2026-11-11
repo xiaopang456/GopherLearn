@@ -83,6 +83,14 @@ type SummarySegmentProducerConfig struct {
 	MaxOutputTokens int
 	// FetchLimit is how many turns are read from the database at once.
 	FetchLimit int
+	// RecordRawOutput says the model's own answer is kept beside the
+	// segment it produced.
+	//
+	// It is off by default: the answer is the size of a model call for
+	// every batch, and a deployment that is not looking at one does not pay
+	// for it. It is what a run that produced a surprising summary is read
+	// with.
+	RecordRawOutput bool
 }
 
 // DefaultSummarySegmentProducerConfig returns the defaults.
@@ -291,6 +299,11 @@ func (p *ModelSummarySegmentProducer) persist(
 		NamesAndNumbers:   namesAndNumbers,
 		WhiteboardChanges: changes,
 		IndexStatus:       model.SessionSummarySegmentIndexPending,
+	}
+	if p.config.RecordRawOutput {
+		// The model's own answer, kept beside what the program made of it.
+		// It is the only record of what the model actually wrote.
+		segment.RawOutput = result.RawOutput
 	}
 	if segment.StartAt.IsZero() {
 		segment.StartAt = time.Now()

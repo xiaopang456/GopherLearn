@@ -141,9 +141,10 @@ func SummarySegmentAssemblyConfigFromSettings(conf config.AgentConfig) (SummaryS
 		},
 		ProducerConfig: SummarySegmentProducerConfig{
 			MaxMessages:     conf.SummarySegmentMaxMessages,
-			MaxInputTokens:  conf.SummarySegmentMaxInputTokens,
+			MaxInputTokens:  conf.EffectiveSummarySegmentMaxInputTokens(),
 			MaxOutputTokens: conf.SummarySegmentMaxOutputTokens,
 			FetchLimit:      conf.SummarySegmentFetchLimit,
+			RecordRawOutput: conf.SummarySegmentDebugDump,
 		},
 		FallbackConfig: SummarySegmentFallbackConfig{
 			RawMessageTokenLimit: conf.SummarySegmentFallbackTokens,

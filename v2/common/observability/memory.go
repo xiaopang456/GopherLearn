@@ -199,7 +199,7 @@ func (r *MemoryRecorder) KnowledgeFallbackDuration(duration time.Duration) {
 // Every count here is an intervention the server had to make, so a rising
 // number names the part of the generator that is drifting. Nothing in this
 // call carries board text: the label set is fixed and the rest are counts.
-func (r *MemoryRecorder) Whiteboard(applied, changed, fabricated, suspiciousDelete, missedUpdate, truncated, dropped, droppedDone int, unprovenAcceptance, unknownOrigin int) {
+func (r *MemoryRecorder) Whiteboard(applied, changed, fabricated, suspiciousDelete, missedUpdate, truncated, dropped, droppedDone int, unprovenAcceptance, unknownOrigin, mislabeledOrigin, assistantProposal int) {
 	mode := r.modeLabel()
 	r.addTotal("whiteboard_applied_total", int64(applied))
 	r.addTotal("whiteboard_changed_total", int64(changed))
@@ -211,6 +211,8 @@ func (r *MemoryRecorder) Whiteboard(applied, changed, fabricated, suspiciousDele
 	r.addTotal("whiteboard_dropped_done_total", int64(droppedDone))
 	r.addTotal("whiteboard_unproven_acceptance_total", int64(unprovenAcceptance))
 	r.addTotal("whiteboard_unknown_origin_total", int64(unknownOrigin))
+	r.addTotal("whiteboard_mislabeled_origin_total", int64(mislabeledOrigin))
+	r.addTotal("whiteboard_assistant_proposal_total", int64(assistantProposal))
 	if fabricated > 0 {
 		r.add("whiteboard_fabricated_batches_total{mode="+mode+"}", 1)
 	}
@@ -223,9 +225,15 @@ func (r *MemoryRecorder) Whiteboard(applied, changed, fabricated, suspiciousDele
 	if unprovenAcceptance > 0 {
 		r.add("whiteboard_unproven_acceptance_batches_total{mode="+mode+"}", 1)
 	}
-	r.logf("memory_metric name=whiteboard mode=%s applied=%d changed=%d fabricated=%d suspicious_delete=%d missed_update=%d truncated=%d dropped=%d dropped_done=%d unproven_acceptance=%d unknown_origin=%d",
+	if mislabeledOrigin > 0 {
+		r.add("whiteboard_mislabeled_origin_batches_total{mode="+mode+"}", 1)
+	}
+	if assistantProposal > 0 {
+		r.add("whiteboard_assistant_proposal_batches_total{mode="+mode+"}", 1)
+	}
+	r.logf("memory_metric name=whiteboard mode=%s applied=%d changed=%d fabricated=%d suspicious_delete=%d missed_update=%d truncated=%d dropped=%d dropped_done=%d unproven_acceptance=%d unknown_origin=%d mislabeled_origin=%d assistant_proposal=%d",
 		mode, applied, changed, fabricated, suspiciousDelete, missedUpdate, truncated, dropped, droppedDone,
-		unprovenAcceptance, unknownOrigin)
+		unprovenAcceptance, unknownOrigin, mislabeledOrigin, assistantProposal)
 }
 
 // SummarySegmentAssistant records what one segment carried of the
@@ -242,6 +250,77 @@ func (r *MemoryRecorder) SummarySegmentAssistant(products, accepted int) {
 	r.addTotal("summary_segment_assistant_accepted_total", int64(accepted))
 	r.logf("memory_metric name=summary_segment_assistant mode=%s products=%d accepted=%d",
 		mode, products, accepted)
+}
+
+// SummarySegmentDropped records the segments the window could not carry.
+//
+// A segment that does not fit is trimmed, and only a segment that cannot be
+// trimmed at all is dropped. The count says how often the window had no room
+// for a piece of the session's own memory, which is a hole in what the model
+// can be told about the session it is in.
+func (r *MemoryRecorder) SummarySegmentDropped(reason string, count int) {
+	mode := r.modeLabel()
+	reason = boundedLabel(reason, "block_budget")
+	if count > 0 {
+		r.addTotal("summary_segment_dropped_total", int64(count))
+		r.add("summary_segment_dropped_batches_total{mode="+mode+",reason="+reason+"}", 1)
+	}
+	r.logf("memory_metric name=summary_segment_dropped mode=%s reason=%s count=%d", mode, reason, count)
+}
+
+// SummarySegmentAssistantDegraded records the assistant's messages that were
+// reduced to a placeholder.
+//
+// A degraded message is a message the summary could not afford: the batch
+// was still generated, and the assistant's words in it were given up. The
+// count is what says how often the input of a batch was too big for the
+// words it carried.
+func (r *MemoryRecorder) SummarySegmentAssistantDegraded(count int) {
+	mode := r.modeLabel()
+	if count > 0 {
+		r.addTotal("summary_segment_assistant_degraded_total", int64(count))
+	}
+	r.logf("memory_metric name=summary_segment_assistant_degraded mode=%s count=%d", mode, count)
+}
+
+// SummarySegmentInputTruncated records the learner's own turns that were cut
+// to make a call fit.
+//
+// It is the count of a loss: a turn that was shortened is a turn the summary
+// saw less of, and it is the last thing that happens before a batch would
+// have failed outright.
+func (r *MemoryRecorder) SummarySegmentInputTruncated(count int) {
+	mode := r.modeLabel()
+	if count > 0 {
+		r.addTotal("summary_segment_input_truncated_total", int64(count))
+	}
+	r.logf("memory_metric name=summary_segment_input_truncated mode=%s count=%d", mode, count)
+}
+
+// SummarySegmentCalls records how many model calls the batches took.
+//
+// A batch that was too big for one call is summarized in pieces. The count is
+// what says how often that happened and what the summaries cost.
+func (r *MemoryRecorder) SummarySegmentCalls(calls int) {
+	mode := r.modeLabel()
+	if calls > 0 {
+		r.addTotal("summary_segment_model_calls_total", int64(calls))
+	}
+	r.logf("memory_metric name=summary_segment_calls mode=%s calls=%d", mode, calls)
+}
+
+// SummarySegmentBatchSplit records the batches that had to be split.
+//
+// The split is the last resort: a batch is split when its input does not fit
+// the generator's budget, which in normal use it does not. The count says
+// when it did, and how often.
+func (r *MemoryRecorder) SummarySegmentBatchSplit(calls int) {
+	mode := r.modeLabel()
+	if calls > 1 {
+		r.addTotal("summary_segment_batch_split_total", 1)
+		r.addTotal("summary_segment_batch_split_calls_total", int64(calls-1))
+	}
+	r.logf("memory_metric name=summary_segment_batch_split mode=%s calls=%d", mode, calls)
 }
 
 // WhiteboardDelta records that a batch was asked for its changes instead of

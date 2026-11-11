@@ -207,10 +207,20 @@ type SessionSummarySegment struct {
 	Content           string    `gorm:"type:longtext;not null" json:"content"`
 	NamesAndNumbers   string    `gorm:"type:text" json:"names_and_numbers"`
 	WhiteboardChanges string    `gorm:"type:json" json:"whiteboard_changes"`
-	TokenEstimate     int       `gorm:"not null;default:0" json:"token_estimate"`
-	IndexStatus       string    `gorm:"type:varchar(16);not null;default:pending;index" json:"index_status"`
-	CreatedAt         time.Time `json:"created_at"`
-	Session           Session   `gorm:"foreignKey:SessionID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE" json:"-"`
+	// RawOutput is what the model answered, before the program checked it.
+	//
+	// It is written only when the deployment asks for it. The answer is the
+	// one thing that cannot be reconstructed: the origin the model gave an
+	// entry and the wording it used for a decision are gone once the
+	// program has kept or dropped them, and a run that produced a
+	// surprising summary cannot be looked at without it.
+	//
+	// It goes away with the session, like the rest of the row.
+	RawOutput     string    `gorm:"type:longtext" json:"-"`
+	TokenEstimate int       `gorm:"not null;default:0" json:"token_estimate"`
+	IndexStatus   string    `gorm:"type:varchar(16);not null;default:pending;index" json:"index_status"`
+	CreatedAt     time.Time `json:"created_at"`
+	Session       Session   `gorm:"foreignKey:SessionID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE" json:"-"`
 }
 
 // DecodeSessionSummarySegmentContent parses a segment body.

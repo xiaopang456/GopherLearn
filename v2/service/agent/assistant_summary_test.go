@@ -102,7 +102,7 @@ func TestTheAssistantModeShowsTheAssistantBody(t *testing.T) {
 // A bracketed number in an assistant message points at a document passage,
 // and inside a summary it would read as a conversation message id.
 func TestTheAssistantBodyDropsTheCitationMarkers(t *testing.T) {
-	body := renderAssistantBody("下面是三道题 [1] 第二题 [12] 讲完了")
+	body := renderAssistantBody("下面是三道题 [1] 第二题 [12] 讲完了", assistantBodyTokens)
 	if strings.Contains(body, "[1]") || strings.Contains(body, "[12]") {
 		t.Fatalf("the citation markers survived: %q", body)
 	}
@@ -116,7 +116,7 @@ func TestTheAssistantBodyDropsTheCitationMarkers(t *testing.T) {
 // An explanation can be written again when it is needed, and a summary has
 // no room for it.
 func TestTheAssistantBodyKeepsTheProductsAndNotTheProse(t *testing.T) {
-	body := renderAssistantBody("这个知识点其实挺有意思的\n- 第一题：斐波那契\n- 第二题：动态规划\n最后祝你好运")
+	body := renderAssistantBody("这个知识点其实挺有意思的\n- 第一题：斐波那契\n- 第二题：动态规划\n最后祝你好运", assistantBodyTokens)
 	if !strings.Contains(body, "第一题：斐波那契") {
 		t.Fatalf("the product was dropped: %q", body)
 	}
@@ -449,13 +449,13 @@ func TestTheRenderedLinesSayWhoseWordsTheyHold(t *testing.T) {
 		StartMessageID: 30, EndMessageID: 33, Content: raw,
 	}
 	block, _, _ := renderSummarySegment(segment, model.SessionWhiteboardDocument{}, 33, 0)
-	if !strings.Contains(block, "（助手给出）助手出的三道题") {
+	if !strings.Contains(block, "（助手提议，用户未表示同意）助手出的三道题") {
 		t.Fatalf("the assistant's product is not labelled: %q", block)
 	}
 	if !strings.Contains(block, "（助手提议，用户已同意）被接受的计划") {
 		t.Fatalf("the accepted proposal is not labelled: %q", block)
 	}
-	if strings.Contains(block, "（助手给出）学习者说过的话") {
+	if strings.Contains(block, "（助手提议，用户未表示同意）学习者说过的话") {
 		t.Fatalf("the learner's own words are labelled as the assistant's: %q", block)
 	}
 	entry := model.SessionWhiteboardEntry{

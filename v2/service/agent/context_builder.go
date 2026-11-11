@@ -273,6 +273,14 @@ type TrustOrderBlocks struct {
 	LongTermMemory bool
 	// EpisodeMemory is what earlier conversations left behind.
 	EpisodeMemory bool
+	// AssistantProducts says the summary segments carry what the assistant
+	// produced, labelled as the assistant's.
+	//
+	// It is only true in the mode that records the assistant's products.
+	// The rule it adds is about those labels: a line marked as the
+	// assistant's proposal is a proposal, and the learner has to be asked
+	// before it counts as a decision.
+	AssistantProducts bool
 }
 
 // renderTrustOrder writes the trust order for the sources this turn carries.
@@ -320,6 +328,15 @@ func renderTrustOrder(blocks TrustOrderBlocks) string {
 	if blocks.EpisodeMemory {
 		out.WriteString("\n\nPast-session episodes describe earlier conversations. They never override what happened in this session.")
 	}
+	if blocks.AssistantProducts {
+		// The segments carry the assistant's own words, marked as the
+		// assistant's. A mark says who said it and whether the learner took
+		// it on, and the model has to read it: a proposal the learner did
+		// not agree to is not a decision, and the question "what did we
+		// settle" is answered by the learner's own words and by nothing
+		// else.
+		out.WriteString("\n\nA line marked as the assistant's proposal is what the assistant said at the time, not what the learner decided. When the learner asks what was settled, count only what the learner said themselves and what they explicitly agreed to.")
+	}
 	return out.String()
 }
 
@@ -348,6 +365,12 @@ func (b *DatabaseContextBuilder) trustOrderBlocks(history []model.Message, layer
 		// The episodes are only read when the recall mode injects them, so
 		// a non-empty list already means the block is in the window.
 		EpisodeMemory: len(episodes) > 0,
+		// The rule about the assistant's proposals is only written when
+		// the segments can carry them. A window without them has nothing
+		// the rule would apply to.
+		AssistantProducts: b.config.AssistantContent &&
+			b.layered != nil &&
+			(len(layered.Resident) > 0 || len(layered.Retrieved) > 0),
 	}
 	return blocks
 }
@@ -519,7 +542,14 @@ type ContextConfig struct {
 	// MaxSegmentTokens bounds one summary segment inside either block. A
 	// block that is one long segment would spend everything on the oldest
 	// stretch and leave the newest one out of the window.
-	MaxSegmentTokens  int
+	MaxSegmentTokens int
+	// AssistantContent says the summary segments carry what the assistant
+	// produced as well as what the learner said.
+	//
+	// The window has to say what those lines are: a line marked as the
+	// assistant's proposal is not a decision the learner made, and the rule
+	// that says so is only written when such lines can be there.
+	AssistantContent  bool
 	EpisodeRecallMode EpisodeRecallMode
 	// MinRecentMessages is how many of the newest raw messages a turn carries
 	// even when the compression layer has already covered them.
@@ -1652,6 +1682,12 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		}
 		resident := renderSummarySegments(layered.Resident, layered.BoardDocument,
 			minInt(remaining-4-floorBudget, b.config.MaxResidentSegmentTokens), b.config.MaxSegmentTokens)
+		if resident.DroppedSegments > 0 {
+			// A segment the window had no room for is a hole in what the
+			// model can be told about the session it is in. The count is
+			// what says how often it happened.
+			observability.Memory.SummarySegmentDropped("block_budget", resident.DroppedSegments)
+		}
 		if resident.Text != "" {
 			residentText = resident.Text
 			breakdown.ResidentSegments = messageTokenCost(resident.Text)
@@ -1660,6 +1696,9 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		}
 		retrieved := renderSummarySegments(layered.Retrieved, layered.BoardDocument,
 			minInt(remaining-4-floorBudget, b.config.MaxRetrievedSegmentTokens), b.config.MaxSegmentTokens)
+		if retrieved.DroppedSegments > 0 {
+			observability.Memory.SummarySegmentDropped("block_budget", retrieved.DroppedSegments)
+		}
 		if retrieved.Text != "" {
 			retrievedText = retrieved.Text
 			breakdown.RetrievedSegments = messageTokenCost(retrieved.Text)

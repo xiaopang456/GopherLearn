@@ -62,13 +62,26 @@ func TestABlockBudgetThatHoldsOneSegmentHoldsTheHeaderToo(t *testing.T) {
 			needed, len(rendered.Segments), header, cost)
 	}
 
-	// And the budget that does not must render nothing - which is the
-	// failure this test exists to make visible.
+	// And the budget that does not hold the header must not carry the
+	// segment whole. The segment is trimmed to the room the header left -
+	// a block that showed it whole would have spent more than it was given -
+	// but it is not dropped: a dropped segment is a hole in what the model
+	// can be told about the session it is in.
 	without := renderSummarySegments([]model.SessionSummarySegment{segment}, document,
 		cost, DefaultSegmentTokens)
-	if len(without.Segments) != 0 {
+	if len(without.Segments) != 1 {
 		t.Fatalf("a budget of %d tokens held %d segments; the header is %d and it does not fit",
 			cost, len(without.Segments), header)
+	}
+	if !without.Segments[0].Trimmed {
+		t.Fatal("the segment was carried whole by a budget that could not hold it")
+	}
+	if len(without.Segments[0].Text) >= len(renderSummarySegmentForTest(segment, document)) {
+		t.Fatal("the trimmed segment is not shorter than the whole one")
+	}
+	if without.DroppedSegments != 0 {
+		t.Fatalf("dropped segments = %d, want 0: a segment that can be trimmed is not dropped",
+			without.DroppedSegments)
 	}
 
 	// The scaled configuration's numbers have to clear the bar: a 370-token

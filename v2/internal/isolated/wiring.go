@@ -856,10 +856,16 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		// constants: a deployment that turns the mode on is choosing how much
 		// of the window the board and the segments may take, and a scaled-down
 		// run has to be able to say a smaller number.
+		//
+		// The two segment blocks carry the effective numbers rather than the
+		// configured ones: a block has to hold one whole segment, and the
+		// segment is larger in the mode that records the assistant's
+		// products.
 		MaxWhiteboardTokens:       conf.AgentConfig.ContextMaxWhiteboardTokens,
-		MaxResidentSegmentTokens:  conf.AgentConfig.ContextMaxResidentSegmentTokens,
-		MaxRetrievedSegmentTokens: conf.AgentConfig.ContextMaxRetrievedSegmentTokens,
+		MaxResidentSegmentTokens:  conf.AgentConfig.EffectiveResidentSegmentTokens(),
+		MaxRetrievedSegmentTokens: conf.AgentConfig.EffectiveRetrievedSegmentTokens(),
 		MaxSegmentTokens:          conf.AgentConfig.EffectiveSegmentTokens(),
+		AssistantContent:          conf.AgentConfig.SummaryAssistantContentEnabled(),
 		MinRecentMessages:         conf.AgentConfig.ContextMinRecentMessages,
 		EpisodeRecallMode:         agentService.EpisodeRecallMode(conf.AgentConfig.EpisodeRecallMode),
 		HistoryFetchLimit:         conf.AgentConfig.ContextHistoryFetchLimit,
@@ -905,7 +911,7 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		}
 		layeredProvider, layeredErr := agentService.NewDatabaseLayeredSummaryProvider(
 			sessionDAO.DefaultRepository(), preselector,
-			agentService.ResidentSegmentCount(conf.AgentConfig.ContextMaxResidentSegmentTokens,
+			agentService.ResidentSegmentCount(conf.AgentConfig.EffectiveResidentSegmentTokens(),
 				conf.AgentConfig.EffectiveSegmentTokens()))
 		if layeredErr != nil {
 			return nil, fmt.Errorf("initialize layered summary reader: %v", layeredErr)
@@ -1316,7 +1322,7 @@ func buildSummarySegmentPreselector(conf *config.Config, embed memoryrecall.Embe
 		return nil, err
 	}
 	preselector.UseLimits(agentService.SummarySegmentPreselectLimits(
-		conf.AgentConfig.ContextMaxRetrievedSegmentTokens, conf.AgentConfig.EffectiveSegmentTokens()))
+		conf.AgentConfig.EffectiveRetrievedSegmentTokens(), conf.AgentConfig.EffectiveSegmentTokens()))
 	return preselector, nil
 }
 
