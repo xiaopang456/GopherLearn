@@ -153,6 +153,20 @@ dimension = 1024
 # 想留在改动前的行为上，就显式写 off；这个键不写等于选了 on。
 # summarySegmentMode = "off"
 
+# 分层摘要要不要把助手给过的东西也记进去（可选，默认 off = 关闭）。
+#
+# off —— 只记学习者自己说过的话。
+# on  —— 助手给过的练习题、计划条目、给出的数值和清单也一并写进摘要段与白板，
+#        并且每一句都标出是谁说的。
+#
+# 这个开关**不走环境变量**：正式入口只读这个配置文件，环境变量里的
+# AGENT_SUMMARY_ASSISTANT_CONTENT 对它不生效。
+#
+# 打开前请先看 docs/PUBLIC-RELEASE-NOTES.md 的「待发布」一节：打开之后写入的是
+# 新数据版本，之后不能再回退到 v0.3.0 及更早的版本；再关掉也不会把已经写入的
+# 数据变回旧版本。
+# summaryAssistantContent = "on"
+
 # 学习 Agent 的思考开关（可选，默认 false = 关闭）。
 # 打开后，Agent 自己那几次模型调用会带上 [ragModelConfig] 的 chatThinkingDialect
 # 写出的思考开关；**强制指定工具的那一次仍然不带思考**——供应商在思考模式下会拒绝
