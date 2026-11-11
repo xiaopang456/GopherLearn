@@ -384,6 +384,36 @@ func LayeredSummaryPrompt() string {
 	return layeredSummaryPrompt
 }
 
+// TrustOrderPrompts returns every trust order the product can write into the
+// system prompt.
+//
+// It is exported for the surfaces that have to recognise the prompt rather
+// than write it. The evaluation harness classifies a model call by its first
+// system message, and a deployment that reads the layered summary sends the
+// base prompt with this turn's trust order and the layered summary's own
+// contract appended. A harness that held only the base prompt would refuse
+// the product's own request as unclassified, and the turn would end before
+// the answer existed.
+//
+// The list holds one entry per combination of the five sources the window can
+// carry, because the order is written per turn: a turn whose window carries
+// the profile writes a different order from a turn whose window does not.
+// The entries are produced by the product's own renderer, so a harness cannot
+// hold a second implementation of the rule and drift from it.
+func TrustOrderPrompts() []string {
+	result := make([]string, 0, 32)
+	for mask := 0; mask < 1<<5; mask++ {
+		result = append(result, renderTrustOrder(TrustOrderBlocks{
+			RecentMessages:  mask&1 != 0,
+			CurrentState:    mask&2 != 0,
+			SummarySegments: mask&4 != 0,
+			LongTermMemory:  mask&8 != 0,
+			EpisodeMemory:   mask&16 != 0,
+		}))
+	}
+	return result
+}
+
 // SystemPromptFor returns the system prompt one read mode answers under.
 //
 // There is one function rather than a branch at each use site because the

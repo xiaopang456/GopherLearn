@@ -12,6 +12,7 @@ import (
 	"io"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -256,6 +257,53 @@ func renderedRolePrompts(base string) map[string]string {
 	return result
 }
 
+// trustOrderChunks are the trust orders the product can write into the answer
+// prompt. The product writes one per turn, naming only the sources that
+// turn's window carries, and it writes it between the base prompt and the
+// layered summary's own contract.
+//
+// The list comes from the product's own renderer, so the evaluator does not
+// hold a second implementation of the rule: a copy would drift from the
+// product the moment the order changes, and the drift would show up as a
+// refused request in the middle of a measurement.
+var trustOrderChunks = agent.TrustOrderPrompts()
+
+// classifyPrompt reads the role of a model call from its first system prompt.
+//
+// The table holds the prompt byte for byte, so an unknown shape is refused
+// rather than guessed at. One shape is not in the table: the product writes
+// this turn's trust order into the prompt, and the order depends on what the
+// window carried, so the table cannot hold every form of it.
+//
+// That form is recognised by taking the product's own trust order out of the
+// prompt and looking up what is left. What is left is the base prompt and
+// the layered contract, which the table does hold, so the lookup stays exact:
+// a prompt that is neither a known rendering nor a known rendering with a
+// known trust order inside it is still refused.
+func classifyPrompt(roles RolePrompts, prompt string) (string, bool) {
+	if role, ok := roles[prompt]; ok {
+		return role, true
+	}
+	for _, chunk := range trustOrderChunks {
+		if chunk == "" {
+			continue
+		}
+		index := strings.Index(prompt, chunk)
+		if index < 0 {
+			continue
+		}
+		// Several trust orders are prefixes of the longer ones, so a chunk
+		// that is not this turn's leaves something behind that the table
+		// does not hold; the loop keeps looking rather than stopping at the
+		// first match.
+		stripped := prompt[:index] + prompt[index+len(chunk):]
+		if role, ok := roles[stripped]; ok {
+			return role, true
+		}
+	}
+	return "", false
+}
+
 type ledgerModel struct {
 	inner  modelcomponent.ToolCallingChatModel
 	ledger *ModelLedger
@@ -287,7 +335,7 @@ func (m *ledgerModel) start(method string, input []*schema.Message) (int, error)
 	prompt := ""
 	if len(input) > 0 && input[0] != nil && input[0].Role == schema.System {
 		prompt = input[0].Content
-		if r, ok := m.roles[prompt]; ok {
+		if r, ok := classifyPrompt(m.roles, prompt); ok {
 			role = r
 		}
 	}

@@ -39,7 +39,7 @@ func modelHTTPHandler(ledger *ModelLedger, roles RolePrompts, backend http.Handl
 		case "/v1/chat/completions":
 			if len(request.Messages) > 0 && request.Messages[0] != nil && request.Messages[0].Role == schema.System {
 				prompt = request.Messages[0].Content
-				if known, ok := roles[prompt]; ok {
+				if known, ok := classifyPrompt(roles, prompt); ok {
 					role = known
 				}
 			}
