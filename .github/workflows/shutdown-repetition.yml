@@ -1,0 +1,18 @@
+name: Shutdown repetition
+on: [push, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  repeat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: hybrid
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: hybrid/go.mod
+      - name: Repeat shutdown timeout
+        run: go test -v -run '^TestHybridEntrySocketUsesSameHandlerAndBoundedShutdown/timeout=true$' -count=50 -timeout=10m .
