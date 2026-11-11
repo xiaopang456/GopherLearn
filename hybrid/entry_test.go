@@ -277,8 +277,15 @@ func TestHybridEntrySocketUsesSameHandlerAndBoundedShutdown(t *testing.T) {
 				return l, err
 			}
 			serverReady := make(chan struct{})
+			streamDone := make(chan struct{})
 			r.server = func(address string, h http.Handler) *http.Server {
-				s := entry.NewHTTPServer(address, h)
+				wrapped := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+					if req.Header.Get("X-Test-Shutdown-Stream") == "yes" {
+						defer close(streamDone)
+					}
+					h.ServeHTTP(w, req)
+				})
+				s := entry.NewHTTPServer(address, wrapped)
 				if s.WriteTimeout != 0 || s.ReadHeaderTimeout != 5*time.Second || s.ReadTimeout != 30*time.Second || s.IdleTimeout != 60*time.Second {
 					t.Error("SSE server settings drifted")
 				}
@@ -350,6 +357,7 @@ func TestHybridEntrySocketUsesSameHandlerAndBoundedShutdown(t *testing.T) {
 				t.Fatal(err)
 			}
 			request.Header.Set("Authorization", "Bearer "+token)
+			request.Header.Set("X-Test-Shutdown-Stream", "yes")
 			close(gate)
 			response, err := http.DefaultClient.Do(request)
 			if err != nil {
@@ -394,6 +402,15 @@ func TestHybridEntrySocketUsesSameHandlerAndBoundedShutdown(t *testing.T) {
 			sqlDB, _ := db.DB()
 			if err := sqlDB.PingContext(context.Background()); err == nil {
 				t.Fatal("resources left open")
+			}
+			// A forced HTTP close does not wait for the handler. Let the model
+			// finish, then wait for its persistence and response cleanup before
+			// the test removes the database directory.
+			releaseNow()
+			select {
+			case <-streamDone:
+			case <-time.After(5 * time.Second):
+				t.Fatal("stream handler did not exit")
 			}
 		})
 	}
