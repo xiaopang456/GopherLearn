@@ -365,6 +365,7 @@ func TestHybridEntrySocketUsesSameHandlerAndBoundedShutdown(t *testing.T) {
 			}
 			defer response.Body.Close()
 			frames := collectSSEFrames(response.Body)
+			var drained <-chan struct{}
 			// The frame saying the turn has started is flushed while generation is still
 			// blocked, which is what leaves this request in flight for shutdown to drain.
 			// The answer is one validated snapshot and cannot arrive before the model
@@ -373,7 +374,9 @@ func TestHybridEntrySocketUsesSameHandlerAndBoundedShutdown(t *testing.T) {
 				t.Fatalf("ordinary SSE did not flush the run starting: %s", first)
 			}
 			if timeout {
-				go frames.drain()
+				done := make(chan struct{})
+				drained = done
+				go func() { defer close(done); frames.drain() }()
 			} else {
 				releaseNow()
 				if rest := frames.rest(); !strings.Contains(rest, `"content":"回答：before-complete"`) || !strings.Contains(rest, "event: message.completed") {
@@ -411,6 +414,13 @@ func TestHybridEntrySocketUsesSameHandlerAndBoundedShutdown(t *testing.T) {
 			case <-streamDone:
 			case <-time.After(5 * time.Second):
 				t.Fatal("stream handler did not exit")
+			}
+			if drained != nil {
+				select {
+				case <-drained:
+				case <-time.After(5 * time.Second):
+					t.Fatal("stream reader did not exit")
+				}
 			}
 		})
 	}
