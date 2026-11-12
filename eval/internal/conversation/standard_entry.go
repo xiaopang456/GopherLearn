@@ -321,7 +321,11 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 	if err != nil {
 		return result, err
 	}
-	stub := &offlineChat{}
+	// The fake model answers the summary segment call the way the mode the
+	// run is in asks for it. The two modes send different prompts and expect
+	// different documents, so the fake model has to know which one it is
+	// standing in for.
+	stub := &offlineChat{assistantContent: settings.Config.AgentConfig.SummaryAssistantContentEnabled()}
 	wire := offlineWire(ledger, roles, stub)
 	defer wire.Close()
 	connection, err := s.ConnectionInfo(ctx)
@@ -397,6 +401,15 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 	result.Audit.Before, result.BeforeCounts, err = s.ObserveJobs(ctx)
 	if err != nil {
 		return result, err
+	}
+	if input.WaitForSummarySegment {
+		// The background writer runs on its own schedule. A run that asked its
+		// question before the segment was written would measure a window
+		// without one, and the segment that was written afterwards would
+		// never be read by the answer the run is about.
+		if err = s.WaitForSummarySegment(ctx, snapshot.Session.ID, 90*time.Second); err != nil {
+			return result, err
+		}
 	}
 	asked, requestErr := askProductQuestions(ctx, client, base, token, snapshot.Session.ID, questions, "offline-final-question")
 	result.Answer = asked[0].Answer

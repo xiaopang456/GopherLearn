@@ -15,6 +15,8 @@ import (
 	"gorm.io/gorm"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -103,6 +105,14 @@ type QuestionResult struct {
 type AttemptInput struct {
 	Memories  []SeedMemory
 	Questions []Question
+	// WaitForSummarySegment makes the run wait until the session has a
+	// summary segment before the first question is asked.
+	//
+	// The layered summary's writer keeps its own schedule, and a run that
+	// asked its question before the segment existed would measure a window
+	// without one. The wait is what turns "the segment was written" into
+	// "the segment was in the window when the model was asked".
+	WaitForSummarySegment bool
 }
 
 // Question is one question of an attempt.
@@ -305,11 +315,21 @@ func RunOfflineProduct(ctx context.Context, repository string, snapshot Snapshot
 
 type offlineChat struct {
 	mu sync.Mutex
+	// assistantContent says the fake model answers the summary segment call
+	// the way the mode that records the assistant's products asks for it.
+	//
+	// The two modes send different prompts and expect different documents:
+	// the mode that does not record the assistant's products asks for the
+	// learner's points only, and a document that carried a product of the
+	// assistant's would be a document nobody asked for.
+	assistantContent bool
 	// answers holds the prompt of every answer the fake model gave, in the
 	// order it gave them. An attempt that asks several questions keeps one
 	// entry per question, so that the context of the later question can be
 	// read and compared with the earlier one.
 	answers [][]*schema.Message
+	// segmentCalls is how many summary segments the fake model was asked for.
+	segmentCalls int
 }
 
 func (m *offlineChat) WithTools([]*schema.ToolInfo) (modelcomponent.ToolCallingChatModel, error) {
@@ -318,6 +338,12 @@ func (m *offlineChat) WithTools([]*schema.ToolInfo) (modelcomponent.ToolCallingC
 func (m *offlineChat) Generate(ctx context.Context, input []*schema.Message, _ ...modelcomponent.Option) (*schema.Message, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if len(input) > 0 && strings.HasPrefix(input[0].Content, segmentWriterPromptPrefix) {
+		m.mu.Lock()
+		m.segmentCalls++
+		m.mu.Unlock()
+		return schema.AssistantMessage(m.segmentDocument(input), nil), nil
 	}
 	if len(input) > 0 && strings.HasPrefix(input[0].Content, "You compress an older portion") {
 		return schema.AssistantMessage(`{"schema_version":2,"current_goal":"synthetic offline summary"}`, nil), nil
@@ -357,4 +383,110 @@ func (m *offlineChat) answerInputs() [][]*schema.Message {
 		out = append(out, append([]*schema.Message(nil), answer...))
 	}
 	return out
+}
+
+// segmentWriterPromptPrefix is how the layered summary's writer prompt starts.
+//
+// The prompt is the product's own, and the fake model answers the call it
+// recognizes. A call the fake model does not recognize is refused, and a
+// refused segment call is a batch that produced nothing: the window then
+// carries no segment at all, and a measurement of the mode that records the
+// assistant's products would find nothing to compare.
+const segmentWriterPromptPrefix = "You maintain two kinds of compressed state"
+
+// The markers the fake model's segment carries.
+//
+// The topic is what a test looks for in the window the answer was built from:
+// a segment that was written but did not reach the model leaves no trace
+// there, and a run that only checked that the segment was written would call
+// that a success.
+const (
+	syntheticSegmentTopic       = "synthetic offline segment"
+	syntheticSegmentLearnerText = "synthetic offline learner point"
+	syntheticSegmentProductText = "synthetic offline assistant product"
+)
+
+// segmentPayloadMessage is one message of the batch, as the writer prompt
+// names it.
+var segmentPayloadMessage = regexp.MustCompile(`\[message_id=(\d+) role=(\w+)\]`)
+
+// segmentDocument is what the fake model answers when the product asks for a
+// summary segment.
+//
+// The document has to be a real one. The program checks every point against
+// the messages of the batch, and a point that names a message the batch never
+// contained is dropped on its own; a segment with no points is not a segment.
+// So the fake model reads the ids out of the payload it was given and cites
+// them, and the segment it produces is stored and read back like any other.
+//
+// The mode decides what the segment carries. The mode that does not record the
+// assistant's products gets the learner's points only. The mode that does gets
+// one of the assistant's products as well, and that product is what the two
+// arms are compared on.
+func (m *offlineChat) segmentDocument(input []*schema.Message) string {
+	payload := ""
+	if len(input) > 1 && input[1] != nil {
+		payload = input[1].Content
+	}
+	learner, product := segmentPayloadMessageIDs(payload)
+	points := []map[string]any{}
+	if learner > 0 {
+		points = append(points, map[string]any{
+			"text": syntheticSegmentLearnerText, "evidence_message_ids": []uint{learner}, "source": "user",
+		})
+	}
+	if m.assistantContent && product > 0 {
+		points = append(points, map[string]any{
+			"text": syntheticSegmentProductText, "evidence_message_ids": []uint{product}, "source": "assistant",
+		})
+	}
+	document := map[string]any{
+		"schema_version": 1,
+		"segment": map[string]any{
+			"topic": syntheticSegmentTopic, "points": points, "names": []string{}, "numbers": []string{},
+		},
+	}
+	// The writer asks for the whole board or for the changes only, and the
+	// two documents have different shapes. Which one it asked for is in the
+	// prompt it answered under.
+	delta := len(input) > 0 && input[0] != nil && strings.Contains(input[0].Content, "whiteboard_changes")
+	if delta {
+		document["whiteboard_changes"] = map[string]any{
+			"goal": nil, "constraints": []any{}, "plan": []any{}, "open_items": []any{},
+		}
+	} else {
+		document["whiteboard"] = map[string]any{
+			"schema_version": 1, "goal": nil, "constraints": []any{}, "plan": []any{}, "open_items": []any{},
+		}
+	}
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		return "{}"
+	}
+	return string(encoded)
+}
+
+// segmentPayloadMessageIDs reads the id of the batch's first learner message
+// and of its first assistant message out of the payload the writer was given.
+//
+// The payload names every message with its id and its role, so the fake model
+// cites messages the batch really contained.
+func segmentPayloadMessageIDs(payload string) (learner, product uint) {
+	for _, match := range segmentPayloadMessage.FindAllStringSubmatch(payload, -1) {
+		id, err := strconv.ParseUint(match[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		switch match[2] {
+		case "user":
+			if learner == 0 {
+				learner = uint(id)
+			}
+		case "assistant":
+			if product == 0 {
+				product = uint(id)
+			}
+		}
+	}
+	return learner, product
 }

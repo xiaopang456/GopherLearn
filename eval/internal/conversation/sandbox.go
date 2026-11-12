@@ -245,6 +245,45 @@ func (s *Sandbox) ObserveJobs(ctx context.Context) ([]JobState, map[string]JobCo
 	return jobs, counts, nil
 }
 
+// WaitForSummarySegment waits until the session has a summary segment.
+//
+// The background writer keeps its own schedule, and a run that asked its
+// question before the segment existed would measure a window without one.
+// The wait is the difference between a segment that was written and a segment
+// the model was actually asked about.
+func (s *Sandbox) WaitForSummarySegment(ctx context.Context, sessionID string, timeout time.Duration) error {
+	if err := s.verify(ctx); err != nil {
+		return err
+	}
+	if s.db == nil {
+		return fmt.Errorf("sandbox database unavailable")
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		var rows int64
+		err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			if err := s.checkMarker(tx); err != nil {
+				return err
+			}
+			return tx.Model(&model.SessionSummarySegment{}).Where("session_id = ?", sessionID).Count(&rows).Error
+		})
+		if err != nil {
+			return err
+		}
+		if rows > 0 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("the session has no summary segment after %s", timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
 // InitSynthetic creates the small schema for the offline demo only. It does
 // not replace the full product migration required for HTTP evaluation.
 func (s *Sandbox) InitSynthetic(ctx context.Context) error {
