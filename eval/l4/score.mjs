@@ -223,6 +223,17 @@ function mentionState(text, span, spans) {
     if (hasMarker(clause, HARD_CANCEL)) return 'negated'
     if (hasMarker(clause, HARD_NEGATION)) return 'negated'
   }
+  // A value that stands behind a marker of a change is the value of that
+  // change, not a statement that it is in force. The same words introduce a
+  // plan ("准备改成 9 道题"), a change that was undone ("改成 9 道题，后来又
+  // 撤销了") and a change that happened ("已经改成 9 道题"), and the text
+  // does not say which one it is - so the mention stays uncertain and the
+  // item goes to the semantic judging. What the answer quotes is not its own
+  // claim, so a quoted mention is left alone.
+  if (before && !holdsAnotherValue(before, span, spans)) {
+    const quoted = quotedRanges(text).some(range => span.start >= range[0] && span.end <= range[1])
+    if (!quoted && hasMarker(text.slice(before[0], before[1]), REPLACEMENT_MARKER)) return 'uncertain'
+  }
   if (before) {
     if (!holdsAnotherValue(before, span, spans) && softPastScopes(text, before[0], before[1], span)) return 'uncertain'
   }
@@ -315,24 +326,148 @@ function readsAsOld(text, span, spans) {
   return false
 }
 
-// superseded reports whether the answer says the old value was replaced: the
-// value in force is given, the old value is read as the old one, and a marker
-// that names the change stands between them.
-function superseded(text, oldSpans, currentSpans, spans) {
-  for (const old of oldSpans) {
-    if (!readsAsOld(text, old, spans)) continue
-    for (const current of currentSpans) {
-      // the value in force has to stand after the old one: "it was that, and
-      // it was changed to this"
-      if (current.start <= old.end) continue
-      // the window reaches to the end of the sentence the value in force is
-      // in, so that "14 道题已经被 9 道题取代" is read as a replacement too
-      const [, sentenceEnd] = sentenceRange(text, current.start)
-      if (!hasMarker(text.slice(old.end, sentenceEnd), REPLACEMENT_MARKER)) continue
-      return true
+// There is no automatic pass for "the old value was replaced". A marker that
+// names a change (改成, 取代 and the like) is not proof: the same words
+// introduce a plan ("准备改成 13 道题"), a cancellation ("改成 13 道题，后来
+// 又撤销了"), a denial ("没有改成 13 道题") and a reversal ("后来又改回 7 道
+// 题"). A scorer that reads the marker alone lets wrong answers through, so
+// an answer that names both values goes to the semantic judging instead.
+
+// ---------------------------------------------------------------------------
+// The scope a value is stated in.
+//
+// A quantity question asks for a number in a frame: how many at a time, how
+// many a week, how many rounds each time. The answer may well state the
+// number in another frame - "18 questions a week" does not answer "how many
+// questions at a time", and a scorer that matches the number alone reads the
+// wrong frame as an answer.
+//
+// The frame is read from the words: the question says which frame it asks in,
+// the answer says which frame it states the number in. The rule never looks
+// at the question id and never at the entity the question is about.
+//
+// When the question asks in a frame and the answer states the value in
+// another frame, the text does not say reliably whether the answer answers
+// the question, so the item goes to the semantic judging. The same goes for
+// an answer that does not state the value at all - one that only quotes it,
+// or offers it back to the user as a question.
+//
+// An answer that states the value without naming a frame is left alone: a
+// direct answer needs no frame wording.
+
+// The frame words, with the marker that turns the word into a frame. The
+// bare unit is not a frame: "3 天" is a duration, and "几天" is a question,
+// so the frame is the unit with 每 / 一 / 这 / 那 / 本 / 上 in front of it.
+const FRAME_UNITS = '次轮遍回趟周月年天日'
+const FRAME_MARKERS = '每一这本上'
+// How far from the value a frame word may stand and still frame it.
+const FRAME_WINDOW = 10
+
+// frameTokens returns the frames a text states, each with where it stands.
+function frameTokens(text) {
+  const found = []
+  const expression = new RegExp(`[${FRAME_MARKERS}]([${FRAME_UNITS}])`, 'gu')
+  for (let match = expression.exec(text); match; match = expression.exec(text)) {
+    found.push({ start: match.index, end: match.index + match[0].length, unit: match[1] })
+  }
+  return found
+}
+
+// clauseBounds returns the clause a mention stands in. A frame word binds the
+// value only when it stands in the same clause: "11 题，一次做多少没说" says
+// how many at a time are not stated, and the "一次" in it frames the missing
+// number, not the one that is written down.
+function clauseBounds(text, span) {
+  let start = 0
+  for (let i = span.start - 1; i >= 0; i -= 1) {
+    if (CLAUSE_BREAK.includes(text[i]) || STRONG_BREAK.includes(text[i])) { start = i + 1; break }
+  }
+  let end = text.length
+  for (let i = span.end; i < text.length; i += 1) {
+    if (CLAUSE_BREAK.includes(text[i]) || STRONG_BREAK.includes(text[i])) { end = i; break }
+  }
+  return [start, end]
+}
+
+// attachedFrame returns the frame a mention of a value stands in: the frame
+// word nearest to it, in the same clause, with no other value between the
+// frame word and the value. Null when the value stands in no frame.
+function attachedFrame(text, span, spans) {
+  const [clauseStart, clauseEnd] = clauseBounds(text, span)
+  let best = null
+  for (const frame of frameTokens(text)) {
+    if (frame.start < clauseStart || frame.end > clauseEnd) continue
+    let distance = 0
+    if (frame.end <= span.start) {
+      distance = span.start - frame.end
+      if (distance > FRAME_WINDOW) continue
+      // another value between the frame word and this one frames that value,
+      // not this one
+      if (spans.some(other => other !== span && other.start > frame.end && other.start < span.start)) continue
+    } else if (frame.start >= span.end) {
+      distance = frame.start - span.end
+      if (distance > FRAME_WINDOW) continue
+      if (spans.some(other => other !== span && other.end > span.end && other.end < frame.start)) continue
+    } else continue
+    if (!best || distance < best.distance) best = { unit: frame.unit, distance }
+  }
+  return best ? best.unit : null
+}
+
+// The spans the answer quotes. What the user said, or what the record says,
+// is not the answer's own statement.
+const QUOTE_PAIRS = [['「', '」'], ['『', '』'], ['“', '”'], ['‘', '’']]
+
+function quotedRanges(text) {
+  const ranges = []
+  for (const [open, close] of QUOTE_PAIRS) {
+    let at = text.indexOf(open)
+    while (at >= 0) {
+      const end = text.indexOf(close, at + open.length)
+      if (end < 0) break
+      ranges.push([at, end + close.length])
+      at = text.indexOf(open, end + close.length)
     }
   }
-  return false
+  return ranges
+}
+
+// interrogative reports whether a mention stands in a question. A value the
+// answer offers back to the user as a question is not a value it states.
+function interrogative(text, span) {
+  const [, sentenceEnd] = sentenceRange(text, span.start)
+  const after = text.slice(span.end, sentenceEnd)
+  const mark = after.search(/[？?]/)
+  if (mark < 0) return false
+  const stop = after.search(/[。！？!?]/)
+  return stop < 0 || mark <= stop
+}
+
+// scopeConflict reports the frame the answer states the value in, when the
+// question asks in another frame - or that the answer never states the value
+// at all, only quotes it or asks it back.
+function scopeConflict(text, question, values, spans) {
+  // The rule is about quantities: a number counted in another frame. A name
+  // or a place has no frame of its own.
+  const numeric = values.some(value => valueNumber(normalizeValue(value)))
+  if (!numeric) return null
+  const asked = new Set(frameTokens(String(question ?? '')).map(frame => frame.unit))
+  if (!asked.size) return null
+  const valueSpans = spans.filter(span => values.includes(span.value))
+  // the value is not in the text at all: the ordinary reading decides it
+  if (!valueSpans.length) return null
+  const quotes = quotedRanges(text)
+  const asserted = valueSpans.filter(span => span.state === 'present')
+    .filter(span => !quotes.some(range => span.start >= range[0] && span.end <= range[1]))
+    .filter(span => !interrogative(text, span))
+  // the value stands in the text, but only as something the answer quotes or
+  // asks back: the answer does not state it
+  if (!asserted.length) return { reason: 'value_not_asserted' }
+  for (const span of asserted) {
+    const unit = attachedFrame(text, span, spans)
+    if (unit && !asked.has(unit)) return { reason: 'scope_mismatch' }
+  }
+  return null
 }
 
 // valueNumber is the number a value carries, and '' when it carries none.
@@ -448,17 +583,18 @@ export function judgeFact(answer, scenario) {
   }
   const reading = factReading(spans, accepted)
   const wrong = factReading(spans, forbidden)
-  const currentSpans = spans.filter(span => accepted.includes(span.value) && span.state === 'present')
   const oldPresent = spans.filter(span => forbidden.includes(span.value) && span.state === 'present')
-  const oldSpans = spans.filter(span => forbidden.includes(span.value) && span.state !== 'negated')
-  // The answer gives the value in force and says the old one was replaced.
-  // This is read before the uncertainty of a mention, because an old value
-  // standing in a past clause is what a replacement statement looks like.
-  if (currentSpans.length && oldSpans.length && superseded(text, oldSpans, currentSpans, spans)) {
-    return { verdict: 'pass', reason: 'fact_value_present_old_value_superseded' }
-  }
   if (reading.uncertain || wrong.uncertain) return { verdict: 'needs_judge', reason: 'negation_uncertain' }
-  if (reading.present && !wrong.present) return { verdict: 'pass', reason: 'fact_value_present' }
+  if (reading.present && !wrong.present) {
+    // The answer gives the value in force. The frame it states the value in
+    // decides whether it is the value the question asks for: a number in
+    // another frame does not answer the question, and a value the answer only
+    // quotes or asks back is not a value it gives. Both go to the semantic
+    // judging instead of being passed.
+    const scope = scopeConflict(text, scenario.question, accepted, spans)
+    if (scope) return { verdict: 'needs_judge', reason: scope.reason }
+    return { verdict: 'pass', reason: 'fact_value_present' }
+  }
   if (reading.present && wrong.present) return { verdict: 'needs_judge', reason: 'mixed_fact_values' }
   // The value in force is not affirmed. An answer that names it in another
   // writing names it all the same, so it is not read as an answer that names
@@ -474,6 +610,10 @@ export function judgeFact(answer, scenario) {
     }
     return { verdict: 'fail', reason: 'forbidden_value_present' }
   }
+  // Neither value is affirmed. The scope decides whether the answer stated the
+  // value at all.
+  const scope = scopeConflict(text, scenario.question, accepted, spans)
+  if (scope) return { verdict: 'needs_judge', reason: scope.reason }
   return { verdict: 'needs_judge', reason: 'no_fact_value' }
 }
 
@@ -511,8 +651,12 @@ export function scoreAttempt(record, scenario, condition = 'main') {
   // The fact reading wants the scenario shape, because it reads the
   // category: a scenario that asks about history is judged differently from
   // one that asks about the present. Only the answer key changes, and only
-  // for a scenario with more than one question.
-  const judged = judgeFact(record.answer, multi ? { ...scenario, answer: key } : scenario)
+  // for a scenario with more than one question. The question travels with it
+  // too: the frame the question asks in is read from the question itself.
+  const judgedScenario = multi
+    ? { ...scenario, answer: key, question: attempt.question ?? scenario.question }
+    : { ...scenario, question: attempt.question ?? scenario.question }
+  const judged = judgeFact(record.answer, judgedScenario)
   const out = result(judged.verdict, judged.reason)
   if (multi) out.question_index = questionIndex
   return out
