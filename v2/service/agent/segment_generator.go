@@ -347,6 +347,8 @@ Rules:
 - The whiteboard answers "what is true now"; the segment answers "what happened in this batch".
 - Every point carries a "source". "user" is what the learner said. "assistant" is something you produced and the learner did not take a position on. "assistant_accepted" is something you proposed and the learner explicitly took on. A point about your own words is never "user".
 - A whiteboard entry that is the learner's own carries no "origin" at all: "origin" is only for your own words. Use "assistant" for a proposal of yours the learner did not take on, and "assistant_accepted" for one the learner explicitly took on.
+- Your own words are cited by YOUR message id. A product of yours - a point, or a whiteboard entry with an "origin" - must cite the id of your message that says it, never the learner's message: a reader reads a cited message back, and a product that cites the learner's message is read back as the learner's.
+- When the learner states a value and you only confirm it, the entry is the learner's: it carries no "origin" and it cites the learner's message. Your confirmation is not the source of the value.
 - Record only products: exercises, plan items, recommendations, names you made up, the specific numbers and lists you gave, and the arrangements you settled on. Do not record explanations, do not record general knowledge, and do not record anything you retrieved from the documents.
 - "assistant_accepted" needs the learner to have said so: "good", "let's do it that way", "as you said", or they went and did it ("I finished the first one"). A polite reply ("thanks", "mm") is not acceptance, and neither is asking about something else. When you are not sure, write "assistant". Most of your products should be "assistant".
 - Do not record an echo: when you only repeat or confirm what the learner already said ("okay, then your seven points"), it stays the learner's point and gets no product of its own.
@@ -409,6 +411,8 @@ Rules:
 - "assistant_accepted" needs the learner to have said so: "good", "let's do it that way", "as you said", or they went and did it ("I finished the first one"). A polite reply ("thanks", "mm") is not acceptance, and neither is asking about something else. When you are not sure, write "assistant". Most of your products should be "assistant".
 - Do not record an echo: when you only repeat or confirm what the learner already said, it stays the learner's point and gets no product of its own.
 - A whiteboard entry that is the learner's own carries no "origin" at all: "origin" is only for your own words. Use "assistant" for a proposal of yours the learner did not take on, and "assistant_accepted" for one the learner explicitly took on.
+- Your own words are cited by YOUR message id. A product of yours - a point, or a whiteboard entry with an "origin" - must cite the id of your message that says it, never the learner's message: a reader reads a cited message back, and a product that cites the learner's message is read back as the learner's.
+- When the learner states a value and you only confirm it, the entry is the learner's: it carries no "origin" and it cites the learner's message. Your confirmation is not the source of the value.
 - Keep numbers, counts and names exactly as they were written. Do not round them and do not rewrite them.
 - Keep the learner's own hedging. If the learner said "主要是", "打算", "可能" or "先试试", the point says the same thing and not "已定", "确定" or "决定". When you are not sure what the learner settled, quote the learner's own words instead of naming a decision.
 - Your guesses and your assessments are not facts about the learner and never become one.
@@ -991,7 +995,7 @@ func trimSegmentToRenderedBudget(content model.SessionSummarySegmentContent,
 	if assistantContent {
 		for len(content.Points) > 1 &&
 			SegmentContentTokens(content, firstMessageID, lastMessageID) > budget {
-			victim, found := oldestUnacceptedAssistantPoint(content.Points)
+			victim, found := segmentPointToGiveUp(content.Points)
 			if !found {
 				break
 			}
@@ -1025,6 +1029,96 @@ func oldestUnacceptedAssistantPoint(points []model.SessionSummarySegmentPoint) (
 	}
 	if victim < 0 {
 		return 0, false
+	}
+	return victim, true
+}
+
+// oldestLearnerPoint finds the oldest point of the learner's own.
+//
+// It is what a segment gives up when it cannot give up a product, because a
+// point of the learner's is an index - it says what was asked - and the
+// message it points at is still there to be read back. A product is not like
+// that: the assistant's own words are in the window in one place only, so a
+// product that goes is a sentence that is gone.
+func oldestLearnerPoint(points []model.SessionSummarySegmentPoint) (int, bool) {
+	victim := -1
+	for index, point := range points {
+		if point.PointSource() != model.SessionSummarySegmentSourceUser {
+			continue
+		}
+		if victim < 0 || segmentPointLastID(point) < segmentPointLastID(points[victim]) {
+			victim = index
+		}
+	}
+	if victim < 0 {
+		return 0, false
+	}
+	return victim, true
+}
+
+// segmentPointIsSoleReference reports whether the point at that place is the
+// only thing in the segment that points at one of the messages it cites.
+//
+// A point that is the only pointer at a message carries something the rest of
+// the segment does not: whatever the assistant said in that message, and the
+// right to read it back. A point whose messages are all pointed at elsewhere
+// says nothing the segment would lose.
+func segmentPointIsSoleReference(points []model.SessionSummarySegmentPoint, index int) bool {
+	if index < 0 || index >= len(points) {
+		return false
+	}
+	for _, id := range points[index].EvidenceMessageIDs {
+		if id == 0 {
+			continue
+		}
+		shared := false
+		for other, candidate := range points {
+			if other == index {
+				continue
+			}
+			if segmentPointCitesID(candidate, id) {
+				shared = true
+				break
+			}
+		}
+		if !shared {
+			return true
+		}
+	}
+	return false
+}
+
+// segmentPointCitesID reports whether a point cites a message.
+func segmentPointCitesID(point model.SessionSummarySegmentPoint, id uint) bool {
+	for _, cited := range point.EvidenceMessageIDs {
+		if cited == id {
+			return true
+		}
+	}
+	return false
+}
+
+// segmentPointToGiveUp is what a segment gives up when it does not fit.
+//
+// The product nobody took on is the first candidate, as it always was. It is
+// not given up when it is the only pointer at a message the segment cites:
+// giving it up then takes the assistant's words and the right to read them
+// back out of the window, and the learner who asks about them later is told
+// that nothing was ever said.
+//
+// When the product cannot be given up, the oldest point of the learner's is
+// given up instead. A point of the learner's is an index - it says what was
+// asked - and the message behind it is still there to be read back, so what
+// goes is the least the segment is worth keeping.
+func segmentPointToGiveUp(points []model.SessionSummarySegmentPoint) (int, bool) {
+	victim, found := oldestUnacceptedAssistantPoint(points)
+	if !found {
+		return 0, false
+	}
+	if segmentPointIsSoleReference(points, victim) {
+		if learner, ok := oldestLearnerPoint(points); ok {
+			return learner, true
+		}
 	}
 	return victim, true
 }

@@ -450,8 +450,14 @@ func renderSummarySegment(segment model.SessionSummarySegment, document model.Se
 // happened last, and the product closest to now is the one the learner is
 // most likely to ask about.
 //
-// The learner's own points and the products the learner took on are not
-// given up here.
+// A product that is the only pointer at a message the segment cites is not
+// given up: giving it up takes the assistant's words and the right to read
+// them back out of the window, and the learner who asks about them later is
+// told that nothing was ever said. The oldest point of the learner's is given
+// up instead - a point of the learner's is an index, and the message behind
+// it is still there to be read back.
+//
+// The products the learner took on are not given up here.
 func dropUnacceptedProducts(points []model.SessionSummarySegmentPoint, marks []string,
 	budget, used int) ([]model.SessionSummarySegmentPoint, []string, bool) {
 	kept := points
@@ -461,7 +467,7 @@ func dropUnacceptedProducts(points []model.SessionSummarySegmentPoint, marks []s
 		if segmentPointsFit(kept, keptMarks, budget, used) {
 			return kept, keptMarks, dropped
 		}
-		victim, found := oldestUnacceptedAssistantPoint(kept)
+		victim, found := segmentPointToGiveUp(kept)
 		if !found {
 			return kept, keptMarks, dropped
 		}
