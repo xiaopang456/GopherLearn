@@ -470,6 +470,44 @@ function scopeConflict(text, question, values, spans) {
   return null
 }
 
+// forbiddenContext reads the forbidden values in the same context the accepted
+// values are read in. The two kinds of value are held to one rule: a value
+// can only fail the attempt when the answer itself asserts it, in the frame
+// the question asks about.
+//
+//   - a forbidden value the answer only quotes, or only asks back, is not the
+//     answer's own claim about the value in force, so the attempt goes to the
+//     semantic judging instead of being failed;
+//   - a forbidden value the answer states in another frame than the question
+//     asks about does not answer the question either - "19 pages a week" is no
+//     answer to "how many pages each time" - so it goes to the semantic
+//     judging as well;
+//   - a forbidden value the answer states in the frame the question asks about
+//     is the answer's own claim, and that fails.
+//
+// The frame rule is about quantities only: a name or a place has no frame of
+// its own, and the quoted rule holds for every kind of value.
+function forbiddenContext(text, question, values, spans) {
+  const valueSpans = spans.filter(span => values.includes(span.value))
+  if (!valueSpans.length) return null
+  const quotes = quotedRanges(text)
+  const asserted = valueSpans.filter(span => span.state === 'present')
+    .filter(span => !quotes.some(range => span.start >= range[0] && span.end <= range[1]))
+    .filter(span => !interrogative(text, span))
+  // the value stands in the text, but only as something the answer quotes or
+  // asks back: the answer does not state it
+  if (!asserted.length) return { reason: 'value_not_asserted' }
+  const numeric = values.some(value => valueNumber(normalizeValue(value)))
+  if (!numeric) return null
+  const asked = new Set(frameTokens(String(question ?? '')).map(frame => frame.unit))
+  if (!asked.size) return null
+  for (const span of asserted) {
+    const unit = attachedFrame(text, span, spans)
+    if (unit && !asked.has(unit)) return { reason: 'scope_mismatch' }
+  }
+  return null
+}
+
 // valueNumber is the number a value carries, and '' when it carries none.
 function valueNumber(canonical) {
   if (canonical.startsWith('quantity:')) return canonical.split(':')[1]
@@ -608,6 +646,14 @@ export function judgeFact(answer, scenario) {
     if (oldPresent.length && oldPresent.every(span => readsAsOld(text, span, spans))) {
       return { verdict: 'needs_judge', reason: 'old_value_only' }
     }
+    // The forbidden value is read in the same context as the accepted one. A
+    // value the answer only quotes or only asks back is not the answer's own
+    // claim, and a value it states in another frame than the question asks
+    // about does not answer the question: both go to the semantic judging
+    // instead of failing the attempt. Only a value the answer states in the
+    // frame the question asks about, as the value in force, fails.
+    const context = forbiddenContext(text, scenario.question, forbidden, spans)
+    if (context) return { verdict: 'needs_judge', reason: context.reason }
     return { verdict: 'fail', reason: 'forbidden_value_present' }
   }
   // Neither value is affirmed. The scope decides whether the answer stated the

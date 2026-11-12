@@ -160,3 +160,51 @@ test('a scenario about history still goes to the semantic checkpoint', () => {
   const s = key({ accepted: ['7道题'], forbidden: ['13道题'], category: 'R3' })
   assert.equal(judgeFact('现在一轮是 7 道题。原来是 13 道题。', s).verdict, 'needs_judge')
 })
+
+// The old value is read in the same context as the value in force. It can
+// only fail the attempt when the answer itself asserts it, in the frame the
+// question asks about.
+test('the old value in another frame does not fail the attempt', () => {
+  const s = key({ accepted: ['9道题'], forbidden: ['14道题'], question: '「甲」现在一次要做多少题？' })
+  // The number is counted in another frame than the question asks in: the
+  // answer does not say what the question asks, so it is not failed on it.
+  const scoped = judgeFact('现在每周14道题。', s)
+  assert.equal(scoped.verdict, 'needs_judge')
+  assert.equal(scoped.reason, 'scope_mismatch')
+  // The same number in the frame the question asks in is the answer's own
+  // claim, and that still fails.
+  const asserted = judgeFact('现在每次14道题。', s)
+  assert.equal(asserted.verdict, 'fail')
+  assert.equal(asserted.reason, 'forbidden_value_present')
+})
+
+test('the old value the answer only quotes does not fail the attempt', () => {
+  const s = key({ accepted: ['9道题'], forbidden: ['14道题'], question: '「甲」现在一次要做多少题？' })
+  const quoted = judgeFact('引用原文：「每次14道题」。', s)
+  assert.equal(quoted.verdict, 'needs_judge')
+  assert.equal(quoted.reason, 'value_not_asserted')
+  // The answer states the value in force and quotes the old one: that is a
+  // reading for the semantic judging, not a failure.
+  const both = judgeFact('现在一次是9道题。记录里写着「每次14道题」。', s)
+  assert.equal(both.verdict, 'needs_judge')
+  assert.notEqual(both.verdict, 'fail')
+})
+
+test('a question without a frame leaves the old value where it stands', () => {
+  const s = key({ accepted: ['9道题'], forbidden: ['14道题'] })
+  // No frame is asked for, so the frame of the answer decides nothing: the
+  // old value the answer states is still the old value given as the value in
+  // force.
+  assert.equal(judgeFact('现在每次14道题。', s).verdict, 'fail')
+  assert.equal(judgeFact('现在每周14道题。', s).verdict, 'fail')
+})
+
+test('a place has no frame of its own', () => {
+  const s = key({ accepted: ['漱玉汀'], forbidden: ['栖霞坞'], question: '「丙」现在的活动场地定在哪里？' })
+  // The old place the answer gives as the place in force still fails.
+  assert.equal(judgeFact('现在定在栖霞坞。', s).verdict, 'fail')
+  // The old place the answer puts in the past is not the answer either.
+  const past = judgeFact('原来定在栖霞坞，现在定在漱玉汀。', s)
+  assert.equal(past.verdict, 'needs_judge')
+  assert.notEqual(past.verdict, 'fail')
+})
