@@ -225,8 +225,8 @@ function mentionState(text, span, spans) {
   }
   // A value that stands behind a marker of a change is the value of that
   // change, not a statement that it is in force. The same words introduce a
-  // plan ("准备改成 9 道题"), a change that was undone ("改成 9 道题，后来又
-  // 撤销了") and a change that happened ("已经改成 9 道题"), and the text
+  // plan ("准备改成 23 道题"), a change that was undone ("改成 23 道题，后来又
+  // 撤销了") and a change that happened ("已经改成 23 道题"), and the text
   // does not say which one it is - so the mention stays uncertain and the
   // item goes to the semantic judging. What the answer quotes is not its own
   // claim, so a quoted mention is left alone.
@@ -356,7 +356,7 @@ function readsAsOld(text, span, spans) {
 // direct answer needs no frame wording.
 
 // The frame words, with the marker that turns the word into a frame. The
-// bare unit is not a frame: "3 天" is a duration, and "几天" is a question,
+// bare unit is not a frame: "17 天" is a duration, and "几天" is a question,
 // so the frame is the unit with 每 / 一 / 这 / 那 / 本 / 上 in front of it.
 const FRAME_UNITS = '次轮遍回趟周月年天日'
 const FRAME_MARKERS = '每一这本上'
@@ -575,8 +575,8 @@ function deniedRun(folded, run) {
 }
 
 // currentValueEcho reports whether the answer names the value in force in
-// another writing than the key writes it: the key says "9道题" and the answer
-// says "9 道", or the key says "重定向跳转" and the answer says "跳转". The
+// another writing than the key writes it: the key says "23道题" and the answer
+// says "23 道", or the key says "合并跳转" and the answer says "跳转". The
 // number is the value; the measure word and the counter noun around it are
 // not. Such an answer names the value in force, so it is never failed on the
 // forbidden value alone.
@@ -595,8 +595,8 @@ function currentValueEcho(text, spans, values) {
     if (core.length < 2) continue
     const run = longestRun(core, folded)
     if (run.length < 2) continue
-    // A run of the edge of the key ("跳转" of "重定向跳转") is a sign of the
-    // value; a run inside the key ("取消传" of "上下文取消传递") is a sign of it
+    // A run of the edge of the key ("跳转" of "合并跳转") is a sign of the
+    // value; a run inside the key ("消息传" of "跨段消息传递") is a sign of it
     // too, but only when it is long enough to be more than a word.
     const atTheEdge = core.startsWith(run) || core.endsWith(run)
     if (!atTheEdge && run.length < 3) continue
