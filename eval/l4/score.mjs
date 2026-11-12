@@ -436,7 +436,11 @@ function quotedRanges(text) {
 // answer offers back to the user as a question is not a value it states.
 function interrogative(text, span) {
   const [, sentenceEnd] = sentenceRange(text, span.start)
-  const after = text.slice(span.end, sentenceEnd)
+  // The end mark of the sentence belongs to the sentence: a question mark
+  // right after the value makes the value part of a question, not a claim.
+  // The slice has to reach past that mark, or the question mark is cut off
+  // before it is looked for.
+  const after = text.slice(span.end, Math.min(text.length, sentenceEnd + 1))
   const mark = after.search(/[？?]/)
   if (mark < 0) return false
   const stop = after.search(/[。！？!?]/)

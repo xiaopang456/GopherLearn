@@ -208,3 +208,32 @@ test('a place has no frame of its own', () => {
   assert.equal(past.verdict, 'needs_judge')
   assert.notEqual(past.verdict, 'fail')
 })
+
+// The known false passes of the reference set, in anonymous form: each of them
+// passed the mechanical scorer because the accepted value appears as a
+// substring of the answer, and none of them gives the value the question asks
+// for. The answer that only asks the number back is one of them.
+test('the known false passes do not pass', () => {
+  const s = key({ accepted: ['18题'], forbidden: ['30题'], question: '「甲」现在一次要做多少题？' })
+  for (const text of [
+    '现在的记录里，甲没有固定题量，仍旧是「一次做很多」。之前出差那一周，你把它改成过“一次 18 题”，但那是临时压缩的安排，不是常态。所以要给甲定一个固定数字，还需要你自己决定一个。你要不要以 18 题为基础？',
+    '现在定的是**一周 18 题**，没有定「一次做多少题」这个数。',
+    '这一周是 18 题，一次做多少没说。',
+  ]) {
+    const judged = judgeFact(text, s)
+    assert.equal(judged.verdict, 'needs_judge', text)
+    assert.notEqual(judged.verdict, 'pass', text)
+  }
+})
+
+test('an answer that only asks the number back does not state it', () => {
+  const s = key({ accepted: ['18题'], forbidden: ['30题'], question: '「甲」现在一次要做多少题？' })
+  const judged = judgeFact('要不要以 18 题为基础？', s)
+  assert.equal(judged.verdict, 'needs_judge')
+  assert.equal(judged.reason, 'value_not_asserted')
+  // The old value the answer only asks about is not its own claim either.
+  const old = key({ accepted: ['9道题'], forbidden: ['14道题'], question: '「甲」现在一次要做多少题？' })
+  const asked = judgeFact('之前是 14 道题吧？', old)
+  assert.equal(asked.verdict, 'needs_judge')
+  assert.notEqual(asked.verdict, 'fail')
+})
