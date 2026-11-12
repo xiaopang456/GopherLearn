@@ -1452,25 +1452,36 @@ func (c AgentConfig) Validate() error {
 	// reads them back. Counting their budgets in every other mode would fail a
 	// configuration that never sends them: a deployment with a tight input
 	// target and the layered mode off is valid today and must stay valid.
+	//
+	// The check itself belongs to every mode: the budgets that reach the
+	// window in the other modes are the same ones, and a configuration that
+	// leaves no room for the required context is refused whether the layered
+	// summary is on, off or in shadow. Only the terms of the sum depend on the
+	// mode.
 	softBudget := c.ContextMaxGlobalUserMemoryTokens + c.ContextMaxTopicUserMemoryTokens +
 		c.ContextMaxSummaryTokens + c.ContextMaxMasteryTokens + c.ContextMaxEpisodeTokens
+	residentTokens := c.ContextMaxResidentSegmentTokens
+	retrievedTokens := c.ContextMaxRetrievedSegmentTokens
 	if c.SummarySegmentMode == "on" {
-		residentTokens := c.EffectiveResidentSegmentTokens()
-		retrievedTokens := c.EffectiveRetrievedSegmentTokens()
+		// The blocks carry what one whole segment costs when the summary
+		// records the assistant's products, and the segment is larger in
+		// that mode.
+		residentTokens = c.EffectiveResidentSegmentTokens()
+		retrievedTokens = c.EffectiveRetrievedSegmentTokens()
 		softBudget += c.ContextMaxWhiteboardTokens + residentTokens + retrievedTokens
-		if softBudget >= c.ContextInputTargetTokens-c.KnowledgeMaxRunTokens {
-			if residentTokens != c.ContextMaxResidentSegmentTokens || retrievedTokens != c.ContextMaxRetrievedSegmentTokens {
-				// The blocks were raised to fit one maximum-size segment, and
-				// the raise is what does not fit. The numbers are in the
-				// message because the fix is a configuration change and the
-				// configuration is what has to change.
-				return fmt.Errorf("the summary's assistant products raise the resident segment block to %d and the retrieved segment block to %d tokens; with the board (%d), the summary (%d), the mastery (%d), the episode (%d), the profile (%d) and the topic note (%d) the soft budgets (%d) leave no room for the required context (%d)",
-					residentTokens, retrievedTokens, c.ContextMaxWhiteboardTokens, c.ContextMaxSummaryTokens,
-					c.ContextMaxMasteryTokens, c.ContextMaxEpisodeTokens, c.ContextMaxGlobalUserMemoryTokens,
-					c.ContextMaxTopicUserMemoryTokens, softBudget, c.ContextInputTargetTokens-c.KnowledgeMaxRunTokens)
-			}
-			return fmt.Errorf("context profile, topic note, episode, summary, mastery, board and segment budgets leave no room for required context")
+	}
+	if softBudget >= c.ContextInputTargetTokens-c.KnowledgeMaxRunTokens {
+		if residentTokens != c.ContextMaxResidentSegmentTokens || retrievedTokens != c.ContextMaxRetrievedSegmentTokens {
+			// The blocks were raised to fit one maximum-size segment, and
+			// the raise is what does not fit. The numbers are in the
+			// message because the fix is a configuration change and the
+			// configuration is what has to change.
+			return fmt.Errorf("the summary's assistant products raise the resident segment block to %d and the retrieved segment block to %d tokens; with the board (%d), the summary (%d), the mastery (%d), the episode (%d), the profile (%d) and the topic note (%d) the soft budgets (%d) leave no room for the required context (%d)",
+				residentTokens, retrievedTokens, c.ContextMaxWhiteboardTokens, c.ContextMaxSummaryTokens,
+				c.ContextMaxMasteryTokens, c.ContextMaxEpisodeTokens, c.ContextMaxGlobalUserMemoryTokens,
+				c.ContextMaxTopicUserMemoryTokens, softBudget, c.ContextInputTargetTokens-c.KnowledgeMaxRunTokens)
 		}
+		return fmt.Errorf("context profile, topic note, episode, summary, mastery, board and segment budgets leave no room for required context")
 	}
 	if c.ContextMaxMasteryTokens > 2000 {
 		return fmt.Errorf("contextMaxMasteryTokens must not exceed 2000")

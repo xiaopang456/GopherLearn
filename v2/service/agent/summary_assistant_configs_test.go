@@ -95,7 +95,7 @@ func TestTheLongConversationIsGeneratedAndKeptUnderBothConfigurations(t *testing
 				StartMessageID: 1, EndMessageID: messages[len(messages)-1].ID, Content: result.SegmentContent,
 			}
 			rendered := renderSummarySegments([]model.SessionSummarySegment{segment}, result.Whiteboard,
-				testCase.agent.EffectiveResidentSegmentTokens(), testCase.agent.EffectiveSegmentTokens())
+				testCase.agent.EffectiveResidentSegmentTokens(), testCase.agent.EffectiveSegmentTokens(), true)
 			if rendered.DroppedSegments != 0 {
 				t.Fatalf("%d segments were dropped from the window", rendered.DroppedSegments)
 			}

@@ -46,3 +46,26 @@ func TestTheAppliedModeLoadsWhenTheBudgetsFit(t *testing.T) {
 		t.Fatalf("a configuration with room was refused: %v", err)
 	}
 }
+
+// The check that the budgets leave room for the required context belongs to
+// every mode.
+//
+// The budgets that reach the window in the other modes are the same ones, so a
+// configuration whose own budgets leave no room is refused whether the layered
+// summary is on, off or in shadow. Only the terms of the sum depend on the
+// mode - the check itself does not.
+func TestTheCommonBudgetCheckAppliesInEveryMode(t *testing.T) {
+	for _, mode := range []string{"on", "off", "shadow"} {
+		t.Run(mode, func(t *testing.T) {
+			conf := defaultConfig()
+			conf.SummarySegmentMode = mode
+			// The five budgets that reach the window in every mode:
+			// 800 + 1200 + 2000 + 900 + 1000 = 5900 against 12000 - 6500 = 5500.
+			conf.ContextInputTargetTokens = 12000
+
+			if err := conf.AgentConfig.Validate(); err == nil {
+				t.Fatalf("the %s mode accepted budgets that leave no room for required context", mode)
+			}
+		})
+	}
+}

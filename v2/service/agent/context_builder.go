@@ -418,20 +418,26 @@ func LayeredSummaryPrompt() string {
 // the product's own request as unclassified, and the turn would end before
 // the answer existed.
 //
-// The list holds one entry per combination of the five sources the window can
+// The list holds one entry per combination of the six sources the window can
 // carry, because the order is written per turn: a turn whose window carries
 // the profile writes a different order from a turn whose window does not.
 // The entries are produced by the product's own renderer, so a harness cannot
 // hold a second implementation of the rule and drift from it.
+//
+// The list has to hold every form the product can write, including the one
+// that carries the rule about the assistant's proposals: a harness that did
+// not know it would refuse the product's own request in the middle of a
+// measurement, and the turn would end before the answer existed.
 func TrustOrderPrompts() []string {
-	result := make([]string, 0, 32)
-	for mask := 0; mask < 1<<5; mask++ {
+	result := make([]string, 0, 64)
+	for mask := 0; mask < 1<<6; mask++ {
 		result = append(result, renderTrustOrder(TrustOrderBlocks{
-			RecentMessages:  mask&1 != 0,
-			CurrentState:    mask&2 != 0,
-			SummarySegments: mask&4 != 0,
-			LongTermMemory:  mask&8 != 0,
-			EpisodeMemory:   mask&16 != 0,
+			RecentMessages:    mask&1 != 0,
+			CurrentState:      mask&2 != 0,
+			SummarySegments:   mask&4 != 0,
+			LongTermMemory:    mask&8 != 0,
+			EpisodeMemory:     mask&16 != 0,
+			AssistantProducts: mask&32 != 0,
 		}))
 	}
 	return result
@@ -1681,7 +1687,8 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 			segmentGrants = append(segmentGrants, whiteboardHistoryGrants(board, layered, input.SessionID)...)
 		}
 		resident := renderSummarySegments(layered.Resident, layered.BoardDocument,
-			minInt(remaining-4-floorBudget, b.config.MaxResidentSegmentTokens), b.config.MaxSegmentTokens)
+			minInt(remaining-4-floorBudget, b.config.MaxResidentSegmentTokens), b.config.MaxSegmentTokens,
+			b.config.AssistantContent)
 		if resident.DroppedSegments > 0 {
 			// A segment the window had no room for is a hole in what the
 			// model can be told about the session it is in. The count is
@@ -1695,7 +1702,8 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 			segmentGrants = append(segmentGrants, summarySegmentHistoryGrants(resident.Segments, input.SessionID)...)
 		}
 		retrieved := renderSummarySegments(layered.Retrieved, layered.BoardDocument,
-			minInt(remaining-4-floorBudget, b.config.MaxRetrievedSegmentTokens), b.config.MaxSegmentTokens)
+			minInt(remaining-4-floorBudget, b.config.MaxRetrievedSegmentTokens), b.config.MaxSegmentTokens,
+			b.config.AssistantContent)
 		if retrieved.DroppedSegments > 0 {
 			observability.Memory.SummarySegmentDropped("block_budget", retrieved.DroppedSegments)
 		}

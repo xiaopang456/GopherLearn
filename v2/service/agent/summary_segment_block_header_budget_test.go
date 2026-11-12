@@ -56,32 +56,45 @@ func TestABlockBudgetThatHoldsOneSegmentHoldsTheHeaderToo(t *testing.T) {
 	// The budget that holds the segment and the header together.
 	needed := header + cost
 	rendered := renderSummarySegments([]model.SessionSummarySegment{segment}, document,
-		needed, DefaultSegmentTokens)
+		needed, DefaultSegmentTokens, false)
 	if len(rendered.Segments) != 1 {
 		t.Fatalf("a budget of %d tokens held %d segments; the header costs %d and the segment %d",
 			needed, len(rendered.Segments), header, cost)
 	}
 
 	// And the budget that does not hold the header must not carry the
-	// segment whole. The segment is trimmed to the room the header left -
-	// a block that showed it whole would have spent more than it was given -
-	// but it is not dropped: a dropped segment is a hole in what the model
-	// can be told about the session it is in.
+	// segment whole.
+	//
+	// The two modes handle it differently, and the difference is the point:
+	// the mode that does not record the assistant's products keeps the path
+	// it always had and skips the segment, and the mode that does record
+	// them trims it to the room the header left - a block that showed it
+	// whole would have spent more than it was given, and a segment that can
+	// be trimmed is not a hole in what the model can be told.
 	without := renderSummarySegments([]model.SessionSummarySegment{segment}, document,
-		cost, DefaultSegmentTokens)
-	if len(without.Segments) != 1 {
-		t.Fatalf("a budget of %d tokens held %d segments; the header is %d and it does not fit",
+		cost, DefaultSegmentTokens, false)
+	if len(without.Segments) != 0 {
+		t.Fatalf("a budget of %d tokens carried %d segments; the header is %d and it does not fit",
 			cost, len(without.Segments), header)
 	}
-	if !without.Segments[0].Trimmed {
+	if without.DroppedSegments != 1 {
+		t.Fatalf("dropped segments = %d, want 1: the mode that is off skips the segment", without.DroppedSegments)
+	}
+	trimmed := renderSummarySegments([]model.SessionSummarySegment{segment}, document,
+		cost, DefaultSegmentTokens, true)
+	if len(trimmed.Segments) != 1 {
+		t.Fatalf("a budget of %d tokens held %d segments; the header is %d and it does not fit",
+			cost, len(trimmed.Segments), header)
+	}
+	if !trimmed.Segments[0].Trimmed {
 		t.Fatal("the segment was carried whole by a budget that could not hold it")
 	}
-	if len(without.Segments[0].Text) >= len(renderSummarySegmentForTest(segment, document)) {
+	if len(trimmed.Segments[0].Text) >= len(renderSummarySegmentForTest(segment, document)) {
 		t.Fatal("the trimmed segment is not shorter than the whole one")
 	}
-	if without.DroppedSegments != 0 {
+	if trimmed.DroppedSegments != 0 {
 		t.Fatalf("dropped segments = %d, want 0: a segment that can be trimmed is not dropped",
-			without.DroppedSegments)
+			trimmed.DroppedSegments)
 	}
 
 	// The scaled configuration's numbers have to clear the bar: a 370-token
@@ -89,7 +102,7 @@ func TestABlockBudgetThatHoldsOneSegmentHoldsTheHeaderToo(t *testing.T) {
 	// 370 is the number the run configuration uses, and it is the smallest
 	// round number above 59 + 304.
 	full := renderSummarySegments([]model.SessionSummarySegment{segment}, document,
-		370, DefaultSegmentTokens)
+		370, DefaultSegmentTokens, false)
 	if len(full.Segments) != 1 {
 		t.Fatalf("a 370-token block held %d segments; one full segment needs %d (header %d + segment %d)",
 			len(full.Segments), needed, header, cost)
