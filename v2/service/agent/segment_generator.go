@@ -995,7 +995,7 @@ func trimSegmentToRenderedBudget(content model.SessionSummarySegmentContent,
 	if assistantContent {
 		for len(content.Points) > 1 &&
 			SegmentContentTokens(content, firstMessageID, lastMessageID) > budget {
-			victim, found := segmentPointToGiveUp(content.Points)
+			victim, found := oldestUnacceptedAssistantPoint(content.Points)
 			if !found {
 				break
 			}
@@ -1029,96 +1029,6 @@ func oldestUnacceptedAssistantPoint(points []model.SessionSummarySegmentPoint) (
 	}
 	if victim < 0 {
 		return 0, false
-	}
-	return victim, true
-}
-
-// oldestLearnerPoint finds the oldest point of the learner's own.
-//
-// It is what a segment gives up when it cannot give up a product, because a
-// point of the learner's is an index - it says what was asked - and the
-// message it points at is still there to be read back. A product is not like
-// that: the assistant's own words are in the window in one place only, so a
-// product that goes is a sentence that is gone.
-func oldestLearnerPoint(points []model.SessionSummarySegmentPoint) (int, bool) {
-	victim := -1
-	for index, point := range points {
-		if point.PointSource() != model.SessionSummarySegmentSourceUser {
-			continue
-		}
-		if victim < 0 || segmentPointLastID(point) < segmentPointLastID(points[victim]) {
-			victim = index
-		}
-	}
-	if victim < 0 {
-		return 0, false
-	}
-	return victim, true
-}
-
-// segmentPointIsSoleReference reports whether the point at that place is the
-// only thing in the segment that points at one of the messages it cites.
-//
-// A point that is the only pointer at a message carries something the rest of
-// the segment does not: whatever the assistant said in that message, and the
-// right to read it back. A point whose messages are all pointed at elsewhere
-// says nothing the segment would lose.
-func segmentPointIsSoleReference(points []model.SessionSummarySegmentPoint, index int) bool {
-	if index < 0 || index >= len(points) {
-		return false
-	}
-	for _, id := range points[index].EvidenceMessageIDs {
-		if id == 0 {
-			continue
-		}
-		shared := false
-		for other, candidate := range points {
-			if other == index {
-				continue
-			}
-			if segmentPointCitesID(candidate, id) {
-				shared = true
-				break
-			}
-		}
-		if !shared {
-			return true
-		}
-	}
-	return false
-}
-
-// segmentPointCitesID reports whether a point cites a message.
-func segmentPointCitesID(point model.SessionSummarySegmentPoint, id uint) bool {
-	for _, cited := range point.EvidenceMessageIDs {
-		if cited == id {
-			return true
-		}
-	}
-	return false
-}
-
-// segmentPointToGiveUp is what a segment gives up when it does not fit.
-//
-// The product nobody took on is the first candidate, as it always was. It is
-// not given up when it is the only pointer at a message the segment cites:
-// giving it up then takes the assistant's words and the right to read them
-// back out of the window, and the learner who asks about them later is told
-// that nothing was ever said.
-//
-// When the product cannot be given up, the oldest point of the learner's is
-// given up instead. A point of the learner's is an index - it says what was
-// asked - and the message behind it is still there to be read back, so what
-// goes is the least the segment is worth keeping.
-func segmentPointToGiveUp(points []model.SessionSummarySegmentPoint) (int, bool) {
-	victim, found := oldestUnacceptedAssistantPoint(points)
-	if !found {
-		return 0, false
-	}
-	if segmentPointIsSoleReference(points, victim) {
-		if learner, ok := oldestLearnerPoint(points); ok {
-			return learner, true
-		}
 	}
 	return victim, true
 }

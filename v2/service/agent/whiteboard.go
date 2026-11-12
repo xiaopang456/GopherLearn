@@ -6,7 +6,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"GopherAI/common/rag"
 	"GopherAI/model"
@@ -173,63 +172,6 @@ func citesAssistantMessage(ids []uint, batch WhiteboardBatch) bool {
 	return false
 }
 
-// whiteboardLearnerStatesValue reports whether one of the learner's own
-// messages in this batch states the entry's value.
-//
-// The learner's words are the only authority for what is true now, so an entry
-// that repeats a value the learner just said is the learner's own, whatever
-// the model wrote on it. The message that says it is returned, because the
-// message decides who said it first.
-//
-// The check is a plain one: the value, or the number and unit it carries, has
-// to be in the learner's own words. A value the learner's message does not
-// contain is not the learner's, and an entry that carries it is the
-// assistant's content however the model labelled it.
-func whiteboardLearnerStatesValue(value string, ids []uint, batch WhiteboardBatch) (uint, bool) {
-	needles := whiteboardValueNeedles(value)
-	if len(needles) == 0 {
-		return 0, false
-	}
-	for index, messageID := range batch.MessageIDs {
-		if index >= len(batch.Messages) {
-			break
-		}
-		if !whiteboardCitesID(ids, messageID) {
-			continue
-		}
-		text := whiteboardPlainText(batch.Messages[index])
-		for _, needle := range needles {
-			if strings.Contains(text, needle) {
-				return messageID, true
-			}
-		}
-	}
-	return 0, false
-}
-
-// whiteboardValueNeedles are the forms of a value that count as the value
-// being said.
-//
-// A value that carries a number is stated by that number and its unit, because
-// that is how a learner states one: "栗矶改成每次 41 页" states "41 页/次".
-// A value that carries no number is stated by the value itself, because a name
-// is said as a name.
-func whiteboardValueNeedles(value string) []string {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return nil
-	}
-	needles := make([]string, 0, 2)
-	if number, unit, ok := parseWhiteboardValue(trimmed); ok {
-		needles = append(needles, whiteboardPlainText(fmt.Sprintf("%g%s", number, unit)))
-	}
-	plain := whiteboardPlainText(trimmed)
-	if plain != "" && len([]rune(plain)) <= 24 {
-		needles = append(needles, plain)
-	}
-	return needles
-}
-
 // whiteboardPlainText is a text with its spaces taken out.
 //
 // Two texts that differ only in spacing say the same thing, and a learner
@@ -275,76 +217,6 @@ func whiteboardCitesAssistantBefore(ids []uint, learnerMessageID uint, batch Whi
 		}
 	}
 	return false
-}
-
-// whiteboardLearnerOwnEntry reports whether the entry is the learner's own
-// fact, and the message of the learner's that says it.
-//
-// It is the learner's own fact when the learner's message in this batch
-// states the value and the assistant's message does not come before it. The
-// label the model wrote on the entry does not decide it: a model that calls
-// the learner's own new value the assistant's is wrong about the label and
-// right about the words.
-func whiteboardLearnerOwnEntry(entry model.SessionWhiteboardEntry, batch WhiteboardBatch) (uint, bool) {
-	messageID, stated := whiteboardLearnerStatesValue(entry.Value, entry.SourceMessageIDs, batch)
-	if !stated {
-		return 0, false
-	}
-	if whiteboardCitesAssistantBefore(entry.SourceMessageIDs, messageID, batch) {
-		return 0, false
-	}
-	return messageID, true
-}
-
-// whiteboardValueTokens are the words a value is made of that can name the
-// subject the value is about.
-//
-// A number is not a subject and a unit is not a subject: "30 分钟" is a value
-// and "分钟" is what it is measured in. What names a subject is what is left.
-func whiteboardValueTokens(value string) []string {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return nil
-	}
-	unit := ""
-	if _, parsed, ok := parseWhiteboardValue(trimmed); ok {
-		unit = parsed
-	}
-	tokens := make([]string, 0, 4)
-	for _, run := range whiteboardTextRuns(trimmed) {
-		if run == unit {
-			continue
-		}
-		if _, err := strconv.ParseFloat(run, 64); err == nil {
-			continue
-		}
-		tokens = append(tokens, run)
-	}
-	return tokens
-}
-
-// whiteboardTextRuns are the runs of letters and digits a text is made of.
-//
-// The runs are what a text says about, not how it says it: the words and the
-// names, without the numbers and the punctuation between them.
-func whiteboardTextRuns(text string) []string {
-	runs := make([]string, 0, 8)
-	current := make([]rune, 0, 16)
-	flush := func() {
-		if len(current) >= 2 {
-			runs = append(runs, string(current))
-		}
-		current = current[:0]
-	}
-	for _, r := range text {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			current = append(current, r)
-			continue
-		}
-		flush()
-	}
-	flush()
-	return runs
 }
 
 // whiteboardOriginForProposal is the origin a proposed entry is read under.
@@ -488,10 +360,8 @@ func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal W
 	// The mode that does not record the assistant's products keeps the board it
 	// has always written: the rules below belong to the mode that carries
 	// origins, and the other one must stay what it was.
-	learnerOwn := map[string]bool{}
 	if schemaVersion == model.SessionWhiteboardSchemaV2 {
 		proposal = whiteboardReuseSupersededKeys(current, proposal, batch)
-		learnerOwn = whiteboardLearnerOwnEntries(current, proposal, batch)
 	}
 	// The goal is always the learner's, so it may only cite the learner's
 	// own messages however the rest of the proposal is made up.
@@ -506,19 +376,19 @@ func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal W
 	}
 
 	constraints, constraintChanges, constraintDiag := applyWhiteboardGroup(
-		current.Constraints, proposal.Constraints, batch, false, schemaVersion, learnerOwn)
+		current.Constraints, proposal.Constraints, batch, false, schemaVersion)
 	result.Board.Constraints = constraints
 	result.Changes = append(result.Changes, constraintChanges...)
 	result.Diagnostics.add(constraintDiag)
 
 	plan, planChanges, planDiag := applyWhiteboardGroup(
-		current.Plan, proposal.Plan, batch, true, schemaVersion, learnerOwn)
+		current.Plan, proposal.Plan, batch, true, schemaVersion)
 	result.Board.Plan = plan
 	result.Changes = append(result.Changes, planChanges...)
 	result.Diagnostics.add(planDiag)
 
 	openItems, openChanges, openDiag := applyWhiteboardGroup(
-		current.OpenItems, proposal.OpenItems, batch, false, schemaVersion, learnerOwn)
+		current.OpenItems, proposal.OpenItems, batch, false, schemaVersion)
 	result.Board.OpenItems = openItems
 	result.Changes = append(result.Changes, openChanges...)
 	result.Diagnostics.add(openDiag)
@@ -660,7 +530,7 @@ func whiteboardEntryForVersion(entry model.SessionWhiteboardEntry, schemaVersion
 // one, because a board that still lists finished work is a board that has
 // not been read.
 func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []model.SessionWhiteboardEntry,
-	batch WhiteboardBatch, doneFirst bool, schemaVersion int, learnerOwn map[string]bool) ([]model.SessionWhiteboardEntry, []model.SessionSummarySegmentChange, WhiteboardDiagnostics) {
+	batch WhiteboardBatch, doneFirst bool, schemaVersion int) ([]model.SessionWhiteboardEntry, []model.SessionSummarySegmentChange, WhiteboardDiagnostics) {
 	var diagnostics WhiteboardDiagnostics
 	currentByKey := make(map[string]model.SessionWhiteboardEntry, len(current))
 	for _, entry := range current {
@@ -721,21 +591,22 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 		// The learner's message in this batch is the evidence, and the
 		// assistant's message has to come after it for the entry to be the
 		// assistant's proposal the learner took on.
+		//
+		// The entry does not have to replace a value the board already
+		// holds. A board that is empty - because the last batch failed to
+		// generate - is exactly where the learner's own words are the only
+		// thing there is.
 		learnerMessageID := uint(0)
 		learnerStated := false
 		if schemaVersion == model.SessionWhiteboardSchemaV2 &&
 			origin != model.SessionWhiteboardOriginUser {
-			learnerMessageID, learnerStated = whiteboardLearnerStatesValue(entry.Value,
-				entry.SourceMessageIDs, batch)
-			learnerStated = learnerStated &&
-				!whiteboardCitesAssistantBefore(entry.SourceMessageIDs, learnerMessageID, batch) &&
-				learnerOwn[key]
+			learnerMessageID, learnerStated = whiteboardLearnerOwnEntry(entry, batch)
 		}
 
 		var ids []uint
 		var ok bool
 		if learnerStated {
-			ids, ok = filterWhiteboardLearnerEvidence(entry.SourceMessageIDs, batch)
+			ids, ok = filterWhiteboardLearnerEvidence(entry.SourceMessageIDs, learnerMessageID, batch)
 		} else {
 			ids, ok = filterWhiteboardEvidence(entry.SourceMessageIDs, previous.SourceMessageIDs, batch.allowed(origin))
 		}
@@ -1203,9 +1074,15 @@ func whiteboardReuseSupersededKeys(current model.SessionWhiteboardDocument,
 // whiteboardSupersedingEntry finds the entry the board holds about the
 // subject the learner's message changed.
 //
-// The two entries are about one subject when the new entry names the old one:
-// an entry that replaces another says what it replaces. The old entry has to
-// be the earlier version: it was written before the message that changed it.
+// The two entries are about one subject when the new entry names the old
+// one, when they measure the same thing, and when the old entry is the
+// earlier version: it was written before the message that changed it.
+//
+// There has to be exactly one such entry. Two of them means the engine
+// cannot tell which one the new entry replaces, and a value that takes over
+// the wrong entry's key loses a fact the learner still has. So a case the
+// engine cannot place is left alone: the new entry keeps its own key, and
+// the board keeps what it had.
 func whiteboardSupersedingEntry(current model.SessionWhiteboardDocument,
 	entry model.SessionWhiteboardEntry, key string, learnerMessageID uint) (string, string, bool) {
 	type candidate struct {
@@ -1223,9 +1100,8 @@ func whiteboardSupersedingEntry(current model.SessionWhiteboardDocument,
 	for _, item := range current.OpenItems {
 		candidates = append(candidates, candidate{"open_items", strings.TrimSpace(item.Key), item})
 	}
-	subject := entry.Text + " " + entry.Value
-	best := 0
-	bestKey, bestGroup := "", ""
+	found := candidate{}
+	matches := 0
 	for _, item := range candidates {
 		if item.key == "" || item.key == key {
 			continue
@@ -1233,16 +1109,122 @@ func whiteboardSupersedingEntry(current model.SessionWhiteboardDocument,
 		if !whiteboardEntryIsOlder(item.entry, learnerMessageID) {
 			continue
 		}
-		size := whiteboardSubjectMatch(item.entry, subject)
-		if size <= best {
+		if !whiteboardEntrySupersedes(item.entry, entry) {
 			continue
 		}
-		best, bestKey, bestGroup = size, item.key, item.group
+		matches++
+		if matches > 1 {
+			// Two entries the new entry could be replacing. The engine
+			// does not know which one, so it replaces neither.
+			return "", "", false
+		}
+		found = item
 	}
-	if best == 0 {
+	if matches == 0 {
 		return "", "", false
 	}
-	return bestKey, bestGroup, true
+	return found.key, found.group, true
+}
+
+// whiteboardEntryNames are the names an entry can be pointed at by.
+//
+// They are the parts of its value that identify it. A value that carries a
+// measurement is identified by that measurement, because "26 pages" and
+// "26 minutes" are two different values and the measurement is what says
+// which one this is. A value that names something is identified by its name.
+//
+// A name has to be worth pointing at: a single character is a fragment of a
+// word rather than a name, and a part that carries a number is a
+// measurement, which the rule above already has.
+func whiteboardEntryNames(entry model.SessionWhiteboardEntry) []string {
+	value := strings.TrimSpace(entry.Value)
+	if value == "" {
+		return nil
+	}
+	if number, unit, ok := parseWhiteboardValue(value); ok {
+		return []string{whiteboardPlainText(strconv.FormatFloat(number, 'f', -1, 64) + unit)}
+	}
+	names := make([]string, 0, 4)
+	for _, part := range strings.FieldsFunc(value, func(r rune) bool {
+		switch r {
+		case ',', '，', '/', '、', '；', ';', ' ', '\t':
+			return true
+		}
+		return false
+	}) {
+		part = strings.TrimSpace(part)
+		if len([]rune(part)) < 2 {
+			continue
+		}
+		if strings.ContainsAny(part, "0123456789") {
+			continue
+		}
+		names = append(names, whiteboardPlainText(part))
+	}
+	return names
+}
+
+// whiteboardEntryUnit is the unit an entry's value is measured in.
+//
+// An entry with no measurement has no unit: it names something rather than
+// measuring it, and an entry that measures something is not the same entry
+// as one that names something.
+func whiteboardEntryUnit(entry model.SessionWhiteboardEntry) string {
+	_, unit, ok := parseWhiteboardValue(entry.Value)
+	if !ok {
+		return ""
+	}
+	return unit
+}
+
+// whiteboardEntryNamesOther reports whether an entry is about another thing.
+//
+// "The other book" is another thing, and a value about it is not a value
+// about this one.
+func whiteboardEntryNamesOther(entry model.SessionWhiteboardEntry) bool {
+	return whiteboardQualifiersIn(entry.Text + " " + entry.Value)[whiteboardQualifierOtherThing]
+}
+
+// whiteboardEntrySupersedes reports whether a new entry is the same entry as
+// an old one under another key.
+//
+// Three things have to hold, and all three of them are about what the two
+// entries say rather than about the words they share:
+//
+//   - they measure the same thing: two entries that measure different units
+//     are two entries, whatever words they share;
+//   - the new entry names the old one: an entry that replaces another says
+//     what it replaces;
+//   - neither of them is about another thing.
+//
+// "Reading pages" and "reading time" share "reading" and measure different
+// units, and they are two entries. A model that renames one of them has to
+// keep both.
+//
+// What the two entries share in words is not evidence of anything. "Reading"
+// is in both "reading pages" and "reading time", and the word says only that
+// both are about reading.
+func whiteboardEntrySupersedes(old model.SessionWhiteboardEntry, updated model.SessionWhiteboardEntry) bool {
+	if whiteboardEntryNamesOther(old) || whiteboardEntryNamesOther(updated) {
+		return false
+	}
+	if !whiteboardUnitsCompatible(whiteboardEntryUnit(old), whiteboardEntryUnit(updated)) {
+		return false
+	}
+	names := whiteboardEntryNames(old)
+	if len(names) == 0 {
+		return false
+	}
+	plain := whiteboardPlainText(updated.Text + " " + updated.Value)
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		if strings.Contains(plain, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // whiteboardRemoveAt drops the entry at the index from the group.
@@ -1251,56 +1233,6 @@ func whiteboardRemoveAt(entries []model.SessionWhiteboardEntry, index int) []mod
 	kept = append(kept, entries[:index]...)
 	kept = append(kept, entries[index+1:]...)
 	return kept
-}
-
-// whiteboardLearnerOwnEntries marks the entries the learner's own words make
-// the learner's own.
-//
-// An entry is the learner's own when the learner's message in this batch
-// states the value, the entry replaces a value the board already holds, and
-// no assistant message the entry cites comes before the learner's message.
-// The last part is what keeps an assistant's proposal that the learner only
-// asked about out of it: there the learner spoke first and the assistant's
-// message is the proposal, not a confirmation.
-func whiteboardLearnerOwnEntries(current model.SessionWhiteboardDocument,
-	proposal WhiteboardProposal, batch WhiteboardBatch) map[string]bool {
-	own := make(map[string]bool)
-	for _, group := range [][]model.SessionWhiteboardEntry{
-		proposal.Constraints, proposal.Plan, proposal.OpenItems,
-	} {
-		for _, entry := range group {
-			key := strings.TrimSpace(entry.Key)
-			if key == "" {
-				continue
-			}
-			messageID, stated := whiteboardLearnerStatesValue(entry.Value, entry.SourceMessageIDs, batch)
-			if !stated {
-				continue
-			}
-			if whiteboardCitesAssistantBefore(entry.SourceMessageIDs, messageID, batch) {
-				continue
-			}
-			if !whiteboardReplacesCurrentValue(current, entry, key, messageID) {
-				continue
-			}
-			own[key] = true
-		}
-	}
-	return own
-}
-
-// whiteboardReplacesCurrentValue reports whether the entry replaces a value
-// the board already holds.
-//
-// The board holds the value either under the same key or under the key the
-// model renamed it to - and then the new entry names the old one.
-func whiteboardReplacesCurrentValue(current model.SessionWhiteboardDocument,
-	entry model.SessionWhiteboardEntry, key string, messageID uint) bool {
-	if whiteboardHasKey(current, key) {
-		return true
-	}
-	_, _, found := whiteboardSupersedingEntry(current, entry, key, messageID)
-	return found
 }
 
 // whiteboardHasKey reports whether the board holds an entry under the key.
@@ -1318,46 +1250,6 @@ func whiteboardHasKey(document model.SessionWhiteboardDocument, key string) bool
 		}
 	}
 	return false
-}
-
-// whiteboardSubjectMatch is how much of the old entry the new entry names.
-//
-// It is the length of the longest word of the old entry that the new entry
-// says. The words of a value are what names its subject; when a value is a
-// bare number and its unit, the words of its text are what name it. The
-// longer the word, the more specific the match.
-func whiteboardSubjectMatch(old model.SessionWhiteboardEntry, subject string) int {
-	words := whiteboardValueTokens(old.Value)
-	words = append(words, whiteboardTextWords(old.Text)...)
-	plain := whiteboardPlainText(subject)
-	longest := 0
-	for _, word := range words {
-		if len([]rune(word)) < 2 {
-			continue
-		}
-		if !strings.Contains(plain, whiteboardPlainText(word)) {
-			continue
-		}
-		if size := len([]rune(word)); size > longest {
-			longest = size
-		}
-	}
-	return longest
-}
-
-// whiteboardTextWords are the words a text is made of.
-//
-// They are what a text says about, not how it says it: the phrases and the
-// names, without the numbers and the punctuation between them.
-func whiteboardTextWords(text string) []string {
-	words := make([]string, 0, 8)
-	for _, run := range whiteboardTextRuns(text) {
-		if _, err := strconv.ParseFloat(run, 64); err == nil {
-			continue
-		}
-		words = append(words, run)
-	}
-	return words
 }
 
 // whiteboardEntryIsOlder reports whether the entry was written before the
@@ -1456,14 +1348,22 @@ func whiteboardRemoveKey(entries []model.SessionWhiteboardEntry, key string) []m
 // own messages in this batch.
 //
 // It is the filter for an entry the learner's own words justify. The message
-// that says the value is in this batch, and the other citations the model
-// added are either stale - they belong to the value this one replaces - or
-// the assistant's, and neither is the proof of a value the learner just said.
-// The stale ones are dropped rather than the entry, because the entry is the
-// learner's current value and the old one is already recorded as the change.
-func filterWhiteboardLearnerEvidence(cited []uint, batch WhiteboardBatch) ([]uint, bool) {
-	ids := make([]uint, 0, len(cited))
-	seen := make(map[uint]struct{}, len(cited))
+// that says the value is in this batch, and it is the proof - whether or not
+// the model cited it, because a model that wrote the wrong label on the
+// entry may well have cited the wrong message with it.
+//
+// The other citations the model added are either stale - they belong to the
+// value this one replaces - or the assistant's, and neither is the proof of
+// a value the learner just said. The stale ones are dropped rather than the
+// entry, because the entry is the learner's current value and the old one is
+// already recorded as the change.
+func filterWhiteboardLearnerEvidence(cited []uint, stated uint, batch WhiteboardBatch) ([]uint, bool) {
+	ids := make([]uint, 0, len(cited)+1)
+	seen := make(map[uint]struct{}, len(cited)+1)
+	if stated != 0 {
+		ids = append(ids, stated)
+		seen[stated] = struct{}{}
+	}
 	for _, id := range cited {
 		if id == 0 {
 			return nil, false
