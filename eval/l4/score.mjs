@@ -242,6 +242,194 @@ function factReading(spans, values) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// The value in force now, and the value that was in force before.
+//
+// The answer key of a scenario that asks for a value names the value it expects
+// and the value it forbids. When the question asks for the value in force now,
+// the forbidden value is the one that was in force before - and an answer may
+// well name it, to say what the value was and what it was changed to. Reading
+// "the forbidden value is written down" as "the forbidden value is the answer"
+// is the mistake this part of the scorer must not make.
+//
+// The three cases are read apart:
+//
+//   - the answer gives the value in force and says the other one was replaced
+//     -> pass. The old value is named, but not as the answer.
+//   - the answer gives the other value as the value in force
+//     -> fail. That is the answer the key forbids.
+//   - the answer names both without saying which one is in force, or names the
+//     value in force in a writing the key does not use
+//     -> pending. The relation cannot be read reliably from the text, so the
+//     item goes to the semantic judging instead of being decided by matching
+//     strings.
+
+// A value the answer puts in the past. The soft markers of mentionState read
+// "原来", "之前" and the rest; these are the ones it does not know. They are
+// read here only to keep an old value from being failed.
+const PAST_MARKER = [...SOFT_MARKER, '最初', '最早', '起初', '一开始', '当初', '以前', '过去', '当年', '原本']
+// A replacement: the marker that names the change between the value that was
+// in force and the value that took its place. The markers of a withdrawal are
+// not here - a withdrawn value is already read as a withdrawn one.
+const REPLACEMENT_MARKER = [
+  '改成', '改为', '调整成', '调整为', '调到', '调成', '换成', '变成', '更新成', '更新为',
+  '取代', '替代', '改成了', '换成了', '已取代', '被取代',
+  /\b(?:changed to|changed into|replaced by|updated to|switched to)\b/iu,
+]
+// The runs of characters that mean nothing on their own. A run like "方式" is
+// no sign that the answer named the value the key names.
+const GENERIC_RUN = ['方式', '方法', '数量', '内容', '问题', '时间', '名字', '地方', '情况', '结果', '部分', '东西', '一次', '一个', '几个', '这个', '那个']
+
+// sentenceRange returns the range of the sentence a position is in.
+function sentenceRange(text, at) {
+  let start = 0
+  for (let i = at - 1; i >= 0; i -= 1) {
+    if (STRONG_BREAK.includes(text[i])) { start = i + 1; break }
+  }
+  let end = text.length
+  for (let i = at; i < text.length; i += 1) {
+    if (STRONG_BREAK.includes(text[i])) { end = i; break }
+  }
+  return [start, end]
+}
+
+// readsAsOld reports whether a mention of the old value is read as the value
+// that was in force before: a past marker or a replacement marker stands
+// where it does.
+function readsAsOld(text, span, spans) {
+  const [sentenceStart, sentenceEnd] = sentenceRange(text, span.start)
+  const backward = clauseRanges(text, sentenceStart, span.start)
+  const before = backward.length ? backward[backward.length - 1] : null
+  if (before && !holdsAnotherValue(before, span, spans)) {
+    const clause = text.slice(before[0], before[1])
+    if (hasMarker(clause, PAST_MARKER) || hasMarker(clause, REPLACEMENT_MARKER)) return true
+  }
+  for (const range of clauseRanges(text, span.end, sentenceEnd)) {
+    const clause = text.slice(range[0], range[1])
+    // a replacement marker names the change between the two values, so it is
+    // read even in a clause that holds the value in force
+    if (hasMarker(clause, REPLACEMENT_MARKER)) return true
+    if (holdsAnotherValue(range, span, spans)) continue
+    if (hasMarker(clause, PAST_MARKER)) return true
+  }
+  return false
+}
+
+// superseded reports whether the answer says the old value was replaced: the
+// value in force is given, the old value is read as the old one, and a marker
+// that names the change stands between them.
+function superseded(text, oldSpans, currentSpans, spans) {
+  for (const old of oldSpans) {
+    if (!readsAsOld(text, old, spans)) continue
+    for (const current of currentSpans) {
+      // the value in force has to stand after the old one: "it was that, and
+      // it was changed to this"
+      if (current.start <= old.end) continue
+      // the window reaches to the end of the sentence the value in force is
+      // in, so that "14 道题已经被 9 道题取代" is read as a replacement too
+      const [, sentenceEnd] = sentenceRange(text, current.start)
+      if (!hasMarker(text.slice(old.end, sentenceEnd), REPLACEMENT_MARKER)) continue
+      return true
+    }
+  }
+  return false
+}
+
+// valueNumber is the number a value carries, and '' when it carries none.
+function valueNumber(canonical) {
+  if (canonical.startsWith('quantity:')) return canonical.split(':')[1]
+  if (canonical.startsWith('seconds:')) return canonical.slice('seconds:'.length)
+  const text = canonical.startsWith('text:') ? canonical.slice('text:'.length) : canonical
+  const found = /^([0-9]+(?:\.[0-9]+)?|[零〇一二两兩三四五六七八九十百千万萬]+)/u.exec(text)
+  if (!found) return ''
+  const number = chineseNumber(found[1])
+  return Number.isFinite(number) ? String(number) : ''
+}
+
+// valueCore is the characters a value is written with, the digits left out.
+function valueCore(canonical) {
+  const text = canonical.startsWith('text:') ? canonical.slice('text:'.length) : canonical
+  return [...text].filter(character => /[\u3400-\u9fff]/u.test(character)).join('')
+}
+
+// quantitiesIn returns the quantities the answer names, each with the state it
+// is read in: a quantity the answer denies or withdraws is not a value it
+// states.
+function quantitiesIn(text, spans) {
+  const haystack = foldCharacters(text)
+  const found = []
+  FACT_EXPR.lastIndex = 0
+  for (let match = FACT_EXPR.exec(haystack.text); match; match = FACT_EXPR.exec(haystack.text)) {
+    const canonical = canonicalExpression(match[0])
+    if (!canonical || canonical.startsWith('clock:')) continue
+    const start = haystack.map[match.index]
+    const end = haystack.map[match.index + match[0].length - 1] + 1
+    const span = { start, end, value: canonical }
+    span.state = mentionState(text, span, [...spans, ...found])
+    found.push(span)
+  }
+  return found
+}
+
+// longestRun returns the longest run of characters the two texts share.
+function longestRun(one, other) {
+  let best = ''
+  for (let i = 0; i < one.length; i += 1) {
+    for (let j = one.length; j > i; j -= 1) {
+      const run = one.slice(i, j)
+      if (!other.includes(run)) continue
+      if (run.length > best.length) best = run
+      break
+    }
+  }
+  return best
+}
+
+// deniedRun reports whether the run of characters the answer shares with the
+// key is denied where it stands: "不是跳转" names no value.
+function deniedRun(folded, run) {
+  let at = folded.indexOf(run)
+  while (at >= 0) {
+    const before = folded.slice(Math.max(0, at - 12), at)
+    if (hasMarker(before, HARD_NEGATION)) return true
+    at = folded.indexOf(run, at + 1)
+  }
+  return false
+}
+
+// currentValueEcho reports whether the answer names the value in force in
+// another writing than the key writes it: the key says "9道题" and the answer
+// says "9 道", or the key says "重定向跳转" and the answer says "跳转". The
+// number is the value; the measure word and the counter noun around it are
+// not. Such an answer names the value in force, so it is never failed on the
+// forbidden value alone.
+function currentValueEcho(text, spans, values) {
+  const folded = foldCharacters(text).text
+  const quantities = quantitiesIn(text, spans)
+  for (const value of values) {
+    const canonical = normalizeValue(value)
+    const number = valueNumber(canonical)
+    if (number) {
+      const stated = quantities.some(quantity => quantity.state === 'present' && valueNumber(quantity.value) === number)
+      if (stated) return { value, kind: 'number' }
+      continue
+    }
+    const core = valueCore(canonical)
+    if (core.length < 2) continue
+    const run = longestRun(core, folded)
+    if (run.length < 2) continue
+    // A run of the edge of the key ("跳转" of "重定向跳转") is a sign of the
+    // value; a run inside the key ("取消传" of "上下文取消传递") is a sign of it
+    // too, but only when it is long enough to be more than a word.
+    const atTheEdge = core.startsWith(run) || core.endsWith(run)
+    if (!atTheEdge && run.length < 3) continue
+    if (GENERIC_RUN.includes(run)) continue
+    if (deniedRun(folded, run)) continue
+    return { value, kind: 'text' }
+  }
+  return null
+}
+
 // judgeFact decides a scenario whose answer key names the values it expects
 // and the values it forbids.
 export function judgeFact(answer, scenario) {
@@ -260,10 +448,32 @@ export function judgeFact(answer, scenario) {
   }
   const reading = factReading(spans, accepted)
   const wrong = factReading(spans, forbidden)
+  const currentSpans = spans.filter(span => accepted.includes(span.value) && span.state === 'present')
+  const oldPresent = spans.filter(span => forbidden.includes(span.value) && span.state === 'present')
+  const oldSpans = spans.filter(span => forbidden.includes(span.value) && span.state !== 'negated')
+  // The answer gives the value in force and says the old one was replaced.
+  // This is read before the uncertainty of a mention, because an old value
+  // standing in a past clause is what a replacement statement looks like.
+  if (currentSpans.length && oldSpans.length && superseded(text, oldSpans, currentSpans, spans)) {
+    return { verdict: 'pass', reason: 'fact_value_present_old_value_superseded' }
+  }
   if (reading.uncertain || wrong.uncertain) return { verdict: 'needs_judge', reason: 'negation_uncertain' }
   if (reading.present && !wrong.present) return { verdict: 'pass', reason: 'fact_value_present' }
-  if (wrong.present && !reading.present) return { verdict: 'fail', reason: 'forbidden_value_present' }
   if (reading.present && wrong.present) return { verdict: 'needs_judge', reason: 'mixed_fact_values' }
+  // The value in force is not affirmed. An answer that names it in another
+  // writing names it all the same, so it is not read as an answer that names
+  // no value at all - and it is never failed on the forbidden value alone.
+  const echo = currentValueEcho(text, spans, accepted)
+  if (wrong.present) {
+    if (echo) return { verdict: 'needs_judge', reason: 'current_value_echo' }
+    // A forbidden value the answer puts in the past is not the answer either:
+    // the answer gives no value in force, which is not the same as giving the
+    // wrong one.
+    if (oldPresent.length && oldPresent.every(span => readsAsOld(text, span, spans))) {
+      return { verdict: 'needs_judge', reason: 'old_value_only' }
+    }
+    return { verdict: 'fail', reason: 'forbidden_value_present' }
+  }
   return { verdict: 'needs_judge', reason: 'no_fact_value' }
 }
 
