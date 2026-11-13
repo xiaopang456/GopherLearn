@@ -30,6 +30,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 
@@ -240,6 +241,17 @@ type LayeredRead struct {
 	// how many retries, and how many batches still failed. The last number is
 	// the one the product's own failure rate is measured on.
 	Batches batchOutcome `json:"batches"`
+	// BatchEvidence is what every attempt at every batch produced: the
+	// model's own answer, the segment body the program made of it, and the
+	// candidates the board refused.
+	//
+	// It is not part of read.json. The answer and the body are the learner's
+	// own words, and a result file is read by people who do not need them.
+	// The evidence is written next to the result as its own directory, and
+	// only when the deployment's summary segment debug dump is on: a run
+	// that is not going to be read afterwards has no business keeping the
+	// learner's words.
+	BatchEvidence *BatchEvidenceSet `json:"-"`
 	// SummaryCompactions is what the rolling summary's writer did: how many
 	// compactions reached a model during the truncated arm's replay. It is
 	// zero on the layered arm, where the product writes no rolling summary at
@@ -455,6 +467,9 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	// reads state nobody wrote measures the reader against a vacuum.
 	seeded := seededLayered{}
 	var batches batchOutcome
+	// evidence is what the write phase's attempts produced, kept for a run
+	// that is going to be read afterwards.
+	var evidence *BatchEvidenceSet
 	// replay is the truncated arm's write phase. It is declared here because
 	// the read phase has to be able to say what the write phase did: a run
 	// whose compaction was refused by the failure cooldown answered without
@@ -467,13 +482,14 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	// truncated arm.
 	summarySource := armSummarySource(mode, nil)
 	if mode == LayeredArmOn {
-		seeded, batches, err = seedLayeredState(ctx, s, messages, settings, segmentModel, sessionID,
+		seeded, batches, evidence, err = seedLayeredState(ctx, s, messages, settings, segmentModel, sessionID,
 			settings.Config.AgentConfig.SummarySegmentMaxAttempts)
 		if err != nil {
 			return read, err
 		}
 		read.SeededSegments = len(seeded.segments)
 		read.SeededBoard = boardEntryCount(seeded.board)
+		read.BatchEvidence = evidence
 	} else {
 		replay, err = replayProductRollingSummary(ctx, s, settings, wrapped, sessionID, messages)
 		if err != nil {
@@ -787,6 +803,34 @@ func (m *recordingChatModel) excerpt() string {
 	return string(runes)
 }
 
+// fullAnswerForReport bounds the whole answer that is kept for an attempt.
+//
+// The excerpt is a head, and a head cannot tell a truncated answer from a
+// wrongly shaped one. The answer a failed attempt produced is kept whole, so
+// that the difference decides the fix; the bound is there because a model that
+// ignored the format can answer with prose of any length, and one runaway
+// answer must not fill the run's directory.
+const fullAnswerForReport = 256 << 10
+
+// full is the whole answer the last call produced, bounded.
+//
+// It is what an attempt that failed is filed with: the program's own answer
+// is dropped with the error, and this is the only copy of it that survives.
+func (m *recordingChatModel) full() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.last) <= fullAnswerForReport {
+		return m.last
+	}
+	// The cut is put on a rune boundary: a half a character at the end of the
+	// answer would make the file unreadable for everything that reads it.
+	cut := fullAnswerForReport
+	for cut > 0 && !utf8.RuneStart(m.last[cut]) {
+		cut--
+	}
+	return m.last[:cut] + "\n...[truncated]"
+}
+
 // seedLayeredState writes the segments and the board the background would
 // have written, retrying a failed batch the way the product's worker does.
 //
@@ -797,7 +841,7 @@ func (m *recordingChatModel) excerpt() string {
 // reports a hole.
 func seedLayeredState(ctx context.Context, s *Sandbox, messages []model.Message,
 	settings *entry.Settings, chat modelcomponent.ToolCallingChatModel,
-	sessionID string, retryBudget int) (seededLayered, batchOutcome, error) {
+	sessionID string, retryBudget int) (seededLayered, batchOutcome, *BatchEvidenceSet, error) {
 	outcome := batchOutcome{}
 	agentConfig := settings.Config.AgentConfig
 	if retryBudget < 1 {
@@ -809,10 +853,14 @@ func seedLayeredState(ctx context.Context, s *Sandbox, messages []model.Message,
 	generator, err := agent.NewModelSegmentGenerator(recorder, agentConfig.EffectiveSummarySegmentMaxInputTokens(),
 		agentConfig.SummarySegmentMaxOutputTokens)
 	if err != nil {
-		return seededLayered{}, outcome, err
+		return seededLayered{}, outcome, nil, err
 	}
 	generator.UseAssistantContent(agentConfig.SummaryAssistantContentEnabled())
 	generator.UseSegmentBudget(agentConfig.EffectiveSegmentTokens())
+	// The evidence of the attempts is kept only when the deployment's debug
+	// dump is on: it is the learner's own words, and a run that is not going
+	// to be read afterwards has no business keeping them.
+	evidence := newBatchEvidenceCollector(agentConfig)
 	seeded := seededLayered{}
 	whiteboard := ""
 	previous := ""
@@ -834,37 +882,10 @@ func seedLayeredState(ctx context.Context, s *Sandbox, messages []model.Message,
 		}
 		batch := messages[start:end]
 		outcome.Batches++
-		var result agent.SegmentGenerationResult
-		var batchErr error
-		for attempt := 0; attempt < retryBudget; attempt++ {
-			if attempt > 0 {
-				outcome.Retries++
-				if err := waitBeforeRetry(ctx, retryDelay); err != nil {
-					break
-				}
-			}
-			result, batchErr = generator.GenerateSegment(ctx, agent.SegmentGenerationInput{
-				Whiteboard: whiteboard, PreviousSegment: previous, Messages: batch,
-				FirstMessageID: batch[0].ID, LastMessageID: batch[len(batch)-1].ID,
-			})
-			if batchErr == nil {
-				outcome.Attempts++
-				break
-			}
-			outcome.failed(batchErr)
-			outcome.RawFailures = append(outcome.RawFailures, rawFailure{
-				Batch:   outcome.Batches,
-				Attempt: attempt + 1,
-				Reason:  segmentFailureLabel(batchErr),
-				Excerpt: recorder.excerpt(),
-			})
-			if attempt == 0 {
-				outcome.FirstFailures++
-			}
-			if ctx.Err() != nil {
-				break
-			}
-		}
+		result, batchErr := runSegmentBatchAttempts(ctx, generator, recorder, agent.SegmentGenerationInput{
+			Whiteboard: whiteboard, PreviousSegment: previous, Messages: batch,
+			FirstMessageID: batch[0].ID, LastMessageID: batch[len(batch)-1].ID,
+		}, outcome.Batches, retryBudget, retryDelay, &outcome, evidence)
 		if batchErr != nil {
 			// The product's worker moves on and leaves the stretch uncovered.
 			outcome.FinalFailures++
@@ -889,7 +910,7 @@ func seedLayeredState(ctx context.Context, s *Sandbox, messages []model.Message,
 			row.RawOutput = result.RawOutput
 		}
 		if err := (guardedStore{s}).with(ctx, func(tx *gorm.DB) error { return tx.Create(&row).Error }); err != nil {
-			return seeded, outcome, err
+			return seeded, outcome, evidence.set(), err
 		}
 		seeded.segments = append(seeded.segments, row)
 		whiteboard = result.WhiteboardContent
@@ -904,10 +925,70 @@ func seedLayeredState(ctx context.Context, s *Sandbox, messages []model.Message,
 			TokenEstimate:    agent.RenderedWhiteboardTokens(seeded.board),
 		}
 		if err := (guardedStore{s}).with(ctx, func(tx *gorm.DB) error { return tx.Create(&board).Error }); err != nil {
-			return seeded, outcome, err
+			return seeded, outcome, evidence.set(), err
 		}
 	}
-	return seeded, outcome, nil
+	return seeded, outcome, evidence.set(), nil
+}
+
+// runSegmentBatchAttempts runs one batch's attempts and keeps what each of
+// them did.
+//
+// The attempts are the product worker's: the same budget, the same wait and
+// the same counting. The evidence of each attempt is kept beside the count,
+// because a refused candidate cannot be looked at in a counter - it can only
+// be looked at in the answer that carried it.
+//
+// A failed attempt is filed with the whole answer the model gave, not with
+// the excerpt the report keeps: a truncated answer and a wrongly shaped one
+// are different failures, and the difference decides the fix.
+func runSegmentBatchAttempts(ctx context.Context, generator agent.SegmentGenerator,
+	recorder *recordingChatModel, input agent.SegmentGenerationInput, batch int,
+	retryBudget int, retryDelay time.Duration, outcome *batchOutcome,
+	evidence *batchEvidenceCollector) (agent.SegmentGenerationResult, error) {
+	var result agent.SegmentGenerationResult
+	var batchErr error
+	for attempt := 0; attempt < retryBudget; attempt++ {
+		if attempt > 0 {
+			outcome.Retries++
+			if err := waitBeforeRetry(ctx, retryDelay); err != nil {
+				break
+			}
+		}
+		result, batchErr = generator.GenerateSegment(ctx, input)
+		if batchErr == nil {
+			outcome.Attempts++
+			evidence.add(BatchEvidence{
+				Batch: batch, Attempt: attempt + 1, Outcome: EvidenceOutcomeGenerated,
+				StartMessageID: input.FirstMessageID, EndMessageID: input.LastMessageID,
+				RawOutput: result.RawOutput, SegmentBody: result.SegmentContent,
+				Claims: result.Diagnostics.ClaimCandidates,
+			})
+			break
+		}
+		outcome.failed(batchErr)
+		outcome.RawFailures = append(outcome.RawFailures, rawFailure{
+			Batch:   batch,
+			Attempt: attempt + 1,
+			Reason:  segmentFailureLabel(batchErr),
+			Excerpt: recorder.excerpt(),
+		})
+		// A failed attempt has no segment body and no candidates: the
+		// program never got as far as building them.
+		evidence.add(BatchEvidence{
+			Batch: batch, Attempt: attempt + 1, Outcome: EvidenceOutcomeFailed,
+			Reason:         segmentFailureLabel(batchErr),
+			StartMessageID: input.FirstMessageID, EndMessageID: input.LastMessageID,
+			RawOutput: recorder.full(),
+		})
+		if attempt == 0 {
+			outcome.FirstFailures++
+		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return result, batchErr
 }
 
 // jsonObjectResponseFormat asks the provider for a JSON object.
@@ -2064,6 +2145,11 @@ func WriteLayeredRead(path string, read LayeredRead) error {
 //
 // The ledger is written even when it is empty, so that a reader can tell a run
 // that made no calls from a run whose ledger was never written.
+//
+// The evidence of the batches is written next to them, in its own directory,
+// and only when the deployment's summary segment debug dump was on. It holds
+// the learner's own words, so it stays out of the result file and out of
+// anything that is committed.
 func WriteLayeredReadFiles(dir string, read LayeredRead) error {
 	encoded, err := json.MarshalIndent(read, "", "  ")
 	if err != nil {
@@ -2076,7 +2162,13 @@ func WriteLayeredReadFiles(dir string, read LayeredRead) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "model-calls.json"), append(calls, '\n'), 0o600)
+	if err = os.WriteFile(filepath.Join(dir, "model-calls.json"), append(calls, '\n'), 0o600); err != nil {
+		return err
+	}
+	if read.BatchEvidence != nil && read.BatchEvidence.Enabled {
+		return WriteBatchEvidence(dir, read.BatchEvidence.Records)
+	}
+	return nil
 }
 
 // LayeredReadTimeout is the deadline one read-side run is given.
