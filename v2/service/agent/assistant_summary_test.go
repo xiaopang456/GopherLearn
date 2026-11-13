@@ -448,7 +448,7 @@ func TestTheRenderedLinesSayWhoseWordsTheyHold(t *testing.T) {
 	segment := model.SessionSummarySegment{
 		StartMessageID: 30, EndMessageID: 33, Content: raw,
 	}
-	block := renderSummarySegment(segment, model.SessionWhiteboardDocument{}, 33, 0)
+	block := renderSummarySegmentBlock(segment, model.SessionWhiteboardDocument{}, 33, 0)
 	if !strings.Contains(block.Text, "（助手提议，用户未表示同意）助手出的三道题") {
 		t.Fatalf("the assistant's product is not labelled: %q", block.Text)
 	}

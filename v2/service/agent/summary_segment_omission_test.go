@@ -64,7 +64,7 @@ func segmentBudgetFor(t *testing.T, content model.SessionSummarySegmentContent,
 	segment := model.SessionSummarySegment{
 		Seq: 1, StartMessageID: startMessageID, EndMessageID: endMessageID, Content: raw,
 	}
-	budget := rag.EstimateTokens(renderSummarySegment(segment, model.SessionWhiteboardDocument{},
+	budget := rag.EstimateTokens(renderSummarySegmentBlock(segment, model.SessionWhiteboardDocument{},
 		endMessageID, 0).Text)
 	for index, point := range content.Points {
 		if index >= keep {

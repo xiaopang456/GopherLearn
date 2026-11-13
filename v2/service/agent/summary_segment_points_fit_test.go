@@ -72,13 +72,13 @@ func TestTheUnacceptedProductGoesBeforeTheLearnersPoint(t *testing.T) {
 	}
 	learnerCost := rag.EstimateTokens(renderSegmentPointLine(learner, "")) + 1
 	productCost := rag.EstimateTokens(renderSegmentPointLine(product, "")) + 1
-	full := renderSummarySegment(segment, model.SessionWhiteboardDocument{}, 31, 0)
+	full := renderSummarySegmentBlock(segment, model.SessionWhiteboardDocument{}, 31, 0)
 	headerCost := rag.EstimateTokens(full.Text) - learnerCost - productCost
 
 	// The budget holds the header and the learner's own point, and not the
 	// product.
 	budget := headerCost + learnerCost + 1
-	rendered := renderSummarySegment(segment, model.SessionWhiteboardDocument{}, 31, budget)
+	rendered := renderSummarySegmentBlock(segment, model.SessionWhiteboardDocument{}, 31, budget)
 	if !strings.Contains(rendered.Text, learner.Text) {
 		t.Fatalf("the learner's own point was given up: %q", rendered.Text)
 	}

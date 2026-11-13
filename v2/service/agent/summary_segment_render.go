@@ -142,7 +142,7 @@ func RenderedSegmentTokens(segment model.SessionSummarySegment) int {
 // renderedSegmentCost renders one segment the way a block will and reports
 // what the block charges for it.
 func renderedSegmentCost(segment model.SessionSummarySegment, perSegmentTokens int) int {
-	block := renderSummarySegment(segment, model.SessionWhiteboardDocument{},
+	block := renderSummarySegmentBlock(segment, model.SessionWhiteboardDocument{},
 		segment.EndMessageID, perSegmentTokens)
 	if block.Text == "" {
 		return 0
@@ -165,7 +165,7 @@ func SegmentContentTokens(content model.SessionSummarySegmentContent,
 	segment := model.SessionSummarySegment{
 		StartMessageID: startMessageID, EndMessageID: endMessageID, Content: raw,
 	}
-	block := renderSummarySegment(segment, model.SessionWhiteboardDocument{}, endMessageID, 0)
+	block := renderSummarySegmentBlock(segment, model.SessionWhiteboardDocument{}, endMessageID, 0)
 	if block.Text == "" {
 		return 0
 	}
@@ -373,7 +373,7 @@ func renderSummarySegments(segments []model.SessionSummarySegment, document mode
 	// put back in chronological order before it is sent.
 	for index := len(ordered) - 1; index >= 0; index-- {
 		segment := ordered[index]
-		rendered := renderSummarySegment(segment, document, latest, perSegmentTokens)
+		rendered := renderSummarySegmentBlock(segment, document, latest, perSegmentTokens)
 		if rendered.Text == "" {
 			continue
 		}
@@ -391,7 +391,7 @@ func renderSummarySegments(segments []model.SessionSummarySegment, document mode
 			// The mode that does record them trims the segment to the room
 			// that is left rather than dropping it.
 			room := budget - used - 4
-			trimmed := renderSummarySegment(segment, document, latest, room)
+			trimmed := renderSummarySegmentBlock(segment, document, latest, room)
 			if trimmed.Text != "" {
 				trimmedCost := rag.EstimateTokens(trimmed.Text) + 4
 				if used+trimmedCost <= budget {
@@ -451,7 +451,22 @@ func renderSummarySegments(segments []model.SessionSummarySegment, document mode
 	return out
 }
 
-// renderSummarySegment renders one segment.
+// renderSummarySegment renders one segment and reports what it carried.
+//
+// It is the form of the renderer that was always here: the text, the
+// messages the points really rendered, and whether the budget cut it. The
+// block form carries more - what was left out and what was lost - and this
+// is the one the callers that do not need the rest use.
+//
+// The two are one render. The block form is the whole answer, and this
+// reads the three fields of it that have always been read.
+func renderSummarySegment(segment model.SessionSummarySegment, document model.SessionWhiteboardDocument,
+	latestEndMessageID uint, perSegmentTokens int) (string, []uint, bool) {
+	block := renderSummarySegmentBlock(segment, document, latestEndMessageID, perSegmentTokens)
+	return block.Text, block.EvidenceMessageIDs, block.Trimmed
+}
+
+// renderSummarySegmentBlock renders one segment.
 //
 // The points are rendered one at a time and a point is never cut in half: a
 // line that says the old value without saying it was replaced afterwards is
@@ -468,7 +483,7 @@ func renderSummarySegments(segments []model.SessionSummarySegment, document mode
 // messages the left-out points came from. The words of a point are never cut:
 // a cut point keeps its name and loses its meaning, and the meaning is
 // usually the part that says what the learner ruled out.
-func renderSummarySegment(segment model.SessionSummarySegment, document model.SessionWhiteboardDocument,
+func renderSummarySegmentBlock(segment model.SessionSummarySegment, document model.SessionWhiteboardDocument,
 	latestEndMessageID uint, perSegmentTokens int) renderedSegmentBlock {
 	content, err := model.DecodeSessionSummarySegmentContent(segment.Content)
 	if err != nil {

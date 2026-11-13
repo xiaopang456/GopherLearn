@@ -109,7 +109,7 @@ func TestTheSupersessionMarkerSurvivesTheCut(t *testing.T) {
 			{Key: "duration", Text: "每次总时长 = 60 分钟", Value: "60 分钟", UpdatedAtMessageID: 90},
 		},
 	}
-	rendered := renderSummarySegment(segment, document, 90, 120)
+	rendered := renderSummarySegmentBlock(segment, document, 90, 120)
 	if !rendered.Trimmed {
 		t.Fatal("the segment was not cut, so the test proves nothing")
 	}
