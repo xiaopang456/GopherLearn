@@ -381,7 +381,7 @@ func TestTheBoardIsMeasuredOnTheBlockTheWindowSends(t *testing.T) {
 		t.Fatalf("the fixture does not fit the block: %d > %d", rendered, model.SessionWhiteboardTokenLimit)
 	}
 	trimmed := board
-	if changes := trimWhiteboardToTokenLimit(&trimmed); len(changes) != 0 {
+	if changes, _ := trimWhiteboardToTokenLimit(&trimmed); len(changes) != 0 {
 		t.Fatalf("a board that fits the block lost %d entries", len(changes))
 	}
 	if len(trimmed.Constraints) != len(board.Constraints) {
@@ -398,7 +398,7 @@ func TestTheTrimmedBoardFitsTheBlockItIsSentIn(t *testing.T) {
 		entry.UpdatedAtMessageID = uint(21 + index)
 		board.Constraints = append(board.Constraints, entry)
 	}
-	changes := trimWhiteboardToTokenLimit(&board)
+	changes, _ := trimWhiteboardToTokenLimit(&board)
 	if len(changes) == 0 {
 		t.Fatal("the fixture did not need trimming, so it proves nothing")
 	}

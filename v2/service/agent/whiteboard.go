@@ -575,11 +575,12 @@ func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal W
 	// has to stay bounded. Entries are dropped from the oldest end and every
 	// drop is recorded, so a value that leaves the board can still be found
 	// in the segment that recorded it.
-	droppedForTokens := trimWhiteboardToTokenLimit(&result.Board)
+	droppedForTokens, expiredStatements := trimWhiteboardToTokenLimit(&result.Board)
 	for _, change := range droppedForTokens {
 		result.Changes = append(result.Changes, change)
 	}
 	result.Diagnostics.DroppedEntries += len(droppedForTokens)
+	result.Diagnostics.ExpiredUnconfirmedStatements += expiredStatements
 
 	// A value the learner's own words look like they replaced, while the
 	// board still carries the old one. The engine cannot know the correct
@@ -1103,8 +1104,9 @@ func entryIdentity(entry model.SessionWhiteboardEntry) string {
 // JSON, and on a real board it runs to about a fifth more than the block the
 // model reads; measuring it dropped entries the window would have carried and
 // still let the block overrun the budget it was supposed to fit.
-func trimWhiteboardToTokenLimit(board *model.SessionWhiteboardDocument) []model.SessionSummarySegmentChange {
+func trimWhiteboardToTokenLimit(board *model.SessionWhiteboardDocument) ([]model.SessionSummarySegmentChange, int) {
 	changes := make([]model.SessionSummarySegmentChange, 0)
+	expired := 0
 	for RenderedWhiteboardTokens(*board) > model.SessionWhiteboardTokenLimit {
 		if len(board.Unverified) > 0 {
 			// The words of the oldest statement go first, and the statement
@@ -1120,6 +1122,7 @@ func trimWhiteboardToTokenLimit(board *model.SessionWhiteboardDocument) []model.
 				continue
 			}
 			board.Unverified = board.Unverified[:len(board.Unverified)-1]
+			expired++
 			continue
 		}
 		victim, found := nextBoardEntryToDrop(*board)
@@ -1141,7 +1144,7 @@ func trimWhiteboardToTokenLimit(board *model.SessionWhiteboardDocument) []model.
 			board.OpenItems = removeWhiteboardEntry(board.OpenItems, victim.entry)
 		}
 	}
-	return changes
+	return changes, expired
 }
 
 // trimWhiteboardToOutputLimit drops entries until the stored body fits the
