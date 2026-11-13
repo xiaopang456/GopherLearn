@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"log"
 	"regexp"
 	"sort"
 	"strconv"
@@ -360,6 +361,26 @@ type WhiteboardDiagnostics struct {
 	// words, kept so that a reader can find them and ask for the message
 	// they came from.
 	UnconfirmedStatements int
+	// ResolvedUnconfirmedStatements is how many statements the board caught
+	// up with: the board now holds the same value under the same key.
+	//
+	// It is counted apart from the expired ones, because the two mean
+	// different things: a resolved statement was dealt with, an expired one
+	// was crowded out.
+	ResolvedUnconfirmedStatements int
+	// ExpiredUnconfirmedStatements is how many statements were crowded out
+	// by the capacity or by the board's budget.
+	//
+	// They are not resolved. The learner's words are still unconfirmed; they
+	// are simply no longer carried, and the count says so.
+	ExpiredUnconfirmedStatements int
+	// DroppedUnconfirmedStatements is how many statements left the board
+	// because the document this batch wrote cannot hold them.
+	//
+	// It is the count of a write in a version that says nothing about the
+	// learner's own words, and it is reported rather than dropped in
+	// silence.
+	DroppedUnconfirmedStatements int
 	// ClaimCandidates are the candidate entries the engine refused, and the
 	// reason each one was refused.
 	//
@@ -408,6 +429,40 @@ type WhiteboardResult struct {
 	Diagnostics WhiteboardDiagnostics
 }
 
+// whiteboardKnownSchemaVersion reports whether a version is one the engine
+// knows.
+func whiteboardKnownSchemaVersion(version int) bool {
+	switch version {
+	case model.SessionWhiteboardSchemaV1, model.SessionWhiteboardSchemaV2,
+		model.SessionWhiteboardSchemaV3:
+		return true
+	}
+	return false
+}
+
+// The versions of the board, and what each of them can hold.
+//
+// The engine's behaviour is decided by the version, because the version is
+// the format the document is written in: a version 1 board could only hold
+// what the learner said, a version 2 board says where each entry came from
+// and is checked against the learner's own words, and a version 3 board can
+// also carry the learner's words behind a change that was refused.
+//
+// A document written before the statements existed - version 1 or version 2 -
+// is read and written as it was: it has no statements, and the engine never
+// puts any there. The statements are a version 3 field and a version 3
+// document says so in its version, so a deployment that rolls back can see
+// that the documents it will meet are not the ones it knows.
+func whiteboardCarriesOrigins(schemaVersion int) bool {
+	return schemaVersion >= model.SessionWhiteboardSchemaV2
+}
+
+// whiteboardCarriesStatements reports whether the version can hold the
+// learner's own words behind a refused change.
+func whiteboardCarriesStatements(schemaVersion int) bool {
+	return schemaVersion >= model.SessionWhiteboardSchemaV3
+}
+
 // ApplyWhiteboardProposal merges a proposal into the current board.
 //
 // The order of the work is the order of the ways a proposal can be wrong: an
@@ -423,14 +478,15 @@ type WhiteboardResult struct {
 // said.
 func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal WhiteboardProposal,
 	batch WhiteboardBatch, schemaVersion int) (WhiteboardResult, error) {
-	if current.SchemaVersion != model.SessionWhiteboardSchemaV1 &&
-		current.SchemaVersion != model.SessionWhiteboardSchemaV2 {
-		return WhiteboardResult{}, fmt.Errorf("session whiteboard schema version must be %d or %d",
-			model.SessionWhiteboardSchemaV1, model.SessionWhiteboardSchemaV2)
+	if !whiteboardKnownSchemaVersion(current.SchemaVersion) {
+		return WhiteboardResult{}, fmt.Errorf("session whiteboard schema version must be %d, %d or %d",
+			model.SessionWhiteboardSchemaV1, model.SessionWhiteboardSchemaV2,
+			model.SessionWhiteboardSchemaV3)
 	}
-	if schemaVersion != model.SessionWhiteboardSchemaV1 && schemaVersion != model.SessionWhiteboardSchemaV2 {
-		return WhiteboardResult{}, fmt.Errorf("session whiteboard schema version must be %d or %d",
-			model.SessionWhiteboardSchemaV1, model.SessionWhiteboardSchemaV2)
+	if !whiteboardKnownSchemaVersion(schemaVersion) {
+		return WhiteboardResult{}, fmt.Errorf("session whiteboard schema version must be %d, %d or %d",
+			model.SessionWhiteboardSchemaV1, model.SessionWhiteboardSchemaV2,
+			model.SessionWhiteboardSchemaV3)
 	}
 	result := WhiteboardResult{
 		Board: model.SessionWhiteboardDocument{SchemaVersion: schemaVersion},
@@ -439,7 +495,7 @@ func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal W
 	// The mode that does not record the assistant's products keeps the board it
 	// has always written: the rules below belong to the mode that carries
 	// origins, and the other one must stay what it was.
-	if schemaVersion == model.SessionWhiteboardSchemaV2 {
+	if whiteboardCarriesOrigins(schemaVersion) {
 		proposal = whiteboardReuseSupersededKeys(current, proposal, batch)
 	}
 	// The goal is always the learner's, so it may only cite the learner's
@@ -477,11 +533,27 @@ func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal W
 
 	// The statements the refused entries left behind travel with the board.
 	//
-	// They are carried forward and resolved, not accumulated: a statement
-	// the board has caught up with is dropped, and the newest ones are the
-	// ones kept.
-	if schemaVersion == model.SessionWhiteboardSchemaV2 {
-		result.Board.Unverified = whiteboardMergeAnchors(current, result.Board, anchors)
+	// They are carried forward and cleared, not accumulated: a statement the
+	// board has caught up with is dropped, and the newest ones are the ones
+	// kept.
+	if whiteboardCarriesStatements(schemaVersion) {
+		kept, resolved, expired := whiteboardMergeAnchors(current, result.Board, anchors)
+		result.Board.Unverified = kept
+		result.Diagnostics.ResolvedUnconfirmedStatements += resolved
+		result.Diagnostics.ExpiredUnconfirmedStatements += expired
+	} else if len(current.Unverified) > 0 {
+		// The version this batch writes cannot hold the statements the
+		// board carries, so they go with the write.
+		//
+		// They are counted and reported rather than dropped in silence: the
+		// count says how many of the learner's own words left the board
+		// with this write, which is what a reader of the counters needs to
+		// know. Turning a switch off does not convert the stored document
+		// back; the next write in the other mode produces a document of
+		// that mode's version.
+		result.Diagnostics.DroppedUnconfirmedStatements += len(current.Unverified)
+		log.Printf("[agent-whiteboard] unconfirmed statements dropped: count=%d written_version=%d",
+			len(current.Unverified), schemaVersion)
 	}
 
 	// One subject does not stay in two places.
@@ -495,7 +567,7 @@ func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal W
 	// The mode that does not record the assistant's products keeps the board
 	// it has always written: this rule belongs to the mode that carries
 	// origins, and the other one must stay byte for byte what it was.
-	if schemaVersion == model.SessionWhiteboardSchemaV2 {
+	if whiteboardCarriesOrigins(schemaVersion) {
 		result.Board = whiteboardDropMovedCopies(result.Board, proposal)
 	}
 
@@ -543,6 +615,9 @@ func (d *WhiteboardDiagnostics) add(other WhiteboardDiagnostics) {
 	d.UnsettledClaims += other.UnsettledClaims
 	d.UnbackedChanges += other.UnbackedChanges
 	d.UnconfirmedStatements += other.UnconfirmedStatements
+	d.ResolvedUnconfirmedStatements += other.ResolvedUnconfirmedStatements
+	d.ExpiredUnconfirmedStatements += other.ExpiredUnconfirmedStatements
+	d.DroppedUnconfirmedStatements += other.DroppedUnconfirmedStatements
 	d.ClaimCandidates = append(d.ClaimCandidates, other.ClaimCandidates...)
 }
 
@@ -702,7 +777,7 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 		claimReason := ""
 		var claim WhiteboardLearnerClaim
 		hasClaim := false
-		if schemaVersion == model.SessionWhiteboardSchemaV2 {
+		if whiteboardCarriesOrigins(schemaVersion) {
 			claim, hasClaim = whiteboardClaimFor(proposal.Claims, key, keyCounts)
 			if hasClaim {
 				claimVerdict, claimReason = whiteboardVerifyClaim(claim, entry, batch)
@@ -775,7 +850,7 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 			diagnostics.DroppedEntries++
 			continue
 		}
-		if schemaVersion == model.SessionWhiteboardSchemaV2 &&
+		if whiteboardCarriesOrigins(schemaVersion) &&
 			origin == model.SessionWhiteboardOriginUser && isExisting &&
 			previous.Value != entry.Value && claimVerdict != whiteboardClaimSettled {
 			// The entry replaces a value the board already holds, and the
@@ -817,7 +892,7 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 			continue
 		}
 		if origin != model.SessionWhiteboardOriginUser {
-			if schemaVersion == model.SessionWhiteboardSchemaV1 {
+			if !whiteboardCarriesOrigins(schemaVersion) {
 				// The board that cannot name an assistant's origin. The
 				// acceptance is checked the way it always was, and an
 				// entry that cannot show it does not go on the board.
@@ -1032,10 +1107,18 @@ func trimWhiteboardToTokenLimit(board *model.SessionWhiteboardDocument) []model.
 	changes := make([]model.SessionSummarySegmentChange, 0)
 	for RenderedWhiteboardTokens(*board) > model.SessionWhiteboardTokenLimit {
 		if len(board.Unverified) > 0 {
-			// The oldest statement goes first. It is the one a reader is
-			// least likely to need, and a board entry is the current state
-			// while a statement is only the words behind a value that was
-			// refused.
+			// The words of the oldest statement go first, and the statement
+			// itself goes only if that was not enough.
+			//
+			// The words are the expensive part and the message id is not:
+			// a statement without its words is still a pointer to the
+			// learner's own message, and a reader can still read it back. A
+			// board entry is the current state, so it is given up last.
+			oldest := board.Unverified[len(board.Unverified)-1]
+			if oldest.Complete {
+				board.Unverified[len(board.Unverified)-1] = whiteboardAnchorNavigation(oldest)
+				continue
+			}
 			board.Unverified = board.Unverified[:len(board.Unverified)-1]
 			continue
 		}

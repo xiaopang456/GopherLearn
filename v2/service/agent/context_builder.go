@@ -378,6 +378,12 @@ func (b *DatabaseContextBuilder) trustOrderBlocks(history []model.Message, layer
 // whiteboardHasStatements reports whether the board carries anything the
 // model could read a fact out of.
 func whiteboardHasStatements(document model.SessionWhiteboardDocument) bool {
+	if len(document.Unverified) > 0 {
+		// The unconfirmed statements are statements too: they are the
+		// learner's own words, and a board that carries nothing else still
+		// has something to show.
+		return true
+	}
 	if document.Goal != nil && strings.TrimSpace(document.Goal.Text) != "" {
 		return true
 	}

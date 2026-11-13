@@ -98,7 +98,7 @@ func TestTheModeThatIsOnWritesTheVersionThatHoldsTheAssistantsProducts(t *testin
 	if err != nil {
 		t.Fatalf("decode the board: %v", err)
 	}
-	if boardDocument.SchemaVersion != model.SessionWhiteboardSchemaV2 {
+	if boardDocument.SchemaVersion != model.SessionWhiteboardSchemaV3 {
 		t.Fatalf("the board is version %d, want %d", boardDocument.SchemaVersion, model.SessionWhiteboardSchemaV2)
 	}
 }

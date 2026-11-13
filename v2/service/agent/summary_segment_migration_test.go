@@ -615,7 +615,7 @@ func TestTheConversionWritesTheVersionTheModeWrites(t *testing.T) {
 		wantSegment      int
 	}{
 		{"off", false, model.SessionWhiteboardSchemaV1, model.SessionSummarySegmentSchemaV1},
-		{"on", true, model.SessionWhiteboardSchemaV2, model.SessionSummarySegmentSchemaV2},
+		{"on", true, model.SessionWhiteboardSchemaV3, model.SessionSummarySegmentSchemaV2},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			reader := &fakeSegmentReader{}

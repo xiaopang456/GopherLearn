@@ -33,18 +33,21 @@ const (
 	// whiteboardBlockHeaderUnconfirmed is the header of a board that carries
 	// unconfirmed learner statements.
 	//
-	// It says what the plain header cannot: a value an unconfirmed
-	// statement is about may not be the current one. Without it the block
-	// would tell the reader that the unmarked value is the current one
-	// while the board itself knows of a statement it could not confirm.
-	whiteboardBlockHeaderUnconfirmed = "Current state (server state; what is true now; a value carrying 〔…已改为…〕 was changed later, so the unmarked value is the current one; a value carrying 〔…未核验原话…〕 has an unconfirmed learner statement about it, so it may not be the current one):"
+	// It drops the plain header's promise that the unmarked value is the
+	// current one. The board holds statements it could not confirm, and it
+	// does not say which item they are about - so it cannot promise that
+	// the value it shows is the current one either. It says the opposite,
+	// and it says it before a reader meets a value.
+	whiteboardBlockHeaderUnconfirmed = "Current state (server state; what is true now; a value carrying 〔…已改为…〕 was changed later; this board carries unconfirmed learner statements below, so a value shown here may not be the current one):"
 	// whiteboardUnconfirmedHeader introduces the unconfirmed learner
 	// statements the board carries.
 	//
 	// It says what they are: the learner's own words that could not be
 	// confirmed, kept so that a reader can find them. They are not a
-	// current value, and the header says so before a reader meets one.
-	whiteboardUnconfirmedHeader = "Unconfirmed learner statements (the learner's own words, word for word; they were not confirmed as the current state, so they are not a current value):"
+	// current value, and the board does not say which item they are about -
+	// the claim they came from was refused, so the item it named is not
+	// something the board may point at.
+	whiteboardUnconfirmedHeader = "Unconfirmed learner statements (the learner's own words; they were not confirmed as the current state, so they are not a current value, and the board does not say which item they are about):"
 	// summarySegmentsBlockHeader introduces the segments.
 	summarySegmentsBlockHeader = "Summary segments (compressed record of earlier turns in this session; the Current state block above is what is true now):"
 )
@@ -90,10 +93,9 @@ func renderWhiteboardBlock(document model.SessionWhiteboardDocument, budget int)
 			out.EvidenceMessageIDs = append(out.EvidenceMessageIDs, document.Goal.SourceMessageIDs...)
 		}
 	}
-	contested := whiteboardContestedEntries(document)
 	for _, group := range [][]model.SessionWhiteboardEntry{document.Constraints, document.Plan, document.OpenItems} {
 		for _, entry := range group {
-			line := renderWhiteboardEntry(entry, contested[strings.TrimSpace(entry.Key)])
+			line := renderWhiteboardEntry(entry)
 			cost := rag.EstimateTokens(line) + 1
 			if used+cost > budget {
 				continue
@@ -116,11 +118,11 @@ func renderWhiteboardBlock(document model.SessionWhiteboardDocument, budget int)
 			body.WriteString("\n" + whiteboardUnconfirmedHeader)
 			used += headerCost
 			for _, anchor := range document.Unverified {
-				line := renderWhiteboardAnchor(anchor)
-				cost := rag.EstimateTokens(line) + 1
-				if used+cost > budget {
+				line, ok := renderWhiteboardAnchor(anchor, budget-used)
+				if !ok {
 					continue
 				}
+				cost := rag.EstimateTokens(line) + 1
 				body.WriteString("\n" + line)
 				used += cost
 				out.EvidenceMessageIDs = append(out.EvidenceMessageIDs, anchor.MessageID)
@@ -133,27 +135,43 @@ func renderWhiteboardBlock(document model.SessionWhiteboardDocument, budget int)
 
 // renderWhiteboardAnchor renders one unconfirmed learner statement.
 //
-// The quote is the learner's own wording, the value is the candidate the
-// refused entry wanted to put up, and the message id is where the words came
-// from. Nothing in the line says the value is current: the header above it
-// says the opposite.
-func renderWhiteboardAnchor(anchor model.SessionWhiteboardAnchor) string {
-	var out strings.Builder
-	out.WriteString("- \"")
-	out.WriteString(strings.TrimSpace(anchor.Quote))
-	out.WriteString("\"")
-	if value := strings.TrimSpace(anchor.Value); value != "" &&
-		anchor.Reason != model.SessionWhiteboardAnchorUnsettled {
-		// The candidate value is what the refused entry wanted to put up.
-		// A statement the learner did not settle has no candidate: the
-		// learner ruled the value out or asked about it, and naming it as a
-		// candidate would dress a negation up as a value.
-		out.WriteString(" (candidate value: ")
-		out.WriteString(value)
-		out.WriteString(")")
+// The words are shown whole or not at all. A statement whose words do not fit
+// the budget is rendered as a pointer: the message is still there, still
+// readable, and the reader is told to read it back rather than shown the
+// beginning of a sentence whose end is missing.
+//
+// The candidate value is shown only with the whole message. A value that is
+// named next to half a sentence reads as a decision the learner made, and
+// the half that is missing may be the part that says they did not.
+func renderWhiteboardAnchor(anchor model.SessionWhiteboardAnchor, budget int) (string, bool) {
+	if anchor.Complete && strings.TrimSpace(anchor.Text) != "" {
+		var out strings.Builder
+		out.WriteString("- \"")
+		out.WriteString(strings.TrimSpace(anchor.Text))
+		out.WriteString("\"")
+		if value := strings.TrimSpace(anchor.Value); value != "" &&
+			anchor.Reason != model.SessionWhiteboardAnchorUnsettled {
+			// The candidate value is what the refused entry wanted to put
+			// up. It is a candidate and nothing more: the learner's words
+			// carry it, but the program could not confirm that it is the
+			// value of that item.
+			out.WriteString(" (candidate value: ")
+			out.WriteString(value)
+			out.WriteString(", not confirmed)")
+		}
+		out.WriteString(renderEvidenceIDs([]uint{anchor.MessageID}))
+		if rag.EstimateTokens(out.String())+1 <= budget {
+			return out.String(), true
+		}
 	}
-	out.WriteString(renderEvidenceIDs([]uint{anchor.MessageID}))
-	return out.String()
+	// The pointer. It carries the message id and nothing else, so a reader
+	// can ask for the message and see the whole of it.
+	pointer := "- there is an unconfirmed learner message here; read it back to see what was said" +
+		renderEvidenceIDs([]uint{anchor.MessageID})
+	if rag.EstimateTokens(pointer)+1 > budget {
+		return "", false
+	}
+	return pointer, true
 }
 
 // unlimitedTokens is a budget large enough that the renderer shows everything.
@@ -242,7 +260,7 @@ func SegmentContentTokens(content model.SessionSummarySegmentContent,
 }
 
 // renderWhiteboardEntry renders one board entry.
-func renderWhiteboardEntry(entry model.SessionWhiteboardEntry, contested string) string {
+func renderWhiteboardEntry(entry model.SessionWhiteboardEntry) string {
 	var out strings.Builder
 	out.WriteString("- ")
 	if key := strings.TrimSpace(entry.Key); key != "" {
@@ -256,15 +274,6 @@ func renderWhiteboardEntry(entry model.SessionWhiteboardEntry, contested string)
 	out.WriteString(strings.TrimSpace(entry.Text))
 	if value := strings.TrimSpace(entry.Value); value != "" && !strings.Contains(entry.Text, value) {
 		fmt.Fprintf(&out, " (value: %s)", value)
-	}
-	if strings.TrimSpace(contested) != "" {
-		// The value is contested: the learner's own words say another
-		// value of it, and the program could not confirm them. The entry
-		// stays what it was, and the marker says that it may not be the
-		// current one.
-		out.WriteString("〔未核验原话：")
-		out.WriteString(strings.TrimSpace(contested))
-		out.WriteString("〕")
 	}
 	out.WriteString(renderEvidenceIDs(entry.SourceMessageIDs))
 	return out.String()

@@ -14,13 +14,15 @@ func TestSessionWhiteboardDocumentRejectsAnUnknownField(t *testing.T) {
 	}
 }
 
-// The two versions are read; anything else is a body this schema cannot
+// The three versions are read; anything else is a body this schema cannot
 // describe.
 func TestSessionWhiteboardDocumentRejectsAnotherSchemaVersion(t *testing.T) {
-	if _, err := DecodeSessionWhiteboardDocument(`{"schema_version":3}`); err == nil {
+	if _, err := DecodeSessionWhiteboardDocument(`{"schema_version":4}`); err == nil {
 		t.Fatal("a document with another schema version was accepted")
 	}
-	for _, version := range []int{SessionWhiteboardSchemaV1, SessionWhiteboardSchemaV2} {
+	for _, version := range []int{
+		SessionWhiteboardSchemaV1, SessionWhiteboardSchemaV2, SessionWhiteboardSchemaV3,
+	} {
 		if _, err := DecodeSessionWhiteboardDocument(fmt.Sprintf(`{"schema_version":%d}`, version)); err != nil {
 			t.Fatalf("a document with schema version %d was refused: %v", version, err)
 		}

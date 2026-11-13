@@ -14,10 +14,15 @@ package agent
 // as an unconfirmed statement: findable, readable back, and never a current
 // value.
 //
-// The wording of the changes is the wording of a real evaluation item, so
-// that the cases here are the cases a run produced: "读书计划改成每次 41 页" is
-// what a learner wrote, and "不要改成 41 页" and "如果改成 41 页呢" are what
-// they wrote when they did not mean it.
+// Three rules bound the statement, and each of them is a case here:
+//
+//   - it does not say which item it is about, because the claim it came from
+//     was refused and nothing in a refused claim may be used to place the
+//     words;
+//   - the words are whole or not shown, because a message that is cut in half
+//     hides the condition or the negation at its end;
+//   - it is cleared only when the board demonstrably holds what it pointed
+//     at, and being crowded out is not that.
 
 import (
 	"context"
@@ -27,18 +32,18 @@ import (
 	"GopherAI/model"
 )
 
-// The learner's own words, as the frozen item wrote them.
+// The learner's own words, as a run produced them.
 const (
-	anchorChangeText       = "手上这本书的内容变简单了，读书计划改成每次 41 页，原先那个页数不用了。"
+	anchorChangeText       = "读书计划改成每次 41 页，原先那个页数不用了。"
 	anchorNegatedText      = "读书计划不要改成 41 页，还是每次读 26 页。"
 	anchorHypotheticalText = "读书计划如果改成 41 页会怎么样？"
 )
 
-// anchorBoard is the board the changes arrive at: the reading plan under the
-// name the learner gave it, with the value they gave it first.
+// anchorBoard is the board the changes arrive at: the reading plan with the
+// value the learner gave it first.
 func anchorBoard() model.SessionWhiteboardDocument {
 	return model.SessionWhiteboardDocument{
-		SchemaVersion: model.SessionWhiteboardSchemaV2,
+		SchemaVersion: model.SessionWhiteboardSchemaV3,
 		Constraints: []model.SessionWhiteboardEntry{
 			ownEntry("pages", "读书计划每次读 26 页", "26 页/次", "", 51),
 		},
@@ -60,10 +65,24 @@ func anchorClaim(stance, update string) WhiteboardLearnerClaim {
 //
 // It is the commonest shape of a refusal that is not a refusal of the
 // learner: the words are the learner's, the quote is not. The board keeps
-// the learner's own sentence anyway, because the sentence is what the
-// program can check.
+// the learner's own message anyway, because the message is what the program
+// can check.
 func anchorParaphrasedClaim() WhiteboardLearnerClaim {
 	return learnerClaim("pages", 95, "读书计划改成41页", "读书计划", "页", "41页", "decided", "yes")
+}
+
+// anchorLongText builds a message of the given length that ends with the
+// given words.
+//
+// The end is the part that matters: a condition or a negation at the end of
+// a long sentence is what a cut would hide.
+func anchorLongText(runes int, ending string) string {
+	filler := strings.Repeat("读书的进度我记在本子上 ", runes/12+1)
+	text := []rune(filler)
+	if len(text) > runes {
+		text = text[:runes]
+	}
+	return string(text) + ending
 }
 
 // The change is confirmed, so it is the current value and nothing is left
@@ -74,7 +93,7 @@ func TestAConfirmedChangeIsTheCurrentValueAndLeavesNothingBehind(t *testing.T) {
 			ownEntry("pages", "读书计划每次读 41 页", "41 页/次", model.SessionWhiteboardOriginUser, 95),
 		},
 		Claims: []WhiteboardLearnerClaim{anchorClaim("decided", "yes")},
-	}, anchorBatch(anchorChangeText), model.SessionWhiteboardSchemaV2)
+	}, anchorBatch(anchorChangeText), model.SessionWhiteboardSchemaV3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +119,7 @@ func TestANegatedChangeDoesNotBecomeTheCurrentValue(t *testing.T) {
 		Claims: []WhiteboardLearnerClaim{
 			learnerClaim("pages", 95, "读书计划不要改成 41 页", "读书计划", "页", "41页", "negated", "no"),
 		},
-	}, anchorBatch(anchorNegatedText), model.SessionWhiteboardSchemaV2)
+	}, anchorBatch(anchorNegatedText), model.SessionWhiteboardSchemaV3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +151,7 @@ func TestAHypotheticalChangeDoesNotBecomeTheCurrentValue(t *testing.T) {
 			ownEntry("pages", "读书计划每次读 41 页", "41 页/次", model.SessionWhiteboardOriginUser, 95),
 		},
 		Claims: []WhiteboardLearnerClaim{anchorClaim("hypothetical", "no")},
-	}, anchorBatch(anchorHypotheticalText), model.SessionWhiteboardSchemaV2)
+	}, anchorBatch(anchorHypotheticalText), model.SessionWhiteboardSchemaV3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,17 +163,18 @@ func TestAHypotheticalChangeDoesNotBecomeTheCurrentValue(t *testing.T) {
 // Another item's value does not overwrite this one's.
 //
 // The claim is about the other book, and the entry is about this one, so the
-// entry is refused. The words stay findable, and they do not contest this
-// entry: the program cannot place them on it.
+// entry is refused. The words stay findable, and the board does not point
+// them at any entry: the claim they came from was refused, so the item it
+// named may not be used to place them.
 func TestAnotherItemsValueDoesNotOverwriteThisOne(t *testing.T) {
 	result, err := ApplyWhiteboardProposal(anchorBoard(), WhiteboardProposal{
 		Constraints: []model.SessionWhiteboardEntry{
-			ownEntry("pages", "乙书每次读 41 页", "41 页/次", model.SessionWhiteboardOriginUser, 95),
+			ownEntry("pages", "另一本书每次读 41 页", "41 页/次", model.SessionWhiteboardOriginUser, 95),
 		},
 		Claims: []WhiteboardLearnerClaim{
-			learnerClaim("pages", 95, "读书计划改成每次 41 页", "乙书", "页", "41页", "decided", "yes"),
+			learnerClaim("pages", 95, "读书计划改成每次 41 页", "另一本书", "页", "41页", "decided", "yes"),
 		},
-	}, anchorBatch(anchorChangeText), model.SessionWhiteboardSchemaV2)
+	}, anchorBatch(anchorChangeText), model.SessionWhiteboardSchemaV3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +183,35 @@ func TestAnotherItemsValueDoesNotOverwriteThisOne(t *testing.T) {
 	}
 	rendered := renderWhiteboardBlock(result.Board, 2000)
 	if strings.Contains(rendered.Text, "未核验原话：") {
-		t.Fatalf("the block contests the entry for words about another item: %s", rendered.Text)
+		t.Fatalf("the block marks an entry for words the program cannot place: %s", rendered.Text)
+	}
+}
+
+// One message about two things does not put one of them on the board.
+//
+// The learner's own message says both: the reading plan goes to 41 pages and
+// the other book to 30. The board keeps what it held, and the statement keeps
+// the message, without saying which of the two things it is about.
+func TestOneMessageAboutTwoThingsDoesNotPutEitherOfThemOnTheBoard(t *testing.T) {
+	message := "读书计划改成每次 41 页，另一本书改成每次 30 页。"
+	result, err := ApplyWhiteboardProposal(anchorBoard(), WhiteboardProposal{
+		Constraints: []model.SessionWhiteboardEntry{
+			ownEntry("pages", "读书计划每次读 41 页", "41 页/次", model.SessionWhiteboardOriginUser, 95),
+		},
+		Claims: []WhiteboardLearnerClaim{anchorClaim("decided", "yes")},
+	}, anchorBatch(message), model.SessionWhiteboardSchemaV3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := boardValues(result.Board)["pages"]; got != "26 页/次" {
+		t.Fatalf("the board holds %q, want the value that was there", got)
+	}
+	if len(result.Board.Unverified) != 1 {
+		t.Fatalf("the board carries %+v, want the learner's own message", result.Board.Unverified)
+	}
+	if !strings.Contains(result.Board.Unverified[0].Text, "另一本书改成每次 30 页") {
+		t.Fatalf("the statement's text = %q, want the whole message",
+			result.Board.Unverified[0].Text)
 	}
 }
 
@@ -177,7 +225,7 @@ func TestARefusedChangeKeepsTheLearnersWordsFindable(t *testing.T) {
 			ownEntry("pages", "读书计划每次读 41 页", "41 页/次", model.SessionWhiteboardOriginUser, 95),
 		},
 		Claims: []WhiteboardLearnerClaim{anchorParaphrasedClaim()},
-	}, anchorBatch(anchorChangeText), model.SessionWhiteboardSchemaV2)
+	}, anchorBatch(anchorChangeText), model.SessionWhiteboardSchemaV3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,23 +240,26 @@ func TestARefusedChangeKeepsTheLearnersWordsFindable(t *testing.T) {
 	if anchor.MessageID != 95 {
 		t.Fatalf("the statement points at message %d, want the learner's own message", anchor.MessageID)
 	}
-	if !strings.Contains(anchor.Quote, "读书计划改成每次 41 页") {
-		t.Fatalf("the statement's quote = %q, want the learner's own words", anchor.Quote)
+	if !anchor.Complete {
+		t.Fatal("the statement does not carry the whole message")
+	}
+	if anchor.Text != anchorChangeText {
+		t.Fatalf("the statement's text = %q, want the learner's own message", anchor.Text)
 	}
 	if anchor.Reason != model.SessionWhiteboardAnchorQuoteNotInMessage {
 		t.Fatalf("the statement's reason = %q, want the one that checks the quote", anchor.Reason)
 	}
 }
 
-// The board a reader sees says what the statement is, and the value next to
-// it is not presented as the one true value.
-func TestTheBoardSaysTheStatementIsNotTheCurrentValue(t *testing.T) {
+// The board a reader sees says what the statement is, and does not promise
+// that the value it shows is the current one.
+func TestTheBoardDoesNotCallTheValueItShowsTheCurrentOne(t *testing.T) {
 	result, err := ApplyWhiteboardProposal(anchorBoard(), WhiteboardProposal{
 		Constraints: []model.SessionWhiteboardEntry{
 			ownEntry("pages", "读书计划每次读 41 页", "41 页/次", model.SessionWhiteboardOriginUser, 95),
 		},
 		Claims: []WhiteboardLearnerClaim{anchorParaphrasedClaim()},
-	}, anchorBatch(anchorChangeText), model.SessionWhiteboardSchemaV2)
+	}, anchorBatch(anchorChangeText), model.SessionWhiteboardSchemaV3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,11 +270,11 @@ func TestTheBoardSaysTheStatementIsNotTheCurrentValue(t *testing.T) {
 	if !strings.Contains(rendered.Text, "not a current value") {
 		t.Fatalf("the block does not say the statements are not the current value: %s", rendered.Text)
 	}
-	if !strings.Contains(rendered.Text, "未核验原话：41 页/次") {
-		t.Fatalf("the block does not mark the value as contested: %s", rendered.Text)
+	if strings.Contains(rendered.Text, "the unmarked value is the current one") {
+		t.Fatalf("the block still calls the value it shows the current one: %s", rendered.Text)
 	}
 	if !strings.Contains(rendered.Text, "may not be the current one") {
-		t.Fatalf("the block does not say the marked value may not be the current one: %s", rendered.Text)
+		t.Fatalf("the block does not say a value shown may not be the current one: %s", rendered.Text)
 	}
 }
 
@@ -238,7 +289,7 @@ func TestTheRefusedChangeAuthorisesReadingTheLearnersWordsBack(t *testing.T) {
 			ownEntry("pages", "读书计划每次读 41 页", "41 页/次", model.SessionWhiteboardOriginUser, 95),
 		},
 		Claims: []WhiteboardLearnerClaim{anchorParaphrasedClaim()},
-	}, anchorBatch(anchorChangeText), model.SessionWhiteboardSchemaV2)
+	}, anchorBatch(anchorChangeText), model.SessionWhiteboardSchemaV3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,27 +319,198 @@ func TestTheRefusedChangeAuthorisesReadingTheLearnersWordsBack(t *testing.T) {
 	}
 }
 
-// A statement the board has caught up with is dropped.
-//
-// The words are on the board now, so the statement has nothing left to say,
-// and the board does not carry it forever.
-func TestAStatementTheBoardCaughtUpWithIsDropped(t *testing.T) {
+// A statement the board has caught up with is cleared, and counted as
+// resolved.
+func TestAStatementTheBoardCaughtUpWithIsCleared(t *testing.T) {
 	current := anchorBoard()
 	current.Unverified = []model.SessionWhiteboardAnchor{
-		{Key: "pages", Subject: "读书计划", Value: "41 页/次", MessageID: 95,
-			Quote: "读书计划改成每次 41 页", Reason: model.SessionWhiteboardAnchorQuoteNotInMessage},
+		{Key: "pages", Value: "41 页/次", MessageID: 95,
+			Text: anchorChangeText, Complete: true,
+			Reason: model.SessionWhiteboardAnchorQuoteNotInMessage},
 	}
 	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{
 		Constraints: []model.SessionWhiteboardEntry{
 			ownEntry("pages", "读书计划每次读 41 页", "41 页/次", model.SessionWhiteboardOriginUser, 95),
 		},
 		Claims: []WhiteboardLearnerClaim{anchorClaim("decided", "yes")},
-	}, anchorBatch(anchorChangeText), model.SessionWhiteboardSchemaV2)
+	}, anchorBatch(anchorChangeText), model.SessionWhiteboardSchemaV3)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(result.Board.Unverified) != 0 {
 		t.Fatalf("the board carries %+v, want nothing: the change was confirmed", result.Board.Unverified)
+	}
+	if result.Diagnostics.ResolvedUnconfirmedStatements != 1 {
+		t.Fatalf("resolved statements = %d, want 1", result.Diagnostics.ResolvedUnconfirmedStatements)
+	}
+	if result.Diagnostics.ExpiredUnconfirmedStatements != 0 {
+		t.Fatalf("expired statements = %d, want 0: the statement was resolved, not crowded out",
+			result.Diagnostics.ExpiredUnconfirmedStatements)
+	}
+}
+
+// Another entry citing the same message does not clear the statement.
+//
+// It says the message was used for something. It does not say the words
+// behind the statement were confirmed, so the statement stays.
+func TestAnotherEntryCitingTheSameMessageDoesNotClearTheStatement(t *testing.T) {
+	current := anchorBoard()
+	current.Unverified = []model.SessionWhiteboardAnchor{
+		{Key: "pages", Value: "41 页/次", MessageID: 95,
+			Text: anchorChangeText, Complete: true,
+			Reason: model.SessionWhiteboardAnchorQuoteNotInMessage},
+	}
+	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{
+		Constraints: []model.SessionWhiteboardEntry{
+			ownEntry("pages", "读书计划每次读 26 页", "26 页/次", model.SessionWhiteboardOriginUser, 51, 95),
+		},
+	}, anchorBatch(anchorChangeText), model.SessionWhiteboardSchemaV3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Board.Unverified) != 1 {
+		t.Fatalf("the board carries %+v, want the statement to stay", result.Board.Unverified)
+	}
+	if result.Diagnostics.ResolvedUnconfirmedStatements != 0 {
+		t.Fatalf("resolved statements = %d, want 0: another entry citing the message is not a resolution",
+			result.Diagnostics.ResolvedUnconfirmedStatements)
+	}
+}
+
+// A statement that is crowded out is expired, not resolved.
+//
+// The two are counted apart, because the difference is what a reader of the
+// counters needs: one was dealt with, the other was forgotten.
+func TestAStatementThatIsCrowdedOutIsExpiredNotResolved(t *testing.T) {
+	current := anchorBoard()
+	for i := 0; i < model.SessionWhiteboardAnchorLimit+2; i++ {
+		current.Unverified = append(current.Unverified, model.SessionWhiteboardAnchor{
+			Key: "pages", Value: "41 页/次", MessageID: uint(100 + i),
+			Text: anchorChangeText, Complete: true,
+			Reason:             model.SessionWhiteboardAnchorQuoteNotInMessage,
+			UpdatedAtMessageID: uint(100 + i),
+		})
+	}
+	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{}, anchorBatch(anchorChangeText),
+		model.SessionWhiteboardSchemaV3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Board.Unverified) != model.SessionWhiteboardAnchorLimit {
+		t.Fatalf("the board carries %d statements, want %d", len(result.Board.Unverified),
+			model.SessionWhiteboardAnchorLimit)
+	}
+	if result.Diagnostics.ExpiredUnconfirmedStatements != 2 {
+		t.Fatalf("expired statements = %d, want 2", result.Diagnostics.ExpiredUnconfirmedStatements)
+	}
+	if result.Diagnostics.ResolvedUnconfirmedStatements != 0 {
+		t.Fatalf("resolved statements = %d, want 0: crowding out is not a resolution",
+			result.Diagnostics.ResolvedUnconfirmedStatements)
+	}
+}
+
+// A long message that ends in a negation is kept whole.
+//
+// A cut would have shown the value and hidden the negation, which reads as a
+// decision the learner never made.
+func TestALongMessageThatEndsInANegationIsKeptWhole(t *testing.T) {
+	message := anchorLongText(400, "但是不要改成 41 页。")
+	result, err := ApplyWhiteboardProposal(anchorBoard(), WhiteboardProposal{
+		Constraints: []model.SessionWhiteboardEntry{
+			ownEntry("pages", "读书计划每次读 41 页", "41 页/次", model.SessionWhiteboardOriginUser, 95),
+		},
+		Claims: []WhiteboardLearnerClaim{anchorParaphrasedClaim()},
+	}, anchorBatch(message), model.SessionWhiteboardSchemaV3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Board.Unverified) != 1 {
+		t.Fatalf("the board carries %+v, want the learner's own message", result.Board.Unverified)
+	}
+	anchor := result.Board.Unverified[0]
+	if !anchor.Complete {
+		t.Fatal("the statement does not carry the whole message")
+	}
+	if !strings.HasSuffix(anchor.Text, "但是不要改成 41 页。") {
+		t.Fatalf("the statement's text ends with %q, want the negation it ends with",
+			anchor.Text[len(anchor.Text)-20:])
+	}
+	rendered := renderWhiteboardBlock(result.Board, 4000)
+	if !strings.Contains(rendered.Text, "但是不要改成 41 页。") {
+		t.Fatalf("the window does not show the end of the message: %s", rendered.Text)
+	}
+}
+
+// A long message that ends in a condition is kept whole, for the same reason.
+func TestALongMessageThatEndsInAConditionIsKeptWhole(t *testing.T) {
+	message := anchorLongText(400, "改成每次 41 页，如果太忙就改成 30 页。")
+	result, err := ApplyWhiteboardProposal(anchorBoard(), WhiteboardProposal{
+		Constraints: []model.SessionWhiteboardEntry{
+			ownEntry("pages", "读书计划每次读 41 页", "41 页/次", model.SessionWhiteboardOriginUser, 95),
+		},
+		Claims: []WhiteboardLearnerClaim{anchorParaphrasedClaim()},
+	}, anchorBatch(message), model.SessionWhiteboardSchemaV3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Board.Unverified) != 1 {
+		t.Fatalf("the board carries %+v, want the learner's own message", result.Board.Unverified)
+	}
+	if !strings.HasSuffix(result.Board.Unverified[0].Text, "如果太忙就改成 30 页。") {
+		t.Fatalf("the statement's text ends with %q, want the condition it ends with",
+			result.Board.Unverified[0].Text[len(result.Board.Unverified[0].Text)-20:])
+	}
+	rendered := renderWhiteboardBlock(result.Board, 4000)
+	if !strings.Contains(rendered.Text, "如果太忙就改成 30 页。") {
+		t.Fatalf("the window does not show the end of the message: %s", rendered.Text)
+	}
+}
+
+// A message too long to be carried whole becomes a pointer.
+//
+// The reader is told to read it back and keeps the message id. Half of the
+// message is not shown, and the candidate value is not shown either: a value
+// named next to a fragment reads as a decision.
+func TestAMessageTooLongToCarryBecomesAPointerThatCanBeReadBack(t *testing.T) {
+	message := anchorLongText(model.SessionWhiteboardAnchorMessageMaxRunes+120, "这次就按 41 页走。")
+	result, err := ApplyWhiteboardProposal(anchorBoard(), WhiteboardProposal{
+		Constraints: []model.SessionWhiteboardEntry{
+			ownEntry("pages", "读书计划每次读 41 页", "41 页/次", model.SessionWhiteboardOriginUser, 95),
+		},
+		Claims: []WhiteboardLearnerClaim{anchorParaphrasedClaim()},
+	}, anchorBatch(message), model.SessionWhiteboardSchemaV3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Board.Unverified) != 1 {
+		t.Fatalf("the board carries %+v, want the learner's own message", result.Board.Unverified)
+	}
+	anchor := result.Board.Unverified[0]
+	if anchor.Complete || anchor.Text != "" {
+		t.Fatalf("the statement carries %q, want no text at all", anchor.Text)
+	}
+	if anchor.MessageID != 95 {
+		t.Fatalf("the statement points at message %d, want the learner's own message", anchor.MessageID)
+	}
+	rendered := renderWhiteboardBlock(result.Board, 4000)
+	if strings.Contains(rendered.Text, "candidate value") {
+		t.Fatalf("the block names a candidate value for a statement it did not show: %s", rendered.Text)
+	}
+	if !strings.Contains(rendered.Text, "read it back to see what was said") {
+		t.Fatalf("the block does not tell the reader to read the message back: %s", rendered.Text)
+	}
+	if !strings.Contains(rendered.Text, "[message_ids=95]") {
+		t.Fatalf("the block does not carry the message id: %s", rendered.Text)
+	}
+	granted := false
+	for _, id := range rendered.EvidenceMessageIDs {
+		if id == 95 {
+			granted = true
+		}
+	}
+	if !granted {
+		t.Fatalf("the window shows %v, want the learner's own message among them",
+			rendered.EvidenceMessageIDs)
 	}
 }
 
@@ -297,12 +519,12 @@ func TestAStatementTheBoardCaughtUpWithIsDropped(t *testing.T) {
 func TestTheReasonOfARefusalIsRecorded(t *testing.T) {
 	result, err := ApplyWhiteboardProposal(anchorBoard(), WhiteboardProposal{
 		Constraints: []model.SessionWhiteboardEntry{
-			ownEntry("pages", "乙书每次读 41 页", "41 页/次", model.SessionWhiteboardOriginUser, 95),
+			ownEntry("pages", "另一本书每次读 41 页", "41 页/次", model.SessionWhiteboardOriginUser, 95),
 		},
 		Claims: []WhiteboardLearnerClaim{
 			learnerClaim("pages", 95, "读书计划改成每次 41 页", "读书计划", "页", "41页", "decided", "yes"),
 		},
-	}, anchorBatch(anchorChangeText), model.SessionWhiteboardSchemaV2)
+	}, anchorBatch(anchorChangeText), model.SessionWhiteboardSchemaV3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,8 +579,8 @@ func TestTheModeThatDoesNotRecordTheAssistantIsUnchanged(t *testing.T) {
 // board reaches, and the read-back the window authorises.
 //
 // The model's quote is not the learner's wording, so the value does not
-// reach the board. The learner's words do, and the window authorises reading
-// them back.
+// reach the board. The learner's message does, and the window authorises
+// reading it back.
 func TestTheWholePathFromTheAnswerToTheReadBack(t *testing.T) {
 	answer := `{"schema_version":1,"segment":{"topic":"读书计划的页数","points":[` +
 		`{"text":"学习者说了新的页数","evidence_message_ids":[95],"source":"user"}]},` +
@@ -390,7 +612,7 @@ func TestTheWholePathFromTheAnswerToTheReadBack(t *testing.T) {
 	}
 	// The window shows them and authorises reading them back.
 	rendered := renderWhiteboardBlock(result.Whiteboard, 2000)
-	if !strings.Contains(rendered.Text, "读书计划改成每次 41 页") {
+	if !strings.Contains(rendered.Text, anchorChangeText) {
 		t.Fatalf("the window does not show the learner's words: %s", rendered.Text)
 	}
 	layered := LayeredSummarySnapshot{

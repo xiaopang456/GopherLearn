@@ -116,7 +116,7 @@ func (m *SummarySegmentMigrator) segmentSchemaVersion() int {
 // boardSchemaVersion is the version the converted board is written in.
 func (m *SummarySegmentMigrator) boardSchemaVersion() int {
 	if m != nil && m.assistantContent {
-		return model.SessionWhiteboardSchemaV2
+		return model.SessionWhiteboardSchemaV3
 	}
 	return model.SessionWhiteboardSchemaV1
 }

@@ -36,10 +36,26 @@ const (
 	// SessionWhiteboardSchemaV2 is the version of the whiteboard document
 	// that says where each entry came from.
 	//
-	// The mode that records what the assistant produced writes this one.
-	// Both versions are read: a version 2 entry with no origin is the
-	// learner's, exactly as a version 1 entry is.
+	// The mode that records what the assistant produced wrote this one
+	// before the unconfirmed statements existed, and it is still read: a
+	// version 2 entry with no origin is the learner's, exactly as a version 1
+	// entry is.
 	SessionWhiteboardSchemaV2 = 2
+
+	// SessionWhiteboardSchemaV3 is the version of the whiteboard document
+	// that can also carry the learner's own words behind a refused change.
+	//
+	// It is a different format, not an extension of version 2: a decoder
+	// that was written before this version refuses a document that carries
+	// the statements, because the field is one it does not know. That is
+	// why the version was raised rather than the field added to version 2 -
+	// a document that no old decoder can read must say so in its version,
+	// and a deployment that has to roll back has to be able to see that it
+	// cannot.
+	//
+	// Everything version 2 could hold is still held: the origins, the
+	// claims and the rules about them are unchanged.
+	SessionWhiteboardSchemaV3 = 3
 
 	// SessionWhiteboardItemLimit is how many entries one board category may hold.
 	// A category that reaches the limit has its oldest entries merged away, and
@@ -245,24 +261,32 @@ type SessionWhiteboardAnchor struct {
 	// Key is the name the proposal gave the entry the words were about.
 	//
 	// It is the model's name for the item, so it is a hint and not a fact:
-	// the entry it was refused from may have been about something else.
+	// the entry it was refused from may have been about something else. It
+	// is kept because it is what says the board now holds what these words
+	// said - and nothing else is used to place the words on an item.
 	Key string `json:"key,omitempty"`
-	// Subject is what the learner spoke about, as the claim reported it.
-	//
-	// It is empty when no claim was written. It is used to find the entry
-	// the words are about, and only when exactly one entry names it.
-	Subject string `json:"subject,omitempty"`
 	// Value is the value the refused entry wanted to put on the board.
 	//
 	// It is the candidate, not the current value: the words carry it, but
-	// the program could not confirm that it is the value of that item.
+	// the program could not confirm that it is the value of that item. It
+	// is empty when the learner did not put a value up at all.
 	Value string `json:"value,omitempty"`
 	// MessageID is the learner's message the words come from.
 	//
 	// It is what authorises reading the original wording back.
 	MessageID uint `json:"message_id"`
-	// Quote is the learner's own words, copied from the message.
-	Quote string `json:"quote"`
+	// Text is the learner's own message.
+	//
+	// It is the whole message or nothing: a message that was cut in half
+	// would hide the end of the sentence, and the end of the sentence is
+	// where a condition or a negation lives. A message that is too long to
+	// be kept whole is kept as a message id alone, and a reader is told to
+	// read it back rather than shown half of it.
+	Text string `json:"text,omitempty"`
+	// Complete says whether Text is the whole message.
+	//
+	// It is false for a message that is kept as a pointer only.
+	Complete bool `json:"complete,omitempty"`
 	// Reason says why the words could not be confirmed.
 	//
 	// It is one of the fixed reasons above, so it is never the learner's
@@ -281,10 +305,14 @@ type SessionWhiteboardAnchor struct {
 // statement from many turns ago has had every chance to be confirmed since.
 const SessionWhiteboardAnchorLimit = 8
 
-// SessionWhiteboardAnchorTextMaxRunes bounds one anchor's quote.
+// SessionWhiteboardAnchorMessageMaxRunes bounds the learner's message one
+// anchor keeps whole.
 //
-// A quote is a sentence or two of the learner's own words, not a transcript.
-const SessionWhiteboardAnchorTextMaxRunes = 200
+// A message that is longer than this is kept as a message id alone, and a
+// reader is told to read it back. Cutting a message in half would hide the
+// end of the sentence - and the end of the sentence is where the condition
+// or the negation is - so a long message is either whole or not shown.
+const SessionWhiteboardAnchorMessageMaxRunes = 600
 
 // SessionWhiteboardGoal is the learner's current goal. It is a single entry
 // rather than a list because a session has one goal at a time; keeping older
@@ -323,6 +351,10 @@ type SessionWhiteboardDocument struct {
 	// words themselves, kept so that a reader can find them and ask for the
 	// message they came from. An entry that was refused took the learner's
 	// words with it, and this is where they went instead.
+	//
+	// Only a version 3 document carries them. A version 1 or version 2
+	// document that carries the field is refused, because those versions
+	// are the formats that were written before it existed.
 	Unverified []SessionWhiteboardAnchor `json:"unverified,omitempty"`
 	// MigratedFromVersion is the version of the old rolling summary this
 	// board was built from, and it is zero for a board the new path wrote.
@@ -355,7 +387,8 @@ func DecodeSessionWhiteboardDocument(content string) (SessionWhiteboardDocument,
 		return SessionWhiteboardDocument{}, err
 	}
 	if document.SchemaVersion != SessionWhiteboardSchemaV1 &&
-		document.SchemaVersion != SessionWhiteboardSchemaV2 {
+		document.SchemaVersion != SessionWhiteboardSchemaV2 &&
+		document.SchemaVersion != SessionWhiteboardSchemaV3 {
 		return SessionWhiteboardDocument{}, fmt.Errorf("unsupported session whiteboard schema version %d", document.SchemaVersion)
 	}
 	if err := document.Validate(); err != nil {
@@ -385,10 +418,10 @@ func (d *SessionWhiteboardDocument) Validate() error {
 		return fmt.Errorf("session whiteboard is nil")
 	}
 	switch d.SchemaVersion {
-	case SessionWhiteboardSchemaV1, SessionWhiteboardSchemaV2:
+	case SessionWhiteboardSchemaV1, SessionWhiteboardSchemaV2, SessionWhiteboardSchemaV3:
 	default:
-		return fmt.Errorf("session whiteboard schema version must be %d or %d",
-			SessionWhiteboardSchemaV1, SessionWhiteboardSchemaV2)
+		return fmt.Errorf("session whiteboard schema version must be %d, %d or %d",
+			SessionWhiteboardSchemaV1, SessionWhiteboardSchemaV2, SessionWhiteboardSchemaV3)
 	}
 	if d.Goal != nil {
 		if err := validateWhiteboardGoal(*d.Goal); err != nil {
@@ -416,17 +449,17 @@ func (d *SessionWhiteboardDocument) Validate() error {
 	if len(d.Unverified) > SessionWhiteboardAnchorLimit {
 		return fmt.Errorf("session whiteboard has too many unconfirmed statements")
 	}
+	if len(d.Unverified) > 0 && d.SchemaVersion != SessionWhiteboardSchemaV3 {
+		// The statements are a version 3 field. A version 1 or version 2
+		// document that carries them is a document in a format that did not
+		// exist when it was written, and it is refused rather than read
+		// with part of itself dropped.
+		return fmt.Errorf("session whiteboard version %d cannot carry an unconfirmed statement",
+			d.SchemaVersion)
+	}
 	for _, anchor := range d.Unverified {
 		if err := anchor.Validate(); err != nil {
 			return err
-		}
-		if d.SchemaVersion == SessionWhiteboardSchemaV1 {
-			// A version 1 board is the board the mode that does not record
-			// what the assistant produced always wrote. It never carries an
-			// unconfirmed statement, so a board that does is a body this
-			// schema cannot describe.
-			return fmt.Errorf("session whiteboard version %d cannot carry an unconfirmed statement",
-				SessionWhiteboardSchemaV1)
 		}
 	}
 	return nil
@@ -437,17 +470,20 @@ func (a SessionWhiteboardAnchor) Validate() error {
 	if a.MessageID == 0 {
 		return fmt.Errorf("session whiteboard unconfirmed statement has no message")
 	}
-	if strings.TrimSpace(a.Quote) == "" {
-		return fmt.Errorf("session whiteboard unconfirmed statement has no quote")
+	if a.Complete && strings.TrimSpace(a.Text) == "" {
+		return fmt.Errorf("session whiteboard unconfirmed statement is marked complete but has no text")
 	}
-	if len([]rune(a.Quote)) > SessionWhiteboardAnchorTextMaxRunes {
-		return fmt.Errorf("session whiteboard unconfirmed statement quote is too long")
+	if !a.Complete && strings.TrimSpace(a.Text) != "" {
+		// A statement that is not complete carries no text: half a message
+		// is worse than none, because a reader cannot tell that the end of
+		// the sentence is missing.
+		return fmt.Errorf("session whiteboard unconfirmed statement is not complete but has text")
+	}
+	if len([]rune(a.Text)) > SessionWhiteboardAnchorMessageMaxRunes {
+		return fmt.Errorf("session whiteboard unconfirmed statement text is too long")
 	}
 	if len([]rune(a.Key)) > SessionWhiteboardTextMaxRunes {
 		return fmt.Errorf("session whiteboard unconfirmed statement key is too long")
-	}
-	if len([]rune(a.Subject)) > SessionWhiteboardTextMaxRunes {
-		return fmt.Errorf("session whiteboard unconfirmed statement subject is too long")
 	}
 	if len([]rune(a.Value)) > SessionWhiteboardTextMaxRunes {
 		return fmt.Errorf("session whiteboard unconfirmed statement value is too long")

@@ -12,14 +12,33 @@ package agent
 //
 // So the two are separated. The value stays refused: it never becomes the
 // current state, and the board never presents it as one. The words are kept as
-// an unconfirmed statement: the message they came from can be read back, the
-// reader can see what the learner actually said, and a value the board shows
-// next to them is marked as contested rather than as the one true value.
+// an unconfirmed statement: the message they came from can be read back, and
+// the reader can see what the learner actually said.
 //
-// What an unconfirmed statement is not: it is not evidence, it is not a
-// fallback fact, and it is not a way to let any message be read. It exists
-// only for a message of this batch, of this session, that the learner wrote
-// and that really carries the value the refused entry wanted to put up.
+// Three rules keep the statement from becoming a second kind of fact.
+//
+// The first is that it does not say what it is about. A refused claim is a
+// claim the program could not confirm, and everything in it is therefore
+// unconfirmed - including the name of the item it spoke about. A statement
+// that hung itself on an entry because the rejected claim named the same
+// subject would be hanging itself on a field that was refused for a reason.
+// So the statement says where the words are (which message) and what was
+// refused (the reason), and it says nothing about which entry they were
+// about.
+//
+// The second is that the words are whole or not shown. A message that was cut
+// in half would hide the end of the sentence, and the end of the sentence is
+// where a condition or a negation lives: "41 pages, unless it gets busy"
+// reads as a decision when its last three words are missing. So a message
+// that is too long to be carried whole is carried as its id alone, and the
+// reader is told to read it back.
+//
+// The third is that a statement is cleared only when something verifiable says
+// it has been dealt with - the board now holds the same value under the same
+// key. Another entry citing the same message is not that: it says the message
+// was used for something, not that the words behind it were confirmed. A
+// statement that is not cleared that way stays until it is crowded out, and
+// being crowded out is reported as what it is.
 
 import (
 	"strings"
@@ -46,6 +65,15 @@ func whiteboardReportClaimRefusals(diagnostics WhiteboardDiagnostics) {
 	}
 	if diagnostics.UnconfirmedStatements > 0 {
 		observability.Memory.WhiteboardUnconfirmedStatements(diagnostics.UnconfirmedStatements)
+	}
+	if diagnostics.ResolvedUnconfirmedStatements > 0 {
+		observability.Memory.WhiteboardUnconfirmedStatementsResolved(diagnostics.ResolvedUnconfirmedStatements)
+	}
+	if diagnostics.ExpiredUnconfirmedStatements > 0 {
+		observability.Memory.WhiteboardUnconfirmedStatementsExpired(diagnostics.ExpiredUnconfirmedStatements)
+	}
+	if diagnostics.DroppedUnconfirmedStatements > 0 {
+		observability.Memory.WhiteboardUnconfirmedStatementsDropped(diagnostics.DroppedUnconfirmedStatements)
 	}
 }
 
@@ -116,6 +144,10 @@ func whiteboardAppendAnchor(anchors []model.SessionWhiteboardAnchor, entry model
 // when it really carries the value the entry wanted to put on the board, so a
 // statement is never built out of a message that does not mention it.
 //
+// The message is kept whole or not at all. A message that is too long to be
+// carried whole becomes a pointer: the reader is told to read it back rather
+// than shown half of it.
+//
 // The reason says why the value was not confirmed. It is one of a fixed set,
 // so it never carries the learner's own words.
 func whiteboardAnchorFor(entry model.SessionWhiteboardEntry, claim WhiteboardLearnerClaim,
@@ -141,12 +173,12 @@ func whiteboardAnchorFor(entry model.SessionWhiteboardEntry, claim WhiteboardLea
 			Key:                strings.TrimSpace(entry.Key),
 			Value:              value,
 			MessageID:          id,
-			Quote:              whiteboardAnchorQuote(text, value, claim, hasClaim),
 			Reason:             reason,
 			UpdatedAtMessageID: batch.LastMessageID,
 		}
-		if hasClaim {
-			anchor.Subject = whiteboardPlainText(claim.Subject)
+		if len([]rune(text)) <= model.SessionWhiteboardAnchorMessageMaxRunes {
+			anchor.Text = strings.TrimSpace(text)
+			anchor.Complete = true
 		}
 		return anchor, true
 	}
@@ -189,87 +221,48 @@ func whiteboardAnchorCandidates(entry model.SessionWhiteboardEntry, claim Whiteb
 	return candidates
 }
 
-// whiteboardAnchorQuote is the learner's own words the statement points at.
+// whiteboardAnchorNavigation is the statement without its words.
 //
-// The model's quote is used when it really is in the message: it is the part
-// of the message the model read, and it is the shortest honest answer. When
-// it is not, the sentence that carries the value is used instead, because a
-// statement has to show the words it is about.
-func whiteboardAnchorQuote(text, value string, claim WhiteboardLearnerClaim, hasClaim bool) string {
-	if hasClaim {
-		quote := strings.TrimSpace(claim.Quote)
-		if quote != "" && strings.Contains(whiteboardPlainText(text), whiteboardPlainText(quote)) {
-			// The words are kept as they were written: a reader is shown
-			// the learner's own sentence, not a tidied one.
-			return whiteboardTrimRunes(quote, model.SessionWhiteboardAnchorTextMaxRunes)
-		}
-	}
-	for _, sentence := range whiteboardSentences(text) {
-		if whiteboardQuoteCarriesValue(sentence, value) {
-			return whiteboardTrimRunes(sentence, model.SessionWhiteboardAnchorTextMaxRunes)
-		}
-	}
-	return whiteboardTrimRunes(strings.TrimSpace(text), model.SessionWhiteboardAnchorTextMaxRunes)
-}
-
-// whiteboardSentences splits a message into the sentences a reader would
-// read on their own.
-//
-// The split is on the marks a learner writes between thoughts. A message that
-// carries no such mark is one sentence.
-func whiteboardSentences(text string) []string {
-	parts := strings.FieldsFunc(text, func(r rune) bool {
-		switch r {
-		case '。', '！', '？', '；', '\n', '!', '?', ';':
-			return true
-		}
-		return false
-	})
-	sentences := make([]string, 0, len(parts))
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		sentences = append(sentences, part)
-	}
-	if len(sentences) == 0 {
-		return []string{strings.TrimSpace(text)}
-	}
-	return sentences
-}
-
-// whiteboardTrimRunes shortens a text to a limit without splitting a rune.
-func whiteboardTrimRunes(text string, limit int) string {
-	runes := []rune(text)
-	if limit <= 0 || len(runes) <= limit {
-		return text
-	}
-	return string(runes[:limit])
+// It is what a statement becomes when the board has no room for the words:
+// the message is still there and still readable, and a reader is told to read
+// it rather than shown a part of it.
+func whiteboardAnchorNavigation(anchor model.SessionWhiteboardAnchor) model.SessionWhiteboardAnchor {
+	anchor.Text = ""
+	anchor.Complete = false
+	return anchor
 }
 
 // whiteboardMergeAnchors carries the unconfirmed statements forward and adds
 // the new ones.
 //
-// A statement is resolved when the board now holds what it pointed at: either
-// an entry cites the message the words came from, or an entry under the same
-// key carries the value the words were about. A statement that has been
-// resolved is dropped, because what it said is now on the board.
+// A statement is cleared only when the board now holds what it pointed at: an
+// entry under the same key carries the same value. That is the one relation
+// that can be checked and that says the words have been dealt with. Another
+// entry citing the same message is not that - it says the message was used,
+// not that the words behind it were confirmed - so a statement that only has
+// that stays.
+//
+// A statement that is neither confirmed nor cleared is crowded out by the
+// capacity or by the board's budget, and that is counted as what it is: an
+// expired statement, not a resolved one.
 //
 // The newest statements are the ones kept. The board travels with every turn,
 // so its size is a fixed cost, and a statement from many turns ago has had
 // every chance to be confirmed since.
 func whiteboardMergeAnchors(current model.SessionWhiteboardDocument,
-	board model.SessionWhiteboardDocument, added []model.SessionWhiteboardAnchor) []model.SessionWhiteboardAnchor {
+	board model.SessionWhiteboardDocument,
+	added []model.SessionWhiteboardAnchor) ([]model.SessionWhiteboardAnchor, int, int) {
 	kept := make([]model.SessionWhiteboardAnchor, 0, len(current.Unverified)+len(added))
+	resolved := 0
 	for _, anchor := range current.Unverified {
 		if whiteboardAnchorResolved(anchor, board) {
+			resolved++
 			continue
 		}
 		kept = append(kept, anchor)
 	}
 	for _, anchor := range added {
-		if anchor.MessageID == 0 || strings.TrimSpace(anchor.Quote) == "" {
+		if anchor.MessageID == 0 {
 			continue
 		}
 		duplicate := false
@@ -287,26 +280,35 @@ func whiteboardMergeAnchors(current model.SessionWhiteboardDocument,
 	// The newest first, so that the limit keeps the statements a reader is
 	// most likely to need.
 	sortWhiteboardAnchors(kept)
+	expired := 0
 	if len(kept) > model.SessionWhiteboardAnchorLimit {
+		expired = len(kept) - model.SessionWhiteboardAnchorLimit
 		kept = kept[:model.SessionWhiteboardAnchorLimit]
 	}
-	return kept
+	return kept, resolved, expired
 }
 
 // whiteboardAnchorResolved reports whether the board now holds what the
 // statement pointed at.
+//
+// The relation is the key and the value together: the board has an entry
+// under the statement's key and that entry carries the statement's value.
+// Anything weaker - another entry citing the same message, an entry with the
+// same key and a different value - is not a resolution, because none of them
+// says the words behind the statement were confirmed.
 func whiteboardAnchorResolved(anchor model.SessionWhiteboardAnchor,
 	board model.SessionWhiteboardDocument) bool {
 	key := strings.TrimSpace(anchor.Key)
+	value := strings.TrimSpace(anchor.Value)
+	if key == "" || value == "" {
+		return false
+	}
 	for _, group := range [][]model.SessionWhiteboardEntry{board.Constraints, board.Plan, board.OpenItems} {
 		for _, entry := range group {
-			for _, id := range entry.SourceMessageIDs {
-				if id == anchor.MessageID {
-					return true
-				}
+			if strings.TrimSpace(entry.Key) != key {
+				continue
 			}
-			if key != "" && strings.TrimSpace(entry.Key) == key &&
-				strings.TrimSpace(entry.Value) == strings.TrimSpace(anchor.Value) {
+			if strings.TrimSpace(entry.Value) == value {
 				return true
 			}
 		}
@@ -329,64 +331,4 @@ func whiteboardAnchorNewer(left, right model.SessionWhiteboardAnchor) bool {
 		return left.UpdatedAtMessageID > right.UpdatedAtMessageID
 	}
 	return left.MessageID > right.MessageID
-}
-
-// whiteboardContestedEntries are the board entries whose value an
-// unconfirmed statement is about.
-//
-// The link is the statement's subject: it is the thing the learner spoke
-// about, and it is only used when exactly one entry names it. A statement
-// whose subject names no entry, or more than one, contests nothing: the
-// program cannot place it, and it says so by leaving the board alone.
-//
-// The value has to differ, or the statement is about the value the board
-// already holds and there is nothing to contest.
-func whiteboardContestedEntries(board model.SessionWhiteboardDocument) map[string]string {
-	contested := make(map[string]string)
-	for _, anchor := range board.Unverified {
-		subject := strings.TrimSpace(anchor.Subject)
-		if subject == "" {
-			continue
-		}
-		if anchor.Reason == model.SessionWhiteboardAnchorUnsettled {
-			// The learner did not settle the value: they ruled it out or
-			// asked about it. There is no conflict to mark, because the
-			// board still holds what they kept.
-			continue
-		}
-		value := strings.TrimSpace(anchor.Value)
-		matched := ""
-		count := 0
-		for _, group := range [][]model.SessionWhiteboardEntry{board.Constraints, board.Plan, board.OpenItems} {
-			for _, entry := range group {
-				if !strings.Contains(whiteboardEntryDescription(entry), subject) {
-					continue
-				}
-				count++
-				if matched == "" {
-					matched = strings.TrimSpace(entry.Key)
-				}
-			}
-		}
-		if count != 1 || matched == "" {
-			continue
-		}
-		if strings.TrimSpace(currentWhiteboardValue(board, matched)) == value {
-			continue
-		}
-		contested[matched] = value
-	}
-	return contested
-}
-
-// currentWhiteboardValue is the value the board holds under a key.
-func currentWhiteboardValue(board model.SessionWhiteboardDocument, key string) string {
-	for _, group := range [][]model.SessionWhiteboardEntry{board.Constraints, board.Plan, board.OpenItems} {
-		for _, entry := range group {
-			if strings.TrimSpace(entry.Key) == key {
-				return entry.Value
-			}
-		}
-	}
-	return ""
 }

@@ -223,7 +223,7 @@ func (g *ModelSegmentGenerator) segmentSchemaVersion() int {
 // the assistant's products writes the board it always wrote.
 func (g *ModelSegmentGenerator) boardSchemaVersion() int {
 	if g != nil && g.assistantContent {
-		return model.SessionWhiteboardSchemaV2
+		return model.SessionWhiteboardSchemaV3
 	}
 	return model.SessionWhiteboardSchemaV1
 }
@@ -590,7 +590,15 @@ type segmentFailure struct {
 	// A failure that carries them says what the attempt cost, and a
 	// failure that does not is a cost nobody can see.
 	calls []segmentCallRecord
-	err   error
+	// diagnostics are what the board engine made of the answers the batch
+	// produced before it gave up.
+	//
+	// They are carried because they were produced: a candidate the engine
+	// refused, and the check that refused it, is a fact about the attempt
+	// whether or not the attempt wrote a segment. A failure that drops them
+	// loses the only record of what happened to them.
+	diagnostics WhiteboardDiagnostics
+	err         error
 }
 
 func (f segmentFailure) Error() string { return f.err.Error() }
@@ -645,6 +653,41 @@ func segmentFailureCallRecords(err error) []segmentCallRecord {
 		return failure.calls
 	}
 	return nil
+}
+
+// whiteboardFailureWithDiagnostics puts the engine's judgements on a failure.
+//
+// A failure that does not carry them loses them: the engine had already
+// refused a candidate and said why, and the attempt that gave up afterwards
+// is the only place that knowledge existed.
+func whiteboardFailureWithDiagnostics(err error, diagnostics WhiteboardDiagnostics) error {
+	var failure segmentFailure
+	if !errors.As(err, &failure) {
+		return err
+	}
+	failure.diagnostics = whiteboardMergeDiagnostics(failure.diagnostics, diagnostics)
+	return failure
+}
+
+// whiteboardMergeDiagnostics adds one set of judgements to another.
+func whiteboardMergeDiagnostics(left, right WhiteboardDiagnostics) WhiteboardDiagnostics {
+	left.add(right)
+	return left
+}
+
+// SegmentFailureDiagnostics returns what the board engine made of the answers
+// a failed generation produced.
+//
+// The engine's judgements - a candidate that was refused, and the check that
+// refused it - are produced while the batch is being read, and a batch that
+// gave up afterwards still produced them. They travel with the failure, so a
+// caller that only has the error can still see them.
+func SegmentFailureDiagnostics(err error) (WhiteboardDiagnostics, bool) {
+	var failure segmentFailure
+	if errors.As(err, &failure) {
+		return failure.diagnostics, true
+	}
+	return WhiteboardDiagnostics{}, false
 }
 
 // GenerateSegment produces one segment and the board that goes with it.
@@ -824,7 +867,7 @@ func (g *ModelSegmentGenerator) generateOneCall(ctx context.Context,
 	if storedWhiteboardTokens(applied.Board) > g.maxOutputTokens {
 		applied, err = g.applyChangesOnly(ctx, ledger, payload, current, batch, applied)
 		if err != nil {
-			return SegmentGenerationResult{}, err
+			return SegmentGenerationResult{}, whiteboardFailureWithDiagnostics(err, applied.Diagnostics)
 		}
 		applied.Diagnostics.DroppedPoints = droppedPoints
 	}
@@ -996,7 +1039,7 @@ func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
 		if storedWhiteboardTokens(applied.Board) > g.maxOutputTokens {
 			applied, err = g.applyChangesOnly(ctx, ledger, payload, current, batch, applied)
 			if err != nil {
-				return SegmentGenerationResult{}, err
+				return SegmentGenerationResult{}, whiteboardFailureWithDiagnostics(err, diagnostics)
 			}
 		}
 		if storedWhiteboardTokens(applied.Board) > g.maxOutputTokens {
@@ -1050,6 +1093,7 @@ func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
 		if failure, ok := err.(segmentFailure); ok {
 			failure.droppedPoints += dropped
 			failure.calls = segmentCallRecords(ledger)
+			failure.diagnostics = whiteboardMergeDiagnostics(failure.diagnostics, diagnostics)
 			return SegmentGenerationResult{}, failure
 		}
 		return SegmentGenerationResult{}, err
