@@ -236,6 +236,35 @@ func (r *MemoryRecorder) Whiteboard(applied, changed, fabricated, suspiciousDele
 		unprovenAcceptance, unknownOrigin, mislabeledOrigin, assistantProposal)
 }
 
+// WhiteboardClaims records what the learner's own words were worth to the
+// board.
+//
+// The counts are the ones that say whether the evidence is being used: a
+// claim that was checked and holds, a claim that does not hold, a claim that
+// holds and says the learner did not settle the value, and a value that was
+// replaced without anything behind it.
+func (r *MemoryRecorder) WhiteboardClaims(verified, rejected, unsettled, unbacked int) {
+	mode := r.modeLabel()
+	r.addTotal("whiteboard_verified_claim_total", int64(verified))
+	r.addTotal("whiteboard_rejected_claim_total", int64(rejected))
+	r.addTotal("whiteboard_unsettled_claim_total", int64(unsettled))
+	r.addTotal("whiteboard_unbacked_change_total", int64(unbacked))
+	if verified > 0 {
+		r.add("whiteboard_verified_claim_batches_total{mode="+mode+"}", 1)
+	}
+	if rejected > 0 {
+		r.add("whiteboard_rejected_claim_batches_total{mode="+mode+"}", 1)
+	}
+	if unsettled > 0 {
+		r.add("whiteboard_unsettled_claim_batches_total{mode="+mode+"}", 1)
+	}
+	if unbacked > 0 {
+		r.add("whiteboard_unbacked_change_batches_total{mode="+mode+"}", 1)
+	}
+	r.logf("memory_metric name=whiteboard_claims mode=%s verified=%d rejected=%d unsettled=%d unbacked=%d",
+		mode, verified, rejected, unsettled, unbacked)
+}
+
 // SummarySegmentAssistant records what one segment carried of the
 // assistant's own products.
 //

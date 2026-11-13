@@ -255,6 +255,15 @@ type WhiteboardProposal struct {
 	Constraints []model.SessionWhiteboardEntry
 	Plan        []model.SessionWhiteboardEntry
 	OpenItems   []model.SessionWhiteboardEntry
+	// Claims are the learner's own words behind the entries, one per entry
+	// that has one.
+	//
+	// They are what a correction rests on: an entry the model labelled as
+	// the assistant's may still be the learner's own statement, and the
+	// only way to know is the learner's own words. A claim is matched to
+	// its entry by the entry's key, and a claim that cannot be placed is
+	// not used.
+	Claims []WhiteboardLearnerClaim
 }
 
 // WhiteboardDiagnostics counts what the engine had to do to the proposal.
@@ -315,6 +324,34 @@ type WhiteboardDiagnostics struct {
 	// current fact. They go to the summary segment instead, labelled as the
 	// assistant's, which is where a reader can still find them.
 	AssistantProposals int
+	// VerifiedClaims is how many entries were confirmed by the learner's
+	// own words - a quote that is really in the message, a value that is
+	// the entry's value, and a subject and an attribute that are what the
+	// entry is about.
+	//
+	// It is a count of its own because it is the one that says the
+	// evidence is being used: a generator that keeps leaving the board
+	// without it is a generator whose corrections are being refused.
+	VerifiedClaims int
+	// RejectedClaims is how many claims did not hold.
+	//
+	// A claim that does not hold is not evidence, and the entry it was
+	// written for keeps the label the model gave it. A rising number here
+	// is a generator that writes evidence it did not read.
+	RejectedClaims int
+	// UnsettledClaims is how many claims held but said the learner did
+	// not settle the value.
+	//
+	// A value nobody settled is not a current fact, so an entry that says
+	// it is the learner's own does not go on the board.
+	UnsettledClaims int
+	// UnbackedChanges is how many entries were refused because they
+	// replaced a value the board already held and the learner's own words
+	// were not behind them.
+	//
+	// A value that is replaced by a value nobody said is a value that is
+	// gone, so the old one stays until something backs the new one.
+	UnbackedChanges int
 }
 
 // WhiteboardResult is the outcome of applying one proposal.
@@ -376,19 +413,19 @@ func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal W
 	}
 
 	constraints, constraintChanges, constraintDiag := applyWhiteboardGroup(
-		current.Constraints, proposal.Constraints, batch, false, schemaVersion)
+		current.Constraints, proposal.Constraints, batch, false, schemaVersion, proposal)
 	result.Board.Constraints = constraints
 	result.Changes = append(result.Changes, constraintChanges...)
 	result.Diagnostics.add(constraintDiag)
 
 	plan, planChanges, planDiag := applyWhiteboardGroup(
-		current.Plan, proposal.Plan, batch, true, schemaVersion)
+		current.Plan, proposal.Plan, batch, true, schemaVersion, proposal)
 	result.Board.Plan = plan
 	result.Changes = append(result.Changes, planChanges...)
 	result.Diagnostics.add(planDiag)
 
 	openItems, openChanges, openDiag := applyWhiteboardGroup(
-		current.OpenItems, proposal.OpenItems, batch, false, schemaVersion)
+		current.OpenItems, proposal.OpenItems, batch, false, schemaVersion, proposal)
 	result.Board.OpenItems = openItems
 	result.Changes = append(result.Changes, openChanges...)
 	result.Diagnostics.add(openDiag)
@@ -447,6 +484,10 @@ func (d *WhiteboardDiagnostics) add(other WhiteboardDiagnostics) {
 	d.UnknownOrigins += other.UnknownOrigins
 	d.MislabeledOrigins += other.MislabeledOrigins
 	d.AssistantProposals += other.AssistantProposals
+	d.VerifiedClaims += other.VerifiedClaims
+	d.RejectedClaims += other.RejectedClaims
+	d.UnsettledClaims += other.UnsettledClaims
+	d.UnbackedChanges += other.UnbackedChanges
 }
 
 // applyWhiteboardGoal decides what the board's goal becomes.
@@ -530,8 +571,9 @@ func whiteboardEntryForVersion(entry model.SessionWhiteboardEntry, schemaVersion
 // one, because a board that still lists finished work is a board that has
 // not been read.
 func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []model.SessionWhiteboardEntry,
-	batch WhiteboardBatch, doneFirst bool, schemaVersion int) ([]model.SessionWhiteboardEntry, []model.SessionSummarySegmentChange, WhiteboardDiagnostics) {
+	batch WhiteboardBatch, doneFirst bool, schemaVersion int, proposal WhiteboardProposal) ([]model.SessionWhiteboardEntry, []model.SessionSummarySegmentChange, WhiteboardDiagnostics) {
 	var diagnostics WhiteboardDiagnostics
+	keyCounts := whiteboardProposalKeyCounts(proposal)
 	currentByKey := make(map[string]model.SessionWhiteboardEntry, len(current))
 	for _, entry := range current {
 		if key := strings.TrimSpace(entry.Key); key != "" {
@@ -588,9 +630,10 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 		// A model that labels the learner's own new value as the assistant's
 		// - which happens when the assistant only confirmed what the learner
 		// said - must not lose the learner's current value over the label.
-		// The learner's message in this batch is the evidence, and the
-		// assistant's message has to come after it for the entry to be the
-		// assistant's proposal the learner took on.
+		// The learner's words are the evidence, and every part of them is
+		// checked: the quote has to be in the message, the value has to be
+		// the entry's value, and the subject and the attribute have to be
+		// what the entry is about.
 		//
 		// The entry does not have to replace a value the board already
 		// holds. A board that is empty - because the last batch failed to
@@ -598,14 +641,60 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 		// thing there is.
 		learnerMessageID := uint(0)
 		learnerStated := false
+		claimVerdict := whiteboardClaimAbsent
+		if schemaVersion == model.SessionWhiteboardSchemaV2 {
+			claim, hasClaim := whiteboardClaimFor(proposal.Claims, key, keyCounts)
+			if hasClaim {
+				claimVerdict = whiteboardVerifyClaim(claim, entry, batch)
+				switch claimVerdict {
+				case whiteboardClaimSettled:
+					learnerMessageID = claim.MessageID
+					learnerStated = true
+					diagnostics.VerifiedClaims++
+				case whiteboardClaimUnsettled:
+					diagnostics.UnsettledClaims++
+				default:
+					diagnostics.RejectedClaims++
+				}
+			}
+		}
+		if claimVerdict == whiteboardClaimUnsettled && origin == model.SessionWhiteboardOriginUser {
+			// The entry says it is the learner's own, and the learner's own
+			// words say the value was not settled: proposed, asked about,
+			// ruled out, or not sure. A value nobody settled is not a
+			// current fact, so the entry does not go on the board.
+			diagnostics.DroppedEntries++
+			continue
+		}
 		if schemaVersion == model.SessionWhiteboardSchemaV2 &&
-			origin != model.SessionWhiteboardOriginUser {
-			learnerMessageID, learnerStated = whiteboardLearnerOwnEntry(entry, batch)
+			origin == model.SessionWhiteboardOriginUser && isExisting &&
+			previous.Value != entry.Value && claimVerdict != whiteboardClaimSettled {
+			// The entry replaces a value the board already holds, and the
+			// learner's own words are not behind it.
+			//
+			// The board holds what is true now, and a value that is
+			// replaced by a value nobody said is a value that is gone. The
+			// program cannot read a decision out of a sentence, so the
+			// model has to show the words it read and the program checks
+			// them. An entry that cannot show them does not replace what
+			// is there.
+			diagnostics.UnbackedChanges++
+			diagnostics.DroppedEntries++
+			continue
+		}
+
+		corrected := false
+		if learnerStated && origin != model.SessionWhiteboardOriginUser {
+			// The label was wrong; the words were the learner's. The entry
+			// is the learner's own, and it replaces the value it changed.
+			origin = model.SessionWhiteboardOriginUser
+			corrected = true
+			diagnostics.MislabeledOrigins++
 		}
 
 		var ids []uint
 		var ok bool
-		if learnerStated {
+		if corrected {
 			ids, ok = filterWhiteboardLearnerEvidence(entry.SourceMessageIDs, learnerMessageID, batch)
 		} else {
 			ids, ok = filterWhiteboardEvidence(entry.SourceMessageIDs, previous.SourceMessageIDs, batch.allowed(origin))
@@ -616,12 +705,7 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 			diagnostics.FabricatedEntries++
 			continue
 		}
-		if learnerStated {
-			// The label was wrong; the words were the learner's. The entry
-			// is the learner's own, and it replaces the value it changed.
-			origin = model.SessionWhiteboardOriginUser
-			diagnostics.MislabeledOrigins++
-		} else if origin != model.SessionWhiteboardOriginUser {
+		if origin != model.SessionWhiteboardOriginUser {
 			if schemaVersion == model.SessionWhiteboardSchemaV1 {
 				// The board that cannot name an assistant's origin. The
 				// acceptance is checked the way it always was, and an
@@ -1021,9 +1105,11 @@ func filterWhiteboardEvidence(proposed, previous []uint, allowed map[uint]struct
 // that says "this was changed later" has a value to point at.
 //
 // Only an entry the learner's own words justify takes a key from another
-// entry. The learner's message is what says the old value is no longer the
-// one, and the two entries are about one subject when the learner, changing
-// the value, says the subject the old entry was about.
+// entry, and the words have to be evidence: the learner's message has to say
+// the value, about that subject, and the entry has to be about the same
+// subject the old entry is about. An entry the program cannot place leaves
+// the board as it was, because a value that takes over the wrong entry's key
+// loses a fact the learner still has.
 func whiteboardReuseSupersededKeys(current model.SessionWhiteboardDocument,
 	proposal WhiteboardProposal, batch WhiteboardBatch) WhiteboardProposal {
 	groups := map[string][]model.SessionWhiteboardEntry{
@@ -1034,13 +1120,21 @@ func whiteboardReuseSupersededKeys(current model.SessionWhiteboardDocument,
 	incoming := map[string][]model.SessionWhiteboardEntry{
 		"constraints": nil, "plan": nil, "open_items": nil,
 	}
+	keyCounts := whiteboardProposalKeyCounts(proposal)
 	for name, entries := range groups {
 		kept := make([]model.SessionWhiteboardEntry, 0, len(entries))
 		for _, entry := range entries {
 			key := strings.TrimSpace(entry.Key)
 			learnerMessageID, own := uint(0), false
+			var claim *WhiteboardLearnerClaim
 			if key != "" {
-				learnerMessageID, own = whiteboardLearnerOwnEntry(entry, batch)
+				if found, has := whiteboardClaimFor(proposal.Claims, key, keyCounts); has {
+					if whiteboardVerifyClaim(found, entry, batch) == whiteboardClaimSettled {
+						learnerMessageID = found.MessageID
+						own = true
+						claim = &found
+					}
+				}
 			}
 			superseded, group, found := "", "", false
 			if own && !whiteboardHasKey(current, key) {
@@ -1048,13 +1142,17 @@ func whiteboardReuseSupersededKeys(current model.SessionWhiteboardDocument,
 				// The key is only taken from another entry when the model
 				// renamed the entry, which is the one case the board
 				// cannot place on its own.
-				superseded, group, found = whiteboardSupersedingEntry(current, entry, key, learnerMessageID)
+				superseded, group, found = whiteboardSupersedingEntry(current, entry, key, learnerMessageID, claim)
 			}
 			if !found {
 				kept = append(kept, entry)
 				continue
 			}
 			entry.Key = superseded
+			// The claim follows the entry. The evidence was written for
+			// the entry the model proposed, and the entry is the same one
+			// under the key the board already gave it.
+			whiteboardMoveClaim(proposal.Claims, key, superseded)
 			incoming[group] = append(incoming[group], entry)
 		}
 		groups[name] = kept
@@ -1078,13 +1176,19 @@ func whiteboardReuseSupersededKeys(current model.SessionWhiteboardDocument,
 // one, when they measure the same thing, and when the old entry is the
 // earlier version: it was written before the message that changed it.
 //
+// The claim adds a second way to say "the same subject": the subject the
+// learner named is the subject the old entry is about. One of the two is
+// enough, and both are checked against what the entries say rather than
+// against the words they happen to share.
+//
 // There has to be exactly one such entry. Two of them means the engine
 // cannot tell which one the new entry replaces, and a value that takes over
 // the wrong entry's key loses a fact the learner still has. So a case the
 // engine cannot place is left alone: the new entry keeps its own key, and
 // the board keeps what it had.
 func whiteboardSupersedingEntry(current model.SessionWhiteboardDocument,
-	entry model.SessionWhiteboardEntry, key string, learnerMessageID uint) (string, string, bool) {
+	entry model.SessionWhiteboardEntry, key string, learnerMessageID uint,
+	claim *WhiteboardLearnerClaim) (string, string, bool) {
 	type candidate struct {
 		group string
 		key   string
@@ -1109,7 +1213,8 @@ func whiteboardSupersedingEntry(current model.SessionWhiteboardDocument,
 		if !whiteboardEntryIsOlder(item.entry, learnerMessageID) {
 			continue
 		}
-		if !whiteboardEntrySupersedes(item.entry, entry) {
+		if !whiteboardEntrySupersedes(item.entry, entry) &&
+			!whiteboardClaimNamesSubject(claim, item.entry) {
 			continue
 		}
 		matches++
@@ -1177,12 +1282,28 @@ func whiteboardEntryUnit(entry model.SessionWhiteboardEntry) string {
 	return unit
 }
 
-// whiteboardEntryNamesOther reports whether an entry is about another thing.
+// whiteboardClaimNamesSubject reports whether the claim's subject is the
+// subject the old entry is about.
 //
-// "The other book" is another thing, and a value about it is not a value
-// about this one.
-func whiteboardEntryNamesOther(entry model.SessionWhiteboardEntry) bool {
-	return whiteboardQualifiersIn(entry.Text + " " + entry.Value)[whiteboardQualifierOtherThing]
+// The subject is the learner's own word for the thing, and the old entry has
+// to be about the same thing: a claim about the reading plan and an entry
+// about the venue are two subjects however many words they share. One
+// subject carries many attributes - the pages of a book and the minutes a
+// book takes are two - and the measurement is what tells those apart, so the
+// two entries have to measure the same thing as well.
+func whiteboardClaimNamesSubject(claim *WhiteboardLearnerClaim, old model.SessionWhiteboardEntry) bool {
+	if claim == nil {
+		return false
+	}
+	subject := whiteboardPlainText(claim.Subject)
+	if subject == "" {
+		return false
+	}
+	_, claimUnit, hasNumber := parseWhiteboardValue(claim.Value)
+	if hasNumber && !whiteboardUnitsCompatible(whiteboardEntryUnit(old), claimUnit) {
+		return false
+	}
+	return strings.Contains(whiteboardEntryDescription(old), subject)
 }
 
 // whiteboardEntrySupersedes reports whether a new entry is the same entry as
@@ -1194,8 +1315,7 @@ func whiteboardEntryNamesOther(entry model.SessionWhiteboardEntry) bool {
 //   - they measure the same thing: two entries that measure different units
 //     are two entries, whatever words they share;
 //   - the new entry names the old one: an entry that replaces another says
-//     what it replaces;
-//   - neither of them is about another thing.
+//     what it replaces.
 //
 // "Reading pages" and "reading time" share "reading" and measure different
 // units, and they are two entries. A model that renames one of them has to
@@ -1205,9 +1325,6 @@ func whiteboardEntryNamesOther(entry model.SessionWhiteboardEntry) bool {
 // is in both "reading pages" and "reading time", and the word says only that
 // both are about reading.
 func whiteboardEntrySupersedes(old model.SessionWhiteboardEntry, updated model.SessionWhiteboardEntry) bool {
-	if whiteboardEntryNamesOther(old) || whiteboardEntryNamesOther(updated) {
-		return false
-	}
 	if !whiteboardUnitsCompatible(whiteboardEntryUnit(old), whiteboardEntryUnit(updated)) {
 		return false
 	}

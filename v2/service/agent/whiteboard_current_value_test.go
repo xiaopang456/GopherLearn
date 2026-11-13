@@ -85,7 +85,10 @@ func TestTheLearnersChangedValueIsTheCurrentValue(t *testing.T) {
 	batch := assistantBatch(95, "这本书变简单了，栗矶改成每次 41 页，原先那个页数不用了。", 96, "往后按新的页数走。")
 	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{
 		Constraints: []model.SessionWhiteboardEntry{
-			ownEntry("pages", "每次读 41 页", "41 页/次", model.SessionWhiteboardOriginAssistantAccepted, 51, 95, 96),
+			ownEntry("pages", "栗矶每次读 41 页", "41 页/次", model.SessionWhiteboardOriginAssistantAccepted, 51, 95, 96),
+		},
+		Claims: []WhiteboardLearnerClaim{
+			learnerClaim("pages", 95, "栗矶改成每次 41 页", "栗矶", "页", "41页", "decided"),
 		},
 	}, batch, model.SessionWhiteboardSchemaV2)
 	if err != nil {
@@ -118,7 +121,10 @@ func TestTheReplacedValueIsMarkedAsChangedLater(t *testing.T) {
 	batch := assistantBatch(95, "栗矶改成每次 41 页，原先那个页数不用了。", 96, "往后按新的页数走。")
 	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{
 		Constraints: []model.SessionWhiteboardEntry{
-			ownEntry("pages", "每次读 41 页", "41 页/次", model.SessionWhiteboardOriginAssistantAccepted, 51, 95, 96),
+			ownEntry("pages", "栗矶每次读 41 页", "41 页/次", model.SessionWhiteboardOriginAssistantAccepted, 51, 95, 96),
+		},
+		Claims: []WhiteboardLearnerClaim{
+			learnerClaim("pages", 95, "栗矶改成每次 41 页", "栗矶", "页", "41页", "decided"),
 		},
 	}, batch, model.SessionWhiteboardSchemaV2)
 	if err != nil {
@@ -222,7 +228,10 @@ func TestTheLearnersOwnChangeLabelledAsTheAssistantsIsTheLearners(t *testing.T) 
 	batch := assistantBatch(111, "楠濑改成提前 5 天交，之前那个天数不作数。", 112, "往后统一按新的天数执行。")
 	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{
 		Constraints: []model.SessionWhiteboardEntry{
-			ownEntry("deadline", "提前 5 天交", "5 天", model.SessionWhiteboardOriginAssistantAccepted, 53, 111, 112),
+			ownEntry("deadline", "楠濑提前 5 天交", "5 天", model.SessionWhiteboardOriginAssistantAccepted, 53, 111, 112),
+		},
+		Claims: []WhiteboardLearnerClaim{
+			learnerClaim("deadline", 111, "楠濑改成提前 5 天交", "楠濑", "天", "5天", "decided"),
 		},
 	}, batch, model.SessionWhiteboardSchemaV2)
 	if err != nil {
@@ -255,7 +264,10 @@ func TestTheCurrentValueSurvivesATightBoard(t *testing.T) {
 	batch := assistantBatch(95, "栗矶改成每次 41 页，原先那个页数不用了。", 96, "往后按新的页数走。")
 	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{
 		Constraints: []model.SessionWhiteboardEntry{
-			ownEntry("pages", "每次读 41 页", "41 页/次", model.SessionWhiteboardOriginAssistantAccepted, 51, 95, 96),
+			ownEntry("pages", "栗矶每次读 41 页", "41 页/次", model.SessionWhiteboardOriginAssistantAccepted, 51, 95, 96),
+		},
+		Claims: []WhiteboardLearnerClaim{
+			learnerClaim("pages", 95, "栗矶改成每次 41 页", "栗矶", "页", "41页", "decided"),
 		},
 	}, batch, model.SessionWhiteboardSchemaV2)
 	if err != nil {
@@ -362,7 +374,10 @@ func TestTheRenamedEntryReplacesTheOneItNames(t *testing.T) {
 	batch := assistantBatch(97, "场地那边临时被占用，椿澧以后改到白鹭馆，原来那个地方不再去。", 98, "往后按新的场地记。")
 	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{
 		Constraints: []model.SessionWhiteboardEntry{
-			ownEntry("plan_venue", "场地由青禾馆改到白鹭馆", "白鹭馆", model.SessionWhiteboardOriginAssistantAccepted, 97, 98),
+			ownEntry("plan_venue", "椿澧的场地由青禾馆改到白鹭馆", "白鹭馆", model.SessionWhiteboardOriginAssistantAccepted, 97, 98),
+		},
+		Claims: []WhiteboardLearnerClaim{
+			learnerClaim("plan_venue", 97, "场地那边临时被占用，椿澧以后改到白鹭馆", "椿澧", "场地", "白鹭馆", "decided"),
 		},
 	}, batch, model.SessionWhiteboardSchemaV2)
 	if err != nil {
