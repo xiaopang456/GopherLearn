@@ -352,6 +352,47 @@ type WhiteboardDiagnostics struct {
 	// A value that is replaced by a value nobody said is a value that is
 	// gone, so the old one stays until something backs the new one.
 	UnbackedChanges int
+	// UnconfirmedStatements is how many unconfirmed learner statements the
+	// batch left behind.
+	//
+	// A statement is the learner's own words that could not be confirmed as
+	// a current fact. It is not a fact and it never becomes one: it is the
+	// words, kept so that a reader can find them and ask for the message
+	// they came from.
+	UnconfirmedStatements int
+	// ClaimCandidates are the candidate entries the engine refused, and the
+	// reason each one was refused.
+	//
+	// The counters above say how many claims did not hold. They cannot say
+	// which entry was refused or which check refused it, so a refusal was a
+	// number and not a place. These are the place: the key is the model's
+	// own name for the entry, the reason is the check that refused it, and
+	// the message id is the learner's message the claim rested on.
+	//
+	// The learner's own words are not here. They are in the model's answer,
+	// and a count that carried them would put the learner's text into a
+	// counter.
+	ClaimCandidates []WhiteboardClaimCandidate
+}
+
+// WhiteboardClaimCandidate is one candidate entry the engine refused.
+//
+// It says what was refused and why, and it is what a reader of a run needs to
+// find the refusal in the model's own answer instead of inferring it from a
+// count.
+type WhiteboardClaimCandidate struct {
+	// Key is the model's own name for the entry.
+	Key string
+	// Reason is the check that refused it.
+	//
+	// It is one of the fixed reasons in the model package, so it never
+	// carries the learner's own words.
+	Reason string
+	// MessageID is the learner's message the claim rested on.
+	MessageID uint
+	// Verdict says what the engine made of the claim: rejected, unsettled
+	// or ambiguous.
+	Verdict string
 }
 
 // WhiteboardResult is the outcome of applying one proposal.
@@ -394,6 +435,7 @@ func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal W
 	result := WhiteboardResult{
 		Board: model.SessionWhiteboardDocument{SchemaVersion: schemaVersion},
 	}
+	anchors := make([]model.SessionWhiteboardAnchor, 0, 2)
 	// The mode that does not record the assistant's products keeps the board it
 	// has always written: the rules below belong to the mode that carries
 	// origins, and the other one must stay what it was.
@@ -412,23 +454,35 @@ func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal W
 		result.Changes = append(result.Changes, *goalChange)
 	}
 
-	constraints, constraintChanges, constraintDiag := applyWhiteboardGroup(
+	constraints, constraintChanges, constraintDiag, constraintAnchors := applyWhiteboardGroup(
 		current.Constraints, proposal.Constraints, batch, false, schemaVersion, proposal)
 	result.Board.Constraints = constraints
 	result.Changes = append(result.Changes, constraintChanges...)
 	result.Diagnostics.add(constraintDiag)
+	anchors = append(anchors, constraintAnchors...)
 
-	plan, planChanges, planDiag := applyWhiteboardGroup(
+	plan, planChanges, planDiag, planAnchors := applyWhiteboardGroup(
 		current.Plan, proposal.Plan, batch, true, schemaVersion, proposal)
 	result.Board.Plan = plan
 	result.Changes = append(result.Changes, planChanges...)
 	result.Diagnostics.add(planDiag)
+	anchors = append(anchors, planAnchors...)
 
-	openItems, openChanges, openDiag := applyWhiteboardGroup(
+	openItems, openChanges, openDiag, openAnchors := applyWhiteboardGroup(
 		current.OpenItems, proposal.OpenItems, batch, false, schemaVersion, proposal)
 	result.Board.OpenItems = openItems
 	result.Changes = append(result.Changes, openChanges...)
 	result.Diagnostics.add(openDiag)
+	anchors = append(anchors, openAnchors...)
+
+	// The statements the refused entries left behind travel with the board.
+	//
+	// They are carried forward and resolved, not accumulated: a statement
+	// the board has caught up with is dropped, and the newest ones are the
+	// ones kept.
+	if schemaVersion == model.SessionWhiteboardSchemaV2 {
+		result.Board.Unverified = whiteboardMergeAnchors(current, result.Board, anchors)
+	}
 
 	// One subject does not stay in two places.
 	//
@@ -488,6 +542,8 @@ func (d *WhiteboardDiagnostics) add(other WhiteboardDiagnostics) {
 	d.RejectedClaims += other.RejectedClaims
 	d.UnsettledClaims += other.UnsettledClaims
 	d.UnbackedChanges += other.UnbackedChanges
+	d.UnconfirmedStatements += other.UnconfirmedStatements
+	d.ClaimCandidates = append(d.ClaimCandidates, other.ClaimCandidates...)
 }
 
 // applyWhiteboardGoal decides what the board's goal becomes.
@@ -571,8 +627,9 @@ func whiteboardEntryForVersion(entry model.SessionWhiteboardEntry, schemaVersion
 // one, because a board that still lists finished work is a board that has
 // not been read.
 func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []model.SessionWhiteboardEntry,
-	batch WhiteboardBatch, doneFirst bool, schemaVersion int, proposal WhiteboardProposal) ([]model.SessionWhiteboardEntry, []model.SessionSummarySegmentChange, WhiteboardDiagnostics) {
+	batch WhiteboardBatch, doneFirst bool, schemaVersion int, proposal WhiteboardProposal) ([]model.SessionWhiteboardEntry, []model.SessionSummarySegmentChange, WhiteboardDiagnostics, []model.SessionWhiteboardAnchor) {
 	var diagnostics WhiteboardDiagnostics
+	anchors := make([]model.SessionWhiteboardAnchor, 0, 2)
 	keyCounts := whiteboardProposalKeyCounts(proposal)
 	currentByKey := make(map[string]model.SessionWhiteboardEntry, len(current))
 	for _, entry := range current {
@@ -642,10 +699,13 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 		learnerMessageID := uint(0)
 		learnerStated := false
 		claimVerdict := whiteboardClaimAbsent
+		claimReason := ""
+		var claim WhiteboardLearnerClaim
+		hasClaim := false
 		if schemaVersion == model.SessionWhiteboardSchemaV2 {
-			claim, hasClaim := whiteboardClaimFor(proposal.Claims, key, keyCounts)
+			claim, hasClaim = whiteboardClaimFor(proposal.Claims, key, keyCounts)
 			if hasClaim {
-				claimVerdict = whiteboardVerifyClaim(claim, entry, batch)
+				claimVerdict, claimReason = whiteboardVerifyClaim(claim, entry, batch)
 				switch claimVerdict {
 				case whiteboardClaimSettled:
 					learnerMessageID = claim.MessageID
@@ -656,6 +716,26 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 				case whiteboardClaimRejected:
 					diagnostics.RejectedClaims++
 				}
+				diagnostics.ClaimCandidates = append(diagnostics.ClaimCandidates,
+					WhiteboardClaimCandidate{
+						Key:       key,
+						Reason:    claimReason,
+						MessageID: claim.MessageID,
+						Verdict:   whiteboardClaimVerdictLabel(claimVerdict),
+					})
+			} else if whiteboardClaimsNameKey(proposal.Claims, key) {
+				// The claim could not be placed under this entry: two entries
+				// carry the key, or two claims name it. A claim that cannot
+				// be placed is not evidence, and the entry is then judged
+				// without it - which is a refusal of its own and is recorded
+				// as one.
+				diagnostics.ClaimCandidates = append(diagnostics.ClaimCandidates,
+					WhiteboardClaimCandidate{
+						Key:     key,
+						Reason:  model.SessionWhiteboardAnchorKeyAmbiguous,
+						Verdict: whiteboardClaimVerdictLabelAmbiguous,
+					})
+				claimReason = model.SessionWhiteboardAnchorKeyAmbiguous
 			}
 		}
 		if claimVerdict == whiteboardClaimRejected {
@@ -673,6 +753,12 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 			// own, it does not go on a board that is empty, and it does not
 			// replace a value the board already holds. The rest of the
 			// proposal is unaffected.
+			//
+			// The learner's own words do not go with it. They are kept as
+			// an unconfirmed statement, so that a reader can find them and
+			// ask for the message they came from. The value stays refused:
+			// it never becomes the current state.
+			anchors = whiteboardAppendAnchor(anchors, entry, claim, hasClaim, batch, claimReason)
 			diagnostics.DroppedEntries++
 			continue
 		}
@@ -681,6 +767,11 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 			// words say the value was not settled: proposed, asked about,
 			// ruled out, or not sure. A value nobody settled is not a
 			// current fact, so the entry does not go on the board.
+			//
+			// The words stay findable all the same: a learner who asked
+			// what would happen if the value were 41 pages is worth being
+			// able to read back.
+			anchors = whiteboardAppendAnchor(anchors, entry, claim, hasClaim, batch, claimReason)
 			diagnostics.DroppedEntries++
 			continue
 		}
@@ -696,6 +787,8 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 			// model has to show the words it read and the program checks
 			// them. An entry that cannot show them does not replace what
 			// is there.
+			anchors = whiteboardAppendAnchor(anchors, entry, claim, hasClaim, batch,
+				model.SessionWhiteboardAnchorUnbackedChange)
 			diagnostics.UnbackedChanges++
 			diagnostics.DroppedEntries++
 			continue
@@ -839,7 +932,8 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 	trimmed, droppedChanges, droppedDone := trimWhiteboardGroup(merged, doneFirst)
 	diagnostics.DroppedDonePlan += droppedDone
 	diagnostics.DroppedEntries += len(droppedChanges)
-	return trimmed, append(changes, droppedChanges...), diagnostics
+	diagnostics.UnconfirmedStatements = len(anchors)
+	return trimmed, append(changes, droppedChanges...), diagnostics, anchors
 }
 
 // whiteboardEntryChange describes what one entry's update did.
@@ -937,6 +1031,14 @@ func entryIdentity(entry model.SessionWhiteboardEntry) string {
 func trimWhiteboardToTokenLimit(board *model.SessionWhiteboardDocument) []model.SessionSummarySegmentChange {
 	changes := make([]model.SessionSummarySegmentChange, 0)
 	for RenderedWhiteboardTokens(*board) > model.SessionWhiteboardTokenLimit {
+		if len(board.Unverified) > 0 {
+			// The oldest statement goes first. It is the one a reader is
+			// least likely to need, and a board entry is the current state
+			// while a statement is only the words behind a value that was
+			// refused.
+			board.Unverified = board.Unverified[:len(board.Unverified)-1]
+			continue
+		}
 		victim, found := nextBoardEntryToDrop(*board)
 		if !found {
 			break
@@ -1163,7 +1265,7 @@ func whiteboardReuseSupersededKeys(current model.SessionWhiteboardDocument,
 			var claim *WhiteboardLearnerClaim
 			if key != "" {
 				if found, has := whiteboardClaimFor(proposal.Claims, key, keyCounts); has {
-					if whiteboardVerifyClaim(found, entry, batch) == whiteboardClaimSettled {
+					if verdict, _ := whiteboardVerifyClaim(found, entry, batch); verdict == whiteboardClaimSettled {
 						learnerMessageID = found.MessageID
 						own = true
 						claim = &found

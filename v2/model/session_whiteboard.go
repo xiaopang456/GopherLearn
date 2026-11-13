@@ -147,6 +147,145 @@ func (e SessionWhiteboardEntry) EntryOrigin() string {
 	return origin
 }
 
+// The reasons a learner's own words could not be confirmed as a current fact.
+//
+// They are a fixed set, because they end up in a metric label and in a stored
+// board: a reason that could carry the learner's own words would carry the
+// learner's own words into a place that is not the learner's own session.
+const (
+	// SessionWhiteboardAnchorStanceUnknown says the claim did not report what
+	// kind of statement the learner's words were.
+	SessionWhiteboardAnchorStanceUnknown = "stance_unknown"
+	// SessionWhiteboardAnchorUpdateUnknown says the claim did not report
+	// whether those words set the value on the item.
+	SessionWhiteboardAnchorUpdateUnknown = "update_unknown"
+	// SessionWhiteboardAnchorMessageNotLearner says the words the claim rests
+	// on are not the learner's own words of this batch.
+	SessionWhiteboardAnchorMessageNotLearner = "message_not_learner"
+	// SessionWhiteboardAnchorQuoteMissing says the claim carried no quote.
+	SessionWhiteboardAnchorQuoteMissing = "quote_missing"
+	// SessionWhiteboardAnchorQuoteNotInMessage says the quote is not in the
+	// message it was taken from.
+	SessionWhiteboardAnchorQuoteNotInMessage = "quote_not_in_message"
+	// SessionWhiteboardAnchorValueNotInQuote says the value is not in the
+	// quoted words.
+	SessionWhiteboardAnchorValueNotInQuote = "value_not_in_quote"
+	// SessionWhiteboardAnchorValueUnitMismatch says the value is in the
+	// quoted words but measures something else.
+	SessionWhiteboardAnchorValueUnitMismatch = "value_unit_mismatch"
+	// SessionWhiteboardAnchorValueMismatch says the claim's value is not the
+	// value of the entry it was written for.
+	SessionWhiteboardAnchorValueMismatch = "value_mismatch"
+	// SessionWhiteboardAnchorSubjectNotInQuote says the subject is not what
+	// the learner spoke about.
+	SessionWhiteboardAnchorSubjectNotInQuote = "subject_not_in_quote"
+	// SessionWhiteboardAnchorSubjectNotInEntry says the entry does not name
+	// the subject the claim is about.
+	SessionWhiteboardAnchorSubjectNotInEntry = "subject_not_in_entry"
+	// SessionWhiteboardAnchorAttributeNotInQuote says the attribute is not
+	// what the learner spoke about.
+	SessionWhiteboardAnchorAttributeNotInQuote = "attribute_not_in_quote"
+	// SessionWhiteboardAnchorAttributeNotInEntry says the entry does not
+	// name the attribute the claim is about.
+	SessionWhiteboardAnchorAttributeNotInEntry = "attribute_not_in_entry"
+	// SessionWhiteboardAnchorScopeConflict says the learner's own words left
+	// another value of the same quantity standing.
+	SessionWhiteboardAnchorScopeConflict = "scope_conflict"
+	// SessionWhiteboardAnchorUnsettled says the learner's words do not settle
+	// the value: they proposed it, asked about it, ruled it out or were
+	// unsure about it.
+	SessionWhiteboardAnchorUnsettled = "unsettled"
+	// SessionWhiteboardAnchorUnbackedChange says the entry replaced a value
+	// the board already held and nothing the learner said was behind it.
+	SessionWhiteboardAnchorUnbackedChange = "unbacked_change"
+	// SessionWhiteboardAnchorKeyAmbiguous says the claim could not be placed
+	// under the entry it was written for.
+	SessionWhiteboardAnchorKeyAmbiguous = "key_ambiguous"
+)
+
+// ValidSessionWhiteboardAnchorReason reports whether a reason is one the
+// program knows.
+func ValidSessionWhiteboardAnchorReason(reason string) bool {
+	switch reason {
+	case SessionWhiteboardAnchorStanceUnknown,
+		SessionWhiteboardAnchorUpdateUnknown,
+		SessionWhiteboardAnchorMessageNotLearner,
+		SessionWhiteboardAnchorQuoteMissing,
+		SessionWhiteboardAnchorQuoteNotInMessage,
+		SessionWhiteboardAnchorValueNotInQuote,
+		SessionWhiteboardAnchorValueUnitMismatch,
+		SessionWhiteboardAnchorValueMismatch,
+		SessionWhiteboardAnchorSubjectNotInQuote,
+		SessionWhiteboardAnchorSubjectNotInEntry,
+		SessionWhiteboardAnchorAttributeNotInQuote,
+		SessionWhiteboardAnchorAttributeNotInEntry,
+		SessionWhiteboardAnchorScopeConflict,
+		SessionWhiteboardAnchorUnsettled,
+		SessionWhiteboardAnchorUnbackedChange,
+		SessionWhiteboardAnchorKeyAmbiguous:
+		return true
+	}
+	return false
+}
+
+// SessionWhiteboardAnchor is a learner's own words that could not be
+// confirmed as a current fact.
+//
+// It is the half of a refused entry that is still true: the learner said
+// something, the program can show which words, and a reader can ask for the
+// message they came from. What it does not say is that the value in it is the
+// current one - that is exactly what could not be confirmed - so it is kept
+// apart from the board's entries and rendered apart from them.
+//
+// Without it, a claim the program could not confirm took the learner's words
+// with it: the entry was refused, the message was cited by nothing, and the
+// words were no longer findable. The reader was left with a board that said
+// the old value and no sign that the learner had said something else.
+type SessionWhiteboardAnchor struct {
+	// Key is the name the proposal gave the entry the words were about.
+	//
+	// It is the model's name for the item, so it is a hint and not a fact:
+	// the entry it was refused from may have been about something else.
+	Key string `json:"key,omitempty"`
+	// Subject is what the learner spoke about, as the claim reported it.
+	//
+	// It is empty when no claim was written. It is used to find the entry
+	// the words are about, and only when exactly one entry names it.
+	Subject string `json:"subject,omitempty"`
+	// Value is the value the refused entry wanted to put on the board.
+	//
+	// It is the candidate, not the current value: the words carry it, but
+	// the program could not confirm that it is the value of that item.
+	Value string `json:"value,omitempty"`
+	// MessageID is the learner's message the words come from.
+	//
+	// It is what authorises reading the original wording back.
+	MessageID uint `json:"message_id"`
+	// Quote is the learner's own words, copied from the message.
+	Quote string `json:"quote"`
+	// Reason says why the words could not be confirmed.
+	//
+	// It is one of the fixed reasons above, so it is never the learner's
+	// own text.
+	Reason string `json:"reason"`
+	// UpdatedAtMessageID is the newest message of the batch the words came
+	// from.
+	UpdatedAtMessageID uint `json:"updated_at_message_id,omitempty"`
+}
+
+// SessionWhiteboardAnchorLimit is how many unconfirmed learner statements one
+// board may carry.
+//
+// The board travels with every turn, so its size is a fixed cost. The limit
+// keeps that cost flat, and the newest statements are the ones kept: a
+// statement from many turns ago has had every chance to be confirmed since.
+const SessionWhiteboardAnchorLimit = 8
+
+// SessionWhiteboardAnchorTextMaxRunes bounds one anchor's quote.
+//
+// A quote is a sentence or two of the learner's own words, not a transcript.
+const SessionWhiteboardAnchorTextMaxRunes = 200
+
 // SessionWhiteboardGoal is the learner's current goal. It is a single entry
 // rather than a list because a session has one goal at a time; keeping older
 // goals would be history, and history belongs to the summary segments.
@@ -177,6 +316,14 @@ type SessionWhiteboardDocument struct {
 	Constraints   []SessionWhiteboardEntry `json:"constraints,omitempty"`
 	Plan          []SessionWhiteboardEntry `json:"plan,omitempty"`
 	OpenItems     []SessionWhiteboardEntry `json:"open_items,omitempty"`
+	// Unverified are the learner's own words that could not be confirmed as
+	// current facts.
+	//
+	// They are not entries and they are not the current state: they are the
+	// words themselves, kept so that a reader can find them and ask for the
+	// message they came from. An entry that was refused took the learner's
+	// words with it, and this is where they went instead.
+	Unverified []SessionWhiteboardAnchor `json:"unverified,omitempty"`
 	// MigratedFromVersion is the version of the old rolling summary this
 	// board was built from, and it is zero for a board the new path wrote.
 	//
@@ -266,6 +413,48 @@ func (d *SessionWhiteboardDocument) Validate() error {
 			}
 		}
 	}
+	if len(d.Unverified) > SessionWhiteboardAnchorLimit {
+		return fmt.Errorf("session whiteboard has too many unconfirmed statements")
+	}
+	for _, anchor := range d.Unverified {
+		if err := anchor.Validate(); err != nil {
+			return err
+		}
+		if d.SchemaVersion == SessionWhiteboardSchemaV1 {
+			// A version 1 board is the board the mode that does not record
+			// what the assistant produced always wrote. It never carries an
+			// unconfirmed statement, so a board that does is a body this
+			// schema cannot describe.
+			return fmt.Errorf("session whiteboard version %d cannot carry an unconfirmed statement",
+				SessionWhiteboardSchemaV1)
+		}
+	}
+	return nil
+}
+
+// Validate checks one unconfirmed learner statement.
+func (a SessionWhiteboardAnchor) Validate() error {
+	if a.MessageID == 0 {
+		return fmt.Errorf("session whiteboard unconfirmed statement has no message")
+	}
+	if strings.TrimSpace(a.Quote) == "" {
+		return fmt.Errorf("session whiteboard unconfirmed statement has no quote")
+	}
+	if len([]rune(a.Quote)) > SessionWhiteboardAnchorTextMaxRunes {
+		return fmt.Errorf("session whiteboard unconfirmed statement quote is too long")
+	}
+	if len([]rune(a.Key)) > SessionWhiteboardTextMaxRunes {
+		return fmt.Errorf("session whiteboard unconfirmed statement key is too long")
+	}
+	if len([]rune(a.Subject)) > SessionWhiteboardTextMaxRunes {
+		return fmt.Errorf("session whiteboard unconfirmed statement subject is too long")
+	}
+	if len([]rune(a.Value)) > SessionWhiteboardTextMaxRunes {
+		return fmt.Errorf("session whiteboard unconfirmed statement value is too long")
+	}
+	if !ValidSessionWhiteboardAnchorReason(a.Reason) {
+		return fmt.Errorf("session whiteboard unconfirmed statement has an unknown reason %q", a.Reason)
+	}
 	return nil
 }
 
@@ -320,6 +509,11 @@ func validateWhiteboardEvidence(ids []uint) error {
 
 // EvidenceMessageIDs returns every message id the board cites, sorted and
 // deduplicated. It is what authorises reading the learner's own words back.
+//
+// The unconfirmed statements are cited too: they are the learner's own words,
+// and a reader that may not ask for them may not find them either. A
+// statement that was confirmed is no longer one of them, so its message is
+// cited by the entry that took its place.
 func (d SessionWhiteboardDocument) EvidenceMessageIDs() []uint {
 	seen := make(map[uint]struct{})
 	if d.Goal != nil {
@@ -333,6 +527,9 @@ func (d SessionWhiteboardDocument) EvidenceMessageIDs() []uint {
 				seen[id] = struct{}{}
 			}
 		}
+	}
+	for _, anchor := range d.Unverified {
+		seen[anchor.MessageID] = struct{}{}
 	}
 	ids := make([]uint, 0, len(seen))
 	for id := range seen {

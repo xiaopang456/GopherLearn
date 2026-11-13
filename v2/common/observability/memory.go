@@ -265,6 +265,78 @@ func (r *MemoryRecorder) WhiteboardClaims(verified, rejected, unsettled, unbacke
 		mode, verified, rejected, unsettled, unbacked)
 }
 
+// whiteboardClaimReasonAllowed are the reasons a refused claim may carry.
+//
+// The list is a copy of the reasons the board's engine knows, kept here so
+// that this package can bound a metric label without depending on the
+// package that owns the board. A reason this list does not know is written
+// as "other", so a reason that ever grows free text cannot reach a metric
+// name.
+var whiteboardClaimReasonAllowed = map[string]struct{}{
+	"stance_unknown":         {},
+	"update_unknown":         {},
+	"message_not_learner":    {},
+	"quote_missing":          {},
+	"quote_not_in_message":   {},
+	"value_not_in_quote":     {},
+	"value_unit_mismatch":    {},
+	"value_mismatch":         {},
+	"subject_not_in_quote":   {},
+	"subject_not_in_entry":   {},
+	"attribute_not_in_quote": {},
+	"attribute_not_in_entry": {},
+	"scope_conflict":         {},
+	"unsettled":              {},
+	"unbacked_change":        {},
+	"key_ambiguous":          {},
+}
+
+// WhiteboardClaimRejections records why the candidate entries were refused.
+//
+// The reason is one of a fixed set, so the label is bounded and the metric
+// never carries the learner's own words. The counts say which check a
+// generator keeps failing, which is the thing a count of refusals alone
+// cannot say.
+//
+// The candidates themselves - the key of the entry and the message the claim
+// rested on - are not here: they belong to the run that produced them, not
+// to a counter every deployment reads.
+func (r *MemoryRecorder) WhiteboardClaimRejections(reasons map[string]int) {
+	mode := r.modeLabel()
+	labels := make([]string, 0, len(reasons))
+	for reason := range reasons {
+		labels = append(labels, reason)
+	}
+	sort.Strings(labels)
+	for _, reason := range labels {
+		count := reasons[reason]
+		if count <= 0 {
+			continue
+		}
+		label := "other"
+		if _, known := whiteboardClaimReasonAllowed[reason]; known {
+			label = reason
+		}
+		r.addTotal("whiteboard_claim_rejection_total", int64(count))
+		r.add("whiteboard_claim_rejection_batches_total{mode="+mode+",reason="+label+"}", 1)
+		r.logf("memory_metric name=whiteboard_claim_rejections mode=%s reason=%s count=%d", mode, label, count)
+	}
+}
+
+// WhiteboardUnconfirmedStatements records the learner's own words the board
+// kept without confirming them.
+//
+// The count says how often a refused entry took the learner's words with it
+// and the board gave them back. It is a count of statements, never of words.
+func (r *MemoryRecorder) WhiteboardUnconfirmedStatements(count int) {
+	mode := r.modeLabel()
+	if count > 0 {
+		r.addTotal("whiteboard_unconfirmed_statement_total", int64(count))
+		r.add("whiteboard_unconfirmed_statement_batches_total{mode="+mode+"}", 1)
+	}
+	r.logf("memory_metric name=whiteboard_unconfirmed_statements mode=%s count=%d", mode, count)
+}
+
 // SummarySegmentAssistant records what one segment carried of the
 // assistant's own products.
 //

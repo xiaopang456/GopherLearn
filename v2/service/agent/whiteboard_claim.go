@@ -211,16 +211,33 @@ const (
 // word for word, the value has to be the entry's value, and the subject and
 // the attribute have to be in the learner's words and in what the entry
 // says about itself.
+// whiteboardVerifyClaim reads one claim against the batch and the entry it
+// belongs to.
+//
+// The order of the checks is the order of the ways a claim can be wrong, and
+// each one is a fact about the messages rather than about the meaning of a
+// sentence: the message has to be the learner's, the quote has to be in it
+// word for word, the value has to be the entry's value, and the subject and
+// the attribute have to be in the learner's words and in what the entry says
+// about itself.
+//
+// The second value it returns is why the claim does not hold, and it is one of
+// a fixed set of reasons. The verdict alone says whether the entry may go on
+// the board; the reason says which check refused it, which is what makes a
+// refused entry locatable instead of a count.
 func whiteboardVerifyClaim(claim WhiteboardLearnerClaim, entry model.SessionWhiteboardEntry,
-	batch WhiteboardBatch) whiteboardClaimVerdict {
-	if !whiteboardClaimStanceKnown(claim.Stance) {
-		return whiteboardClaimRejected
+	batch WhiteboardBatch) (whiteboardClaimVerdict, string) {
+	if strings.TrimSpace(claim.Stance) == "" || !whiteboardClaimStanceKnown(claim.Stance) {
+		// The model did not say what kind of statement the learner's words
+		// were, or it said it in a way the program does not read. Either
+		// way there is no decision to act on.
+		return whiteboardClaimRejected, model.SessionWhiteboardAnchorStanceUnknown
 	}
-	if !whiteboardClaimUpdateKnown(claim.Update) {
+	if strings.TrimSpace(claim.Update) == "" || !whiteboardClaimUpdateKnown(claim.Update) {
 		// The model did not answer the second question, so the program has
 		// one answer where it needs two. An unanswered question is not an
 		// answer that says yes.
-		return whiteboardClaimRejected
+		return whiteboardClaimRejected, model.SessionWhiteboardAnchorUpdateUnknown
 	}
 	message, found := whiteboardBatchMessage(batch, claim.MessageID)
 	if !found {
@@ -229,52 +246,60 @@ func whiteboardVerifyClaim(claim WhiteboardLearnerClaim, entry model.SessionWhit
 		// batch, or a message that does not exist at all. None of them is
 		// the learner's own words, and the assistant confirming something
 		// is not the learner accepting it.
-		return whiteboardClaimRejected
+		return whiteboardClaimRejected, model.SessionWhiteboardAnchorMessageNotLearner
 	}
 	quote := whiteboardPlainText(claim.Quote)
-	if quote == "" || !strings.Contains(whiteboardPlainText(message), quote) {
-		// The quote is not the learner's own wording.
-		return whiteboardClaimRejected
+	if quote == "" {
+		return whiteboardClaimRejected, model.SessionWhiteboardAnchorQuoteMissing
 	}
-	if !whiteboardQuoteCarriesValue(quote, claim.Value) {
+	if !strings.Contains(whiteboardPlainText(message), quote) {
+		// The quote is not the learner's own wording.
+		return whiteboardClaimRejected, model.SessionWhiteboardAnchorQuoteNotInMessage
+	}
+	carries, valueReason := whiteboardQuoteCarriesValueReason(quote, claim.Value)
+	if !carries {
 		// The value the claim names is not in the words the claim quotes.
 		//
 		// This is the check that keeps the claim from being two model
 		// fields agreeing with each other and nothing else. The learner
 		// never wrote the number, so there is nothing behind the entry
 		// whatever the entry and the claim say about each other.
-		return whiteboardClaimRejected
+		return whiteboardClaimRejected, valueReason
 	}
 	if !whiteboardClaimValueMatches(claim.Value, entry.Value) {
 		// The value of the claim is not the value of the entry. A claim
 		// about another value of the same quantity proves nothing about
 		// this one.
-		return whiteboardClaimRejected
+		return whiteboardClaimRejected, model.SessionWhiteboardAnchorValueMismatch
 	}
 	subject := whiteboardPlainText(claim.Subject)
-	if subject == "" || !strings.Contains(quote, subject) ||
-		!strings.Contains(whiteboardEntryDescription(entry), subject) {
-		// The subject is not what the learner spoke about, or the entry is
-		// not about that subject. Two subjects that share a number are two
-		// subjects.
-		return whiteboardClaimRejected
+	if subject == "" || !strings.Contains(quote, subject) {
+		// The subject is not what the learner spoke about.
+		return whiteboardClaimRejected, model.SessionWhiteboardAnchorSubjectNotInQuote
+	}
+	if !strings.Contains(whiteboardEntryDescription(entry), subject) {
+		// The entry is not about that subject. Two subjects that share a
+		// number are two subjects.
+		return whiteboardClaimRejected, model.SessionWhiteboardAnchorSubjectNotInEntry
 	}
 	attribute := whiteboardPlainText(claim.Attribute)
-	if attribute == "" || !strings.Contains(quote, attribute) ||
-		!strings.Contains(whiteboardEntryDescription(entry), attribute) {
-		// The attribute is not what the learner spoke about, or the entry
-		// is not about that attribute. One subject carries many
-		// attributes, and they are not each other's values.
-		return whiteboardClaimRejected
+	if attribute == "" || !strings.Contains(quote, attribute) {
+		// The attribute is not what the learner spoke about.
+		return whiteboardClaimRejected, model.SessionWhiteboardAnchorAttributeNotInQuote
+	}
+	if !strings.Contains(whiteboardEntryDescription(entry), attribute) {
+		// One subject carries many attributes, and they are not each
+		// other's values.
+		return whiteboardClaimRejected, model.SessionWhiteboardAnchorAttributeNotInEntry
 	}
 	if !strings.EqualFold(strings.TrimSpace(claim.Stance), whiteboardClaimStanceDecided) {
-		return whiteboardClaimUnsettled
+		return whiteboardClaimUnsettled, model.SessionWhiteboardAnchorUnsettled
 	}
 	if !strings.EqualFold(strings.TrimSpace(claim.Update), whiteboardClaimUpdateYes) {
 		// The model called the words a decision and then said they do not
 		// update the item. The two answers disagree, so the program acts on
 		// neither: what it cannot make out, it does not write.
-		return whiteboardClaimUnsettled
+		return whiteboardClaimUnsettled, model.SessionWhiteboardAnchorUnsettled
 	}
 	if !whiteboardScopeHolds(message, claim.Value) {
 		// The model says the learner settled this value, but the learner's
@@ -285,9 +310,9 @@ func whiteboardVerifyClaim(claim WhiteboardLearnerClaim, entry model.SessionWhit
 		// the words correctly. "Do not change it to 41 pages, keep 26" says
 		// 41 and leaves 26 standing, and no reading of the sentence makes
 		// 41 the current value.
-		return whiteboardClaimRejected
+		return whiteboardClaimRejected, model.SessionWhiteboardAnchorScopeConflict
 	}
-	return whiteboardClaimSettled
+	return whiteboardClaimSettled, ""
 }
 
 // whiteboardValuesInText reads every measurement the text carries.
@@ -367,20 +392,37 @@ func whiteboardLastMeasurement(text, unit string) (whiteboardValueForm, bool) {
 // written in the words. A name that is not in them is a name the learner did
 // not say.
 func whiteboardQuoteCarriesValue(quote, value string) bool {
+	carries, _ := whiteboardQuoteCarriesValueReason(quote, value)
+	return carries
+}
+
+// whiteboardQuoteCarriesValueReason is whiteboardQuoteCarriesValue with the
+// reason the value is not carried.
+//
+// The two refusals are different in what they say about the model: a value
+// that is not in the quoted words at all is a claim about words the learner
+// did not use, and a value whose unit measures something else is a claim
+// about another quantity. A reader that has to act on the refusal - and a
+// generator that has to learn from it - needs to tell them apart.
+func whiteboardQuoteCarriesValueReason(quote, value string) (bool, string) {
 	claimForm, ok := whiteboardValueForms(value)
 	if !ok {
-		return false
+		return false, model.SessionWhiteboardAnchorValueNotInQuote
 	}
 	if !claimForm.hasNumber {
 		// A name. The learner has to have written it.
 		name := whiteboardPlainText(claimForm.plain)
 		if name == "" {
-			return false
+			return false, model.SessionWhiteboardAnchorValueNotInQuote
 		}
-		return strings.Contains(quote, name)
+		if strings.Contains(quote, name) {
+			return true, ""
+		}
+		return false, model.SessionWhiteboardAnchorValueNotInQuote
 	}
 	// A measurement. Every number in the quoted words is read, and the
 	// value has to be one of them with a unit that measures the same thing.
+	sameNumber := false
 	for _, form := range whiteboardValuesInText(quote) {
 		if !form.hasNumber {
 			continue
@@ -388,11 +430,16 @@ func whiteboardQuoteCarriesValue(quote, value string) bool {
 		if form.number != claimForm.number {
 			continue
 		}
+		sameNumber = true
 		if whiteboardUnitsCompatible(form.unit, claimForm.unit) {
-			return true
+			return true, ""
 		}
 	}
-	return false
+	if sameNumber {
+		// The number is there and the unit is not the one that measures it.
+		return false, model.SessionWhiteboardAnchorValueUnitMismatch
+	}
+	return false, model.SessionWhiteboardAnchorValueNotInQuote
 }
 
 // whiteboardBatchMessage returns the text of one of the learner's messages in

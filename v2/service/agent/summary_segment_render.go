@@ -30,6 +30,21 @@ import (
 const (
 	// whiteboardBlockHeader introduces the board.
 	whiteboardBlockHeader = "Current state (server state; what is true now; a value carrying 〔…已改为…〕 was changed later, so the unmarked value is the current one):"
+	// whiteboardBlockHeaderUnconfirmed is the header of a board that carries
+	// unconfirmed learner statements.
+	//
+	// It says what the plain header cannot: a value an unconfirmed
+	// statement is about may not be the current one. Without it the block
+	// would tell the reader that the unmarked value is the current one
+	// while the board itself knows of a statement it could not confirm.
+	whiteboardBlockHeaderUnconfirmed = "Current state (server state; what is true now; a value carrying 〔…已改为…〕 was changed later, so the unmarked value is the current one; a value carrying 〔…未核验原话…〕 has an unconfirmed learner statement about it, so it may not be the current one):"
+	// whiteboardUnconfirmedHeader introduces the unconfirmed learner
+	// statements the board carries.
+	//
+	// It says what they are: the learner's own words that could not be
+	// confirmed, kept so that a reader can find them. They are not a
+	// current value, and the header says so before a reader meets one.
+	whiteboardUnconfirmedHeader = "Unconfirmed learner statements (the learner's own words, word for word; they were not confirmed as the current state, so they are not a current value):"
 	// summarySegmentsBlockHeader introduces the segments.
 	summarySegmentsBlockHeader = "Summary segments (compressed record of earlier turns in this session; the Current state block above is what is true now):"
 )
@@ -60,8 +75,12 @@ func renderWhiteboardBlock(document model.SessionWhiteboardDocument, budget int)
 		return out
 	}
 	var body strings.Builder
-	body.WriteString(whiteboardBlockHeader)
-	used := rag.EstimateTokens(whiteboardBlockHeader) + 4
+	header := whiteboardBlockHeader
+	if len(document.Unverified) > 0 {
+		header = whiteboardBlockHeaderUnconfirmed
+	}
+	body.WriteString(header)
+	used := rag.EstimateTokens(header) + 4
 	if document.Goal != nil {
 		line := "- Goal: " + strings.TrimSpace(document.Goal.Text) + renderEvidenceIDs(document.Goal.SourceMessageIDs)
 		cost := rag.EstimateTokens(line) + 1
@@ -71,9 +90,10 @@ func renderWhiteboardBlock(document model.SessionWhiteboardDocument, budget int)
 			out.EvidenceMessageIDs = append(out.EvidenceMessageIDs, document.Goal.SourceMessageIDs...)
 		}
 	}
+	contested := whiteboardContestedEntries(document)
 	for _, group := range [][]model.SessionWhiteboardEntry{document.Constraints, document.Plan, document.OpenItems} {
 		for _, entry := range group {
-			line := renderWhiteboardEntry(entry)
+			line := renderWhiteboardEntry(entry, contested[strings.TrimSpace(entry.Key)])
 			cost := rag.EstimateTokens(line) + 1
 			if used+cost > budget {
 				continue
@@ -83,8 +103,57 @@ func renderWhiteboardBlock(document model.SessionWhiteboardDocument, budget int)
 			out.EvidenceMessageIDs = append(out.EvidenceMessageIDs, entry.SourceMessageIDs...)
 		}
 	}
+	// The unconfirmed statements are rendered under a header of their own.
+	//
+	// They are the learner's words, not a current value, and they are shown
+	// as what they are: a statement that could not be confirmed, with the
+	// message it came from so that a reader can ask for it. The ids are
+	// collected here because a statement that was not shown authorises
+	// nothing: a reader that may not see it may not read it back either.
+	if len(document.Unverified) > 0 {
+		headerCost := rag.EstimateTokens(whiteboardUnconfirmedHeader) + 1
+		if used+headerCost <= budget {
+			body.WriteString("\n" + whiteboardUnconfirmedHeader)
+			used += headerCost
+			for _, anchor := range document.Unverified {
+				line := renderWhiteboardAnchor(anchor)
+				cost := rag.EstimateTokens(line) + 1
+				if used+cost > budget {
+					continue
+				}
+				body.WriteString("\n" + line)
+				used += cost
+				out.EvidenceMessageIDs = append(out.EvidenceMessageIDs, anchor.MessageID)
+			}
+		}
+	}
 	out.Text = body.String()
 	return out
+}
+
+// renderWhiteboardAnchor renders one unconfirmed learner statement.
+//
+// The quote is the learner's own wording, the value is the candidate the
+// refused entry wanted to put up, and the message id is where the words came
+// from. Nothing in the line says the value is current: the header above it
+// says the opposite.
+func renderWhiteboardAnchor(anchor model.SessionWhiteboardAnchor) string {
+	var out strings.Builder
+	out.WriteString("- \"")
+	out.WriteString(strings.TrimSpace(anchor.Quote))
+	out.WriteString("\"")
+	if value := strings.TrimSpace(anchor.Value); value != "" &&
+		anchor.Reason != model.SessionWhiteboardAnchorUnsettled {
+		// The candidate value is what the refused entry wanted to put up.
+		// A statement the learner did not settle has no candidate: the
+		// learner ruled the value out or asked about it, and naming it as a
+		// candidate would dress a negation up as a value.
+		out.WriteString(" (candidate value: ")
+		out.WriteString(value)
+		out.WriteString(")")
+	}
+	out.WriteString(renderEvidenceIDs([]uint{anchor.MessageID}))
+	return out.String()
 }
 
 // unlimitedTokens is a budget large enough that the renderer shows everything.
@@ -173,7 +242,7 @@ func SegmentContentTokens(content model.SessionSummarySegmentContent,
 }
 
 // renderWhiteboardEntry renders one board entry.
-func renderWhiteboardEntry(entry model.SessionWhiteboardEntry) string {
+func renderWhiteboardEntry(entry model.SessionWhiteboardEntry, contested string) string {
 	var out strings.Builder
 	out.WriteString("- ")
 	if key := strings.TrimSpace(entry.Key); key != "" {
@@ -187,6 +256,15 @@ func renderWhiteboardEntry(entry model.SessionWhiteboardEntry) string {
 	out.WriteString(strings.TrimSpace(entry.Text))
 	if value := strings.TrimSpace(entry.Value); value != "" && !strings.Contains(entry.Text, value) {
 		fmt.Fprintf(&out, " (value: %s)", value)
+	}
+	if strings.TrimSpace(contested) != "" {
+		// The value is contested: the learner's own words say another
+		// value of it, and the program could not confirm them. The entry
+		// stays what it was, and the marker says that it may not be the
+		// current one.
+		out.WriteString("〔未核验原话：")
+		out.WriteString(strings.TrimSpace(contested))
+		out.WriteString("〕")
 	}
 	out.WriteString(renderEvidenceIDs(entry.SourceMessageIDs))
 	return out.String()

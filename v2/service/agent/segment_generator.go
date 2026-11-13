@@ -815,6 +815,7 @@ func (g *ModelSegmentGenerator) generateOneCall(ctx context.Context,
 		observability.Memory.WhiteboardClaims(applied.Diagnostics.VerifiedClaims,
 			applied.Diagnostics.RejectedClaims, applied.Diagnostics.UnsettledClaims,
 			applied.Diagnostics.UnbackedChanges)
+		whiteboardReportClaimRefusals(applied.Diagnostics)
 	}()
 
 	// A board that does not fit the output budget is not a batch that failed.
@@ -911,6 +912,7 @@ func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
 			diagnostics.MislabeledOrigins, diagnostics.AssistantProposals)
 		observability.Memory.WhiteboardClaims(diagnostics.VerifiedClaims, diagnostics.RejectedClaims,
 			diagnostics.UnsettledClaims, diagnostics.UnbackedChanges)
+		whiteboardReportClaimRefusals(diagnostics)
 	}()
 	remaining := input.Messages
 	ledger := &segmentCallLedger{}

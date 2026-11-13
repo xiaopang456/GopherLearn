@@ -462,7 +462,7 @@ func TestTheRenderedLinesSayWhoseWordsTheyHold(t *testing.T) {
 		Key: "plan", Text: "按三道练习来", Origin: model.SessionWhiteboardOriginAssistantAccepted,
 		SourceMessageIDs: []uint{31, 32},
 	}
-	line := renderWhiteboardEntry(entry)
+	line := renderWhiteboardEntry(entry, "")
 	if !strings.Contains(line, "（助手提议，用户已同意）") {
 		t.Fatalf("the board entry is not labelled: %q", line)
 	}
