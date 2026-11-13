@@ -585,6 +585,18 @@ func segmentFailureCalls(err error) int {
 	return 0
 }
 
+// segmentFailureCallRecords are the calls a failed generation made.
+//
+// The count is what the counters report; the records are what a reader needs
+// to see which call failed and why.
+func segmentFailureCallRecords(err error) []segmentCallRecord {
+	var failure segmentFailure
+	if errors.As(err, &failure) {
+		return failure.calls
+	}
+	return nil
+}
+
 // GenerateSegment produces one segment and the board that goes with it.
 //
 // Every way out of this call is counted once, including the ways that
@@ -603,6 +615,15 @@ func (g *ModelSegmentGenerator) GenerateSegment(ctx context.Context, input Segme
 		if calls > 0 {
 			observability.Memory.SummarySegmentCalls(calls)
 			observability.Memory.SummarySegmentCallFailures(calls)
+		}
+		if g.assistantContent {
+			// The summaries that were written again are counted on the
+			// failure path as well: a batch that was written twice and
+			// then failed spent those calls, and the count of them is
+			// what says how many times the model was asked to say it
+			// shorter.
+			observability.Memory.SummarySegmentCompressed(
+				segmentCallRewrites(segmentFailureCallRecords(err)))
 		}
 	} else {
 		observability.Memory.SummarySegment("generated", segmentReasonNone,

@@ -133,11 +133,26 @@ type LayeredRetrieval struct {
 // HTTP boundary the provider was actually reached at. Only the boundary
 // observation is a provider call, so only that one is counted.
 type LayeredCall struct {
-	Method     string `json:"method"`
+	Method string `json:"method"`
+	// Role is what the request was classified as. A request the harness
+	// cannot classify is refused before it reaches the provider, so a role
+	// is never "unknown" in a run that completed.
+	Role       string `json:"role"`
 	Status     int    `json:"status,omitempty"`
 	Prompt     int    `json:"prompt_tokens"`
 	Completion int    `json:"completion_tokens"`
 	Error      string `json:"error,omitempty"`
+}
+
+// SegmentCall is one model call a batch of the layered summary made.
+//
+// The record is the product's own: the generator writes one per call as the
+// calls happen, and the run carries it so that a batch that wrote nothing
+// still says what it spent.
+type SegmentCall struct {
+	Purpose string `json:"purpose"`
+	Outcome string `json:"outcome"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 // LayeredRun is what one conversation produced under one mode.
@@ -162,6 +177,11 @@ type LayeredRun struct {
 	CompletionTokens    int              `json:"completion_tokens"`
 	// Calls is the provider boundary of every call the run made.
 	Calls []LayeredCall `json:"calls,omitempty"`
+	// SegmentCalls are the calls the layered summary made, as the generator
+	// recorded them. A batch that wrote nothing still made the calls, and a
+	// run that cannot see them cannot tell a batch that failed early from one
+	// that failed late.
+	SegmentCalls []SegmentCall `json:"segment_calls,omitempty"`
 	// Holes are the stretches of turns no segment covers, written as the
 	// message range each one spans. A hole is the difference between a
 	// summary that stopped and a summary that is still moving.
@@ -176,6 +196,67 @@ type LayeredRun struct {
 // LayeredModes are the modes a run may use.
 var LayeredModes = []string{"off", "shadow", "on"}
 
+// LayeredTurnStore is where a layered run keeps the session, the turns and
+// the rolling summary.
+//
+// The turns are stored first, because a segment cites the messages it covers
+// and the ids have to exist before it is written.
+//
+// The store is an interface so that the same run can be driven against the
+// disposable database a paid run owns and against a local one a test owns.
+// The run itself is the same code either way: what it measures is the
+// generator, the board and the calls, and none of those depends on which
+// database the turns were written into.
+type LayeredTurnStore interface {
+	// Init prepares the database for the run.
+	Init(ctx context.Context) error
+	// Seed writes the evaluation identity the turns belong to.
+	Seed(ctx context.Context, user model.User) error
+	// CreateSession writes the session the turns belong to.
+	CreateSession(ctx context.Context, session model.Session) error
+	// CreateMessage writes one turn and returns it with the id it was given.
+	CreateMessage(ctx context.Context, message model.Message) (*model.Message, error)
+	// GetSummary reads the rolling summary of the session.
+	GetSummary(ctx context.Context, userID int64, session string) (*model.SessionSummary, error)
+	// SaveSummary writes the rolling summary of the session.
+	SaveSummary(ctx context.Context, summary *model.SessionSummary, version uint64) error
+	// ListAfter reads the turns after a message id.
+	ListAfter(ctx context.Context, session string, id uint, limit int) ([]model.Message, error)
+}
+
+// sandboxLayeredStore is the disposable database a paid run owns.
+type sandboxLayeredStore struct{ sandbox *Sandbox }
+
+func (s sandboxLayeredStore) Init(ctx context.Context) error {
+	return s.sandbox.InitProductSchema(ctx)
+}
+
+func (s sandboxLayeredStore) Seed(ctx context.Context, user model.User) error {
+	return s.sandbox.SeedProduct(ctx, user, nil, "")
+}
+
+func (s sandboxLayeredStore) CreateSession(ctx context.Context, session model.Session) error {
+	return (guardedStore{sandbox: s.sandbox}).with(ctx, func(tx *gorm.DB) error {
+		return tx.Create(&session).Error
+	})
+}
+
+func (s sandboxLayeredStore) CreateMessage(ctx context.Context, message model.Message) (*model.Message, error) {
+	return (guardedStore{sandbox: s.sandbox}).Create(ctx, &message)
+}
+
+func (s sandboxLayeredStore) GetSummary(ctx context.Context, userID int64, session string) (*model.SessionSummary, error) {
+	return (guardedStore{sandbox: s.sandbox}).GetSummary(ctx, userID, session)
+}
+
+func (s sandboxLayeredStore) SaveSummary(ctx context.Context, summary *model.SessionSummary, version uint64) error {
+	return (guardedStore{sandbox: s.sandbox}).SaveSummary(ctx, summary, version)
+}
+
+func (s sandboxLayeredStore) ListAfter(ctx context.Context, session string, id uint, limit int) ([]model.Message, error) {
+	return (guardedStore{sandbox: s.sandbox}).ListAfter(ctx, session, id, limit)
+}
+
 // RunLayeredSummary replays one conversation and returns what the summary
 // made of it.
 //
@@ -185,6 +266,30 @@ var LayeredModes = []string{"off", "shadow", "on"}
 func RunLayeredSummary(ctx context.Context, repository, scenario, condition string,
 	turns []Turn, question string, evidenceTurns []int,
 	proxyBase, chatModel, mode string) (run LayeredRun, resultErr error) {
+	sandbox, err := NewSandbox(ctx)
+	if err != nil {
+		return run, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, closeSandbox(sandbox)) }()
+	return RunLayeredSummaryInStore(ctx, repository, scenario, condition, turns, question,
+		evidenceTurns, proxyBase, chatModel, mode, sandboxLayeredStore{sandbox: sandbox})
+}
+
+// RunLayeredSummaryInStore replays one conversation against a store the caller
+// owns.
+//
+// This is the run RunLayeredSummary runs: the same role table read from the
+// product's own sources, the same HTTP boundary, the same generator and the
+// same counters. Only the database the turns are written into differs, and
+// the store is where a caller that does not want to own a disposable database
+// writes them instead.
+//
+// The upstream is the same either way: the run talks to a proxy base URL, so
+// a caller can point it at a local stand-in and drive the whole path without
+// a provider.
+func RunLayeredSummaryInStore(ctx context.Context, repository, scenario, condition string,
+	turns []Turn, question string, evidenceTurns []int,
+	proxyBase, chatModel, mode string, store LayeredTurnStore) (run LayeredRun, resultErr error) {
 	if len(turns) == 0 {
 		return run, fmt.Errorf("turns are required")
 	}
@@ -238,12 +343,7 @@ func RunLayeredSummary(ctx context.Context, repository, scenario, condition stri
 	if err != nil {
 		return run, err
 	}
-	s, err := NewSandbox(ctx)
-	if err != nil {
-		return run, err
-	}
-	defer func() { resultErr = errors.Join(resultErr, closeSandbox(s)) }()
-	if err = s.InitProductSchema(ctx); err != nil {
+	if err = store.Init(ctx); err != nil {
 		return run, err
 	}
 	password, err := randomHex(24)
@@ -254,18 +354,15 @@ func RunLayeredSummary(ctx context.Context, repository, scenario, condition stri
 	if err != nil {
 		return run, err
 	}
-	if err = s.SeedProduct(ctx, model.User{ID: 7001, Username: "l4-eval-learner", Password: hash}, nil, ""); err != nil {
+	if err = store.Seed(ctx, model.User{ID: 7001, Username: "l4-eval-learner", Password: hash}); err != nil {
 		return run, err
 	}
 	sessionID := "l4-layered-" + scenario
-	if err = (guardedStore{sandbox: s}).with(ctx, func(tx *gorm.DB) error {
-		return tx.Create(&model.Session{ID: sessionID, UserID: 7001, UserName: "l4-eval-learner",
-			Mode: model.SessionModeAgent, Title: "Layered run"}).Error
-	}); err != nil {
+	if err = store.CreateSession(ctx, model.Session{ID: sessionID, UserID: 7001, UserName: "l4-eval-learner",
+		Mode: model.SessionModeAgent, Title: "Layered run"}); err != nil {
 		return run, err
 	}
-	guard := guardedStore{sandbox: s}
-	messages, err := storeTurns(ctx, guard, sessionID, turns)
+	messages, err := storeTurns(ctx, store, sessionID, turns)
 	if err != nil {
 		return run, err
 	}
@@ -278,7 +375,7 @@ func RunLayeredSummary(ctx context.Context, repository, scenario, condition stri
 	before := observability.Memory.Snapshot()
 
 	if mode == "off" || mode == "shadow" {
-		covered, failures, err := runOldSummary(ctx, guard, sessionID, turns, settings, wrapped)
+		covered, failures, err := runOldSummary(ctx, store, sessionID, turns, settings, wrapped)
 		if err != nil {
 			return run, err
 		}
@@ -308,7 +405,7 @@ func RunLayeredSummary(ctx context.Context, repository, scenario, condition stri
 			continue
 		}
 		run.ModelCalls++
-		entry := LayeredCall{Method: call.Method, Status: call.HTTPStatus, Error: call.Error}
+		entry := LayeredCall{Method: call.Method, Role: call.Role, Status: call.HTTPStatus, Error: call.Error}
 		if call.Usage != nil {
 			entry.Prompt = call.Usage.PromptTokens
 			entry.Completion = call.Usage.CompletionTokens
@@ -337,10 +434,10 @@ func layeredModeKnown(mode string) bool {
 //
 // The user turn is written first and the answer after it, because that is
 // the order the conversation happened in and the ids have to follow it.
-func storeTurns(ctx context.Context, guard guardedStore, sessionID string, turns []Turn) ([]model.Message, error) {
+func storeTurns(ctx context.Context, store LayeredTurnStore, sessionID string, turns []Turn) ([]model.Message, error) {
 	messages := make([]model.Message, 0, len(turns)*2)
 	for _, turn := range turns {
-		user, err := guard.Create(ctx, &model.Message{SessionID: sessionID, UserName: "l4-eval-learner",
+		user, err := store.CreateMessage(ctx, model.Message{SessionID: sessionID, UserName: "l4-eval-learner",
 			Content: turn.User, IsUser: true, CreatedAt: turn.UserAt.UTC(),
 			AnswerBasis: rag.AnswerBasisConversation, KnowledgeStatus: rag.KnowledgeStatusNotRequired,
 			KnowledgeReason: rag.KnowledgeReasonNone})
@@ -348,7 +445,7 @@ func storeTurns(ctx context.Context, guard guardedStore, sessionID string, turns
 			return nil, err
 		}
 		messages = append(messages, *user)
-		answer, err := guard.Create(ctx, &model.Message{SessionID: sessionID, UserName: "l4-eval-learner",
+		answer, err := store.CreateMessage(ctx, model.Message{SessionID: sessionID, UserName: "l4-eval-learner",
 			Content: turn.Assistant, CreatedAt: turn.AssistantAt.UTC()})
 		if err != nil {
 			return nil, err
@@ -364,14 +461,14 @@ func storeTurns(ctx context.Context, guard guardedStore, sessionID string, turns
 // The summary is asked for after every turn, the way the product asks for
 // it: the summary provider decides for itself whether this turn is the one
 // that triggers a summary.
-func runOldSummary(ctx context.Context, guard guardedStore, sessionID string, turns []Turn,
+func runOldSummary(ctx context.Context, store LayeredTurnStore, sessionID string, turns []Turn,
 	settings *entry.Settings, chat modelcomponent.ToolCallingChatModel) (uint, int, error) {
 	policy := ProductSummaryConfig(settings.Config)
 	generator, err := agent.NewModelSummaryGenerator(chat, policy.MaxInputTokens, policy.MaxOutputTokens, policy.Budget)
 	if err != nil {
 		return 0, 0, err
 	}
-	provider, err := agent.NewRollingSummaryProvider(guard, guard, generator, policy)
+	provider, err := agent.NewRollingSummaryProvider(store, store, generator, policy)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -440,6 +537,10 @@ func runLayeredSegments(ctx context.Context, sessionID string, messages []model.
 		if err != nil {
 			run.Failures.Segments++
 			run.Errors = append(run.Errors, err.Error())
+			// The calls the batch made are recorded even though the batch
+			// wrote nothing: they were paid for, and a run that cannot see
+			// them reads as a batch that failed before it began.
+			run.SegmentCalls = append(run.SegmentCalls, evalSegmentCalls(result, err)...)
 			// The stretch stays uncovered. The product retries the same
 			// batch, so the batch after it waits; moving on would leave a
 			// hole between two segments and a watermark that runs past
@@ -447,6 +548,7 @@ func runLayeredSegments(ctx context.Context, sessionID string, messages []model.
 			run.Holes = append(run.Holes, fmt.Sprintf("%d-%d", batch[0].ID, batch[len(batch)-1].ID))
 			break
 		}
+		run.SegmentCalls = append(run.SegmentCalls, evalSegmentCalls(result, nil)...)
 		seq++
 		run.Segments = append(run.Segments, LayeredSegment{
 			Seq:            seq,
@@ -476,6 +578,23 @@ func runLayeredSegments(ctx context.Context, sessionID string, messages []model.
 	run.Coverage.Series = series
 	run.Whiteboard = whiteboard
 	return nil
+}
+
+// evalSegmentCalls are the generator's own records of the calls it made.
+//
+// The product writes them; the run copies them. A copy rather than a second
+// implementation: a run that recomputed them could disagree with the product
+// and would not know it.
+func evalSegmentCalls(result agent.SegmentGenerationResult, err error) []SegmentCall {
+	calls := agent.SegmentCallsOf(result, err)
+	if len(calls) == 0 {
+		return nil
+	}
+	out := make([]SegmentCall, 0, len(calls))
+	for _, call := range calls {
+		out = append(out, SegmentCall{Purpose: call.Purpose, Outcome: call.Outcome, Reason: call.Reason})
+	}
+	return out
 }
 
 // SupersededMarksOf counts the values the board marked as replaced.

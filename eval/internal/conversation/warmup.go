@@ -30,6 +30,14 @@ func (g guardedStore) Create(ctx context.Context, m *model.Message) (*model.Mess
 	})
 	return out, err
 }
+
+// CreateMessage writes one turn and returns it with the id it was given.
+//
+// It is the store's own name for the message repository's create: a store
+// that holds turns names them the way the run does.
+func (g guardedStore) CreateMessage(ctx context.Context, message model.Message) (*model.Message, error) {
+	return g.Create(ctx, &message)
+}
 func (g guardedStore) ListAfter(ctx context.Context, session string, id uint, limit int) ([]model.Message, error) {
 	var out []model.Message
 	err := g.with(ctx, func(tx *gorm.DB) error {

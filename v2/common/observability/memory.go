@@ -412,7 +412,7 @@ func (r *MemoryRecorder) SummarySegment(outcome, reason string, points, pointsDr
 	mode := r.modeLabel()
 	outcome = boundedLabel(outcome, "generated", "failed")
 	reason = boundedLabel(reason, "none", "invalid_output", "unknown_schema_version", "point_without_source",
-		"input_too_large", "output_too_large", "model_error", "empty_output")
+		"input_too_large", "output_too_large", "model_error", "empty_output", "over_budget")
 	r.add("summary_segment_total{mode="+mode+",outcome="+outcome+",reason="+reason+"}", 1)
 	if outcome == "failed" {
 		r.add("summary_segment_failed_total{mode="+mode+",reason="+reason+"}", 1)

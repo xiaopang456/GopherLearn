@@ -440,8 +440,7 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	}); err != nil {
 		return read, err
 	}
-	guard := guardedStore{sandbox: s}
-	messages, err := storeTurns(ctx, guard, sessionID, turns)
+	messages, err := storeTurns(ctx, sandboxLayeredStore{sandbox: s}, sessionID, turns)
 	if err != nil {
 		return read, err
 	}

@@ -247,6 +247,46 @@ func (g *ModelSegmentGenerator) segmentCall(ctx context.Context, ledger *segment
 	return response, nil
 }
 
+// SegmentCall is one model call the segment generator made.
+//
+// It is exported so that a caller outside this package - the evaluation
+// harness, which reads what a run spent - can read the records without
+// keeping a second copy of the rules that wrote them.
+type SegmentCall struct {
+	// Purpose says what the call was for.
+	Purpose string `json:"purpose"`
+	// Outcome is how it ended.
+	Outcome string `json:"outcome"`
+	// Reason names why, for a call that did not succeed.
+	Reason string `json:"reason,omitempty"`
+}
+
+// SegmentCallsOf returns the calls a generation made.
+//
+// The generator writes one record per call as the calls happen, and a failed
+// generation carries them: the calls were paid for whether the batch wrote a
+// segment or not. The accessor reads the records of whichever of the two
+// happened, so a caller that only has an outcome still learns what the
+// outcome cost.
+func SegmentCallsOf(result SegmentGenerationResult, err error) []SegmentCall {
+	records := result.CallRecords
+	if len(records) == 0 {
+		records = segmentFailureCallRecords(err)
+	}
+	if len(records) == 0 {
+		return nil
+	}
+	out := make([]SegmentCall, 0, len(records))
+	for _, record := range records {
+		out = append(out, SegmentCall{
+			Purpose: record.Purpose,
+			Outcome: string(record.Outcome),
+			Reason:  record.Reason,
+		})
+	}
+	return out
+}
+
 // segmentCallRecords is the record the result carries.
 //
 // The result of a failed batch carries it too: the calls were made and
@@ -266,6 +306,21 @@ func segmentCallFailures(records []segmentCallRecord) int {
 	count := 0
 	for _, record := range records {
 		if record.Outcome != segmentCallOK {
+			count++
+		}
+	}
+	return count
+}
+
+// segmentCallRewrites is how many of the calls wrote the summary again.
+//
+// A batch that was written again and then failed spent those calls, and the
+// count of them is the same on both paths: a batch that succeeded and a batch
+// that did not are measured the same way.
+func segmentCallRewrites(records []segmentCallRecord) int {
+	count := 0
+	for _, record := range records {
+		if record.Purpose == segmentPurposeRewrite {
 			count++
 		}
 	}
