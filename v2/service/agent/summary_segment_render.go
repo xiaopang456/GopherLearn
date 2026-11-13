@@ -272,9 +272,12 @@ type renderedSegmentBlock struct {
 	// OmittedPoints is how many points did not fit into the segment's
 	// room.
 	OmittedPoints int
-	// OmittedMessageIDs are the messages those points were written from.
-	// They are the entrances that did not enter the window, and they are
-	// what the note in the block names.
+	// OmittedMessageIDs are the messages the points that were left out
+	// were written from.
+	//
+	// They are the candidates for a lost entrance. Whether they actually
+	// lost one is decided when the window is assembled, because a message
+	// another point names, or the note itself, still gives it a way back.
 	OmittedMessageIDs []uint
 }
 
@@ -298,10 +301,23 @@ type renderedSummarySegments struct {
 	//
 	// The point is left out whole - its words are not cut - and the block
 	// names the messages it came from. The count is what says how much of
-	// the summary the window did not carry.
+	// the summary the window did not carry. It is counted from the window
+	// that was actually assembled: a segment that is rendered twice and
+	// sent the second time contributes the second render's omissions, not
+	// both.
 	OmittedPoints int
-	// OmittedMessageIDs are the messages the omitted points were written
-	// from. They are the entrances that did not enter the window.
+	// OmittedMessageIDs are the messages that lost their way back.
+	//
+	// They are the messages the points that were left out named, and the
+	// ones nothing in the final window names: not a point that was kept,
+	// not the note that says what was left out, and not the authorisation
+	// that lets the model read it back. A message another point names has
+	// an entrance and is not counted here.
+	//
+	// A lost entrance is a count of what the reader cannot get back to. It
+	// does not say the fact is gone - the summary still holds it - and it
+	// does not say that another point naming the same message loses
+	// anything: the message is still readable through that other point.
 	OmittedMessageIDs []uint
 }
 
@@ -340,6 +356,17 @@ func renderSummarySegments(segments []model.SessionSummarySegment, document mode
 	}
 	header := summarySegmentsBlockHeader
 	used := rag.EstimateTokens(header) + 4
+	// What the final window carries, and what it does not.
+	//
+	// The counts are worked out at the end, from the window that was
+	// actually assembled, rather than added up as the segments are walked.
+	// A segment that does not fit is rendered twice - once in full and once
+	// in the room that is left - and the second render replaces the first.
+	// Adding the two sets of omissions counts a point twice that was left
+	// out once.
+	shown := make([]uint, 0, 8)
+	candidates := make([]uint, 0, 8)
+	omittedPoints := 0
 	// The walk goes from the newest segment backwards: the newest one covers
 	// the turns the learner is talking about, and it is the one that must not
 	// be squeezed out by an older and larger stretch. What is collected is
@@ -357,6 +384,8 @@ func renderSummarySegments(segments []model.SessionSummarySegment, document mode
 				// keeps the path it always had: the segment does not fit
 				// the room that is left, so the block does not carry it.
 				out.DroppedSegments++
+				omittedPoints += segmentPointCount(segment)
+				candidates = append(candidates, segmentCitedIDs(segment)...)
 				continue
 			}
 			// The mode that does record them trims the segment to the room
@@ -372,14 +401,21 @@ func renderSummarySegments(segments []model.SessionSummarySegment, document mode
 						EvidenceMessageIDs: trimmed.EvidenceMessageIDs,
 						Trimmed:            rendered.Trimmed || trimmed.Trimmed,
 					})
-					out.OmittedPoints += rendered.OmittedPoints + trimmed.OmittedPoints
-					out.OmittedMessageIDs = append(out.OmittedMessageIDs, trimmed.OmittedMessageIDs...)
+					// The trimmed render is the one that is sent, so its
+					// omissions are the ones that happened. The first
+					// render's omissions are not added to them: they are
+					// the same omissions, counted twice.
+					omittedPoints += trimmed.OmittedPoints
+					candidates = append(candidates, trimmed.OmittedMessageIDs...)
+					shown = append(shown, trimmed.EvidenceMessageIDs...)
 					continue
 				}
 			}
 			// There is no room for even the smallest form of this
 			// segment. It is dropped, and the count says so.
 			out.DroppedSegments++
+			omittedPoints += segmentPointCount(segment)
+			candidates = append(candidates, segmentCitedIDs(segment)...)
 			continue
 		}
 		used += cost
@@ -387,9 +423,19 @@ func renderSummarySegments(segments []model.SessionSummarySegment, document mode
 			Segment: segment, Text: rendered.Text,
 			EvidenceMessageIDs: rendered.EvidenceMessageIDs, Trimmed: rendered.Trimmed,
 		})
-		out.OmittedPoints += rendered.OmittedPoints
-		out.OmittedMessageIDs = append(out.OmittedMessageIDs, rendered.OmittedMessageIDs...)
+		omittedPoints += rendered.OmittedPoints
+		candidates = append(candidates, rendered.OmittedMessageIDs...)
+		shown = append(shown, rendered.EvidenceMessageIDs...)
 	}
+	out.OmittedPoints = omittedPoints
+	// The messages that lost their way back.
+	//
+	// A message named by a point that was left out is a candidate. It has
+	// lost its entrance only when nothing in the final window names it: not
+	// a point that was kept, not the note that says what was left out, and
+	// not the authorisation that lets the model read it back. A message that
+	// another point names has an entrance and is not lost.
+	out.OmittedMessageIDs = lostSegmentEntrances(candidates, shown)
 	if len(out.Segments) == 0 {
 		return out
 	}

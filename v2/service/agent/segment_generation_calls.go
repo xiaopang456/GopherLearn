@@ -112,7 +112,7 @@ func (g *ModelSegmentGenerator) nextCall(remaining []model.Message, whiteboard, 
 		// not fit is a reason to send less, never a reason to write
 		// nothing.
 		degraded := g.degradeCall(call)
-		if rag.EstimateTokens(g.renderCall(whiteboard, previous, degraded)) > g.maxInputTokens {
+		if rag.EstimateTokens(g.renderCall(whiteboard, previous, degraded)) > g.payloadBudget() {
 			// The learner's own words do not fit either. What the learner
 			// said is the one thing that cannot be given up, so it is
 			// shortened to what fits and the count travels with the
@@ -166,8 +166,9 @@ func (g *ModelSegmentGenerator) fitCall(messages []model.Message, whiteboard, pr
 	// is measured against.
 	floor := g.degradeCall(call)
 	floorCost := rag.EstimateTokens(g.renderCall(whiteboard, previous, floor))
-	share := g.maxInputTokens * assistantExcerptShare / 5
-	available := g.maxInputTokens - floorCost
+	budget := g.payloadBudget()
+	share := budget * assistantExcerptShare / 5
+	available := budget - floorCost
 	if available < 0 {
 		available = 0
 	}
@@ -175,7 +176,7 @@ func (g *ModelSegmentGenerator) fitCall(messages []model.Message, whiteboard, pr
 		share = available
 	}
 	call.caps = allocateAssistantExcerpts(call.excerpts, share)
-	return call, rag.EstimateTokens(g.renderCall(whiteboard, previous, call)) <= g.maxInputTokens
+	return call, rag.EstimateTokens(g.renderCall(whiteboard, previous, call)) <= budget
 }
 
 // degradeCall gives up the assistant excerpts of a call.
@@ -201,12 +202,13 @@ func (g *ModelSegmentGenerator) degradeCall(call generationCall) generationCall 
 // travels with the result: a summary that was written from shortened words
 // says so.
 func (g *ModelSegmentGenerator) shortenCall(call generationCall, whiteboard, previous string) generationCall {
+	budget := g.payloadBudget()
 	for attempt := 0; attempt < 4; attempt++ {
 		cost := rag.EstimateTokens(g.renderCall(whiteboard, previous, call))
-		if cost <= g.maxInputTokens {
+		if cost <= budget {
 			break
 		}
-		overflow := cost - g.maxInputTokens
+		overflow := cost - budget
 		progressed := false
 		for index := range call.messages {
 			message := &call.messages[index]
@@ -319,8 +321,19 @@ func allocateAssistantExcerpts(excerpts []assistantExcerpt, budget int) []int {
 // It is the payload the whole batch used to be sent as, with one difference:
 // the assistant's excerpts are cut to what this call can afford.
 func (g *ModelSegmentGenerator) renderCall(whiteboard, previous string, call generationCall) string {
-	return renderSegmentInputWithExcerpts(whiteboard, previous, call.messages, g.maxInputTokens,
+	return renderSegmentInputWithExcerpts(whiteboard, previous, call.messages, g.payloadBudget(),
 		g.assistantContent, call.caps)
+}
+
+// payloadBudget is what the payload of a request may cost.
+//
+// The limit is on the whole request and the system prompt is part of it, so
+// the prompt is paid for first. Everything that sizes a payload - the calls
+// that are cut, the excerpts that are shared out, the turns that are
+// shortened - is sized against this number, so what is measured is what is
+// sent.
+func (g *ModelSegmentGenerator) payloadBudget() int {
+	return segmentPayloadBudget(g.segmentPrompt(), g.maxInputTokens)
 }
 
 // describeCall names what a call is, for the logs.

@@ -177,14 +177,49 @@ func TestAFactThatDidNotFitIsNamedAndNotThere(t *testing.T) {
 	if !strings.Contains(rendered.Text, "[message_ids=30]") {
 		t.Fatalf("the block does not name the message: %q", rendered.Text)
 	}
-	found := false
+	// And it is not counted as a lost entrance. The other point names the
+	// same message and the note names it as well, so the reader can still
+	// open it: a message that is named somewhere in the window has not
+	// lost its way back.
 	for _, id := range rendered.OmittedMessageIDs {
 		if id == 30 {
+			t.Fatalf("the message still has an entrance in the window: %v",
+				rendered.OmittedMessageIDs)
+		}
+	}
+}
+
+// A message that nothing in the window names has lost its way back.
+//
+// This is the other half of the count. A point that was left out takes the
+// name of its message with it, and when nothing else in the window names
+// that message the reader cannot open it any more. The count is what says
+// how often that happened.
+func TestAMessageNothingNamesHasLostItsEntrance(t *testing.T) {
+	content := budgetSegment(
+		model.SessionSummarySegmentPoint{
+			Text: "甲书改成每次 41 页", EvidenceMessageIDs: []uint{30},
+		},
+		model.SessionSummarySegmentPoint{
+			Text: "乙书改成每次 30 页", EvidenceMessageIDs: []uint{31},
+		},
+	)
+	rendered := renderTestSegment(content, 30, 31, segmentBudgetFor(t, content, 30, 31, 1))
+	if rendered.OmittedPoints != 1 {
+		t.Fatalf("omitted points = %d, want 1: %q", rendered.OmittedPoints, rendered.Text)
+	}
+	found := false
+	for _, id := range rendered.OmittedMessageIDs {
+		if id == 31 {
 			found = true
+		}
+		if id == 30 {
+			t.Fatalf("the message the surviving point names was counted as lost: %v",
+				rendered.OmittedMessageIDs)
 		}
 	}
 	if !found {
-		t.Fatalf("the message the fact came from was not counted: %v", rendered.OmittedMessageIDs)
+		t.Fatalf("the message nothing names was not counted: %v", rendered.OmittedMessageIDs)
 	}
 }
 

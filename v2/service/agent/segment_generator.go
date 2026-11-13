@@ -10,11 +10,9 @@ import (
 	"strings"
 
 	"GopherAI/common/observability"
-	"GopherAI/common/rag"
 	"GopherAI/model"
 
 	modelcomponent "github.com/cloudwego/eino/components/model"
-	"github.com/cloudwego/eino/schema"
 )
 
 // The segment generator produces one summary segment and the whiteboard that
@@ -83,6 +81,14 @@ type SegmentGenerationResult struct {
 	// Calls is how many model calls the batch took. A batch that was too big
 	// for one call is summarized in pieces.
 	Calls int
+	// SplitCalls is how many of those calls happened because the batch did
+	// not fit in one call.
+	//
+	// It is separate from Calls because a batch can take more than one call
+	// without having been split: a summary that did not fit is written
+	// again, and those calls are rewrites rather than pieces. Counting them
+	// as splits says the batch was bigger than it was.
+	SplitCalls int
 	// Degraded is how many of the assistant's messages were reduced to a
 	// placeholder because the batch did not fit otherwise.
 	Degraded int
@@ -98,6 +104,14 @@ type SegmentGenerationResult struct {
 	// fit is not counted here - it failed, and the failure is counted as
 	// one.
 	Compressed int
+	// CallRecords are the records of the model calls this batch made.
+	//
+	// A batch is one call to write the summary and up to two more to write
+	// it again, and each of them has an outcome. The records travel with
+	// the result whether the batch produced a segment or failed, because
+	// the calls were made either way and a cost nobody can see is a cost
+	// nobody can plan for.
+	CallRecords []segmentCallRecord
 }
 
 // ModelSegmentGenerator generates a segment and a whiteboard with a chat
@@ -520,7 +534,13 @@ type segmentFailure struct {
 	// a different kind of failure from one that never got that far, and the
 	// count is the only thing that tells them apart.
 	droppedPoints int
-	err           error
+	// calls are the model calls the batch made before it gave up.
+	//
+	// The calls were made and they were paid for, whatever became of them.
+	// A failure that carries them says what the attempt cost, and a
+	// failure that does not is a cost nobody can see.
+	calls []segmentCallRecord
+	err   error
 }
 
 func (f segmentFailure) Error() string { return f.err.Error() }
@@ -552,6 +572,19 @@ func segmentFailureDropped(err error) int {
 	return 0
 }
 
+// segmentFailureCalls reports how many model calls a failed generation made.
+//
+// The count is read off the error rather than returned beside it, because a
+// call that failed has no result to carry it: the tokens were spent on the
+// attempt whether or not it produced anything.
+func segmentFailureCalls(err error) int {
+	var failure segmentFailure
+	if errors.As(err, &failure) {
+		return segmentCallCount(failure.calls)
+	}
+	return 0
+}
+
 // GenerateSegment produces one segment and the board that goes with it.
 //
 // Every way out of this call is counted once, including the ways that
@@ -562,6 +595,15 @@ func (g *ModelSegmentGenerator) GenerateSegment(ctx context.Context, input Segme
 	result, err := g.generateSegment(ctx, input)
 	if err != nil {
 		observability.Memory.SummarySegment("failed", segmentFailureReason(err), 0, segmentFailureDropped(err))
+		// The calls a failed batch made were made and were paid for. The
+		// count travels with the failure, because a batch that failed
+		// after three calls and a batch that failed after one are not the
+		// same cost and the counters are what say which was which.
+		calls := segmentFailureCalls(err)
+		if calls > 0 {
+			observability.Memory.SummarySegmentCalls(calls)
+			observability.Memory.SummarySegmentCallFailures(calls)
+		}
 	} else {
 		observability.Memory.SummarySegment("generated", segmentReasonNone,
 			len(result.Segment.Points), result.Diagnostics.DroppedPoints)
@@ -584,10 +626,16 @@ func (g *ModelSegmentGenerator) GenerateSegment(ctx context.Context, input Segme
 			// many model calls the batch took, and how many of the
 			// assistant's messages were given up to make it fit.
 			observability.Memory.SummarySegmentCalls(result.Calls)
-			observability.Memory.SummarySegmentBatchSplit(result.Calls)
+			// The split count is what says the batch did not fit in one
+			// call. The rewrite calls are counted separately, because a
+			// batch that was written again is not a batch that was
+			// bigger.
+			observability.Memory.SummarySegmentBatchSplit(result.SplitCalls)
 			observability.Memory.SummarySegmentAssistantDegraded(result.Degraded)
 			observability.Memory.SummarySegmentInputTruncated(result.Shortened)
 			observability.Memory.SummarySegmentCompressed(result.Compressed)
+			observability.Memory.SummarySegmentCallFailures(
+				segmentCallFailures(result.CallRecords))
 		}
 	}
 	return result, err
@@ -621,29 +669,41 @@ func (g *ModelSegmentGenerator) generateSegment(ctx context.Context, input Segme
 // always sent.
 func (g *ModelSegmentGenerator) generateOneCall(ctx context.Context,
 	input SegmentGenerationInput) (SegmentGenerationResult, error) {
-	payload := renderSegmentInput(input, g.maxInputTokens, g.assistantContent)
-	if rag.EstimateTokens(payload) > g.maxInputTokens {
-		return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInputTooLarge,
-			err: fmt.Errorf("segment input exceeds token limit")}
-	}
-	response, err := g.model.Generate(ctx, []*schema.Message{
-		schema.SystemMessage(g.segmentPrompt()),
-		schema.UserMessage(payload),
+	ledger := &segmentCallLedger{}
+	payload := renderSegmentInput(input, g.payloadBudget(), g.assistantContent)
+	response, err := g.segmentCall(ctx, ledger, segmentPurposeSummary, segmentRequest{
+		system: g.segmentPrompt(),
+		user:   payload,
 	})
 	if err != nil {
-		return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonModelError,
-			err: fmt.Errorf("generate summary segment: %w", err)}
-	}
-	if response == nil {
-		return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonEmptyOutput, err: ErrEmptySessionSummary}
+		if failure, ok := err.(segmentFailure); ok {
+			failure.calls = segmentCallRecords(ledger)
+			return SegmentGenerationResult{}, failure
+		}
+		return SegmentGenerationResult{}, err
 	}
 	document, err := decodeSegmentGenerationDocument(response.Content)
 	if err != nil {
+		// The answer came back and it could not be read. The reason the
+		// decode gives is the one the failure carries: an unknown schema
+		// version is its own reason and not a generic one.
+		ledger.unusable(segmentPurposeSummary, segmentFailureReason(err))
+		if failure, ok := err.(segmentFailure); ok {
+			failure.calls = segmentCallRecords(ledger)
+			return SegmentGenerationResult{}, failure
+		}
 		return SegmentGenerationResult{}, err
 	}
 	batch := whiteboardBatchFor(input, g.assistantContent)
 	segment, droppedPoints, err := buildSegmentContent(document, input, batch, g.assistantContent)
 	if err != nil {
+		// The answer came back and the points in it could not be used.
+		// The reason the build gives is the one the failure carries.
+		ledger.unusable(segmentPurposeSummary, segmentFailureReason(err))
+		if failure, ok := err.(segmentFailure); ok {
+			failure.calls = segmentCallRecords(ledger)
+			return SegmentGenerationResult{}, failure
+		}
 		return SegmentGenerationResult{}, err
 	}
 	// The segment is trimmed to what a segment's block may carry, measured on
@@ -656,12 +716,13 @@ func (g *ModelSegmentGenerator) generateOneCall(ctx context.Context,
 	segmentContent, err := model.MarshalSessionSummarySegmentContent(segment)
 	if err != nil {
 		return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInvalidOutput,
-			droppedPoints: droppedPoints, err: err}
+			droppedPoints: droppedPoints, calls: segmentCallRecords(ledger), err: err}
 	}
 
 	current, err := decodeCurrentWhiteboard(input.Whiteboard, g.boardSchemaVersion())
 	if err != nil {
-		return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInvalidOutput, err: err}
+		return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInvalidOutput,
+			calls: segmentCallRecords(ledger), err: err}
 	}
 	applied, err := ApplyWhiteboardProposal(current, WhiteboardProposal{
 		Goal:        document.Whiteboard.Goal,
@@ -670,7 +731,8 @@ func (g *ModelSegmentGenerator) generateOneCall(ctx context.Context,
 		OpenItems:   document.Whiteboard.OpenItems,
 	}, batch, g.boardSchemaVersion())
 	if err != nil {
-		return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInvalidOutput, err: err}
+		return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInvalidOutput,
+			calls: segmentCallRecords(ledger), err: err}
 	}
 
 	// The board counters are reported even when the generation fails after
@@ -690,7 +752,7 @@ func (g *ModelSegmentGenerator) generateOneCall(ctx context.Context,
 	// The rewrite was the wrong shape for this batch, so the batch is asked
 	// for its changes and the program merges them.
 	if storedWhiteboardTokens(applied.Board) > g.maxOutputTokens {
-		applied, err = g.applyChangesOnly(ctx, payload, current, batch, applied)
+		applied, err = g.applyChangesOnly(ctx, ledger, payload, current, batch, applied)
 		if err != nil {
 			return SegmentGenerationResult{}, err
 		}
@@ -710,7 +772,7 @@ func (g *ModelSegmentGenerator) generateOneCall(ctx context.Context,
 	whiteboardContent, err := model.MarshalSessionWhiteboardDocument(applied.Board)
 	if err != nil {
 		return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInvalidOutput,
-			droppedPoints: droppedPoints, err: err}
+			droppedPoints: droppedPoints, calls: segmentCallRecords(ledger), err: err}
 	}
 	return SegmentGenerationResult{
 		Segment:           segment,
@@ -720,7 +782,8 @@ func (g *ModelSegmentGenerator) generateOneCall(ctx context.Context,
 		Changes:           applied.Changes,
 		Diagnostics:       applied.Diagnostics,
 		RawOutput:         response.Content,
-		Calls:             1,
+		Calls:             ledger.calls(),
+		CallRecords:       segmentCallRecords(ledger),
 	}, nil
 }
 
@@ -764,6 +827,7 @@ func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
 		degraded    int
 		shortened   int
 		callsMade   int
+		splitCalls  int
 	)
 	// The board counters are reported even when the generation fails after
 	// the engine ran. A proposal that had to be trimmed and then failed for
@@ -778,12 +842,19 @@ func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
 			diagnostics.MislabeledOrigins, diagnostics.AssistantProposals)
 	}()
 	remaining := input.Messages
+	ledger := &segmentCallLedger{}
 	for len(remaining) > 0 {
 		// The call is cut against the board and the segment as they are
 		// now, because that is what the call will carry.
 		call, rest := g.nextCall(remaining, whiteboardContent, previousSegment)
 		if len(call.messages) == 0 {
 			break
+		}
+		// A batch that was split into pieces is one call more than the
+		// batch it was. The count is what says the input was too big,
+		// as opposed to a summary that was written again.
+		if len(rest) > 0 {
+			splitCalls++
 		}
 		callInput := SegmentGenerationInput{
 			Whiteboard:      whiteboardContent,
@@ -796,20 +867,12 @@ func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
 			LastMessageID:  input.LastMessageID,
 		}
 		payload := g.renderCall(whiteboardContent, previousSegment, call)
-		if rag.EstimateTokens(payload) > g.maxInputTokens {
-			return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInputTooLarge,
-				err: fmt.Errorf("segment input exceeds token limit")}
-		}
-		response, err := g.model.Generate(ctx, []*schema.Message{
-			schema.SystemMessage(g.segmentPrompt()),
-			schema.UserMessage(payload),
+		response, err := g.segmentCall(ctx, ledger, segmentPurposeSummary, segmentRequest{
+			system: g.segmentPrompt(),
+			user:   payload,
 		})
 		if err != nil {
-			return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonModelError,
-				err: fmt.Errorf("generate summary segment: %w", err)}
-		}
-		if response == nil {
-			return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonEmptyOutput, err: ErrEmptySessionSummary}
+			return SegmentGenerationResult{}, err
 		}
 		callsMade++
 		degraded += call.degraded
@@ -817,11 +880,26 @@ func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
 		rawOutputs = append(rawOutputs, response.Content)
 		document, err := decodeSegmentGenerationDocument(response.Content)
 		if err != nil {
+			// The answer came back and it could not be read. The reason
+			// the decode gives is the one the failure carries.
+			ledger.unusable(segmentPurposeSummary, segmentFailureReason(err))
+			if failure, ok := err.(segmentFailure); ok {
+				failure.calls = segmentCallRecords(ledger)
+				return SegmentGenerationResult{}, failure
+			}
 			return SegmentGenerationResult{}, err
 		}
 		batch := whiteboardBatchFor(callInput, g.assistantContent)
 		segment, droppedPoints, err := buildSegmentContent(document, callInput, batch, g.assistantContent)
 		if err != nil {
+			// The answer came back and the points in it could not be
+			// used. The reason the build gives is the one the failure
+			// carries.
+			ledger.record(segmentPurposeSummary, segmentCallFailed, segmentFailureReason(err))
+			if failure, ok := err.(segmentFailure); ok {
+				failure.calls = segmentCallRecords(ledger)
+				return SegmentGenerationResult{}, failure
+			}
 			return SegmentGenerationResult{}, err
 		}
 		dropped += droppedPoints
@@ -839,7 +917,8 @@ func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
 			OpenItems:   document.Whiteboard.OpenItems,
 		}, batch, g.boardSchemaVersion())
 		if err != nil {
-			return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInvalidOutput, err: err}
+			return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInvalidOutput,
+				calls: segmentCallRecords(ledger), err: err}
 		}
 		diagnostics.add(applied.Diagnostics)
 
@@ -847,7 +926,7 @@ func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
 		// failed. The rewrite was the wrong shape for this batch, so the
 		// batch is asked for its changes and the program merges them.
 		if storedWhiteboardTokens(applied.Board) > g.maxOutputTokens {
-			applied, err = g.applyChangesOnly(ctx, payload, current, batch, applied)
+			applied, err = g.applyChangesOnly(ctx, ledger, payload, current, batch, applied)
 			if err != nil {
 				return SegmentGenerationResult{}, err
 			}
@@ -866,13 +945,13 @@ func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
 		boardContent, err := model.MarshalSessionWhiteboardDocument(applied.Board)
 		if err != nil {
 			return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInvalidOutput,
-				droppedPoints: dropped, err: err}
+				droppedPoints: dropped, calls: segmentCallRecords(ledger), err: err}
 		}
 		whiteboardContent = boardContent
 		segmentContent, err := model.MarshalSessionSummarySegmentContent(segment)
 		if err != nil {
 			return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInvalidOutput,
-				droppedPoints: dropped, err: err}
+				droppedPoints: dropped, calls: segmentCallRecords(ledger), err: err}
 		}
 		previousSegment = segmentContent
 		// The turns this call covered are done with. What is left is
@@ -895,13 +974,14 @@ func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
 	// fit is not stored at all. The words are never cut: a cut point says
 	// something else, and what it says is often the opposite of what was
 	// said.
-	merged, compressed, err := g.fitSegmentToBudget(ctx, input, merged)
+	merged, compressed, err := g.fitSegmentToBudget(ctx, ledger, input, merged)
 	if err != nil {
 		// The points that were already given up are still given up. A
 		// failure that dropped points before it failed is a different kind
 		// of failure from one that never got that far.
 		if failure, ok := err.(segmentFailure); ok {
 			failure.droppedPoints += dropped
+			failure.calls = segmentCallRecords(ledger)
 			return SegmentGenerationResult{}, failure
 		}
 		return SegmentGenerationResult{}, err
@@ -910,12 +990,12 @@ func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
 	segmentContent, err := model.MarshalSessionSummarySegmentContent(merged)
 	if err != nil {
 		return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInvalidOutput,
-			droppedPoints: dropped, err: err}
+			droppedPoints: dropped, calls: segmentCallRecords(ledger), err: err}
 	}
 	whiteboardContent, err = model.MarshalSessionWhiteboardDocument(current)
 	if err != nil {
 		return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInvalidOutput,
-			droppedPoints: dropped, err: err}
+			droppedPoints: dropped, calls: segmentCallRecords(ledger), err: err}
 	}
 	diagnostics.DroppedPoints = dropped
 	return SegmentGenerationResult{
@@ -927,9 +1007,11 @@ func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
 		Diagnostics:       diagnostics,
 		RawOutput:         strings.Join(rawOutputs, "\n"),
 		Calls:             callsMade,
+		SplitCalls:        splitCalls,
 		Degraded:          degraded,
 		Shortened:         shortened,
 		Compressed:        compressed,
+		CallRecords:       segmentCallRecords(ledger),
 	}, nil
 }
 
@@ -940,21 +1022,23 @@ func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
 // citations are checked, fabricated entries are dropped and the board is
 // trimmed exactly as a rewrite would be. What changes is only where the
 // proposal came from.
-func (g *ModelSegmentGenerator) applyChangesOnly(ctx context.Context, payload string,
+func (g *ModelSegmentGenerator) applyChangesOnly(ctx context.Context, ledger *segmentCallLedger, payload string,
 	current model.SessionWhiteboardDocument, batch WhiteboardBatch,
 	rewrite WhiteboardResult) (WhiteboardResult, error) {
-	response, err := g.model.Generate(ctx, []*schema.Message{
-		schema.SystemMessage(g.segmentDeltaPrompt()),
-		schema.UserMessage(payload),
+	// The call answers under a different instruction, and the instruction is
+	// part of the request. The whole request is measured against the limit
+	// the deployment set plus the instruction it carries under, so the two
+	// are the same measure as the call before it.
+	response, err := g.segmentCall(ctx, ledger, segmentPurposeChanges, segmentRequest{
+		system: g.segmentDeltaPrompt(),
+		user:   payload,
 	})
 	if err != nil {
 		return rewrite, nil // the rewrite is still the better answer
 	}
-	if response == nil {
-		return rewrite, nil
-	}
 	delta, err := decodeSegmentDeltaDocument(response.Content)
 	if err != nil {
+		ledger.unusable(segmentPurposeChanges, segmentReasonInvalidOutput)
 		return rewrite, nil
 	}
 	merged, err := mergeWhiteboardDelta(current, delta, g.boardSchemaVersion())

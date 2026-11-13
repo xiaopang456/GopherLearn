@@ -22,8 +22,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/cloudwego/eino/schema"
-
 	"GopherAI/common/rag"
 	"GopherAI/model"
 )
@@ -105,14 +103,19 @@ func segmentNotAcceptable(content model.SessionSummarySegmentContent,
 // The board is not touched by the compression. The board of the batch is
 // already what the calls wrote, and applying a second board on top of it
 // would write the same changes twice.
-func (g *ModelSegmentGenerator) fitSegmentToBudget(ctx context.Context, input SegmentGenerationInput,
+func (g *ModelSegmentGenerator) fitSegmentToBudget(ctx context.Context, ledger *segmentCallLedger,
+	input SegmentGenerationInput,
 	content model.SessionSummarySegmentContent) (model.SessionSummarySegmentContent, int, error) {
 	if segmentNotAcceptable(content, input.FirstMessageID, input.LastMessageID, g.segmentBudget()) == "" {
 		return content, 0, nil
 	}
+	// The first answer came back and it did not fit. The call was spent on
+	// a summary that was refused, and the record says so: what became of
+	// the answer is a second thing from the fact that the call was made.
+	ledger.refuse(segmentPurposeSummary, segmentReasonOverBudget)
 	compressed := 0
 	for attempt := 0; attempt < segmentCompressLimit; attempt++ {
-		shorter, err := g.compressSegment(ctx, input)
+		shorter, err := g.compressSegment(ctx, ledger, input)
 		if err != nil {
 			return content, compressed, err
 		}
@@ -121,6 +124,11 @@ func (g *ModelSegmentGenerator) fitSegmentToBudget(ctx context.Context, input Se
 		if segmentNotAcceptable(shorter, input.FirstMessageID, input.LastMessageID, g.segmentBudget()) == "" {
 			return content, compressed, nil
 		}
+		// The answer came back and it did not fit. The call was spent on
+		// a summary that was refused, and the record says so: the outcome
+		// of the call is replaced, not added to, so one call is one
+		// record whatever became of its answer.
+		ledger.refuse(segmentPurposeRewrite, segmentReasonOverBudget)
 	}
 	return content, compressed, segmentFailure{reason: segmentReasonOverBudget,
 		err: fmt.Errorf("summary segment does not fit the budget it is read under")}
@@ -135,31 +143,39 @@ func (g *ModelSegmentGenerator) fitSegmentToBudget(ctx context.Context, input Se
 // The board and the previous segment are sent when they fit. A batch that
 // was split into several calls does not fit with them, and the turns alone
 // are what the summary is written from anyway.
-func (g *ModelSegmentGenerator) compressSegment(ctx context.Context,
+//
+// The request is built whole - the system prompt, the payload and the
+// instruction that goes with it - and it is the whole request that is
+// measured against the input limit. Measuring only the payload would let a
+// request through that the provider cannot accept.
+func (g *ModelSegmentGenerator) compressSegment(ctx context.Context, ledger *segmentCallLedger,
 	input SegmentGenerationInput) (model.SessionSummarySegmentContent, error) {
-	payload := renderSegmentInput(input, g.maxInputTokens, g.assistantContent)
-	if rag.EstimateTokens(payload) > g.maxInputTokens {
-		payload = renderSegmentInputWithExcerpts("", "", input.Messages, g.maxInputTokens,
+	// The request is built whole and measured whole.
+	//
+	// The instruction that goes with this call is part of the request, so
+	// the payload may cost what is left of the budget after it. A request
+	// that is measured against a budget it was not sized for is a request
+	// that does not fit, and the call that would not fit is not made.
+	budget := g.payloadBudget() - rag.EstimateTokens(segmentCompressRequest)
+	if budget < 0 {
+		budget = 0
+	}
+	payload := renderSegmentInput(input, budget, g.assistantContent)
+	if rag.EstimateTokens(payload) > budget {
+		payload = renderSegmentInputWithExcerpts("", "", input.Messages, budget,
 			g.assistantContent, nil)
 	}
-	if rag.EstimateTokens(payload) > g.maxInputTokens {
-		return model.SessionSummarySegmentContent{}, segmentFailure{reason: segmentReasonInputTooLarge,
-			err: fmt.Errorf("segment input exceeds token limit")}
+	request := segmentRequest{
+		system: g.segmentPrompt(),
+		user:   payload + segmentCompressRequest,
 	}
-	response, err := g.model.Generate(ctx, []*schema.Message{
-		schema.SystemMessage(g.segmentPrompt()),
-		schema.UserMessage(payload + segmentCompressRequest),
-	})
+	response, err := g.segmentCall(ctx, ledger, segmentPurposeRewrite, request)
 	if err != nil {
-		return model.SessionSummarySegmentContent{}, segmentFailure{reason: segmentReasonModelError,
-			err: fmt.Errorf("generate summary segment: %w", err)}
-	}
-	if response == nil {
-		return model.SessionSummarySegmentContent{}, segmentFailure{reason: segmentReasonEmptyOutput,
-			err: ErrEmptySessionSummary}
+		return model.SessionSummarySegmentContent{}, err
 	}
 	document, err := decodeSegmentGenerationDocument(response.Content)
 	if err != nil {
+		ledger.unusable(segmentPurposeRewrite, segmentFailureReason(err))
 		return model.SessionSummarySegmentContent{}, err
 	}
 	batch := whiteboardBatchFor(input, g.assistantContent)

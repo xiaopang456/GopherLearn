@@ -1697,9 +1697,9 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		}
 		if resident.OmittedPoints > 0 || len(resident.OmittedMessageIDs) > 0 {
 			// Points the window had no room for are left out whole, and
-			// the messages they came from are the entrances that did not
-			// enter the window. The counts say how much of the summary
-			// the window did not carry.
+			// the messages nothing in the window names any more are the
+			// ways back that were lost. The counts say how much of the
+			// summary the window did not carry.
 			observability.Memory.SummarySegmentOmitted(resident.OmittedPoints,
 				len(resident.OmittedMessageIDs))
 		}

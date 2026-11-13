@@ -309,16 +309,40 @@ func (r *MemoryRecorder) SummarySegmentCalls(calls int) {
 	r.logf("memory_metric name=summary_segment_calls mode=%s calls=%d", mode, calls)
 }
 
+// SummarySegmentCallFailures records the model calls that did not succeed.
+//
+// A call that came back empty, an answer that could not be parsed and a
+// provider that failed are three different things, and a summary that was
+// refused because it did not fit is a fourth. The count is what says how
+// much of the generation budget went into calls that produced nothing.
+//
+// It counts calls and not batches: the reason a batch failed is counted
+// where it has always been counted, by the failure reason, and a batch that
+// failed after three calls and one that failed after one are the same
+// failure with different costs.
+func (r *MemoryRecorder) SummarySegmentCallFailures(count int) {
+	mode := r.modeLabel()
+	if count > 0 {
+		r.addTotal("summary_segment_call_failures_total", int64(count))
+	}
+	r.logf("memory_metric name=summary_segment_call_failures mode=%s count=%d", mode, count)
+}
+
 // SummarySegmentBatchSplit records the batches that had to be split.
 //
 // The split is the last resort: a batch is split when its input does not fit
 // the generator's budget, which in normal use it does not. The count says
 // when it did, and how often.
+//
+// It takes the number of calls the split caused, not the number of calls
+// the batch made. A batch that was written again because its summary did
+// not fit took more than one call without having been split, and counting
+// that as a split says the input was bigger than it was.
 func (r *MemoryRecorder) SummarySegmentBatchSplit(calls int) {
 	mode := r.modeLabel()
-	if calls > 1 {
+	if calls > 0 {
 		r.addTotal("summary_segment_batch_split_total", 1)
-		r.addTotal("summary_segment_batch_split_calls_total", int64(calls-1))
+		r.addTotal("summary_segment_batch_split_calls_total", int64(calls))
 	}
 	r.logf("memory_metric name=summary_segment_batch_split mode=%s calls=%d", mode, calls)
 }

@@ -216,6 +216,73 @@ func segmentOmittedMarks(marks []string, kept int) []string {
 	return marks[kept:]
 }
 
+// segmentPointCount is how many points a segment holds.
+//
+// It is what a segment that never reached the window costs in points: the
+// facts that are not in the window, and that the count has to say.
+func segmentPointCount(segment model.SessionSummarySegment) int {
+	content, err := model.DecodeSessionSummarySegmentContent(segment.Content)
+	if err != nil {
+		return 0
+	}
+	return len(content.Points)
+}
+
+// segmentCitedIDs is every message a segment's points name.
+//
+// It is what a segment that never reached the window takes with it: the
+// messages that were readable through it and are not readable through
+// anything now.
+func segmentCitedIDs(segment model.SessionSummarySegment) []uint {
+	content, err := model.DecodeSessionSummarySegmentContent(segment.Content)
+	if err != nil {
+		return nil
+	}
+	ids := make([]uint, 0, 8)
+	for _, point := range content.Points {
+		ids = append(ids, point.EvidenceMessageIDs...)
+	}
+	return uniqueSegmentIDs(ids)
+}
+
+// lostSegmentEntrances are the messages that nothing in the final window
+// names any more.
+//
+// The candidates are the messages the points that were left out named. A
+// candidate has lost its entrance only when the window does not name it
+// anywhere: not in a point that was kept, not in the note that says what
+// was left out, and not in the authorisation that lets the model read it
+// back. A message another point names has an entrance, and a message that
+// the note names has one too, so neither is lost.
+//
+// The order is the order the candidates were found in, so the count reads
+// the way the window does.
+func lostSegmentEntrances(candidates, shown []uint) []uint {
+	kept := make(map[uint]struct{}, len(shown))
+	for _, id := range shown {
+		if id == 0 {
+			continue
+		}
+		kept[id] = struct{}{}
+	}
+	lost := make([]uint, 0, len(candidates))
+	seen := make(map[uint]struct{}, len(candidates))
+	for _, id := range candidates {
+		if id == 0 {
+			continue
+		}
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		if _, hasEntrance := kept[id]; hasEntrance {
+			continue
+		}
+		lost = append(lost, id)
+	}
+	return lost
+}
+
 // segmentOmissionNote is what the block says about the points it left out.
 //
 // The note is the navigation. It says how many points did not fit and which
