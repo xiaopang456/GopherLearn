@@ -323,6 +323,47 @@ func (r *MemoryRecorder) SummarySegmentBatchSplit(calls int) {
 	r.logf("memory_metric name=summary_segment_batch_split mode=%s calls=%d", mode, calls)
 }
 
+// SummarySegmentCompressed records the summaries that were written again
+// because they did not fit the budget they are read under.
+//
+// A summary that is too long is asked for again with the same turns and a
+// request to write it shorter. The count says how often that happened, and it
+// is a count of cost as well: every one of these is a model call.
+//
+// The count does not say how many summaries were still too long afterwards.
+// Those are failures and are counted as such.
+func (r *MemoryRecorder) SummarySegmentCompressed(count int) {
+	mode := r.modeLabel()
+	if count > 0 {
+		r.addTotal("summary_segment_compressed_total", int64(count))
+		r.add("summary_segment_compressed_batches_total{mode="+mode+"}", 1)
+	}
+	r.logf("memory_metric name=summary_segment_compressed mode=%s count=%d", mode, count)
+}
+
+// SummarySegmentOmitted records what the window had no room for.
+//
+// A point that does not fit is left out whole - its words are not cut - and
+// the block names the messages it came from when there is room for the name.
+// The counts are the ones that say how much of the summary the window did not
+// carry: the points that stayed out, and the entrances to them.
+//
+// The entrances are a count of what the reader could not get back to. They do
+// not say the facts are gone - the summary still holds them, and the next
+// window may carry them. They say the window did not offer the way back.
+func (r *MemoryRecorder) SummarySegmentOmitted(points, entrances int) {
+	mode := r.modeLabel()
+	if points > 0 {
+		r.addTotal("summary_segment_omitted_points_total", int64(points))
+	}
+	if entrances > 0 {
+		r.addTotal("summary_segment_omitted_entrances_total", int64(entrances))
+		r.add("summary_segment_omitted_batches_total{mode="+mode+"}", 1)
+	}
+	r.logf("memory_metric name=summary_segment_omitted mode=%s points=%d entrances=%d",
+		mode, points, entrances)
+}
+
 // WhiteboardDelta records that a batch was asked for its changes instead of
 // the whole board.
 //

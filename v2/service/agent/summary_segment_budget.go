@@ -1,196 +1,35 @@
 package agent
 
-// What a summary segment gives up when it does not fit its budget.
+// What a summary segment gives up when the window has no room for it.
 //
 // A point is two things at once: what was said, and the name of the message
 // it was said in. The name is what lets the reader read that message back,
-// and the reader can only read what the segment names. The original is in
-// the database, and a model cannot open the database.
+// and the reader can only read what the segment names.
 //
-// So the order in which a segment spends a budget it does not have is:
+// So the segment never gives up a name and never gives up half a fact. A
+// point that does not fit is left out whole, and the block names the
+// messages the left-out points came from: the fact is not in the window any
+// more, but the way back to it is, and the count says how often that
+// happened.
 //
-//  1. the words that say the same thing twice go first: two points that
-//     carry the same text are one point written twice, and the one that is
-//     left names every message both of them named;
-//  2. then the words go: a point that does not fit is cut short rather than
-//     removed, and a cut point keeps its names, its label and its mark;
-//  3. and only then is a point given up, and only when every message it
-//     names is named by a point that is kept.
+// The words of a point are never cut. A cut point keeps its name and loses
+// its meaning: "不要改成 41 页" cut short says something else, and a summary
+// that says something else is worse than one that says less. A summary that
+// does not fit is a question for the model that wrote it - write it again,
+// shorter - and that is a generation question, not a rendering one.
 //
-// The third rule is the same for the learner's own points and for the
-// assistant's products. A point that is the last name of a message is kept,
-// whichever side wrote it: a rule that protected the assistant's products by
-// giving up the learner's own points would move the same loss onto the
-// other side, and the learner's point is as often the last name of a message
-// as the assistant's product is.
-//
-// What is left when even that is not enough is the point that carries the
-// least: the one that names the fewest messages, and among those the
-// shortest text. That is the last thing the engine gives up, and it gives up
-// the point whose loss costs the least.
+// Two points that say the same thing are not one point. The same words can
+// be the learner's and the assistant's, or the old value and the new one,
+// and the reader is told apart by who said it and by when. Merging them
+// would throw that away, so nothing here merges anything.
 
 import (
+	"strconv"
 	"strings"
 
 	"GopherAI/common/rag"
 	"GopherAI/model"
 )
-
-// segmentPointFloorRunes is how much of a point's text is kept when the
-// point is cut short.
-//
-// The floor is small on purpose: a cut point is still a point, and it still
-// names its messages. What it loses is the detail, and the detail is
-// readable in the message behind it.
-const segmentPointFloorRunes = 8
-
-// segmentPointNameOnlyRunes is the smallest a point's text may become.
-//
-// A point that is cut down to this is almost a name: it says that something
-// happened in that message and lets the reader open it. It is the form a
-// point takes when the segment has room for the names and not for the
-// words.
-const segmentPointNameOnlyRunes = 4
-
-// cutPointText shortens a text to a number of runes, keeping its beginning
-// and its end.
-//
-// The end of a summary is often the value - "改成每次 41 页" - and the
-// beginning is what it is about, so a cut that keeps only the beginning
-// throws away the part that matters most. The end therefore gets the larger
-// half of what is left. The cut is marked, because a reader has to be able
-// to see that the text is short.
-func cutPointText(text string, keep int) string {
-	runes := []rune(text)
-	if keep >= len(runes) {
-		return text
-	}
-	if keep <= 1 {
-		return string(runes[:1])
-	}
-	head := keep / 3
-	tail := keep - head - 1
-	if tail < 0 {
-		tail = 0
-	}
-	if head+tail+1 >= len(runes) {
-		return string(runes[:keep])
-	}
-	return string(runes[:head]) + "…" + string(runes[len(runes)-tail:])
-}
-
-// mergeSegmentDuplicates merges the points that say the same thing.
-//
-// Two points that carry the same text are one point written twice, and the
-// segment only has room for one of them. The one that is left names every
-// message both of them named, so the merge loses no message and no name.
-//
-// The order of the points is kept: the first of the two is the one that
-// stays, because the segment is read in the order it happened.
-func mergeSegmentDuplicates(points []model.SessionSummarySegmentPoint) []model.SessionSummarySegmentPoint {
-	merged := make([]model.SessionSummarySegmentPoint, 0, len(points))
-	at := make(map[string]int, len(points))
-	for _, point := range points {
-		key := strings.TrimSpace(point.Text)
-		if key == "" {
-			merged = append(merged, point)
-			continue
-		}
-		position, exists := at[key]
-		if !exists {
-			at[key] = len(merged)
-			merged = append(merged, point)
-			continue
-		}
-		merged[position].EvidenceMessageIDs = mergeSegmentMessageIDs(
-			merged[position].EvidenceMessageIDs, point.EvidenceMessageIDs)
-	}
-	return merged
-}
-
-// mergeSegmentMessageIDs is the union of two lists of message ids.
-func mergeSegmentMessageIDs(left, right []uint) []uint {
-	ids := make([]uint, 0, len(left)+len(right))
-	seen := make(map[uint]struct{}, len(left)+len(right))
-	for _, list := range [][]uint{left, right} {
-		for _, id := range list {
-			if id == 0 {
-				continue
-			}
-			if _, duplicate := seen[id]; duplicate {
-				continue
-			}
-			seen[id] = struct{}{}
-			ids = append(ids, id)
-		}
-	}
-	return ids
-}
-
-// shortenSegmentPoints cuts the texts of the points until they fit a budget.
-//
-// The longest text goes first: the learner's points can be hundreds of runes
-// long and the assistant's products are short by construction, so the words
-// that cost the most are the words that are cut. A cut point keeps its
-// message ids, its label and its mark - what it says about the message
-// stays, only the words are fewer.
-//
-// The cost is measured by the caller, because the two places that fit a
-// segment measure it differently: one measures the stored body, the other
-// measures the block that is written into the window.
-func shortenSegmentPoints(points []model.SessionSummarySegmentPoint,
-	cost func([]model.SessionSummarySegmentPoint) int, budget int) ([]model.SessionSummarySegmentPoint, bool) {
-	if len(points) == 0 {
-		return points, false
-	}
-	shortened := make([]model.SessionSummarySegmentPoint, len(points))
-	copy(shortened, points)
-	changed := false
-	for _, floor := range []int{segmentPointFloorRunes, segmentPointNameOnlyRunes} {
-		for {
-			size := cost(shortened)
-			if size <= budget {
-				return shortened, changed
-			}
-			victim := -1
-			longest := 0
-			for index, point := range shortened {
-				runes := len([]rune(point.Text))
-				if runes <= floor {
-					continue
-				}
-				if victim < 0 || runes > longest {
-					victim, longest = index, runes
-				}
-			}
-			if victim < 0 {
-				// Every text is at the floor. The next floor is smaller, and
-				// if that one is reached too there is nothing left to cut:
-				// what is left to give up is a point, and that is a different
-				// decision.
-				break
-			}
-			runes := len([]rune(shortened[victim].Text))
-			// The cut is what this point can give and no more, so that the
-			// excess is spread over the points instead of being taken out
-			// of one of them.
-			cut := size - budget
-			if room := runes - floor; cut > room {
-				cut = room
-			}
-			if cut < 1 {
-				cut = 1
-			}
-			keep := runes - cut
-			if keep < floor {
-				keep = floor
-			}
-			shortened[victim].Text = cutPointText(shortened[victim].Text, keep)
-			changed = true
-		}
-	}
-	return shortened, changed
-}
 
 // segmentHasAssistantPoint reports whether the segment holds a point of the
 // assistant's.
@@ -214,6 +53,11 @@ func segmentHasAssistantPoint(points []model.SessionSummarySegmentPoint) bool {
 // the segment does not: whatever was said in that message, and the right to
 // read it back. A point whose messages are all named elsewhere says nothing
 // the segment would lose.
+//
+// It is a statement about the names and not about the facts: a message may
+// hold two facts and one of them may be left out while the message stays
+// readable. What is left out is then a fact the window does not carry, and
+// the count of the omitted points says so.
 func segmentPointIsLastName(points []model.SessionSummarySegmentPoint, index int) bool {
 	if index < 0 || index >= len(points) {
 		return false
@@ -263,12 +107,12 @@ func segmentPointCitesID(point model.SessionSummarySegmentPoint, id uint) bool {
 // message would stop being readable, and the reader can only read what the
 // segment names. That is the same rule for the learner's own points and for
 // the assistant's products: the point of the learner's that is the only
-// thing naming a message is kept, exactly as the product of the assistant's
+// thing naming a message is kept, exactly as a product of the assistant's
 // is.
 //
 // When every point is the last name of one of its messages, nothing is given
-// up. A segment that does not fit is a segment the renderer cuts, and the
-// renderer cuts the words and not the names.
+// up. A segment that does not fit is a segment the renderer leaves out, and
+// the renderer says which messages it left out.
 func segmentPointToGiveUp(points []model.SessionSummarySegmentPoint) (int, bool) {
 	victim := -1
 	for index, point := range points {
@@ -297,8 +141,8 @@ func segmentPointToGiveUp(points []model.SessionSummarySegmentPoint) (int, bool)
 		return victim, true
 	}
 	// Nothing can go without taking a name with it, so nothing goes. A
-	// segment that does not fit is a segment the renderer cuts, and the
-	// renderer cuts the words and not the names.
+	// segment that does not fit is a segment the renderer leaves out, and
+	// the renderer says which messages it left out.
 	return 0, false
 }
 
@@ -313,4 +157,101 @@ func segmentPointsCost(points []model.SessionSummarySegmentPoint, marks []string
 		total += rag.EstimateTokens(renderSegmentPointLine(point, segmentPointMark(marks, index))) + 1
 	}
 	return total
+}
+
+// segmentOmittedIDs is the messages the points that were left out named.
+//
+// It is the way back to what did not fit: the fact is not in the window, but
+// the message it was written from is named, so the reader can open it.
+//
+// The ids are the ones of the points themselves and not the ones of the
+// messages no point names: a message that two points name is named by the
+// point that was kept, and naming it again would say that it is unreadable
+// when it is not.
+func segmentOmittedIDs(points []model.SessionSummarySegmentPoint, kept int) []uint {
+	ids := make([]uint, 0, 4)
+	seen := make(map[uint]struct{}, 4)
+	for index := kept; index < len(points); index++ {
+		for _, id := range points[index].EvidenceMessageIDs {
+			if id == 0 {
+				continue
+			}
+			if _, duplicate := seen[id]; duplicate {
+				continue
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// uniqueSegmentIDs is a list of message ids without the repeats.
+func uniqueSegmentIDs(ids []uint) []uint {
+	unique := make([]uint, 0, len(ids))
+	seen := make(map[uint]struct{}, len(ids))
+	for _, id := range ids {
+		if id == 0 {
+			continue
+		}
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	return unique
+}
+
+// segmentOmittedMarks are the marks the points that were left out carried.
+//
+// A mark says that the value in that message is not the current one, and it
+// travels with the point it belongs to. A point that is left out takes its
+// mark with it, and the note in the block carries it, so a reader who opens
+// the message is told that the value in it is not the current one.
+func segmentOmittedMarks(marks []string, kept int) []string {
+	if kept >= len(marks) {
+		return nil
+	}
+	return marks[kept:]
+}
+
+// segmentOmissionNote is what the block says about the points it left out.
+//
+// The note is the navigation. It says how many points did not fit and which
+// messages they were written from, so a reader who wants the fact knows
+// where it is instead of being told that it is gone.
+//
+// A mark the omitted points carried comes with them: the mark says that the
+// value in that message is not the current one, and a reader who opens the
+// message needs to be told that as much as the reader who reads the point.
+func segmentOmissionNote(omitted int, ids []uint, marks []string) string {
+	if omitted <= 0 || len(ids) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id == 0 {
+			continue
+		}
+		// The ids are written the way the points write them, so that the
+		// rule "an id that is not shown is not one the model may read
+		// back" holds for the note as well.
+		parts = append(parts, renderEvidenceIDs([]uint{id}))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	note := "（未展开 " + strconv.Itoa(omitted) + " 条 " + strings.Join(parts, " ")
+	carried := make([]string, 0, len(marks))
+	for _, mark := range marks {
+		if strings.TrimSpace(mark) == "" {
+			continue
+		}
+		carried = append(carried, mark)
+	}
+	if len(carried) > 0 {
+		note += " " + strings.Join(carried, " ")
+	}
+	return note + "）"
 }

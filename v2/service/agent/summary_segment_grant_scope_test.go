@@ -54,14 +54,18 @@ func TestTheBoardGrantsOnlyTheStatementsItShowed(t *testing.T) {
 	}
 }
 
-// The segments are cut to their budget, and the points they did not carry
-// authorise nothing.
+// The segments are cut to their budget, and what they did not carry is named.
+//
+// A point that does not fit is left out whole, and the block says which
+// messages it came from. The message is named, so it may be read back: the
+// reader is told where the fact is, and the id it may open is an id it was
+// shown.
 func TestTheSegmentsGrantOnlyThePointsTheyShowed(t *testing.T) {
 	long := strings.Repeat("学习者把每次学习总时长定为三十分钟", 12)
 	segment := testSegment(t, 1, 1, 30, "学习时长调整", []model.SessionSummarySegmentPoint{
 		{Text: long, EvidenceMessageIDs: []uint{12}},
-		{Text: long, EvidenceMessageIDs: []uint{13}},
-		{Text: long, EvidenceMessageIDs: []uint{14}},
+		{Text: long + "第二段", EvidenceMessageIDs: []uint{13}},
+		{Text: long + "第三段", EvidenceMessageIDs: []uint{14}},
 	}, nil)
 	reader := &fakeSegmentReader{watermark: 30, segments: []model.SessionSummarySegment{segment}}
 	window := buildLayeredWindow(t, reader, &fakeHistoryReader{}, nil, nil)
@@ -76,17 +80,23 @@ func TestTheSegmentsGrantOnlyThePointsTheyShowed(t *testing.T) {
 		}
 	}
 	// The budget has to have cut something, or the test above proves nothing.
-	if strings.Contains(body, "[message_ids=14]") {
+	if strings.Contains(body, "第三段") {
 		t.Fatalf("the last point reached the window: %s", body)
+	}
+	// The message the point was written from is named, so the fact is still
+	// reachable.
+	if !strings.Contains(body, "[message_ids=14]") {
+		t.Fatalf("the block does not name the message that was left out: %s", body)
 	}
 }
 
-// A value the board has since replaced keeps its marker when the budget cuts
-// the point's text.
+// A value the board has since replaced keeps its marker when the point does
+// not fit.
 //
 // The marker is what stops the model from quoting a superseded value as the
-// current one. A point that kept its old value but lost its marker is the
-// failure this closes.
+// current one. The point is left out whole - its words are not cut - and the
+// marker travels with it into the note the block carries, so a reader who
+// opens the message is told that the value in it is not the current one.
 func TestTheSupersessionMarkerSurvivesTheCut(t *testing.T) {
 	segment := testSegment(t, 1, 1, 30, "学习时长调整", []model.SessionSummarySegmentPoint{
 		{Text: strings.Repeat("学习者把每次学习总时长定为三十分钟", 20), EvidenceMessageIDs: []uint{12}},
@@ -99,17 +109,17 @@ func TestTheSupersessionMarkerSurvivesTheCut(t *testing.T) {
 			{Key: "duration", Text: "每次总时长 = 60 分钟", Value: "60 分钟", UpdatedAtMessageID: 90},
 		},
 	}
-	text, evidence, trimmed := renderSummarySegment(segment, document, 90, 120)
-	if !trimmed {
+	rendered := renderSummarySegment(segment, document, 90, 120)
+	if !rendered.Trimmed {
 		t.Fatal("the segment was not cut, so the test proves nothing")
 	}
-	if !strings.Contains(text, "已改为 60 分钟") {
-		t.Fatalf("the marker did not survive the cut: %s", text)
+	if !strings.Contains(rendered.Text, "已改为 60 分钟") {
+		t.Fatalf("the marker did not survive the cut: %s", rendered.Text)
 	}
-	if !strings.Contains(text, "[message_ids=12]") {
-		t.Fatalf("the ids did not survive the cut: %s", text)
+	if !strings.Contains(rendered.Text, "[message_ids=12]") {
+		t.Fatalf("the ids did not survive the cut: %s", rendered.Text)
 	}
-	if len(evidence) != 1 || evidence[0] != 12 {
-		t.Fatalf("the evidence is %v, want the id the cut point still carries", evidence)
+	if len(rendered.EvidenceMessageIDs) != 1 || rendered.EvidenceMessageIDs[0] != 12 {
+		t.Fatalf("the evidence is %v, want the id the cut point still carries", rendered.EvidenceMessageIDs)
 	}
 }

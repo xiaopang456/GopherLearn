@@ -65,6 +65,8 @@ func TestMemoryRecorderBoundsTheWhiteboardAndSegmentLabels(t *testing.T) {
 	recorder.SummarySegmentDropped("block_budget", 2)
 	recorder.SummarySegmentAssistantDegraded(3)
 	recorder.SummarySegmentCalls(2)
+	recorder.SummarySegmentCompressed(2)
+	recorder.SummarySegmentOmitted(3, 4)
 
 	snapshot := recorder.Snapshot()
 	if snapshot.Totals["whiteboard_applied_total"] != 1 ||
@@ -85,6 +87,14 @@ func TestMemoryRecorderBoundsTheWhiteboardAndSegmentLabels(t *testing.T) {
 		snapshot.Totals["summary_segment_assistant_degraded_total"] != 3 ||
 		snapshot.Totals["summary_segment_model_calls_total"] != 2 {
 		t.Fatalf("unexpected segment totals: %#v", snapshot.Totals)
+	}
+	if snapshot.Totals["summary_segment_compressed_total"] != 2 ||
+		snapshot.Totals["summary_segment_omitted_points_total"] != 3 ||
+		snapshot.Totals["summary_segment_omitted_entrances_total"] != 4 {
+		t.Fatalf("unexpected compression and omission totals: %#v", snapshot.Totals)
+	}
+	if snapshot.Counters["summary_segment_omitted_batches_total{mode=off}"] != 1 {
+		t.Fatalf("the omission was not counted as a batch: %#v", snapshot.Counters)
 	}
 	if snapshot.Totals["summary_segment_assistant_products_total"] != 3 ||
 		snapshot.Totals["summary_segment_assistant_accepted_total"] != 1 {

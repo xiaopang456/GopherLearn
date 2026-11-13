@@ -115,8 +115,8 @@ func TestABlockBudgetThatHoldsOneSegmentHoldsTheHeaderToo(t *testing.T) {
 // renderSummarySegmentForTest renders one segment the way the block does.
 func renderSummarySegmentForTest(segment model.SessionSummarySegment,
 	document model.SessionWhiteboardDocument) string {
-	block, _, _ := renderSummarySegment(segment, document, segment.EndMessageID, DefaultSegmentTokens)
-	return block
+	block := renderSummarySegment(segment, document, segment.EndMessageID, DefaultSegmentTokens)
+	return block.Text
 }
 
 // mustSegmentContent encodes a segment body for a test.

@@ -322,8 +322,8 @@ func TestALearnerEntryMayNotCiteTheAssistant(t *testing.T) {
 //
 // Nobody agreed to them, so they are the least the segment is worth keeping.
 // The learner's own points and the products the learner took on are not
-// given up at all: the renderer trims them for display, which is a
-// different thing from the segment dropping them.
+// given up at all: a point that does not fit is left out whole, and the
+// block says which messages it came from.
 func TestTheUnacceptedProductsGoFirstWhenTheSegmentIsOverBudget(t *testing.T) {
 	content := model.SessionSummarySegmentContent{
 		SchemaVersion: model.SessionSummarySegmentSchemaV2,
@@ -334,49 +334,39 @@ func TestTheUnacceptedProductsGoFirstWhenTheSegmentIsOverBudget(t *testing.T) {
 			{Text: "被接受的助手产物", EvidenceMessageIDs: []uint{31, 32}, Source: model.SessionSummarySegmentSourceAssistantAccepted},
 		},
 	}
-	trimmed, dropped := trimSegmentToRenderedBudget(content, 30, 33, 1, true)
-	if dropped != 1 {
-		t.Fatalf("dropped = %d, want 1", dropped)
+	rendered := renderTestSegment(content, 30, 33, segmentBudgetFor(t, content, 30, 33, 1))
+	if strings.Contains(rendered.Text, "旧的助手产物") {
+		t.Fatalf("the unaccepted product survived: %q", rendered.Text)
 	}
-	for _, point := range trimmed.Points {
-		if point.Source == model.SessionSummarySegmentSourceAssistant {
-			t.Fatalf("the unaccepted product survived: %+v", trimmed.Points)
-		}
-	}
-	if len(trimmed.Points) != 2 {
-		t.Fatalf("points = %d, want 2: %+v", len(trimmed.Points), trimmed.Points)
+	if !strings.Contains(rendered.Text, "学习者说过的话") {
+		t.Fatalf("the learner's own point was given up: %q", rendered.Text)
 	}
 }
 
 // Two products, each the only thing naming the message it came from.
 //
-// Neither is given up. The message would stop being readable, and the reader
-// can only read what the segment names - the original is in the database,
-// and a model cannot open the database. What is cut instead is the words.
+// Neither is given up while there is a choice to make. The message would
+// stop being readable, and the reader can only read what the segment names
+// - the original is in the database, and a model cannot open the database.
+// What happens when even the smallest form does not fit is a different
+// thing: the point is left out and the block names the message, so the way
+// back to it is still there.
 func TestTheProductsThatNameAMessageAreNotGivenUp(t *testing.T) {
 	content := model.SessionSummarySegmentContent{
 		SchemaVersion: model.SessionSummarySegmentSchemaV2,
 		Topic:         "t",
 		Points: []model.SessionSummarySegmentPoint{
 			{Text: "新的助手产物", EvidenceMessageIDs: []uint{34}, Source: model.SessionSummarySegmentSourceAssistant},
-			{Text: "旧的助手产物", EvidenceMessageIDs: []uint{31}, Source: model.SessionSummarySegmentSourceAssistant},
+			{Text: "旧的助手产物，" + strings.Repeat("很长", 13),
+				EvidenceMessageIDs: []uint{31}, Source: model.SessionSummarySegmentSourceAssistant},
 		},
 	}
-	trimmed, dropped := trimSegmentToRenderedBudget(content, 30, 34, 1, true)
-	if dropped != 0 {
-		t.Fatalf("dropped = %d, want 0: %+v", dropped, trimmed.Points)
+	rendered := renderTestSegment(content, 30, 34, segmentBudgetFor(t, content, 30, 34, 1)+20)
+	if !strings.Contains(rendered.Text, "[message_ids=31]") {
+		t.Fatalf("a message lost its name: %q", rendered.Text)
 	}
-	if len(trimmed.Points) != 2 {
-		t.Fatalf("points = %d, want 2: %+v", len(trimmed.Points), trimmed.Points)
-	}
-	names := map[uint]bool{}
-	for _, point := range trimmed.Points {
-		for _, id := range point.EvidenceMessageIDs {
-			names[id] = true
-		}
-	}
-	if !names[31] || !names[34] {
-		t.Fatalf("a message lost its name: %+v", trimmed.Points)
+	if rendered.OmittedPoints != 1 {
+		t.Fatalf("omitted points = %d, want 1: %q", rendered.OmittedPoints, rendered.Text)
 	}
 }
 
@@ -391,7 +381,7 @@ func TestTheOffModeStillDropsTheTail(t *testing.T) {
 			{Text: "第三点", EvidenceMessageIDs: []uint{32}},
 		},
 	}
-	trimmed, dropped := trimSegmentToRenderedBudget(content, 30, 33, 1, false)
+	trimmed, dropped := trimSegmentToRenderedBudget(content, 30, 33, 1)
 	if dropped == 0 {
 		t.Fatal("nothing was dropped")
 	}
@@ -458,15 +448,15 @@ func TestTheRenderedLinesSayWhoseWordsTheyHold(t *testing.T) {
 	segment := model.SessionSummarySegment{
 		StartMessageID: 30, EndMessageID: 33, Content: raw,
 	}
-	block, _, _ := renderSummarySegment(segment, model.SessionWhiteboardDocument{}, 33, 0)
-	if !strings.Contains(block, "（助手提议，用户未表示同意）助手出的三道题") {
-		t.Fatalf("the assistant's product is not labelled: %q", block)
+	block := renderSummarySegment(segment, model.SessionWhiteboardDocument{}, 33, 0)
+	if !strings.Contains(block.Text, "（助手提议，用户未表示同意）助手出的三道题") {
+		t.Fatalf("the assistant's product is not labelled: %q", block.Text)
 	}
-	if !strings.Contains(block, "（助手提议，用户已同意）被接受的计划") {
-		t.Fatalf("the accepted proposal is not labelled: %q", block)
+	if !strings.Contains(block.Text, "（助手提议，用户已同意）被接受的计划") {
+		t.Fatalf("the accepted proposal is not labelled: %q", block.Text)
 	}
-	if strings.Contains(block, "（助手提议，用户未表示同意）学习者说过的话") {
-		t.Fatalf("the learner's own words are labelled as the assistant's: %q", block)
+	if strings.Contains(block.Text, "（助手提议，用户未表示同意）学习者说过的话") {
+		t.Fatalf("the learner's own words are labelled as the assistant's: %q", block.Text)
 	}
 	entry := model.SessionWhiteboardEntry{
 		Key: "plan", Text: "按三道练习来", Origin: model.SessionWhiteboardOriginAssistantAccepted,

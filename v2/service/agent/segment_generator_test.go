@@ -26,6 +26,10 @@ type stubSegmentModel struct {
 	// fits the output budget, so a stub that answered one string to both
 	// calls could not tell the two paths apart.
 	byPrompt map[string]string
+	// byCall answers differently per call. The generator asks for the same
+	// batch again when the summary does not fit the window, and a stub that
+	// answered one string to every call could not tell the two apart.
+	byCall   []string
 	calls    int
 	prompts  []*schema.Message
 	failWith error
@@ -33,11 +37,18 @@ type stubSegmentModel struct {
 
 func (m *stubSegmentModel) Generate(_ context.Context, input []*schema.Message, _ ...modelcomponent.Option) (*schema.Message, error) {
 	m.calls++
-	m.prompts = input
+	m.prompts = append(m.prompts, input...)
 	if m.failWith != nil {
 		return nil, m.failWith
 	}
 	content := m.content
+	if len(m.byCall) > 0 {
+		index := m.calls - 1
+		if index >= len(m.byCall) {
+			index = len(m.byCall) - 1
+		}
+		content = m.byCall[index]
+	}
 	if len(input) > 0 && input[0] != nil {
 		if answer, ok := m.byPrompt[input[0].Content]; ok {
 			content = answer

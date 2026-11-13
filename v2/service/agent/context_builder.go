@@ -1695,6 +1695,14 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 			// what says how often it happened.
 			observability.Memory.SummarySegmentDropped("block_budget", resident.DroppedSegments)
 		}
+		if resident.OmittedPoints > 0 || len(resident.OmittedMessageIDs) > 0 {
+			// Points the window had no room for are left out whole, and
+			// the messages they came from are the entrances that did not
+			// enter the window. The counts say how much of the summary
+			// the window did not carry.
+			observability.Memory.SummarySegmentOmitted(resident.OmittedPoints,
+				len(resident.OmittedMessageIDs))
+		}
 		if resident.Text != "" {
 			residentText = resident.Text
 			breakdown.ResidentSegments = messageTokenCost(resident.Text)
@@ -1706,6 +1714,10 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 			b.config.AssistantContent)
 		if retrieved.DroppedSegments > 0 {
 			observability.Memory.SummarySegmentDropped("block_budget", retrieved.DroppedSegments)
+		}
+		if retrieved.OmittedPoints > 0 || len(retrieved.OmittedMessageIDs) > 0 {
+			observability.Memory.SummarySegmentOmitted(retrieved.OmittedPoints,
+				len(retrieved.OmittedMessageIDs))
 		}
 		if retrieved.Text != "" {
 			retrievedText = retrieved.Text

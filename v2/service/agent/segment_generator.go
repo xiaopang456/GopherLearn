@@ -90,6 +90,14 @@ type SegmentGenerationResult struct {
 	// call fit. It is a count of a loss, not of a thing that was produced:
 	// a turn that was shortened is a turn the summary saw less of.
 	Shortened int
+	// Compressed is how many times a summary that did not fit was written
+	// again with the same turns and a request to write it shorter.
+	//
+	// It is a count of cost: every one of these is a model call the batch
+	// did not have to make. A batch that was compressed and still did not
+	// fit is not counted here - it failed, and the failure is counted as
+	// one.
+	Compressed int
 }
 
 // ModelSegmentGenerator generates a segment and a whiteboard with a chat
@@ -497,6 +505,11 @@ const (
 	segmentReasonOutputTooLarge = "output_too_large"
 	segmentReasonModelError     = "model_error"
 	segmentReasonEmptyOutput    = "empty_output"
+	// segmentReasonOverBudget says the summary was written twice and
+	// still did not fit the window it is read under. The batch wrote
+	// nothing: a summary that was cut to fit is a summary of something
+	// else.
+	segmentReasonOverBudget = "over_budget"
 )
 
 // segmentFailure is why one generation produced no segment.
@@ -574,6 +587,7 @@ func (g *ModelSegmentGenerator) GenerateSegment(ctx context.Context, input Segme
 			observability.Memory.SummarySegmentBatchSplit(result.Calls)
 			observability.Memory.SummarySegmentAssistantDegraded(result.Degraded)
 			observability.Memory.SummarySegmentInputTruncated(result.Shortened)
+			observability.Memory.SummarySegmentCompressed(result.Compressed)
 		}
 	}
 	return result, err
@@ -637,7 +651,7 @@ func (g *ModelSegmentGenerator) generateOneCall(ctx context.Context,
 	// renderer drop the tail, which spent the model's tokens on points nobody
 	// would ever read and reported nothing about it.
 	segment, trimmedPoints := trimSegmentToRenderedBudget(segment, input.FirstMessageID, input.LastMessageID,
-		g.segmentBudget(), g.assistantContent)
+		g.segmentBudget())
 	droppedPoints += trimmedPoints
 	segmentContent, err := model.MarshalSessionSummarySegmentContent(segment)
 	if err != nil {
@@ -874,13 +888,25 @@ func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
 	dropped += len(points) - len(merged.Points)
 	merged.Names = trimSegmentTerms(names)
 	merged.Numbers = trimSegmentTerms(numbers)
-	// The segment is trimmed to what a segment's block may carry, measured on
-	// the rendered block. The alternative was to keep every point and let the
-	// renderer drop the tail, which spent the model's tokens on points nobody
-	// would ever read and reported nothing about it.
-	merged, trimmedPoints := trimSegmentToRenderedBudget(merged, input.FirstMessageID, input.LastMessageID,
-		g.segmentBudget(), g.assistantContent)
-	dropped += trimmedPoints
+	// The segment has to be what the window can carry.
+	//
+	// A summary that does not fit is asked for again with the same turns
+	// and a request to write it shorter, and a summary that still does not
+	// fit is not stored at all. The words are never cut: a cut point says
+	// something else, and what it says is often the opposite of what was
+	// said.
+	merged, compressed, err := g.fitSegmentToBudget(ctx, input, merged)
+	if err != nil {
+		// The points that were already given up are still given up. A
+		// failure that dropped points before it failed is a different kind
+		// of failure from one that never got that far.
+		if failure, ok := err.(segmentFailure); ok {
+			failure.droppedPoints += dropped
+			return SegmentGenerationResult{}, failure
+		}
+		return SegmentGenerationResult{}, err
+	}
+	callsMade += compressed
 	segmentContent, err := model.MarshalSessionSummarySegmentContent(merged)
 	if err != nil {
 		return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInvalidOutput,
@@ -903,6 +929,7 @@ func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
 		Calls:             callsMade,
 		Degraded:          degraded,
 		Shortened:         shortened,
+		Compressed:        compressed,
 	}, nil
 }
 
@@ -976,49 +1003,14 @@ func (g *ModelSegmentGenerator) segmentDeltaPrompt() string {
 // the budget: the renderer trims an over-long first point rather than showing
 // nothing, and a segment with no points is not a segment.
 //
-// When the assistant's products are recorded there is something else that
-// may be given up first, and the order in which it is given up is the one in
-// summary_segment_budget.go: the words that say the same thing twice go
-// first, then the words go - a point that does not fit is cut short rather
-// than removed - and only then is a point given up, and only when every
-// message it names is named by a point that is kept.
-//
-// The mode that does not record the assistant's products keeps the old rule
-// exactly: the tail went first, and nothing else changed.
+// This is the rule of the mode that does not record the assistant's products,
+// and it is kept exactly as it was. The mode that does record them asks for
+// a summary that fits instead of trimming one: a summary that was cut to fit
+// is a summary of something else, and the window that cannot carry it says
+// so rather than carrying a piece of it.
 func trimSegmentToRenderedBudget(content model.SessionSummarySegmentContent,
-	firstMessageID, lastMessageID uint, budget int, assistantContent bool) (model.SessionSummarySegmentContent, int) {
+	firstMessageID, lastMessageID uint, budget int) (model.SessionSummarySegmentContent, int) {
 	dropped := 0
-	if assistantContent {
-		// The words that say the same thing twice go first. Two points that
-		// carry the same text are one point written twice, and the one that
-		// is left names every message both of them named.
-		before := len(content.Points)
-		content.Points = mergeSegmentDuplicates(content.Points)
-		dropped += before - len(content.Points)
-		// Then the products that another point also names go. The message
-		// stays named by the other point, so nothing stops being readable,
-		// and the space they take is not the space the learner's own points
-		// need.
-		for len(content.Points) > 1 &&
-			SegmentContentTokens(content, firstMessageID, lastMessageID) > budget {
-			victim, found := segmentPointToGiveUp(content.Points)
-			if !found {
-				break
-			}
-			content.Points = append(content.Points[:victim], content.Points[victim+1:]...)
-			dropped++
-		}
-		// And then the words go. A point that does not fit is cut short
-		// rather than removed: it keeps its names, its label and its mark,
-		// so what it says about the message stays and only the detail is
-		// fewer.
-		content.Points, _ = shortenSegmentPoints(content.Points, func(points []model.SessionSummarySegmentPoint) int {
-			measured := content
-			measured.Points = points
-			return SegmentContentTokens(measured, firstMessageID, lastMessageID)
-		}, budget)
-		return content, dropped
-	}
 	for len(content.Points) > 1 &&
 		SegmentContentTokens(content, firstMessageID, lastMessageID) > budget {
 		content.Points = content.Points[:len(content.Points)-1]

@@ -142,12 +142,12 @@ func RenderedSegmentTokens(segment model.SessionSummarySegment) int {
 // renderedSegmentCost renders one segment the way a block will and reports
 // what the block charges for it.
 func renderedSegmentCost(segment model.SessionSummarySegment, perSegmentTokens int) int {
-	block, _, _ := renderSummarySegment(segment, model.SessionWhiteboardDocument{},
+	block := renderSummarySegment(segment, model.SessionWhiteboardDocument{},
 		segment.EndMessageID, perSegmentTokens)
-	if block == "" {
+	if block.Text == "" {
 		return 0
 	}
-	return rag.EstimateTokens(block) + segmentSeparatorTokens
+	return rag.EstimateTokens(block.Text) + segmentSeparatorTokens
 }
 
 // SegmentContentTokens is what a segment body costs once it is rendered,
@@ -165,11 +165,11 @@ func SegmentContentTokens(content model.SessionSummarySegmentContent,
 	segment := model.SessionSummarySegment{
 		StartMessageID: startMessageID, EndMessageID: endMessageID, Content: raw,
 	}
-	block, _, _ := renderSummarySegment(segment, model.SessionWhiteboardDocument{}, endMessageID, 0)
-	if block == "" {
+	block := renderSummarySegment(segment, model.SessionWhiteboardDocument{}, endMessageID, 0)
+	if block.Text == "" {
 		return 0
 	}
-	return rag.EstimateTokens(block) + 4
+	return rag.EstimateTokens(block.Text) + 4
 }
 
 // renderWhiteboardEntry renders one board entry.
@@ -260,6 +260,24 @@ type renderedSummarySegment struct {
 	Trimmed bool
 }
 
+// renderedSegmentBlock is what one segment contributed to the window.
+type renderedSegmentBlock struct {
+	// Text is the block the segment contributed.
+	Text string
+	// EvidenceMessageIDs are the ids of the points that really rendered. A
+	// point the budget cut is not one the model saw.
+	EvidenceMessageIDs []uint
+	// Trimmed says the budget cut this segment.
+	Trimmed bool
+	// OmittedPoints is how many points did not fit into the segment's
+	// room.
+	OmittedPoints int
+	// OmittedMessageIDs are the messages those points were written from.
+	// They are the entrances that did not enter the window, and they are
+	// what the note in the block names.
+	OmittedMessageIDs []uint
+}
+
 // renderedSummarySegments is what one turn actually sent.
 type renderedSummarySegments struct {
 	// Text is the block, ready to be put in the window.
@@ -275,6 +293,16 @@ type renderedSummarySegments struct {
 	// cannot be trimmed is dropped. The count says how often the window had
 	// no room for a piece of the session's own memory.
 	DroppedSegments int
+	// OmittedPoints is how many points of the segments the block carries
+	// did not fit into the window.
+	//
+	// The point is left out whole - its words are not cut - and the block
+	// names the messages it came from. The count is what says how much of
+	// the summary the window did not carry.
+	OmittedPoints int
+	// OmittedMessageIDs are the messages the omitted points were written
+	// from. They are the entrances that did not enter the window.
+	OmittedMessageIDs []uint
 }
 
 // renderSummarySegments renders the segments under a token budget.
@@ -318,11 +346,11 @@ func renderSummarySegments(segments []model.SessionSummarySegment, document mode
 	// put back in chronological order before it is sent.
 	for index := len(ordered) - 1; index >= 0; index-- {
 		segment := ordered[index]
-		block, evidence, trimmed := renderSummarySegment(segment, document, latest, perSegmentTokens)
-		if block == "" {
+		rendered := renderSummarySegment(segment, document, latest, perSegmentTokens)
+		if rendered.Text == "" {
 			continue
 		}
-		cost := rag.EstimateTokens(block) + 4
+		cost := rag.EstimateTokens(rendered.Text) + 4
 		if used+cost > budget {
 			if !assistantContent {
 				// The mode that does not record the assistant's products
@@ -334,15 +362,18 @@ func renderSummarySegments(segments []model.SessionSummarySegment, document mode
 			// The mode that does record them trims the segment to the room
 			// that is left rather than dropping it.
 			room := budget - used - 4
-			trimmedBlock, trimmedEvidence, wasTrimmed := renderSummarySegment(segment, document, latest, room)
-			if trimmedBlock != "" {
-				trimmedCost := rag.EstimateTokens(trimmedBlock) + 4
+			trimmed := renderSummarySegment(segment, document, latest, room)
+			if trimmed.Text != "" {
+				trimmedCost := rag.EstimateTokens(trimmed.Text) + 4
 				if used+trimmedCost <= budget {
 					used += trimmedCost
 					out.Segments = append(out.Segments, renderedSummarySegment{
-						Segment: segment, Text: trimmedBlock,
-						EvidenceMessageIDs: trimmedEvidence, Trimmed: trimmed || wasTrimmed,
+						Segment: segment, Text: trimmed.Text,
+						EvidenceMessageIDs: trimmed.EvidenceMessageIDs,
+						Trimmed:            rendered.Trimmed || trimmed.Trimmed,
 					})
+					out.OmittedPoints += rendered.OmittedPoints + trimmed.OmittedPoints
+					out.OmittedMessageIDs = append(out.OmittedMessageIDs, trimmed.OmittedMessageIDs...)
 					continue
 				}
 			}
@@ -353,8 +384,11 @@ func renderSummarySegments(segments []model.SessionSummarySegment, document mode
 		}
 		used += cost
 		out.Segments = append(out.Segments, renderedSummarySegment{
-			Segment: segment, Text: block, EvidenceMessageIDs: evidence, Trimmed: trimmed,
+			Segment: segment, Text: rendered.Text,
+			EvidenceMessageIDs: rendered.EvidenceMessageIDs, Trimmed: rendered.Trimmed,
 		})
+		out.OmittedPoints += rendered.OmittedPoints
+		out.OmittedMessageIDs = append(out.OmittedMessageIDs, rendered.OmittedMessageIDs...)
 	}
 	if len(out.Segments) == 0 {
 		return out
@@ -382,18 +416,20 @@ func renderSummarySegments(segments []model.SessionSummarySegment, document mode
 // given up first, oldest first: nobody agreed to them, so they are the least
 // the segment is worth keeping. A point that is the last name of one of its
 // messages is not given up at all, and that is the same rule for the
-// learner's own points and for the assistant's products. The learner's own
-// points and the products the learner took on are not given up here - they
-// are trimmed for display, which is a different thing from the segment
-// giving them up.
+// learner's own points and for the assistant's products.
+//
+// What does not fit after that is left out whole, and the block says which
+// messages the left-out points came from. The words of a point are never cut:
+// a cut point keeps its name and loses its meaning, and the meaning is
+// usually the part that says what the learner ruled out.
 func renderSummarySegment(segment model.SessionSummarySegment, document model.SessionWhiteboardDocument,
-	latestEndMessageID uint, perSegmentTokens int) (string, []uint, bool) {
+	latestEndMessageID uint, perSegmentTokens int) renderedSegmentBlock {
 	content, err := model.DecodeSessionSummarySegmentContent(segment.Content)
 	if err != nil {
 		// A segment this schema cannot read carries nothing the model could
 		// use, and guessing at its body would put text the learner never
 		// said into their mouth.
-		return "", nil, false
+		return renderedSegmentBlock{}
 	}
 	pointMarks, headerMark := summarySegmentSupersession(segment, content, document, latestEndMessageID)
 	var out strings.Builder
@@ -408,6 +444,8 @@ func renderSummarySegment(segment model.SessionSummarySegment, document model.Se
 	used := rag.EstimateTokens(out.String())
 	points := content.Points
 	trimmed := false
+	dropped := 0
+	droppedIDs := make([]uint, 0, 4)
 	if perSegmentTokens > 0 {
 		// The points that the document can give up are the ones the
 		// document carries as the assistant's: a product nobody took on is
@@ -416,48 +454,62 @@ func renderSummarySegment(segment model.SessionSummarySegment, document model.Se
 		// stop being readable. A document that carries no such point gives
 		// nothing up, and the mode that does not record the assistant's
 		// products writes exactly such documents.
-		var dropped bool
-		points, pointMarks, dropped = dropUnacceptedProducts(points, pointMarks, perSegmentTokens, used)
-		trimmed = trimmed || dropped
-		//
-		// The words go before a point does, in the segments that carry the
-		// assistant's products: a point that does not fit is cut short
-		// rather than removed, and it keeps its names. The mode that does
-		// not record the assistant's products is not touched here - it
-		// writes the same blocks it always wrote.
-		if segmentHasAssistantPoint(points) {
-			var shortened bool
-			points, shortened = shortenSegmentPoints(points, func(points []model.SessionSummarySegmentPoint) int {
-				return segmentPointsCost(points, pointMarks, used)
-			}, perSegmentTokens)
-			trimmed = trimmed || shortened
-		}
+		points, pointMarks, dropped, droppedIDs = dropUnacceptedProducts(points, pointMarks, perSegmentTokens, used)
+		trimmed = trimmed || dropped > 0
 	}
-	var evidence []uint
+	// The points are rendered one at a time, and a point that does not fit
+	// is left out whole: its words are not cut, because a cut point says
+	// something else.
+	lines := make([]string, 0, len(points))
+	costs := make([]int, 0, len(points))
+	kept := 0
 	for index, point := range points {
-		text := strings.TrimSpace(point.Text)
 		line := renderSegmentPointLine(point, segmentPointMark(pointMarks, index))
 		cost := rag.EstimateTokens(line) + 1
 		if perSegmentTokens > 0 && used+cost > perSegmentTokens {
-			if len(evidence) == 0 {
-				// The first point does not fit on its own. Its text is cut,
-				// but its ids and its marker stay: the marker is what says
-				// the value is not current any more.
-				cut, ok := trimPointLine(text, segmentPointLabel(point),
-					point.EvidenceMessageIDs, segmentPointMark(pointMarks, index), perSegmentTokens-used)
-				if ok {
-					out.WriteString("\n" + cut)
-					evidence = append(evidence, point.EvidenceMessageIDs...)
-				}
-			}
 			trimmed = true
 			break
 		}
-		out.WriteString("\n" + line)
-		evidence = append(evidence, point.EvidenceMessageIDs...)
+		lines = append(lines, line)
+		costs = append(costs, cost)
 		used += cost
+		kept = index + 1
 	}
-	return out.String(), evidence, trimmed
+	omitted := dropped + len(points) - kept
+	omittedIDs := uniqueSegmentIDs(append(droppedIDs, segmentOmittedIDs(points, kept)...))
+	var evidence []uint
+	for index, point := range points {
+		if index >= kept {
+			break
+		}
+		evidence = append(evidence, point.EvidenceMessageIDs...)
+	}
+	// The note is the navigation: it names the messages the left-out points
+	// were written from, so the facts that did not fit are still one read
+	// away.
+	//
+	// The note is written in the room that is left, and it never takes the
+	// room of a point that did fit: a fact the learner can read is worth
+	// more than a way back to a fact they cannot. When the room is not
+	// there, the omission is counted and the count is what says so.
+	if omitted > 0 && len(omittedIDs) > 0 {
+		note := segmentOmissionNote(omitted, omittedIDs, segmentOmittedMarks(pointMarks, kept))
+		noteCost := rag.EstimateTokens(note) + 1
+		if note != "" && (perSegmentTokens <= 0 || used+noteCost <= perSegmentTokens) {
+			out.WriteString("\n" + note)
+			used += noteCost
+			// The ids the note names are shown, so they may be read back.
+			// An id that is not shown is not one the model may read.
+			evidence = append(evidence, omittedIDs...)
+		}
+	}
+	for _, line := range lines {
+		out.WriteString("\n" + line)
+	}
+	return renderedSegmentBlock{
+		Text: out.String(), EvidenceMessageIDs: evidence, Trimmed: trimmed,
+		OmittedPoints: omitted, OmittedMessageIDs: omittedIDs,
+	}
 }
 
 // dropUnacceptedProducts gives up the assistant's products nobody took on
@@ -477,24 +529,29 @@ func renderSummarySegment(segment model.SessionSummarySegment, document model.Se
 //
 // The learner's own points and the products the learner took on are not
 // given up here.
+//
+// The ids of the points that were given up come back with the rest: they are
+// the entrances that did not enter the window, and the block names them.
 func dropUnacceptedProducts(points []model.SessionSummarySegmentPoint, marks []string,
-	budget, used int) ([]model.SessionSummarySegmentPoint, []string, bool) {
+	budget, used int) ([]model.SessionSummarySegmentPoint, []string, int, []uint) {
 	kept := points
 	keptMarks := marks
-	dropped := false
+	dropped := 0
+	droppedIDs := make([]uint, 0, 4)
 	for {
 		if segmentPointsFit(kept, keptMarks, budget, used) {
-			return kept, keptMarks, dropped
+			return kept, keptMarks, dropped, droppedIDs
 		}
 		victim, found := segmentPointToGiveUp(kept)
 		if !found {
-			return kept, keptMarks, dropped
+			return kept, keptMarks, dropped, droppedIDs
 		}
+		droppedIDs = append(droppedIDs, kept[victim].EvidenceMessageIDs...)
 		kept = append(kept[:victim], kept[victim+1:]...)
 		if victim < len(keptMarks) {
 			keptMarks = append(keptMarks[:victim], keptMarks[victim+1:]...)
 		}
-		dropped = true
+		dropped++
 	}
 }
 
