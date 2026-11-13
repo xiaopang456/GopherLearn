@@ -11,21 +11,21 @@ package agent
 //
 // So the evidence is stated rather than read. The model says which message it
 // read, quotes that message word for word, names the subject and the
-// attribute the value belongs to, and reports what kind of statement it was.
-// The program then checks every part of that statement against the messages
-// of the batch: the message is one of the learner's own, the quote really is
-// in it, the value is the entry's value, and the subject and the attribute
-// are what the entry is about.
+// attribute the value belongs to, and reports what kind of statement it was
+// and whether that statement updates the item. The program then checks every
+// part of that statement against the messages of the batch: the message is
+// one of the learner's own, the quote really is in it, the value really is
+// in the quoted words, the value is the entry's value, and the subject and
+// the attribute are what the entry is about.
 //
-// What the checks cannot do is decide what the quote means. "改成 41 页" and
-// "不要改成 41 页" are both a learner who wrote a number, and only the model
-// can tell them apart. The stance it reports is the one part of this that is
-// a judgement rather than a fact, so the program bounds how far that
-// judgement reaches: a stance that says "negated", "hypothetical",
-// "proposed" or "uncertain" never becomes a current fact, and a stance that
-// says "decided" becomes one only when the quote, the value, the subject and
-// the attribute all check out. A claim that does not check out is not
-// evidence, and an entry without evidence keeps the label the model gave it.
+// The checks are facts about the messages, not about the meaning of a
+// sentence. What a quote means is still the model's judgement, so the model
+// is asked two questions about it rather than one: what kind of statement it
+// is, and whether it updates the item. A model that misreads a sentence
+// usually misreads one of the two, and the program refuses the entry when
+// the two answers do not agree. What the program cannot do is prove that a
+// model which answers both questions the same wrong way is wrong, and the
+// report of this change says so.
 //
 // The claim is not stored. The board keeps what it has always kept: the
 // entry, its value and the messages it came from. The claim is evidence for
@@ -34,6 +34,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"GopherAI/model"
@@ -58,6 +59,13 @@ type WhiteboardLearnerClaim struct {
 	Value string `json:"value"`
 	// Stance says what kind of statement it was.
 	Stance string `json:"stance"`
+	// Update says whether that statement updates the item to this value.
+	//
+	// It is a second question about the same words, asked apart from the
+	// stance, and the program needs both answers before it lets a claim
+	// change what the board holds. A model that reads "do not change it to
+	// 41 pages" as a plain statement usually still answers "no" here.
+	Update string `json:"update"`
 }
 
 // UnmarshalJSON reads a claim and ignores the fields the program does not know.
@@ -77,6 +85,7 @@ func (c *WhiteboardLearnerClaim) UnmarshalJSON(data []byte) error {
 		Attribute string `json:"attribute"`
 		Value     string `json:"value"`
 		Stance    string `json:"stance"`
+		Update    string `json:"update"`
 	}
 	var fields claimFields
 	if err := json.Unmarshal(data, &fields); err != nil {
@@ -90,6 +99,7 @@ func (c *WhiteboardLearnerClaim) UnmarshalJSON(data []byte) error {
 		Attribute: fields.Attribute,
 		Value:     fields.Value,
 		Stance:    fields.Stance,
+		Update:    fields.Update,
 	}
 	return nil
 }
@@ -129,22 +139,66 @@ func whiteboardClaimStanceKnown(stance string) bool {
 	return false
 }
 
+// The answers a claim may give to the second question: does this statement
+// update the item to this value.
+//
+// This is asked apart from the stance on purpose. The stance says what kind
+// of sentence the words are; the update says what they do to the item. A
+// model that reads a negation as a plain statement usually still answers
+// "no" here, and a model that answers "yes" here while calling the words a
+// hypothetical has contradicted itself. Either way the program refuses the
+// entry, so a single misreading does not reach the board.
+const (
+	// whiteboardClaimUpdateYes says the words update the item to this value.
+	whiteboardClaimUpdateYes = "yes"
+	// whiteboardClaimUpdateNo says the words do not update the item.
+	whiteboardClaimUpdateNo = "no"
+	// whiteboardClaimUpdateUnsure says the model cannot tell.
+	whiteboardClaimUpdateUnsure = "unsure"
+)
+
+// whiteboardClaimUpdateKnown reports whether an update answer is one the
+// program knows.
+func whiteboardClaimUpdateKnown(update string) bool {
+	switch strings.ToLower(strings.TrimSpace(update)) {
+	case whiteboardClaimUpdateYes, whiteboardClaimUpdateNo, whiteboardClaimUpdateUnsure:
+		return true
+	}
+	return false
+}
+
 // whiteboardClaimVerdict is what the program made of one claim.
+//
+// The three states are kept apart because they mean three different things
+// to the engine: a claim that was never offered says nothing about the
+// entry, a claim that holds says the learner's own words are behind it, and
+// a claim that does not hold says the model asserted something the program
+// could not confirm. The last one is a refusal, and a refusal is not the
+// same as silence.
 type whiteboardClaimVerdict int
 
 const (
 	// whiteboardClaimAbsent says the entry carried no claim at all.
+	//
+	// Nothing was asserted, so nothing is checked. The entry is judged the
+	// way it was judged before claims existed.
 	whiteboardClaimAbsent whiteboardClaimVerdict = iota
-	// whiteboardClaimFalse says the claim does not hold: the quote is not
-	// in the message, the value is another one, or the subject and the
-	// attribute are not what the entry is about.
-	whiteboardClaimFalse
+	// whiteboardClaimRejected says the claim was offered and does not hold:
+	// the quote is not in the message, the value is not in the quoted
+	// words, the value is another one, or the subject and the attribute are
+	// not what the entry is about.
+	//
+	// A rejected claim is not evidence and it is not silence either. The
+	// entry it was written for is refused: it does not become the
+	// learner's own, it does not take over another entry's key, and it does
+	// not replace a value the board already holds.
+	whiteboardClaimRejected
 	// whiteboardClaimSettled says the claim holds and the learner settled
 	// the value.
 	whiteboardClaimSettled
-	// whiteboardClaimUnsettled says the claim holds and the learner did
-	// not settle the value: they proposed it, asked about it, ruled it out
-	// or were not sure.
+	// whiteboardClaimUnsettled says the claim holds but the learner did not
+	// settle the value: they proposed it, asked about it, ruled it out, were
+	// not sure, or the model's own two answers disagree about it.
 	whiteboardClaimUnsettled
 )
 
@@ -160,7 +214,13 @@ const (
 func whiteboardVerifyClaim(claim WhiteboardLearnerClaim, entry model.SessionWhiteboardEntry,
 	batch WhiteboardBatch) whiteboardClaimVerdict {
 	if !whiteboardClaimStanceKnown(claim.Stance) {
-		return whiteboardClaimFalse
+		return whiteboardClaimRejected
+	}
+	if !whiteboardClaimUpdateKnown(claim.Update) {
+		// The model did not answer the second question, so the program has
+		// one answer where it needs two. An unanswered question is not an
+		// answer that says yes.
+		return whiteboardClaimRejected
 	}
 	message, found := whiteboardBatchMessage(batch, claim.MessageID)
 	if !found {
@@ -169,18 +229,27 @@ func whiteboardVerifyClaim(claim WhiteboardLearnerClaim, entry model.SessionWhit
 		// batch, or a message that does not exist at all. None of them is
 		// the learner's own words, and the assistant confirming something
 		// is not the learner accepting it.
-		return whiteboardClaimFalse
+		return whiteboardClaimRejected
 	}
 	quote := whiteboardPlainText(claim.Quote)
 	if quote == "" || !strings.Contains(whiteboardPlainText(message), quote) {
 		// The quote is not the learner's own wording.
-		return whiteboardClaimFalse
+		return whiteboardClaimRejected
+	}
+	if !whiteboardQuoteCarriesValue(quote, claim.Value) {
+		// The value the claim names is not in the words the claim quotes.
+		//
+		// This is the check that keeps the claim from being two model
+		// fields agreeing with each other and nothing else. The learner
+		// never wrote the number, so there is nothing behind the entry
+		// whatever the entry and the claim say about each other.
+		return whiteboardClaimRejected
 	}
 	if !whiteboardClaimValueMatches(claim.Value, entry.Value) {
 		// The value of the claim is not the value of the entry. A claim
 		// about another value of the same quantity proves nothing about
 		// this one.
-		return whiteboardClaimFalse
+		return whiteboardClaimRejected
 	}
 	subject := whiteboardPlainText(claim.Subject)
 	if subject == "" || !strings.Contains(quote, subject) ||
@@ -188,7 +257,7 @@ func whiteboardVerifyClaim(claim WhiteboardLearnerClaim, entry model.SessionWhit
 		// The subject is not what the learner spoke about, or the entry is
 		// not about that subject. Two subjects that share a number are two
 		// subjects.
-		return whiteboardClaimFalse
+		return whiteboardClaimRejected
 	}
 	attribute := whiteboardPlainText(claim.Attribute)
 	if attribute == "" || !strings.Contains(quote, attribute) ||
@@ -196,12 +265,134 @@ func whiteboardVerifyClaim(claim WhiteboardLearnerClaim, entry model.SessionWhit
 		// The attribute is not what the learner spoke about, or the entry
 		// is not about that attribute. One subject carries many
 		// attributes, and they are not each other's values.
-		return whiteboardClaimFalse
+		return whiteboardClaimRejected
 	}
 	if !strings.EqualFold(strings.TrimSpace(claim.Stance), whiteboardClaimStanceDecided) {
 		return whiteboardClaimUnsettled
 	}
+	if !strings.EqualFold(strings.TrimSpace(claim.Update), whiteboardClaimUpdateYes) {
+		// The model called the words a decision and then said they do not
+		// update the item. The two answers disagree, so the program acts on
+		// neither: what it cannot make out, it does not write.
+		return whiteboardClaimUnsettled
+	}
+	if !whiteboardScopeHolds(message, claim.Value) {
+		// The model says the learner settled this value, but the learner's
+		// own words left a different value of the same quantity standing
+		// after it.
+		//
+		// This is the check that does not depend on the model having read
+		// the words correctly. "Do not change it to 41 pages, keep 26" says
+		// 41 and leaves 26 standing, and no reading of the sentence makes
+		// 41 the current value.
+		return whiteboardClaimRejected
+	}
 	return whiteboardClaimSettled
+}
+
+// whiteboardValuesInText reads every measurement the text carries.
+//
+// A text may carry more than one number, and each of them is one of the
+// values the learner wrote. The order they come in does not matter here:
+// what matters is which of them the claim names.
+func whiteboardValuesInText(text string) []whiteboardValueForm {
+	matches := whiteboardValuePattern.FindAllStringSubmatch(text, -1)
+	forms := make([]whiteboardValueForm, 0, len(matches))
+	for _, match := range matches {
+		if len(match) < 3 {
+			continue
+		}
+		number := 0.0
+		if _, err := fmt.Sscanf(match[1], "%g", &number); err != nil {
+			continue
+		}
+		forms = append(forms, whiteboardValueForm{number: number, unit: match[2], hasNumber: true})
+	}
+	return forms
+}
+
+// whiteboardScopeHolds reports whether the claimed value is the one the
+// learner's own message leaves standing.
+//
+// A message that carries two values of the same quantity says the learner
+// wrote both, and the one that comes last is the one they left standing.
+// This is a fact about the order of the words rather than about their
+// meaning, and it is what tells "do not change it to 41 pages, keep 26" from
+// "change it to 41 pages": in the first the learner ends on 26.
+//
+// A value that is a name has no order, and a message that carries no other
+// value of the same quantity says nothing against it. Both are left to the
+// model's own reading.
+func whiteboardScopeHolds(message, value string) bool {
+	form, ok := whiteboardValueForms(value)
+	if !ok || !form.hasNumber {
+		// A name, or a bare number with no unit to compare: there is no
+		// order to read.
+		return true
+	}
+	last, found := whiteboardLastMeasurement(message, form.unit)
+	if !found {
+		return true
+	}
+	return last.number == form.number
+}
+
+// whiteboardLastMeasurement returns the last measurement of the unit in the
+// text.
+//
+// The unit is compared the way the board compares units - one is taken to be
+// the other when one of them starts the other - so "5 天" and "5 天交" are
+// the same dimension.
+func whiteboardLastMeasurement(text, unit string) (whiteboardValueForm, bool) {
+	last := whiteboardValueForm{}
+	found := false
+	for _, form := range whiteboardValuesInText(text) {
+		if !whiteboardUnitsCompatible(form.unit, unit) {
+			continue
+		}
+		last = form
+		found = true
+	}
+	return last, found
+}
+
+// whiteboardQuoteCarriesValue reports whether the quoted words carry the
+// value the claim names.
+//
+// The value may be written in more than one way, so the comparison is by
+// what the value is rather than by how it is written: "41 页" and "41 页/次"
+// are the same number of pages, and "41 分钟" is not.
+//
+// A value that carries no number is a name, and a name is carried when it is
+// written in the words. A name that is not in them is a name the learner did
+// not say.
+func whiteboardQuoteCarriesValue(quote, value string) bool {
+	claimForm, ok := whiteboardValueForms(value)
+	if !ok {
+		return false
+	}
+	if !claimForm.hasNumber {
+		// A name. The learner has to have written it.
+		name := whiteboardPlainText(claimForm.plain)
+		if name == "" {
+			return false
+		}
+		return strings.Contains(quote, name)
+	}
+	// A measurement. Every number in the quoted words is read, and the
+	// value has to be one of them with a unit that measures the same thing.
+	for _, form := range whiteboardValuesInText(quote) {
+		if !form.hasNumber {
+			continue
+		}
+		if form.number != claimForm.number {
+			continue
+		}
+		if whiteboardUnitsCompatible(form.unit, claimForm.unit) {
+			return true
+		}
+	}
+	return false
 }
 
 // whiteboardBatchMessage returns the text of one of the learner's messages in

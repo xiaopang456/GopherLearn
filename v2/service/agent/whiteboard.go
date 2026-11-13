@@ -653,10 +653,28 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 					diagnostics.VerifiedClaims++
 				case whiteboardClaimUnsettled:
 					diagnostics.UnsettledClaims++
-				default:
+				case whiteboardClaimRejected:
 					diagnostics.RejectedClaims++
 				}
 			}
+		}
+		if claimVerdict == whiteboardClaimRejected {
+			// The model offered evidence for this entry and the evidence
+			// does not hold.
+			//
+			// A rejected claim is not the same as no claim. No claim says
+			// nothing, and the entry is then judged by the label the model
+			// wrote on it. A rejected claim says the model's own account of
+			// the learner's words cannot be confirmed, and an entry whose
+			// account of the learner's words is wrong is not one to write.
+			//
+			// So the entry is refused here, before any of the paths that
+			// would put it on the board: it does not become the learner's
+			// own, it does not go on a board that is empty, and it does not
+			// replace a value the board already holds. The rest of the
+			// proposal is unaffected.
+			diagnostics.DroppedEntries++
+			continue
 		}
 		if claimVerdict == whiteboardClaimUnsettled && origin == model.SessionWhiteboardOriginUser {
 			// The entry says it is the learner's own, and the learner's own
@@ -720,7 +738,23 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 				// model wrote on it. A label the citations do not support
 				// is the model's mistake, and the entry is not thrown away
 				// with it.
+				//
+				// The one thing the citations cannot decide is whether the
+				// learner settled the value, and that is what a claim is
+				// for. An entry whose own evidence says the learner did
+				// settle it is the learner's own; one whose evidence says
+				// they did not is not raised by this branch, however the
+				// model labelled it.
 				switch {
+				case claimVerdict == whiteboardClaimUnsettled:
+					// The learner's own words are the evidence and they
+					// do not settle the value. The entry does not become
+					// the learner's current fact, and it does not become a
+					// product the learner took on either: what the label
+					// says the learner accepted is not what the words
+					// behind the entry say.
+					diagnostics.DroppedEntries++
+					continue
 				case !citesAssistantMessage(ids, batch) &&
 					origin == model.SessionWhiteboardOriginAssistantAccepted:
 					// The entry says the learner took a proposal on, and

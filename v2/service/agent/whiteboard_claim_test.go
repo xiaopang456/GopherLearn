@@ -26,10 +26,19 @@ import (
 )
 
 // learnerClaim is the evidence one entry rests on.
-func learnerClaim(key string, messageID uint, quote, subject, attribute, value, stance string) WhiteboardLearnerClaim {
+//
+// The update answer is "yes" unless the test says otherwise: most of these
+// cases are about the checks that come before it, and the ones that are
+// about the answer itself say so.
+func learnerClaim(key string, messageID uint, quote, subject, attribute, value, stance string, update ...string) WhiteboardLearnerClaim {
+	answer := whiteboardClaimUpdateYes
+	if len(update) > 0 {
+		answer = update[0]
+	}
 	return WhiteboardLearnerClaim{
 		Key: key, MessageID: messageID, Quote: quote,
 		Subject: subject, Attribute: attribute, Value: value, Stance: stance,
+		Update: answer,
 	}
 }
 
