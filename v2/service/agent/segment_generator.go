@@ -977,11 +977,11 @@ func (g *ModelSegmentGenerator) segmentDeltaPrompt() string {
 // nothing, and a segment with no points is not a segment.
 //
 // When the assistant's products are recorded there is something else that
-// may be given up first. A product nobody accepted is the least the segment
-// is worth keeping - nobody agreed to it - so it goes before anything of the
-// learner's, oldest first. The learner's own points and the products the
-// learner took on are not dropped at all: the renderer trims them for
-// display, which is a different thing from the segment giving them up.
+// may be given up first, and the order in which it is given up is the one in
+// summary_segment_budget.go: the words that say the same thing twice go
+// first, then the words go - a point that does not fit is cut short rather
+// than removed - and only then is a point given up, and only when every
+// message it names is named by a point that is kept.
 //
 // The mode that does not record the assistant's products keeps the old rule
 // exactly: the tail went first, and nothing else changed.
@@ -989,15 +989,34 @@ func trimSegmentToRenderedBudget(content model.SessionSummarySegmentContent,
 	firstMessageID, lastMessageID uint, budget int, assistantContent bool) (model.SessionSummarySegmentContent, int) {
 	dropped := 0
 	if assistantContent {
+		// The words that say the same thing twice go first. Two points that
+		// carry the same text are one point written twice, and the one that
+		// is left names every message both of them named.
+		before := len(content.Points)
+		content.Points = mergeSegmentDuplicates(content.Points)
+		dropped += before - len(content.Points)
+		// Then the products that another point also names go. The message
+		// stays named by the other point, so nothing stops being readable,
+		// and the space they take is not the space the learner's own points
+		// need.
 		for len(content.Points) > 1 &&
 			SegmentContentTokens(content, firstMessageID, lastMessageID) > budget {
-			victim, found := oldestUnacceptedAssistantPoint(content.Points)
+			victim, found := segmentPointToGiveUp(content.Points)
 			if !found {
 				break
 			}
 			content.Points = append(content.Points[:victim], content.Points[victim+1:]...)
 			dropped++
 		}
+		// And then the words go. A point that does not fit is cut short
+		// rather than removed: it keeps its names, its label and its mark,
+		// so what it says about the message stays and only the detail is
+		// fewer.
+		content.Points, _ = shortenSegmentPoints(content.Points, func(points []model.SessionSummarySegmentPoint) int {
+			measured := content
+			measured.Points = points
+			return SegmentContentTokens(measured, firstMessageID, lastMessageID)
+		}, budget)
 		return content, dropped
 	}
 	for len(content.Points) > 1 &&

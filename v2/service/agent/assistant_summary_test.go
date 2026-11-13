@@ -348,11 +348,12 @@ func TestTheUnacceptedProductsGoFirstWhenTheSegmentIsOverBudget(t *testing.T) {
 	}
 }
 
-// The oldest unaccepted product goes first.
+// Two products, each the only thing naming the message it came from.
 //
-// A segment describes what happened last, and the product closest to now is
-// the one the learner is most likely to ask about.
-func TestTheOldestUnacceptedProductGoesFirst(t *testing.T) {
+// Neither is given up. The message would stop being readable, and the reader
+// can only read what the segment names - the original is in the database,
+// and a model cannot open the database. What is cut instead is the words.
+func TestTheProductsThatNameAMessageAreNotGivenUp(t *testing.T) {
 	content := model.SessionSummarySegmentContent{
 		SchemaVersion: model.SessionSummarySegmentSchemaV2,
 		Topic:         "t",
@@ -362,11 +363,20 @@ func TestTheOldestUnacceptedProductGoesFirst(t *testing.T) {
 		},
 	}
 	trimmed, dropped := trimSegmentToRenderedBudget(content, 30, 34, 1, true)
-	if dropped != 1 {
-		t.Fatalf("dropped = %d, want 1", dropped)
+	if dropped != 0 {
+		t.Fatalf("dropped = %d, want 0: %+v", dropped, trimmed.Points)
 	}
-	if len(trimmed.Points) != 1 || trimmed.Points[0].Text != "新的助手产物" {
-		t.Fatalf("the wrong product went: %+v", trimmed.Points)
+	if len(trimmed.Points) != 2 {
+		t.Fatalf("points = %d, want 2: %+v", len(trimmed.Points), trimmed.Points)
+	}
+	names := map[uint]bool{}
+	for _, point := range trimmed.Points {
+		for _, id := range point.EvidenceMessageIDs {
+			names[id] = true
+		}
+	}
+	if !names[31] || !names[34] {
+		t.Fatalf("a message lost its name: %+v", trimmed.Points)
 	}
 }
 

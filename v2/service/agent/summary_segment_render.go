@@ -380,9 +380,12 @@ func renderSummarySegments(segments []model.SessionSummarySegment, document mode
 //
 // When the points do not fit, the assistant's products nobody took on are
 // given up first, oldest first: nobody agreed to them, so they are the least
-// the segment is worth keeping. The learner's own points and the products
-// the learner took on are not given up here - they are trimmed for display,
-// which is a different thing from the segment giving them up.
+// the segment is worth keeping. A point that is the last name of one of its
+// messages is not given up at all, and that is the same rule for the
+// learner's own points and for the assistant's products. The learner's own
+// points and the products the learner took on are not given up here - they
+// are trimmed for display, which is a different thing from the segment
+// giving them up.
 func renderSummarySegment(segment model.SessionSummarySegment, document model.SessionWhiteboardDocument,
 	latestEndMessageID uint, perSegmentTokens int) (string, []uint, bool) {
 	content, err := model.DecodeSessionSummarySegmentContent(segment.Content)
@@ -408,12 +411,27 @@ func renderSummarySegment(segment model.SessionSummarySegment, document model.Se
 	if perSegmentTokens > 0 {
 		// The points that the document can give up are the ones the
 		// document carries as the assistant's: a product nobody took on is
-		// the least the segment is worth keeping. A document that carries
-		// no such point gives nothing up, and the mode that does not record
-		// the assistant's products writes exactly such documents.
+		// the least the segment is worth keeping. A point that is the last
+		// name of one of its messages is kept, because the message would
+		// stop being readable. A document that carries no such point gives
+		// nothing up, and the mode that does not record the assistant's
+		// products writes exactly such documents.
 		var dropped bool
 		points, pointMarks, dropped = dropUnacceptedProducts(points, pointMarks, perSegmentTokens, used)
-		trimmed = dropped
+		trimmed = trimmed || dropped
+		//
+		// The words go before a point does, in the segments that carry the
+		// assistant's products: a point that does not fit is cut short
+		// rather than removed, and it keeps its names. The mode that does
+		// not record the assistant's products is not touched here - it
+		// writes the same blocks it always wrote.
+		if segmentHasAssistantPoint(points) {
+			var shortened bool
+			points, shortened = shortenSegmentPoints(points, func(points []model.SessionSummarySegmentPoint) int {
+				return segmentPointsCost(points, pointMarks, used)
+			}, perSegmentTokens)
+			trimmed = trimmed || shortened
+		}
 	}
 	var evidence []uint
 	for index, point := range points {
@@ -450,6 +468,13 @@ func renderSummarySegment(segment model.SessionSummarySegment, document model.Se
 // happened last, and the product closest to now is the one the learner is
 // most likely to ask about.
 //
+// A point that is the last name of one of its messages is not given up. The
+// message would stop being readable, and the reader can only read what the
+// segment names - the original is in the database, and a model cannot open
+// the database. The rule is the same for the learner's own points and for
+// the assistant's products: a point of the learner's that is the only thing
+// naming a message is kept, exactly as a product of the assistant's is.
+//
 // The learner's own points and the products the learner took on are not
 // given up here.
 func dropUnacceptedProducts(points []model.SessionSummarySegmentPoint, marks []string,
@@ -461,7 +486,7 @@ func dropUnacceptedProducts(points []model.SessionSummarySegmentPoint, marks []s
 		if segmentPointsFit(kept, keptMarks, budget, used) {
 			return kept, keptMarks, dropped
 		}
-		victim, found := oldestUnacceptedAssistantPoint(kept)
+		victim, found := segmentPointToGiveUp(kept)
 		if !found {
 			return kept, keptMarks, dropped
 		}
@@ -482,15 +507,7 @@ func segmentPointsFit(points []model.SessionSummarySegmentPoint, marks []string,
 	if budget <= 0 {
 		return true
 	}
-	for index, point := range points {
-		line := renderSegmentPointLine(point, segmentPointMark(marks, index))
-		cost := rag.EstimateTokens(line) + 1
-		if used+cost > budget {
-			return false
-		}
-		used += cost
-	}
-	return true
+	return segmentPointsCost(points, marks, used) <= budget
 }
 
 // renderSegmentPointLine is one point as it is written into the block.
