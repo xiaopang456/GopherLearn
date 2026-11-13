@@ -101,6 +101,117 @@ func TestTheHypotheticalValueIsNotTheLearnersValue(t *testing.T) {
 	}
 }
 
+// The learner proposed the value rather than settling it. A proposal is not
+// a current fact, so the board keeps what it has.
+func TestTheRequestedValueIsNotTheLearnersValue(t *testing.T) {
+	batch := assistantBatch(95, "阅读计划能不能改成41页，我先想想", 96, "好的。")
+	result, err := ApplyWhiteboardProposal(pagesBoard(), WhiteboardProposal{
+		Constraints: []model.SessionWhiteboardEntry{
+			ownEntry("pages", "阅读计划每次读 41 页", "41 页/次", "", 95),
+		},
+		Claims: []WhiteboardLearnerClaim{
+			learnerClaim("pages", 95, "阅读计划能不能改成41页", "阅读计划", "页", "41页", "proposed"),
+		},
+	}, batch, model.SessionWhiteboardSchemaV2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if boardValues(result.Board)["pages"] != "26 页/次" {
+		t.Fatalf("the board = %+v", result.Board.Constraints)
+	}
+	if result.Diagnostics.UnsettledClaims != 1 {
+		t.Fatalf("unsettled claims = %d, want 1", result.Diagnostics.UnsettledClaims)
+	}
+}
+
+// The learner was not sure about the value. Not sure is not settled, so the
+// board keeps what it has.
+func TestTheUncertainValueIsNotTheLearnersValue(t *testing.T) {
+	batch := assistantBatch(95, "阅读计划好像要改成41页，我不确定", 96, "好的。")
+	result, err := ApplyWhiteboardProposal(pagesBoard(), WhiteboardProposal{
+		Constraints: []model.SessionWhiteboardEntry{
+			ownEntry("pages", "阅读计划每次读 41 页", "41 页/次", "", 95),
+		},
+		Claims: []WhiteboardLearnerClaim{
+			learnerClaim("pages", 95, "阅读计划好像要改成41页", "阅读计划", "页", "41页", "uncertain"),
+		},
+	}, batch, model.SessionWhiteboardSchemaV2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if boardValues(result.Board)["pages"] != "26 页/次" {
+		t.Fatalf("the board = %+v", result.Board.Constraints)
+	}
+}
+
+// The value of another quantity is not this value. The claim says 41
+// minutes and the entry says 41 pages, and the two are not the same value
+// however much they look alike.
+func TestTheValueOfAnotherUnitIsNotTheLearnersValue(t *testing.T) {
+	batch := assistantBatch(95, "阅读计划每次读41分钟", 96, "好的。")
+	result, err := ApplyWhiteboardProposal(pagesBoard(), WhiteboardProposal{
+		Constraints: []model.SessionWhiteboardEntry{
+			ownEntry("pages", "阅读计划每次读 41 页", "41 页/次", "", 95),
+		},
+		Claims: []WhiteboardLearnerClaim{
+			learnerClaim("pages", 95, "阅读计划每次读41分钟", "阅读计划", "分钟", "41分钟", "decided"),
+		},
+	}, batch, model.SessionWhiteboardSchemaV2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if boardValues(result.Board)["pages"] != "26 页/次" {
+		t.Fatalf("the board = %+v", result.Board.Constraints)
+	}
+	if result.Diagnostics.RejectedClaims != 1 {
+		t.Fatalf("rejected claims = %d, want 1", result.Diagnostics.RejectedClaims)
+	}
+}
+
+// The learner ruled the value out on a board that holds nothing. There is no
+// old value to keep, and a value nobody settled is not a value either.
+func TestTheNegatedStatementIsNothingOnAnEmptyBoard(t *testing.T) {
+	batch := assistantBatch(95, "阅读计划不要改成41页", 96, "好的。")
+	result, err := ApplyWhiteboardProposal(model.SessionWhiteboardDocument{
+		SchemaVersion: model.SessionWhiteboardSchemaV2,
+	}, WhiteboardProposal{
+		Constraints: []model.SessionWhiteboardEntry{
+			ownEntry("pages", "阅读计划每次读 41 页", "41 页/次", "", 95),
+		},
+		Claims: []WhiteboardLearnerClaim{
+			learnerClaim("pages", 95, "阅读计划不要改成41页", "阅读计划", "页", "41页", "negated"),
+		},
+	}, batch, model.SessionWhiteboardSchemaV2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Board.Constraints) != 0 {
+		t.Fatalf("the board = %+v", result.Board.Constraints)
+	}
+}
+
+// The learner asked what would happen on a board that holds nothing. There
+// is nothing to keep and nothing that was decided.
+func TestTheHypotheticalStatementIsNothingOnAnEmptyBoard(t *testing.T) {
+	batch := assistantBatch(95, "阅读计划如果改成41页会怎样", 96, "好的。")
+	result, err := ApplyWhiteboardProposal(model.SessionWhiteboardDocument{
+		SchemaVersion: model.SessionWhiteboardSchemaV2,
+	}, WhiteboardProposal{
+		Constraints: []model.SessionWhiteboardEntry{
+			ownEntry("pages", "阅读计划每次读 41 页", "41 页/次", "", 95),
+		},
+		Claims: []WhiteboardLearnerClaim{
+			learnerClaim("pages", 95, "阅读计划如果改成41页会怎样", "阅读计划", "页", "41页", "hypothetical"),
+		},
+	}, batch, model.SessionWhiteboardSchemaV2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Board.Constraints) != 0 {
+		t.Fatalf("the board = %+v", result.Board.Constraints)
+	}
+}
+
 // The learner said the number about another thing. The subject of the claim
 // is not the subject of the entry, so the claim is not evidence for it.
 func TestTheValueOfAnotherThingIsNotTheLearnersValue(t *testing.T) {
