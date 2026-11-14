@@ -882,9 +882,10 @@ func (g *ModelSegmentGenerator) generateOneCall(ctx context.Context,
 		// limit when the batch started still has to be stored, and
 		// giving up here would mean the batch wrote nothing after
 		// paying for both calls.
+		beforeOutputTrim := snapshotBoardEntries(applied.Board)
 		dropped := trimWhiteboardToOutputLimit(&applied.Board, g.maxOutputTokens)
 		applied.Changes = append(applied.Changes, dropped...)
-		markRemovedEntries(&applied.Diagnostics, dropped, "output_budget")
+		markRemovedEntries(&applied.Diagnostics, beforeOutputTrim, applied.Board, "output_budget")
 		applied.Diagnostics.DroppedEntries += len(dropped)
 	}
 	for i := range applied.Diagnostics.Entries {
@@ -1063,9 +1064,10 @@ func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
 			// limit when the batch started still has to be stored, and
 			// giving up here would mean the batch wrote nothing after
 			// paying for both calls.
+			beforeOutputTrim := snapshotBoardEntries(applied.Board)
 			droppedBoard := trimWhiteboardToOutputLimit(&applied.Board, g.maxOutputTokens)
 			applied.Changes = append(applied.Changes, droppedBoard...)
-			markRemovedEntries(&applied.Diagnostics, droppedBoard, "output_budget")
+			markRemovedEntries(&applied.Diagnostics, beforeOutputTrim, applied.Board, "output_budget")
 			applied.Diagnostics.DroppedEntries += len(droppedBoard)
 		}
 		reconcilePriorCall(&diagnostics, applied.Diagnostics, applied.Board)

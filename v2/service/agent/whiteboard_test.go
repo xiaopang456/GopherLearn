@@ -472,8 +472,9 @@ func TestEntryRetentionReportsCapacityAndOutputTrimming(t *testing.T) {
 	if removed == nil || removed.Outcome != "applied" || removed.EntryRetention != "removed" || removed.EntryRetentionReason != "item_capacity" {
 		t.Fatalf("diagnostic=%+v", removed)
 	}
+	before := snapshotBoardEntries(result.Board)
 	changes := trimWhiteboardToOutputLimit(&result.Board, 1)
-	markRemovedEntries(&result.Diagnostics, changes, "output_budget")
+	markRemovedEntries(&result.Diagnostics, before, result.Board, "output_budget")
 	for _, change := range changes {
 		for _, d := range result.Diagnostics.Entries {
 			if d.Key == change.Key && d.EntryRetentionReason != "output_budget" {

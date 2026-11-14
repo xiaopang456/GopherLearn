@@ -272,7 +272,10 @@ type WhiteboardProposal struct {
 // Every field is a count of an intervention, so a run that shows a rising
 // number of them is showing a generator that is drifting, not a board that is
 // misbehaving.
-type whiteboardRemoval struct{ key, value, reason, group string }
+type whiteboardRemoval struct {
+	entry         model.SessionWhiteboardEntry
+	reason, group string
+}
 type anchorRemoval struct {
 	messageID          uint
 	key, value, reason string
@@ -686,6 +689,7 @@ func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal W
 	// in the segment that recorded it.
 	reconcileEntryRetention(&result.Diagnostics, result.Board, "moved_or_replaced")
 	anchorsBeforeTrim := append([]model.SessionWhiteboardAnchor(nil), result.Board.Unverified...)
+	boardBeforeTokenTrim := snapshotBoardEntries(result.Board)
 	droppedForTokens, expiredStatements := trimWhiteboardToTokenLimit(&result.Board)
 	for _, prior := range anchorsBeforeTrim {
 		found := false
@@ -699,7 +703,7 @@ func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal W
 			result.Diagnostics.removedAnchors = append(result.Diagnostics.removedAnchors, anchorRemoval{prior.MessageID, prior.Key, prior.Value, "render_budget"})
 		}
 	}
-	markRemovedEntries(&result.Diagnostics, droppedForTokens, "render_budget")
+	markRemovedEntries(&result.Diagnostics, boardBeforeTokenTrim, result.Board, "render_budget")
 	reconcileAnchorRetention(&result.Diagnostics, result.Board, "render_budget")
 	for _, change := range droppedForTokens {
 		result.Changes = append(result.Changes, change)
@@ -1223,11 +1227,9 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 		diagnostics.SuspiciousDeletes++
 	}
 
+	beforeTrim := boardWithGroup(groupName, merged)
 	trimmed, droppedChanges, droppedDone := trimWhiteboardGroup(merged, doneFirst)
-	markRemovedEntries(&diagnostics, droppedChanges, "item_capacity")
-	for i := range diagnostics.removedEntries {
-		diagnostics.removedEntries[i].group = groupName
-	}
+	markRemovedEntries(&diagnostics, beforeTrim, boardWithGroup(groupName, trimmed), "item_capacity")
 	diagnostics.DroppedDonePlan += droppedDone
 	diagnostics.DroppedEntries += len(droppedChanges)
 	diagnostics.UnconfirmedStatements = len(anchors)
@@ -2165,21 +2167,53 @@ func findReplacementValue(messages []string, number float64, unit string) (float
 }
 
 // These diagnostics describe the generated board, not a committed row or a rendered window.
-func markRemovedEntries(d *WhiteboardDiagnostics, changes []model.SessionSummarySegmentChange, reason string) {
-	for _, c := range changes {
-		if c.Removed {
-			d.removedEntries = append(d.removedEntries, whiteboardRemoval{key: c.Key, value: strings.TrimSpace(c.OldValue), reason: reason})
+func snapshotBoardEntries(board model.SessionWhiteboardDocument) model.SessionWhiteboardDocument {
+	clone := func(in []model.SessionWhiteboardEntry) []model.SessionWhiteboardEntry {
+		out := append([]model.SessionWhiteboardEntry(nil), in...)
+		for i := range out {
+			out[i].SourceMessageIDs = append([]uint(nil), in[i].SourceMessageIDs...)
 		}
+		return out
 	}
-	for i := range d.Entries {
-		e := &d.Entries[i]
-		if e.Outcome != whiteboardEntryOutcomeApplied {
-			continue
-		}
-		for _, c := range changes {
-			if c.Removed && c.Key == e.Key && strings.TrimSpace(c.OldValue) == e.candidateValue {
-				e.EntryRetention = "removed"
-				e.EntryRetentionReason = reason
+	return model.SessionWhiteboardDocument{Constraints: clone(board.Constraints), Plan: clone(board.Plan), OpenItems: clone(board.OpenItems)}
+}
+func boardWithGroup(group string, entries []model.SessionWhiteboardEntry) model.SessionWhiteboardDocument {
+	board := model.SessionWhiteboardDocument{}
+	switch group {
+	case "constraints":
+		board.Constraints = entries
+	case "plan":
+		board.Plan = entries
+	case "open_items":
+		board.OpenItems = entries
+	}
+	return snapshotBoardEntries(board)
+}
+func markRemovedEntries(d *WhiteboardDiagnostics, before, after model.SessionWhiteboardDocument, reason string) {
+	oldGroups := [][]model.SessionWhiteboardEntry{before.Constraints, before.Plan, before.OpenItems}
+	newGroups := [][]model.SessionWhiteboardEntry{after.Constraints, after.Plan, after.OpenItems}
+	for gi, group := range oldGroups {
+		for _, old := range group {
+			found := false
+			for _, current := range newGroups[gi] {
+				if reflect.DeepEqual(old, current) {
+					found = true
+					break
+				}
+			}
+			if found {
+				continue
+			}
+			snapshot := old
+			snapshot.SourceMessageIDs = append([]uint(nil), old.SourceMessageIDs...)
+			event := whiteboardRemoval{entry: snapshot, group: []string{"constraints", "plan", "open_items"}[gi], reason: reason}
+			d.removedEntries = append(d.removedEntries, event)
+			for i := range d.Entries {
+				e := &d.Entries[i]
+				if e.Outcome == whiteboardEntryOutcomeApplied && e.candidateGroup == event.group && e.candidateEntry != nil && reflect.DeepEqual(*e.candidateEntry, event.entry) {
+					e.EntryRetention = "removed"
+					e.EntryRetentionReason = reason
+				}
 			}
 		}
 	}
@@ -2269,7 +2303,7 @@ func reconcilePriorCall(prior *WhiteboardDiagnostics, later WhiteboardDiagnostic
 				e.EntryRetention = "removed"
 				e.EntryRetentionReason = "updated_or_replaced"
 				for _, event := range later.removedEntries {
-					if event.key == e.Key && event.value == e.candidateValue && (event.group == "" || event.group == e.candidateGroup) {
+					if event.group == e.candidateGroup && e.candidateEntry != nil && reflect.DeepEqual(event.entry, *e.candidateEntry) {
 						e.EntryRetentionReason = event.reason
 						break
 					}

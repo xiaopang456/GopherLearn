@@ -788,3 +788,70 @@ func TestSplitGeneratorAnchorRetentionReachesAttemptFile(t *testing.T) {
 		t.Fatalf("missing anchors: %v", seen)
 	}
 }
+
+type sameValueExportModel struct{ calls int }
+
+func (m *sameValueExportModel) WithTools([]*schema.ToolInfo) (modelcomponent.ToolCallingChatModel, error) {
+	return m, nil
+}
+func (m *sameValueExportModel) Stream(context.Context, []*schema.Message, ...modelcomponent.Option) (*schema.StreamReader[*schema.Message], error) {
+	return nil, errors.New("unused")
+}
+func (m *sameValueExportModel) Generate(_ context.Context, input []*schema.Message, _ ...modelcomponent.Option) (*schema.Message, error) {
+	m.calls++
+	match := regexp.MustCompile(`\[message_id=(\d+) role=user\]`).FindStringSubmatch(input[1].Content)
+	if len(match) < 2 {
+		return nil, errors.New("missing user")
+	}
+	id, _ := strconv.Atoi(match[1])
+	items := []map[string]any{}
+	if m.calls == 1 {
+		for i := 0; i < 20; i++ {
+			key := fmt.Sprintf("filler%d", i)
+			if i == 0 {
+				key = "same"
+			}
+			items = append(items, map[string]any{"key": key, "text": "version A", "value": "same", "source_message_ids": []int{id}, "updated_at_message_id": 100})
+		}
+	}
+	if m.calls == 2 {
+		items = append(items, map[string]any{"key": "same", "text": "version B", "value": "same", "source_message_ids": []int{id}, "updated_at_message_id": 1})
+		items = append(items, map[string]any{"key": "new", "text": "new", "value": "new", "source_message_ids": []int{id}, "updated_at_message_id": 101})
+	}
+	obj := map[string]any{"schema_version": 1, "segment": map[string]any{"topic": "test", "points": []any{map[string]any{"text": "point", "evidence_message_ids": []int{id}, "source": "user"}}}, "whiteboard": map[string]any{"schema_version": 1, "constraints": items}}
+	raw, _ := json.Marshal(obj)
+	return schema.AssistantMessage(string(raw), nil), nil
+}
+func TestSameValueVersionsExportDistinctRemovalReasons(t *testing.T) {
+	fake := &sameValueExportModel{}
+	recorder := &recordingChatModel{inner: fake}
+	g, err := agent.NewModelSegmentGenerator(recorder, 1200, 2000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.UseAssistantContent(true)
+	messages := make([]model.Message, 0, 130)
+	for i := 1; i <= 65; i++ {
+		messages = append(messages, model.Message{ID: uint(2*i - 1), IsUser: true, Content: fmt.Sprintf("turn %d", i)}, model.Message{ID: uint(2 * i), Content: strings.Repeat("assistant explanation ", 100)})
+	}
+	collector := newBatchEvidenceCollector(config.AgentConfig{SummarySegmentDebugDump: true}, "run")
+	_, err = runSegmentBatchAttempts(context.Background(), g, recorder, agent.SegmentGenerationInput{Messages: messages, FirstMessageID: 1, LastMessageID: 130}, 1, 1, 0, &batchOutcome{}, collector, model.SessionWhiteboardDocument{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err = WriteBatchEvidence(dir, collector.set().Records); err != nil {
+		t.Fatal(err)
+	}
+	rows := readEvidenceAttempt(t, dir, 1, 1)["entries"].([]any)
+	found := map[int]string{}
+	for _, raw := range rows {
+		r := raw.(map[string]any)
+		if r["key"] == "same" {
+			found[int(r["call_index"].(float64))], _ = r["generated_entry_retention_reason"].(string)
+		}
+	}
+	if found[1] != "updated_or_replaced" || found[2] != "item_capacity" {
+		t.Fatalf("versions=%v", found)
+	}
+}
