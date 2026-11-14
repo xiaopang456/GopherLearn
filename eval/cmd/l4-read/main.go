@@ -69,6 +69,12 @@ func run(args []string, out io.Writer) error {
 	scaledConfig := flags.String("scaled-config", "",
 		"[agentConfig] TOML overlay for a scaled run; absent keeps the product defaults")
 	timeout := flags.Duration("timeout", 0, "read deadline")
+	checkConfig := flags.Bool("check-config", false,
+		"load the product's configuration, report what it says, and exit without calling a model")
+	expectAssistantContent := flags.String("expect-assistant-content", "on",
+		"the assistant-content switch the run needs (on or off)")
+	expectDebugDump := flags.String("expect-debug-dump", "on",
+		"the debug-dump switch the run needs (on or off)")
 	var accepted, forbidden listFlag
 	flags.Var(&accepted, "accepted", "an answer the run passes on (repeatable)")
 	flags.Var(&forbidden, "forbidden", "an answer the run fails on (repeatable)")
@@ -77,6 +83,13 @@ func run(args []string, out io.Writer) error {
 	}
 	if flags.NArg() != 0 {
 		return fmt.Errorf("no positional arguments are accepted")
+	}
+	if *checkConfig {
+		return runConfigCheck([]string{
+			"-repository", *repository,
+			"-expect-assistant-content", *expectAssistantContent,
+			"-expect-debug-dump", *expectDebugDump,
+		}, os.Stdout)
 	}
 	if err := pathguard.CheckAll(map[string]string{"output": *output}); err != nil {
 		return err
