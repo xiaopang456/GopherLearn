@@ -809,6 +809,11 @@ type ContextWindow struct {
 	// stretch of turns it covers and a board entry by the message that
 	// changed it - the same id has different provenances under each.
 	SummarySegmentHistoryGrants []HistoryMessageGrant
+	WhiteboardEntryMessageIDs   []uint
+	WhiteboardEntryKeys         []string
+	WhiteboardDisplayedEntries  []WhiteboardDisplayEntry
+	WhiteboardDisplayedAnchors  []WhiteboardDisplayAnchor
+	WhiteboardAnchorMessageIDs  []uint
 }
 
 type MessageHistoryReader interface {
@@ -1681,10 +1686,17 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	residentText := ""
 	retrievedText := ""
 	var segmentGrants []HistoryMessageGrant
+	var whiteboardEntryIDs, whiteboardAnchorIDs []uint
+	var whiteboardEntryKeys []string
+	var whiteboardDisplayedEntries []WhiteboardDisplayEntry
+	var whiteboardDisplayedAnchors []WhiteboardDisplayAnchor
 	if b.layered != nil {
 		board := renderWhiteboardBlock(layered.BoardDocument, minInt(remaining-4-floorBudget, b.config.MaxWhiteboardTokens))
 		if board.Text != "" {
 			whiteboardText = board.Text
+			whiteboardEntryIDs, whiteboardAnchorIDs = board.EntryMessageIDs, board.AnchorMessageIDs
+			whiteboardEntryKeys = board.EntryKeys
+			whiteboardDisplayedEntries, whiteboardDisplayedAnchors = board.Entries, board.Anchors
 			breakdown.Whiteboard = messageTokenCost(board.Text)
 			remaining -= breakdown.Whiteboard
 			// The grants come from the statements the board really showed.
@@ -1842,7 +1854,9 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		EpisodeSources:       episodeSources,
 		EpisodeHistoryGrants: episodeGrants, SummaryHistoryGrants: summaryGrants,
 		SummarySegmentHistoryGrants: segmentGrants,
-		RecallEmbeddingCalls:        cycle.EmbeddingCalls(), ResolvedTopicKeys: input.ProposedTopicKeys,
+		WhiteboardEntryMessageIDs:   whiteboardEntryIDs, WhiteboardAnchorMessageIDs: whiteboardAnchorIDs,
+		WhiteboardEntryKeys: whiteboardEntryKeys, WhiteboardDisplayedEntries: whiteboardDisplayedEntries, WhiteboardDisplayedAnchors: whiteboardDisplayedAnchors,
+		RecallEmbeddingCalls: cycle.EmbeddingCalls(), ResolvedTopicKeys: input.ProposedTopicKeys,
 		AuthoritativeTopicKeys: input.AuthoritativeTopicKeys, UsedTopicKeys: renderedTopicKeys,
 		PreinjectedMemory: preinjected,
 	}, nil

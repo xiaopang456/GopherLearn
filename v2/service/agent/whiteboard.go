@@ -435,6 +435,14 @@ type WhiteboardEntryOutcome struct {
 	AnchorMessageID uint
 	// AnchorReason is the reason the anchor carries.
 	AnchorReason string
+	// EntryRetention and AnchorRetention describe the generated board after all limits.
+	// These are not persistence or display claims.
+	EntryRetention        string
+	EntryRetentionReason  string
+	AnchorRetention       string
+	AnchorRetentionReason string
+	candidateText         string
+	candidateValue        string
 }
 
 // What became of a proposed entry.
@@ -628,6 +636,8 @@ func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal W
 		result.Diagnostics.ExpiredUnconfirmedStatements += expired
 	}
 
+	reconcileAnchorRetention(&result.Diagnostics, result.Board, "anchor_capacity")
+
 	// One subject does not stay in two places.
 	//
 	// The key is the model's name for an entry and the group is where the
@@ -647,7 +657,10 @@ func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal W
 	// has to stay bounded. Entries are dropped from the oldest end and every
 	// drop is recorded, so a value that leaves the board can still be found
 	// in the segment that recorded it.
+	reconcileEntryRetention(&result.Diagnostics, result.Board, "moved_or_replaced")
 	droppedForTokens, expiredStatements := trimWhiteboardToTokenLimit(&result.Board)
+	markRemovedEntries(&result.Diagnostics, droppedForTokens, "render_budget")
+	reconcileAnchorRetention(&result.Diagnostics, result.Board, "render_budget")
 	for _, change := range droppedForTokens {
 		result.Changes = append(result.Changes, change)
 	}
@@ -665,6 +678,7 @@ func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal W
 	if err := result.Board.Validate(); err != nil {
 		return WhiteboardResult{}, fmt.Errorf("whiteboard result: %w", err)
 	}
+	reconcileEntryRetention(&result.Diagnostics, result.Board, "not_retained")
 	result.Diagnostics.ChangedEntries = countChangedEntries(current, result.Board)
 	return result, nil
 }
@@ -807,7 +821,8 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 		// record is written before the loop moves on: the entries that were
 		// refused are exactly the ones a reader of a run has to find.
 		outcome := WhiteboardEntryOutcome{
-			Key:          strings.TrimSpace(entry.Key),
+			Key:           strings.TrimSpace(entry.Key),
+			candidateText: strings.TrimSpace(entry.Text), candidateValue: strings.TrimSpace(entry.Value),
 			ClaimVerdict: whiteboardClaimVerdictLabel(whiteboardClaimAbsent),
 		}
 		record := func() {
@@ -1110,6 +1125,7 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 				}
 			}
 		}
+		outcome.candidateText = text
 		updated := entry
 		updated.Text = text
 		updated.Key = key
@@ -1162,6 +1178,7 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 	}
 
 	trimmed, droppedChanges, droppedDone := trimWhiteboardGroup(merged, doneFirst)
+	markRemovedEntries(&diagnostics, droppedChanges, "item_capacity")
 	diagnostics.DroppedDonePlan += droppedDone
 	diagnostics.DroppedEntries += len(droppedChanges)
 	diagnostics.UnconfirmedStatements = len(anchors)
@@ -2096,4 +2113,73 @@ func findReplacementValue(messages []string, number float64, unit string) (float
 		}
 	}
 	return 0, false
+}
+
+// These diagnostics describe the generated board, not a committed row or a rendered window.
+func markRemovedEntries(d *WhiteboardDiagnostics, changes []model.SessionSummarySegmentChange, reason string) {
+	for i := range d.Entries {
+		e := &d.Entries[i]
+		if e.Outcome != whiteboardEntryOutcomeApplied {
+			continue
+		}
+		for _, c := range changes {
+			if c.Removed && c.Key == e.Key && strings.TrimSpace(c.OldValue) == e.candidateValue {
+				e.EntryRetention = "removed"
+				e.EntryRetentionReason = reason
+			}
+		}
+	}
+}
+func reconcileEntryRetention(d *WhiteboardDiagnostics, board model.SessionWhiteboardDocument, missing string) {
+	for i := range d.Entries {
+		e := &d.Entries[i]
+		if e.Outcome != whiteboardEntryOutcomeApplied {
+			e.EntryRetention = "not_applied"
+			continue
+		}
+		if e.EntryRetention == "removed" {
+			continue
+		}
+		found := false
+		for _, group := range [][]model.SessionWhiteboardEntry{board.Constraints, board.Plan, board.OpenItems} {
+			for _, item := range group {
+				if item.Key == e.Key && strings.TrimSpace(item.Text) == e.candidateText && strings.TrimSpace(item.Value) == e.candidateValue {
+					found = true
+				}
+			}
+		}
+		if found {
+			e.EntryRetention = "retained"
+			e.EntryRetentionReason = ""
+		} else {
+			e.EntryRetention = "removed"
+			e.EntryRetentionReason = missing
+		}
+	}
+}
+func reconcileAnchorRetention(d *WhiteboardDiagnostics, board model.SessionWhiteboardDocument, missing string) {
+	for i := range d.Entries {
+		e := &d.Entries[i]
+		if e.AnchorMessageID == 0 {
+			e.AnchorRetention = "not_created"
+			continue
+		}
+		if e.AnchorRetention == "removed" {
+			continue
+		}
+		found := false
+		for _, a := range board.Unverified {
+			if a.MessageID == e.AnchorMessageID && strings.TrimSpace(a.Value) == e.candidateValue {
+				found = true
+				break
+			}
+		}
+		if found {
+			e.AnchorRetention = "retained"
+			e.AnchorRetentionReason = ""
+		} else {
+			e.AnchorRetention = "removed"
+			e.AnchorRetentionReason = missing
+		}
+	}
 }

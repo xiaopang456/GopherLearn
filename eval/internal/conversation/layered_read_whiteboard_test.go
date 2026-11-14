@@ -19,6 +19,10 @@ package conversation
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"GopherAI/config"
@@ -99,9 +103,10 @@ func TestTheAuthorisationSaysWhichCardDrewIt(t *testing.T) {
 		{MessageID: 96, SourceKind: agent.HistorySourceWhiteboard, SourceSessionID: "session-1"},
 		{MessageID: 97, SourceKind: agent.HistorySourceSummarySegment, SourceSessionID: "session-1"},
 	}
-	seeded := seededLayered{board: board}
+	_ = board
+	window := agent.ContextWindow{WhiteboardAnchorMessageIDs: []uint{95}, WhiteboardEntryMessageIDs: []uint{96}}
 
-	origins := grantOrigins(grants, seeded)
+	origins := grantOrigins(grants, window)
 	if len(origins[grantOriginWhiteboardAnchor]) != 1 ||
 		origins[grantOriginWhiteboardAnchor][0] != 95 {
 		t.Fatalf("the whiteboard anchor's messages = %v, want the one the statement kept",
@@ -139,7 +144,7 @@ func TestAMessageUnderAnEntryAndAMessageUnderAStatementAreToldApart(t *testing.T
 		{MessageID: 95, SourceKind: agent.HistorySourceWhiteboard, SourceSessionID: "session-1"},
 		{MessageID: 96, SourceKind: agent.HistorySourceWhiteboard, SourceSessionID: "session-1"},
 	}
-	origins := grantOrigins(grants, seededLayered{board: board})
+	origins := grantOrigins(grants, agent.ContextWindow{WhiteboardAnchorMessageIDs: []uint{board.Unverified[0].MessageID}, WhiteboardEntryMessageIDs: board.Constraints[0].SourceMessageIDs})
 	for _, origin := range []string{grantOriginWhiteboardAnchor, grantOriginWhiteboardEntry} {
 		if len(origins[origin]) != 1 {
 			t.Fatalf("%s carries %v, want one message", origin, origins[origin])
@@ -147,5 +152,79 @@ func TestAMessageUnderAnEntryAndAMessageUnderAStatementAreToldApart(t *testing.T
 	}
 	if origins[grantOriginWhiteboardAnchor][0] == origins[grantOriginWhiteboardEntry][0] {
 		t.Fatal("the statement and the entry are the same message")
+	}
+}
+
+// emptyOriginHistory keeps the test focused on the persisted board.
+type emptyOriginHistory struct{}
+
+func (emptyOriginHistory) ListRecentAfter(context.Context, string, uint, int) ([]model.Message, error) {
+	return nil, nil
+}
+
+func TestFinalReadFileReportsOnlyRenderedBoardOrigins(t *testing.T) {
+	for _, tc := range []struct {
+		name, entryText       string
+		wantEntry, wantAnchor bool
+	}{
+		{"both", "short", true, true}, {"entry only", "short", true, false}, {"anchor only", strings.Repeat("long ", 100), false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			board := model.SessionWhiteboardDocument{SchemaVersion: model.SessionWhiteboardSchemaV3, Constraints: []model.SessionWhiteboardEntry{{Key: "k", Text: tc.entryText, Value: "v", SourceMessageIDs: []uint{7}}}, Unverified: []model.SessionWhiteboardAnchor{{Key: "k", Value: "v", MessageID: 7, Reason: model.SessionWhiteboardAnchorNoClaim}}}
+			provider := &stubLayeredProvider{snapshot: agent.LayeredSummarySnapshot{Board: &model.SessionWhiteboard{Version: 1, CoveredMessageID: 7}, BoardDocument: board, CoveredMessageID: 7}}
+			found := false
+			for budget := 1; budget < 500; budget++ {
+				cfg := agent.DefaultContextConfig()
+				cfg.MaxWhiteboardTokens = budget
+				cfg.MinRecentMessages = 0
+				builder, err := agent.NewContextBuilder(cfg, emptyOriginHistory{}, nil, nil, nil, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err = builder.UseLayeredSummaryProvider(provider); err != nil {
+					t.Fatal(err)
+				}
+				run := agent.RunContext{UserID: 1, SessionID: "s", Question: "hello"}
+				window, err := builder.Build(context.Background(), run)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if (len(window.WhiteboardEntryMessageIDs) > 0) != tc.wantEntry || (len(window.WhiteboardAnchorMessageIDs) > 0) != tc.wantAnchor {
+					continue
+				}
+				grants, set := windowGrantSet(window, run)
+				if !set.Covers(7, "s") {
+					t.Fatal("not authorised")
+				}
+				read := LayeredRead{GrantOrigins: grantOrigins(grants, window), PersistedWhiteboard: whiteboardSnapshotOf(board), DisplayedWhiteboardEntryKeys: window.WhiteboardEntryKeys, DisplayedWhiteboardAnchorMessageIDs: window.WhiteboardAnchorMessageIDs}
+				annotatePersistedVisibility(read.PersistedWhiteboard, window)
+				dir := t.TempDir()
+				if err = WriteLayeredReadFiles(dir, read); err != nil {
+					t.Fatal(err)
+				}
+				raw, err := os.ReadFile(filepath.Join(dir, "read.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var decoded LayeredRead
+				if err = json.Unmarshal(raw, &decoded); err != nil {
+					t.Fatal(err)
+				}
+				if (len(decoded.GrantOrigins[grantOriginWhiteboardEntry]) > 0) != tc.wantEntry || (len(decoded.GrantOrigins[grantOriginWhiteboardAnchor]) > 0) != tc.wantAnchor {
+					t.Fatalf("origins=%v", decoded.GrantOrigins)
+				}
+				if decoded.PersistedWhiteboard == nil || len(decoded.PersistedWhiteboard.Constraints) != 1 || len(decoded.PersistedWhiteboard.Anchors) != 1 {
+					t.Fatal("persisted snapshot lost")
+				}
+				if *decoded.PersistedWhiteboard.Constraints[0].Displayed != tc.wantEntry || *decoded.PersistedWhiteboard.Anchors[0].Displayed != tc.wantAnchor {
+					t.Fatal("display status differs from window")
+				}
+				found = true
+				break
+			}
+			if !found {
+				t.Fatal("no budget created requested case")
+			}
+		})
 	}
 }

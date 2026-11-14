@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -450,5 +451,54 @@ func TestTheBoardGivesUpItsEntriesInOrder(t *testing.T) {
 	}
 	if _, found := nextBoardEntryToDrop(board); found {
 		t.Fatal("an empty board still offered an entry")
+	}
+}
+
+func TestEntryRetentionReportsCapacityAndOutputTrimming(t *testing.T) {
+	entries := make([]model.SessionWhiteboardEntry, 21)
+	for i := range entries {
+		entries[i] = whiteboardEntry(fmt.Sprintf("key%d", i), fmt.Sprintf("entry %d", i), fmt.Sprintf("value %d", i), 21)
+	}
+	result, err := ApplyWhiteboardProposal(model.SessionWhiteboardDocument{SchemaVersion: model.SessionWhiteboardSchemaV1}, WhiteboardProposal{Constraints: entries}, whiteboardBatch(21), model.SessionWhiteboardSchemaV1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var removed *WhiteboardEntryOutcome
+	for i := range result.Diagnostics.Entries {
+		if result.Diagnostics.Entries[i].Key == "key20" {
+			removed = &result.Diagnostics.Entries[i]
+		}
+	}
+	if removed == nil || removed.Outcome != "applied" || removed.EntryRetention != "removed" || removed.EntryRetentionReason != "item_capacity" {
+		t.Fatalf("diagnostic=%+v", removed)
+	}
+	changes := trimWhiteboardToOutputLimit(&result.Board, 1)
+	markRemovedEntries(&result.Diagnostics, changes, "output_budget")
+	for _, change := range changes {
+		for _, d := range result.Diagnostics.Entries {
+			if d.Key == change.Key && d.EntryRetentionReason != "output_budget" {
+				t.Fatalf("output trim=%+v", d)
+			}
+		}
+	}
+}
+
+func TestAnchorRetentionDistinguishesCapacityAndRenderBudget(t *testing.T) {
+	board := model.SessionWhiteboardDocument{SchemaVersion: model.SessionWhiteboardSchemaV3}
+	d := WhiteboardDiagnostics{Entries: []WhiteboardEntryOutcome{{AnchorMessageID: 10, candidateValue: "v"}}}
+	reconcileAnchorRetention(&d, board, "anchor_capacity")
+	if d.Entries[0].AnchorRetention != "removed" || d.Entries[0].AnchorRetentionReason != "anchor_capacity" {
+		t.Fatal(d)
+	}
+	d.Entries[0].AnchorRetention = ""
+	board.Unverified = []model.SessionWhiteboardAnchor{{MessageID: 10, Value: "v", Reason: model.SessionWhiteboardAnchorNoClaim}}
+	reconcileAnchorRetention(&d, board, "anchor_capacity")
+	if d.Entries[0].AnchorRetention != "retained" {
+		t.Fatal(d)
+	}
+	board.Unverified = nil
+	reconcileAnchorRetention(&d, board, "render_budget")
+	if d.Entries[0].AnchorRetentionReason != "render_budget" {
+		t.Fatal(d)
 	}
 }

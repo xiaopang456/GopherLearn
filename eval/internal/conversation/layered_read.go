@@ -186,7 +186,12 @@ type LayeredRead struct {
 	// "summary_segment", "summary" and "episode". A message may appear
 	// under more than one: a message the board kept and a segment quoted
 	// was authorised twice.
-	GrantOrigins map[string][]uint `json:"grant_origins,omitempty"`
+	GrantOrigins                        map[string][]uint               `json:"grant_origins,omitempty"`
+	PersistedWhiteboard                 *WhiteboardSnapshot             `json:"persisted_whiteboard,omitempty"`
+	DisplayedWhiteboardEntries          []agent.WhiteboardDisplayEntry  `json:"displayed_whiteboard_entries,omitempty"`
+	DisplayedWhiteboardAnchors          []agent.WhiteboardDisplayAnchor `json:"displayed_whiteboard_anchors,omitempty"`
+	DisplayedWhiteboardEntryKeys        []string                        `json:"displayed_whiteboard_entry_keys,omitempty"`
+	DisplayedWhiteboardAnchorMessageIDs []uint                          `json:"displayed_whiteboard_anchor_message_ids,omitempty"`
 	// ReadMode is the deployment's long-term memory read path, and
 	// ReadsEvidenceBack says whether that path lets a compressed card's
 	// evidence ids be read back at all. They are reported beside the
@@ -621,6 +626,20 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	// The authorization chain: an id the window authorised is readable, an id
 	// it never showed the model is not.
 	checkToolAuthority(s, sessionID, window, seeded, &read)
+	if mode == LayeredArmOn {
+		stored, err := sessiondao.NewRepository(s.db).GetWhiteboard(ctx, 7001, sessionID)
+		if err != nil && !errors.Is(err, model.ErrWhiteboardNotFound) {
+			return read, fmt.Errorf("read persisted whiteboard: %w", err)
+		}
+		if err == nil {
+			document, decodeErr := model.DecodeSessionWhiteboardDocument(stored.Content)
+			if decodeErr != nil {
+				return read, fmt.Errorf("decode persisted whiteboard: %w", decodeErr)
+			}
+			read.PersistedWhiteboard = whiteboardSnapshotOf(document)
+			annotatePersistedVisibility(read.PersistedWhiteboard, window)
+		}
+	}
 
 	// The answer, produced by the product's own runner: the window it builds,
 	// the tools it offers, the loop that runs them, and the call limits the
@@ -1771,6 +1790,37 @@ func inspectWindow(read *LayeredRead, window agent.ContextWindow, seeded seededL
 	}
 }
 
+// annotatePersistedVisibility compares stored rows with the exact rendered cards.
+func annotatePersistedVisibility(snapshot *WhiteboardSnapshot, window agent.ContextWindow) {
+	if snapshot == nil {
+		return
+	}
+	for groupIndex, group := range [][]WhiteboardEntrySnapshot{snapshot.Constraints, snapshot.Plan, snapshot.OpenItems} {
+		name := []string{"constraints", "plan", "open_items"}[groupIndex]
+		for i := range group {
+			shown := false
+			for _, card := range window.WhiteboardDisplayedEntries {
+				if card.Group == name && card.Key == group[i].Key && card.Value == group[i].Value {
+					shown = true
+					break
+				}
+			}
+			group[i].Displayed = &shown
+		}
+	}
+	for i := range snapshot.Anchors {
+		shown := false
+		for _, card := range window.WhiteboardDisplayedAnchors {
+			a := snapshot.Anchors[i]
+			if card.Key == a.Key && card.Value == a.Value && card.MessageID == a.MessageID {
+				shown = true
+				break
+			}
+		}
+		snapshot.Anchors[i].Displayed = &shown
+	}
+}
+
 // segmentSeqsIn reads the segment numbers out of a rendered block.
 //
 // The renderer's own header is [第 N 段 · 消息 a-b · time], so the number sits
@@ -1879,7 +1929,11 @@ func checkToolAuthority(s *Sandbox, sessionID string, window agent.ContextWindow
 	grants, set := windowGrantSet(window, run)
 	read.Grants = len(grants)
 	read.GrantSources = grantSources(grants)
-	read.GrantOrigins = grantOrigins(grants, seeded)
+	read.GrantOrigins = grantOrigins(grants, window)
+	read.DisplayedWhiteboardEntries = window.WhiteboardDisplayedEntries
+	read.DisplayedWhiteboardAnchors = window.WhiteboardDisplayedAnchors
+	read.DisplayedWhiteboardEntryKeys = window.WhiteboardEntryKeys
+	read.DisplayedWhiteboardAnchorMessageIDs = window.WhiteboardAnchorMessageIDs
 	visible := visibleMessageIDs(window)
 	for _, grant := range grants {
 		if !containsUint(read.GrantedIDs, grant.MessageID) {
@@ -1979,27 +2033,16 @@ const (
 // unconfirmed statement keeps it findable without confirming it. The product
 // grants both under one kind, so the split has to be made here - and it is
 // the split that says whether a value was confirmed or only preserved.
-func grantOrigins(grants []agent.HistoryMessageGrant, seeded seededLayered) map[string][]uint {
+func grantOrigins(grants []agent.HistoryMessageGrant, window agent.ContextWindow) map[string][]uint {
 	if len(grants) == 0 {
 		return nil
 	}
-	anchors := map[uint]struct{}{}
-	entries := map[uint]struct{}{}
-	for _, anchor := range seeded.board.Unverified {
-		if anchor.MessageID != 0 {
-			anchors[anchor.MessageID] = struct{}{}
-		}
+	anchors, entries := map[uint]struct{}{}, map[uint]struct{}{}
+	for _, id := range window.WhiteboardAnchorMessageIDs {
+		anchors[id] = struct{}{}
 	}
-	for _, group := range [][]model.SessionWhiteboardEntry{
-		seeded.board.Constraints, seeded.board.Plan, seeded.board.OpenItems,
-	} {
-		for _, entry := range group {
-			for _, id := range entry.SourceMessageIDs {
-				if id != 0 {
-					entries[id] = struct{}{}
-				}
-			}
-		}
+	for _, id := range window.WhiteboardEntryMessageIDs {
+		entries[id] = struct{}{}
 	}
 	origins := make(map[string][]uint, 5)
 	add := func(origin string, id uint) {
@@ -2018,13 +2061,10 @@ func grantOrigins(grants []agent.HistoryMessageGrant, seeded seededLayered) map[
 		case agent.HistorySourceWhiteboard:
 			if _, ok := anchors[grant.MessageID]; ok {
 				add(grantOriginWhiteboardAnchor, grant.MessageID)
-				continue
 			}
 			if _, ok := entries[grant.MessageID]; ok {
 				add(grantOriginWhiteboardEntry, grant.MessageID)
-				continue
 			}
-			add(grantOriginWhiteboardEntry, grant.MessageID)
 		case agent.HistorySourceSummarySegment:
 			add(grantOriginSummarySegment, grant.MessageID)
 		case agent.HistorySourceSummary:

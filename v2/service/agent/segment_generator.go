@@ -878,6 +878,7 @@ func (g *ModelSegmentGenerator) generateOneCall(ctx context.Context,
 		// paying for both calls.
 		dropped := trimWhiteboardToOutputLimit(&applied.Board, g.maxOutputTokens)
 		applied.Changes = append(applied.Changes, dropped...)
+		markRemovedEntries(&applied.Diagnostics, dropped, "output_budget")
 		applied.Diagnostics.DroppedEntries += len(dropped)
 	}
 	applied.Diagnostics.DroppedPoints = droppedPoints
@@ -1031,7 +1032,6 @@ func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
 			return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInvalidOutput,
 				calls: segmentCallRecords(ledger), err: err}
 		}
-		diagnostics.add(applied.Diagnostics)
 
 		// A board that does not fit the output budget is not a batch that
 		// failed. The rewrite was the wrong shape for this batch, so the
@@ -1049,8 +1049,10 @@ func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
 			// paying for both calls.
 			droppedBoard := trimWhiteboardToOutputLimit(&applied.Board, g.maxOutputTokens)
 			applied.Changes = append(applied.Changes, droppedBoard...)
+			markRemovedEntries(&applied.Diagnostics, droppedBoard, "output_budget")
 			applied.Diagnostics.DroppedEntries += len(droppedBoard)
 		}
+		diagnostics.add(applied.Diagnostics)
 		changes = append(changes, applied.Changes...)
 		current = applied.Board
 		boardContent, err := model.MarshalSessionWhiteboardDocument(applied.Board)

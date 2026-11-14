@@ -163,6 +163,7 @@ type WhiteboardEntrySnapshot struct {
 	Value            string `json:"value"`
 	Origin           string `json:"origin,omitempty"`
 	SourceMessageIDs []uint `json:"source_message_ids,omitempty"`
+	Displayed        *bool  `json:"displayed,omitempty"`
 }
 
 // WhiteboardAnchorSnapshot is one unconfirmed statement of a board at one
@@ -176,6 +177,7 @@ type WhiteboardAnchorSnapshot struct {
 	Value     string `json:"value"`
 	MessageID uint   `json:"message_id"`
 	Reason    string `json:"reason"`
+	Displayed *bool  `json:"displayed,omitempty"`
 }
 
 // whiteboardSnapshotOf reads a board into a snapshot.
@@ -289,14 +291,18 @@ type batchEvidenceCallFile struct {
 // and a record that carried them would put the learner's text into a file
 // that is read by people who do not need it.
 type batchEvidenceEntry struct {
-	Key             string `json:"key"`
-	ClaimVerdict    string `json:"claim_verdict"`
-	ClaimReason     string `json:"claim_reason,omitempty"`
-	ClaimMessageID  uint   `json:"claim_message_id,omitempty"`
-	Outcome         string `json:"outcome"`
-	OutcomeReason   string `json:"outcome_reason,omitempty"`
-	AnchorMessageID uint   `json:"anchor_message_id,omitempty"`
-	AnchorReason    string `json:"anchor_reason,omitempty"`
+	Key                   string `json:"key"`
+	ClaimVerdict          string `json:"claim_verdict"`
+	ClaimReason           string `json:"claim_reason,omitempty"`
+	ClaimMessageID        uint   `json:"claim_message_id,omitempty"`
+	Outcome               string `json:"outcome"`
+	OutcomeReason         string `json:"outcome_reason,omitempty"`
+	AnchorMessageID       uint   `json:"anchor_message_id,omitempty"`
+	AnchorReason          string `json:"anchor_reason,omitempty"`
+	EntryRetention        string `json:"generated_entry_retention,omitempty"`
+	EntryRetentionReason  string `json:"generated_entry_retention_reason,omitempty"`
+	AnchorRetention       string `json:"generated_anchor_retention,omitempty"`
+	AnchorRetentionReason string `json:"generated_anchor_retention_reason,omitempty"`
 }
 
 // WriteBatchEvidence writes the evidence of every attempt next to the run's
@@ -354,6 +360,8 @@ func writeBatchEvidenceAttempt(dir string, record BatchEvidence) error {
 			OutcomeReason:   entry.OutcomeReason,
 			AnchorMessageID: entry.AnchorMessageID,
 			AnchorReason:    entry.AnchorReason,
+			EntryRetention:  entry.EntryRetention, EntryRetentionReason: entry.EntryRetentionReason,
+			AnchorRetention: entry.AnchorRetention, AnchorRetentionReason: entry.AnchorRetentionReason,
 		})
 	}
 	name := fmt.Sprintf("batch-%02d-attempt-%02d.json", record.Batch, record.Attempt)

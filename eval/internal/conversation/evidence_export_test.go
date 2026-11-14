@@ -624,3 +624,21 @@ func TestNoEvidenceIsWrittenWhenTheDebugDumpIsOff(t *testing.T) {
 		t.Fatalf("the evidence directory exists although the dump was off: %v", statErr)
 	}
 }
+
+func TestGeneratedRetentionIsWrittenSeparatelyFromSnapshots(t *testing.T) {
+	dir := t.TempDir()
+	before := whiteboardSnapshotOf(model.SessionWhiteboardDocument{SchemaVersion: model.SessionWhiteboardSchemaV3})
+	after := whiteboardSnapshotOf(model.SessionWhiteboardDocument{SchemaVersion: model.SessionWhiteboardSchemaV3})
+	records := []BatchEvidence{{Batch: 1, Attempt: 1, Outcome: EvidenceOutcomeGenerated, WhiteboardBefore: before, WhiteboardAfter: after, Entries: []agent.WhiteboardEntryOutcome{{Key: "key20", Outcome: "applied", EntryRetention: "removed", EntryRetentionReason: "item_capacity", AnchorMessageID: 12, AnchorRetention: "removed", AnchorRetentionReason: "render_budget"}}}}
+	if err := WriteBatchEvidence(dir, records); err != nil {
+		t.Fatal(err)
+	}
+	file := readEvidenceAttempt(t, dir, 1, 1)
+	entries := file["entries"].([]any)
+	e := entries[0].(map[string]any)
+	for key, want := range map[string]string{"outcome": "applied", "generated_entry_retention": "removed", "generated_entry_retention_reason": "item_capacity", "generated_anchor_retention": "removed", "generated_anchor_retention_reason": "render_budget"} {
+		if e[key] != want {
+			t.Fatalf("%s=%v want %s", key, e[key], want)
+		}
+	}
+}

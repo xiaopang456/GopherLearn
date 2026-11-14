@@ -53,6 +53,19 @@ const (
 )
 
 // renderedWhiteboard is the board as it actually reached the window.
+// WhiteboardDisplayEntry identifies a statement actually included in the window.
+type WhiteboardDisplayEntry struct {
+	Group string `json:"group"`
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// WhiteboardDisplayAnchor identifies an unconfirmed statement actually included in the window.
+type WhiteboardDisplayAnchor struct {
+	Key       string `json:"key"`
+	Value     string `json:"value"`
+	MessageID uint   `json:"message_id"`
+}
 type renderedWhiteboard struct {
 	// Text is the block, ready to be put in the window.
 	Text string
@@ -60,6 +73,11 @@ type renderedWhiteboard struct {
 	// rendered. The goal and the entries are statements; the ones the budget
 	// cut are not, and they authorise nothing.
 	EvidenceMessageIDs []uint
+	EntryMessageIDs    []uint
+	EntryKeys          []string
+	Entries            []WhiteboardDisplayEntry
+	Anchors            []WhiteboardDisplayAnchor
+	AnchorMessageIDs   []uint
 }
 
 // renderWhiteboardBlock renders the board under a token budget.
@@ -91,9 +109,10 @@ func renderWhiteboardBlock(document model.SessionWhiteboardDocument, budget int)
 			body.WriteString("\n" + line)
 			used += cost
 			out.EvidenceMessageIDs = append(out.EvidenceMessageIDs, document.Goal.SourceMessageIDs...)
+			out.EntryMessageIDs = append(out.EntryMessageIDs, document.Goal.SourceMessageIDs...)
 		}
 	}
-	for _, group := range [][]model.SessionWhiteboardEntry{document.Constraints, document.Plan, document.OpenItems} {
+	for groupIndex, group := range [][]model.SessionWhiteboardEntry{document.Constraints, document.Plan, document.OpenItems} {
 		for _, entry := range group {
 			line := renderWhiteboardEntry(entry)
 			cost := rag.EstimateTokens(line) + 1
@@ -103,6 +122,9 @@ func renderWhiteboardBlock(document model.SessionWhiteboardDocument, budget int)
 			body.WriteString("\n" + line)
 			used += cost
 			out.EvidenceMessageIDs = append(out.EvidenceMessageIDs, entry.SourceMessageIDs...)
+			out.EntryMessageIDs = append(out.EntryMessageIDs, entry.SourceMessageIDs...)
+			out.EntryKeys = append(out.EntryKeys, entry.Key)
+			out.Entries = append(out.Entries, WhiteboardDisplayEntry{Group: []string{"constraints", "plan", "open_items"}[groupIndex], Key: entry.Key, Value: entry.Value})
 		}
 	}
 	// The unconfirmed statements are rendered under a header of their own.
@@ -126,6 +148,8 @@ func renderWhiteboardBlock(document model.SessionWhiteboardDocument, budget int)
 				body.WriteString("\n" + line)
 				used += cost
 				out.EvidenceMessageIDs = append(out.EvidenceMessageIDs, anchor.MessageID)
+				out.AnchorMessageIDs = append(out.AnchorMessageIDs, anchor.MessageID)
+				out.Anchors = append(out.Anchors, WhiteboardDisplayAnchor{Key: anchor.Key, Value: anchor.Value, MessageID: anchor.MessageID})
 			}
 		}
 	}

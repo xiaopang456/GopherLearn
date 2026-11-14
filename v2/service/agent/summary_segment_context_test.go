@@ -554,3 +554,39 @@ func TestThePreselectorSpendsItsBudgetOnWhatTheWindowSends(t *testing.T) {
 		t.Fatalf("the segment the block fits was not selected: %+v", selected)
 	}
 }
+
+func TestRenderedWhiteboardOriginsFollowVisibleStatements(t *testing.T) {
+	board := model.SessionWhiteboardDocument{SchemaVersion: model.SessionWhiteboardSchemaV3,
+		Constraints: []model.SessionWhiteboardEntry{{Key: "k", Text: strings.Repeat("entry ", 80), Value: "v", SourceMessageIDs: []uint{7}}},
+		Unverified:  []model.SessionWhiteboardAnchor{{Key: "k", MessageID: 7, Reason: model.SessionWhiteboardAnchorNoClaim}},
+	}
+	full := renderWhiteboardBlock(board, unlimitedTokens)
+	if len(full.EntryMessageIDs) != 1 || len(full.AnchorMessageIDs) != 1 {
+		t.Fatalf("both: %+v", full)
+	}
+	foundEntryOnly, foundAnchorOnly := false, false
+	for budget := 1; budget < 1000; budget++ {
+		rendered := renderWhiteboardBlock(board, budget)
+		if len(rendered.EntryMessageIDs) > 0 && len(rendered.AnchorMessageIDs) == 0 {
+			foundEntryOnly = true
+		}
+		if len(rendered.EntryMessageIDs) == 0 && len(rendered.AnchorMessageIDs) > 0 {
+			foundAnchorOnly = true
+		}
+	}
+	// An expensive entry can be cut while the smaller anchor fits. A short
+	// entry produces the converse under a suitable budget.
+	if !foundAnchorOnly {
+		t.Fatal("no budget showed anchor alone")
+	}
+	board.Constraints[0].Text = "short"
+	for budget := 1; budget < 1000; budget++ {
+		rendered := renderWhiteboardBlock(board, budget)
+		if len(rendered.EntryMessageIDs) > 0 && len(rendered.AnchorMessageIDs) == 0 {
+			foundEntryOnly = true
+		}
+	}
+	if !foundEntryOnly {
+		t.Fatal("no budget showed entry alone")
+	}
+}
