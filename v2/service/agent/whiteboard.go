@@ -1036,9 +1036,10 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 		}
 
 		if isExisting && whiteboardSameMeasurement(previous.Value, entry.Value) &&
-			(previous.Text != text || previous.State != entry.State) {
+			previous.Text != text {
 			// The entry would take the place of a value the board already
-			// holds, and it brings no new number.
+			// holds, it brings no new number, and it says something else
+			// about it.
 			//
 			// A number is not the name of a thing. The pages a learner
 			// planned to read and the pages they actually read are two
@@ -1052,6 +1053,10 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 			// are kept as an unconfirmed statement: a reader can find them
 			// and ask for the message they came from. What the board
 			// holds is left as it was.
+			//
+			// An entry that says the same thing is not a change, and an
+			// entry that only moves a plan step along is not a change of
+			// what the step is about: neither of them is refused here.
 			anchors, outcome.AnchorMessageID, outcome.AnchorReason =
 				whiteboardAppendAnchor(anchors, entry, claim, hasClaim, batch,
 					model.SessionWhiteboardAnchorSameNumber)

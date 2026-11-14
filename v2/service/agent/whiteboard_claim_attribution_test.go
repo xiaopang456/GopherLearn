@@ -35,8 +35,6 @@ import (
 const (
 	// firstBookMessage is a page count the learner settled about one book.
 	firstBookMessage = "甲书以后每次读41页"
-	// secondBookMessage is a page count the learner settled about another.
-	secondBookMessage = "乙书以后每次读41页"
 	// pagesActuallyReadMessage is a page count the learner reports about the
 	// pages they read, not about the pages they planned to read.
 	pagesActuallyReadMessage = "阅读计划这次实际读完了41页"
@@ -192,6 +190,46 @@ func TestANewNumberStillTakesThePlaceOfTheOldOne(t *testing.T) {
 	}
 	if result.Diagnostics.VerifiedClaims != 1 {
 		t.Fatalf("verified claims = %d, want 1", result.Diagnostics.VerifiedClaims)
+	}
+}
+
+// A step that only moves along is not a change of what it is about.
+//
+// The board holds the value and the wording, and the entry says the same
+// thing and only marks the step as done. A number that says nothing new
+// is not the reason to refuse that: what the step is about has not
+// changed, only where it is.
+func TestTheStepThatOnlyMovesAlongIsNotRefused(t *testing.T) {
+	current := model.SessionWhiteboardDocument{
+		SchemaVersion: model.SessionWhiteboardSchemaV2,
+		Plan: []model.SessionWhiteboardEntry{
+			{Key: "reading_plan_pages", Text: "阅读计划每次读 41 页", Value: "41 页",
+				State: "open", SourceMessageIDs: []uint{51}},
+		},
+	}
+	batch := assistantBatch(95, "阅读计划以后每次读41页", 96, "往后按新的页数走。")
+	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{
+		Plan: []model.SessionWhiteboardEntry{
+			{Key: "reading_plan_pages", Text: "阅读计划每次读 41 页", Value: "41 页",
+				State: "done", SourceMessageIDs: []uint{95}},
+		},
+		Claims: []WhiteboardLearnerClaim{
+			learnerClaim("reading_plan_pages", 95, "阅读计划以后每次读41页", "阅读计划", "每次读多少页",
+				"41 页", whiteboardClaimStanceDecided),
+		},
+	}, batch, model.SessionWhiteboardSchemaV2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, found := boardEntry(result.Board, "reading_plan_pages")
+	if !found {
+		t.Fatalf("the board does not carry the plan: %+v", result.Board.Plan)
+	}
+	if entry.State != "done" {
+		t.Fatalf("the step's state = %q, want %q", entry.State, "done")
+	}
+	if result.Diagnostics.DroppedEntries != 0 {
+		t.Fatalf("dropped entries = %d, want 0", result.Diagnostics.DroppedEntries)
 	}
 }
 
