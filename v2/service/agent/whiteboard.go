@@ -374,40 +374,105 @@ type WhiteboardDiagnostics struct {
 	// are simply no longer carried, and the count says so.
 	ExpiredUnconfirmedStatements int
 
-	// ClaimCandidates are the candidate entries the engine refused, and the
-	// reason each one was refused.
+	// Entries are what became of every entry the proposal brought, one row
+	// each, and the three layers of the decision are kept apart.
 	//
 	// The counters above say how many claims did not hold. They cannot say
 	// which entry was refused or which check refused it, so a refusal was a
 	// number and not a place. These are the place: the key is the model's
-	// own name for the entry, the reason is the check that refused it, and
-	// the message id is the learner's message the claim rested on.
+	// own name for the entry, the claim says what the engine made of the
+	// model's own account of the learner's words, the outcome says what
+	// became of the entry itself, and the anchor says whether the learner's
+	// words stayed findable.
+	//
+	// The three layers are apart because they are three different facts. A
+	// claim that holds is not an entry on the board, and an entry that was
+	// refused may still have left the learner's words findable.
 	//
 	// The learner's own words are not here. They are in the model's answer,
 	// and a count that carried them would put the learner's text into a
 	// counter.
-	ClaimCandidates []WhiteboardClaimCandidate
+	Entries []WhiteboardEntryOutcome
 }
 
-// WhiteboardClaimCandidate is one candidate entry the engine refused.
+// WhiteboardEntryOutcome is what became of one proposed entry.
 //
-// It says what was refused and why, and it is what a reader of a run needs to
-// find the refusal in the model's own answer instead of inferring it from a
-// count.
-type WhiteboardClaimCandidate struct {
+// The three layers are kept apart on purpose. The claim is the model's own
+// account of the learner's words and what the engine made of it; the outcome
+// is what became of the entry itself; the anchor is whether the learner's
+// words were kept findable, and under which message.
+//
+// A claim that holds is not an entry on the board, so a diagnostic that
+// reported only the claim could not tell a reader that the value never
+// landed. And an entry that was refused is not a lost turn: the learner's
+// words may still be readable under an anchor, which is a different thing
+// again from the value being confirmed.
+type WhiteboardEntryOutcome struct {
 	// Key is the model's own name for the entry.
 	Key string
-	// Reason is the check that refused it.
+	// ClaimVerdict is what the engine made of the claim: settled,
+	// unsettled, rejected, ambiguous or absent.
+	//
+	// Every verdict has its own name. A verdict that is not named falls into
+	// "absent", which says nothing was asserted - and a claim that holds
+	// used to be indistinguishable from that.
+	ClaimVerdict string
+	// ClaimReason is why the claim did not hold. It is empty when the claim
+	// held.
 	//
 	// It is one of the fixed reasons in the model package, so it never
 	// carries the learner's own words.
-	Reason string
-	// MessageID is the learner's message the claim rested on.
-	MessageID uint
-	// Verdict says what the engine made of the claim: rejected, unsettled
-	// or ambiguous.
-	Verdict string
+	ClaimReason string
+	// ClaimMessageID is the learner's message the claim rested on. It is
+	// zero when the entry carried no claim.
+	ClaimMessageID uint
+	// Outcome is what became of the entry: applied, refused or dropped.
+	Outcome string
+	// OutcomeReason is why. It is empty when the entry was applied.
+	OutcomeReason string
+	// AnchorMessageID is the message the learner's own words were kept
+	// under. It is zero when no anchor was made.
+	AnchorMessageID uint
+	// AnchorReason is the reason the anchor carries.
+	AnchorReason string
 }
+
+// What became of a proposed entry.
+//
+// The names are a fixed set, so a diagnostic never carries the learner's own
+// words and never becomes free text in a metric.
+const (
+	// whiteboardEntryOutcomeApplied says the entry went onto the board.
+	whiteboardEntryOutcomeApplied = "applied"
+	// whiteboardEntryOutcomeRefused says a check refused the entry: the
+	// value was not confirmed, or the entry could not be sourced.
+	whiteboardEntryOutcomeRefused = "refused"
+	// whiteboardEntryOutcomeDropped says the entry never reached a check -
+	// it had no text, or the proposal repeated a key.
+	whiteboardEntryOutcomeDropped = "dropped"
+)
+
+// Why an entry did not go on the board.
+//
+// The reasons that are about the learner's own words are the ones in the
+// model package, because they are the same reasons the unconfirmed
+// statements carry. The rest are about the shape of the proposal.
+const (
+	// whiteboardEntryReasonEmptyText says the entry had no text.
+	whiteboardEntryReasonEmptyText = "empty_text"
+	// whiteboardEntryReasonDuplicateKey says the proposal brought the same
+	// key twice and the later one won.
+	whiteboardEntryReasonDuplicateKey = "duplicate_key"
+	// whiteboardEntryReasonOriginUnknown says the entry named an origin
+	// the program does not know.
+	whiteboardEntryReasonOriginUnknown = "origin_unknown"
+	// whiteboardEntryReasonAssistantProduct says the entry was the
+	// assistant's own proposal, which the learner did not take on.
+	whiteboardEntryReasonAssistantProduct = "assistant_product"
+	// whiteboardEntryReasonUnprovenAcceptance says the entry said the
+	// learner took a proposal on and the citations did not show it.
+	whiteboardEntryReasonUnprovenAcceptance = "unproven_acceptance"
+)
 
 // WhiteboardResult is the outcome of applying one proposal.
 type WhiteboardResult struct {
@@ -520,22 +585,27 @@ func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal W
 		result.Changes = append(result.Changes, *goalChange)
 	}
 
+	// The messages the board already carries. They are the session's own
+	// record of what was said, and a proposal that cites one of them names
+	// something that really happened.
+	carried := whiteboardBoardEvidenceIDs(current)
+
 	constraints, constraintChanges, constraintDiag, constraintAnchors := applyWhiteboardGroup(
-		current.Constraints, proposal.Constraints, batch, false, schemaVersion, proposal)
+		current.Constraints, proposal.Constraints, batch, false, schemaVersion, proposal, carried)
 	result.Board.Constraints = constraints
 	result.Changes = append(result.Changes, constraintChanges...)
 	result.Diagnostics.add(constraintDiag)
 	anchors = append(anchors, constraintAnchors...)
 
 	plan, planChanges, planDiag, planAnchors := applyWhiteboardGroup(
-		current.Plan, proposal.Plan, batch, true, schemaVersion, proposal)
+		current.Plan, proposal.Plan, batch, true, schemaVersion, proposal, carried)
 	result.Board.Plan = plan
 	result.Changes = append(result.Changes, planChanges...)
 	result.Diagnostics.add(planDiag)
 	anchors = append(anchors, planAnchors...)
 
 	openItems, openChanges, openDiag, openAnchors := applyWhiteboardGroup(
-		current.OpenItems, proposal.OpenItems, batch, false, schemaVersion, proposal)
+		current.OpenItems, proposal.OpenItems, batch, false, schemaVersion, proposal, carried)
 	result.Board.OpenItems = openItems
 	result.Changes = append(result.Changes, openChanges...)
 	result.Diagnostics.add(openDiag)
@@ -621,7 +691,7 @@ func (d *WhiteboardDiagnostics) add(other WhiteboardDiagnostics) {
 	d.ResolvedUnconfirmedStatements += other.ResolvedUnconfirmedStatements
 	d.ExpiredUnconfirmedStatements += other.ExpiredUnconfirmedStatements
 
-	d.ClaimCandidates = append(d.ClaimCandidates, other.ClaimCandidates...)
+	d.Entries = append(d.Entries, other.Entries...)
 }
 
 // applyWhiteboardGoal decides what the board's goal becomes.
@@ -705,7 +775,8 @@ func whiteboardEntryForVersion(entry model.SessionWhiteboardEntry, schemaVersion
 // one, because a board that still lists finished work is a board that has
 // not been read.
 func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []model.SessionWhiteboardEntry,
-	batch WhiteboardBatch, doneFirst bool, schemaVersion int, proposal WhiteboardProposal) ([]model.SessionWhiteboardEntry, []model.SessionSummarySegmentChange, WhiteboardDiagnostics, []model.SessionWhiteboardAnchor) {
+	batch WhiteboardBatch, doneFirst bool, schemaVersion int, proposal WhiteboardProposal,
+	carried map[uint]struct{}) ([]model.SessionWhiteboardEntry, []model.SessionSummarySegmentChange, WhiteboardDiagnostics, []model.SessionWhiteboardAnchor) {
 	var diagnostics WhiteboardDiagnostics
 	anchors := make([]model.SessionWhiteboardAnchor, 0, 2)
 	keyCounts := whiteboardProposalKeyCounts(proposal)
@@ -732,9 +803,22 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 	seenKeys := make(map[string]struct{}, len(proposed))
 	changes := make([]model.SessionSummarySegmentChange, 0, len(proposed))
 	for _, entry := range proposed {
+		// What became of this entry is recorded in three layers, and the
+		// record is written before the loop moves on: the entries that were
+		// refused are exactly the ones a reader of a run has to find.
+		outcome := WhiteboardEntryOutcome{
+			Key:          strings.TrimSpace(entry.Key),
+			ClaimVerdict: whiteboardClaimVerdictLabel(whiteboardClaimAbsent),
+		}
+		record := func() {
+			diagnostics.Entries = append(diagnostics.Entries, outcome)
+		}
 		text := strings.TrimSpace(entry.Text)
 		if text == "" {
 			diagnostics.DroppedEntries++
+			outcome.Outcome = whiteboardEntryOutcomeDropped
+			outcome.OutcomeReason = whiteboardEntryReasonEmptyText
+			record()
 			continue
 		}
 		if len([]rune(text)) > model.SessionWhiteboardTextMaxRunes {
@@ -746,7 +830,18 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 			// The model named an origin the program does not know. It is an
 			// origin it cannot check, and an entry it cannot check does not
 			// go on the board.
+			//
+			// A label the program cannot read is not a reason to lose the
+			// learner's words, though. The anchor keeps them findable under
+			// a message of this batch that really carries the value, and it
+			// says nothing about the value being the current one.
 			diagnostics.UnknownOrigins++
+			anchors, outcome.AnchorMessageID, outcome.AnchorReason =
+				whiteboardAppendAnchor(anchors, entry, WhiteboardLearnerClaim{}, false, batch,
+					model.SessionWhiteboardAnchorNoClaim)
+			outcome.Outcome = whiteboardEntryOutcomeRefused
+			outcome.OutcomeReason = whiteboardEntryReasonOriginUnknown
+			record()
 			continue
 		}
 		key := strings.TrimSpace(entry.Key)
@@ -755,6 +850,9 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 			if _, seen := seenKeys[key]; seen {
 				// The same key twice in one proposal: the later one wins,
 				// because it is the one the generator put last.
+				outcome.Outcome = whiteboardEntryOutcomeDropped
+				outcome.OutcomeReason = whiteboardEntryReasonDuplicateKey
+				record()
 				continue
 			}
 			seenKeys[key] = struct{}{}
@@ -794,25 +892,17 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 				case whiteboardClaimRejected:
 					diagnostics.RejectedClaims++
 				}
-				diagnostics.ClaimCandidates = append(diagnostics.ClaimCandidates,
-					WhiteboardClaimCandidate{
-						Key:       key,
-						Reason:    claimReason,
-						MessageID: claim.MessageID,
-						Verdict:   whiteboardClaimVerdictLabel(claimVerdict),
-					})
+				outcome.ClaimVerdict = whiteboardClaimVerdictLabel(claimVerdict)
+				outcome.ClaimReason = claimReason
+				outcome.ClaimMessageID = claim.MessageID
 			} else if whiteboardClaimsNameKey(proposal.Claims, key) {
 				// The claim could not be placed under this entry: two entries
 				// carry the key, or two claims name it. A claim that cannot
 				// be placed is not evidence, and the entry is then judged
 				// without it - which is a refusal of its own and is recorded
 				// as one.
-				diagnostics.ClaimCandidates = append(diagnostics.ClaimCandidates,
-					WhiteboardClaimCandidate{
-						Key:     key,
-						Reason:  model.SessionWhiteboardAnchorKeyAmbiguous,
-						Verdict: whiteboardClaimVerdictLabelAmbiguous,
-					})
+				outcome.ClaimVerdict = whiteboardClaimVerdictLabelAmbiguous
+				outcome.ClaimReason = model.SessionWhiteboardAnchorKeyAmbiguous
 				claimReason = model.SessionWhiteboardAnchorKeyAmbiguous
 			}
 		}
@@ -836,8 +926,12 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 			// an unconfirmed statement, so that a reader can find them and
 			// ask for the message they came from. The value stays refused:
 			// it never becomes the current state.
-			anchors = whiteboardAppendAnchor(anchors, entry, claim, hasClaim, batch, claimReason)
+			anchors, outcome.AnchorMessageID, outcome.AnchorReason =
+				whiteboardAppendAnchor(anchors, entry, claim, hasClaim, batch, claimReason)
 			diagnostics.DroppedEntries++
+			outcome.Outcome = whiteboardEntryOutcomeRefused
+			outcome.OutcomeReason = claimReason
+			record()
 			continue
 		}
 		if claimVerdict == whiteboardClaimUnsettled && origin == model.SessionWhiteboardOriginUser {
@@ -849,8 +943,12 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 			// The words stay findable all the same: a learner who asked
 			// what would happen if the value were 41 pages is worth being
 			// able to read back.
-			anchors = whiteboardAppendAnchor(anchors, entry, claim, hasClaim, batch, claimReason)
+			anchors, outcome.AnchorMessageID, outcome.AnchorReason =
+				whiteboardAppendAnchor(anchors, entry, claim, hasClaim, batch, claimReason)
 			diagnostics.DroppedEntries++
+			outcome.Outcome = whiteboardEntryOutcomeRefused
+			outcome.OutcomeReason = claimReason
+			record()
 			continue
 		}
 		if whiteboardCarriesOrigins(schemaVersion) &&
@@ -865,33 +963,61 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 			// model has to show the words it read and the program checks
 			// them. An entry that cannot show them does not replace what
 			// is there.
-			anchors = whiteboardAppendAnchor(anchors, entry, claim, hasClaim, batch,
-				model.SessionWhiteboardAnchorUnbackedChange)
+			anchors, outcome.AnchorMessageID, outcome.AnchorReason =
+				whiteboardAppendAnchor(anchors, entry, claim, hasClaim, batch,
+					model.SessionWhiteboardAnchorUnbackedChange)
 			diagnostics.UnbackedChanges++
 			diagnostics.DroppedEntries++
+			outcome.Outcome = whiteboardEntryOutcomeRefused
+			outcome.OutcomeReason = model.SessionWhiteboardAnchorUnbackedChange
+			record()
 			continue
 		}
 
-		corrected := false
 		if learnerStated && origin != model.SessionWhiteboardOriginUser {
 			// The label was wrong; the words were the learner's. The entry
 			// is the learner's own, and it replaces the value it changed.
 			origin = model.SessionWhiteboardOriginUser
-			corrected = true
 			diagnostics.MislabeledOrigins++
 		}
 
+		// The evidence of an entry the learner's own words settled is
+		// collected the same way, whichever label the model wrote on it.
+		//
+		// A model that calls the learner's own new value the assistant's
+		// and a model that calls it the learner's own have said the same
+		// thing once the claim holds, and the engine has to treat them
+		// the same way. The claim is the evidence; the label is only the
+		// model's guess about which side of the conversation the entry
+		// belongs to, and a guess that the evidence contradicts is not a
+		// reason to lose the value.
 		var ids []uint
 		var ok bool
-		if corrected {
-			ids, ok = filterWhiteboardLearnerEvidence(entry.SourceMessageIDs, learnerMessageID, batch)
+		if learnerStated {
+			ids, ok = filterWhiteboardVerifiedEvidence(entry.SourceMessageIDs, learnerMessageID,
+				previous.SourceMessageIDs, batch, carried)
 		} else {
 			ids, ok = filterWhiteboardEvidence(entry.SourceMessageIDs, previous.SourceMessageIDs, batch.allowed(origin))
 		}
 		if !ok {
 			// The entry cites a message this batch never contained. It is
 			// dropped on its own: the rest of the proposal is still usable.
+			//
+			// The learner's own words do not go with it. They are kept as
+			// an unconfirmed statement, so that a reader can find them and
+			// ask for the message they came from. The value stays refused:
+			// it never becomes the current state.
+			//
+			// The anchor is navigation and nothing else. It says the words
+			// are in a message of this batch, and it does not say the value
+			// is the learner's current one.
 			diagnostics.FabricatedEntries++
+			anchors, outcome.AnchorMessageID, outcome.AnchorReason =
+				whiteboardAppendAnchor(anchors, entry, claim, hasClaim, batch,
+					model.SessionWhiteboardAnchorCitationInvalid)
+			outcome.Outcome = whiteboardEntryOutcomeRefused
+			outcome.OutcomeReason = model.SessionWhiteboardAnchorCitationInvalid
+			record()
 			continue
 		}
 		if origin != model.SessionWhiteboardOriginUser {
@@ -902,6 +1028,9 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 				if origin == model.SessionWhiteboardOriginAssistantAccepted &&
 					!acceptedAssistantProposal(ids, batch) {
 					diagnostics.UnprovenAcceptances++
+					outcome.Outcome = whiteboardEntryOutcomeRefused
+					outcome.OutcomeReason = whiteboardEntryReasonUnprovenAcceptance
+					record()
 					continue
 				}
 			} else {
@@ -924,7 +1053,15 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 					// product the learner took on either: what the label
 					// says the learner accepted is not what the words
 					// behind the entry say.
+					//
+					// The words stay findable: the learner asked about the
+					// value and is worth being able to read back.
+					anchors, outcome.AnchorMessageID, outcome.AnchorReason =
+						whiteboardAppendAnchor(anchors, entry, claim, hasClaim, batch, claimReason)
 					diagnostics.DroppedEntries++
+					outcome.Outcome = whiteboardEntryOutcomeRefused
+					outcome.OutcomeReason = claimReason
+					record()
 					continue
 				case !citesAssistantMessage(ids, batch) &&
 					origin == model.SessionWhiteboardOriginAssistantAccepted:
@@ -939,7 +1076,14 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 					// nothing of the assistant's. It cannot be placed,
 					// and a proposal that cannot be placed is not a
 					// product.
+					//
+					// The value here is the assistant's own, so there is
+					// no anchor: the assistant's product cannot be the
+					// learner's evidence.
 					diagnostics.AssistantProposals++
+					outcome.Outcome = whiteboardEntryOutcomeRefused
+					outcome.OutcomeReason = whiteboardEntryReasonAssistantProduct
+					record()
 					continue
 				case origin == model.SessionWhiteboardOriginAssistantAccepted &&
 					!acceptedAssistantProposal(ids, batch):
@@ -949,6 +1093,9 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 					// summary segment as one of the assistant's products
 					// and never reaches the board.
 					diagnostics.UnprovenAcceptances++
+					outcome.Outcome = whiteboardEntryOutcomeRefused
+					outcome.OutcomeReason = whiteboardEntryReasonUnprovenAcceptance
+					record()
 					continue
 				case origin == model.SessionWhiteboardOriginAssistant:
 					// The assistant's own proposal, which the learner did
@@ -956,6 +1103,9 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 					// the segment carries it as a product, the board does
 					// not.
 					diagnostics.AssistantProposals++
+					outcome.Outcome = whiteboardEntryOutcomeRefused
+					outcome.OutcomeReason = whiteboardEntryReasonAssistantProduct
+					record()
 					continue
 				}
 			}
@@ -982,6 +1132,8 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 				if change := whiteboardEntryChange(key, previous, updated, isExisting); change != nil {
 					changes = append(changes, *change)
 				}
+				outcome.Outcome = whiteboardEntryOutcomeApplied
+				record()
 				continue
 			}
 			positions[key] = len(merged)
@@ -991,6 +1143,8 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 		if change := whiteboardEntryChange(key, previous, updated, isExisting); change != nil {
 			changes = append(changes, *change)
 		}
+		outcome.Outcome = whiteboardEntryOutcomeApplied
+		record()
 	}
 
 	// An old entry the proposal did not mention is kept, but the fact that it
@@ -1685,25 +1839,64 @@ func whiteboardRemoveKey(entries []model.SessionWhiteboardEntry, key string) []m
 	return kept
 }
 
-// filterWhiteboardLearnerEvidence keeps the citations that are the learner's
-// own messages in this batch.
+// filterWhiteboardVerifiedEvidence keeps the citations of an entry the
+// learner's own words settled.
 //
-// It is the filter for an entry the learner's own words justify. The message
-// that says the value is in this batch, and it is the proof - whether or not
-// the model cited it, because a model that wrote the wrong label on the
-// entry may well have cited the wrong message with it.
+// It is the one evidence path of a verified entry, and it does not care which
+// label the model wrote on the entry. An entry the model called the
+// assistant's and an entry it called the learner's own have said the same
+// thing once the claim holds, and the engine has to treat them the same way:
+// the claim is the evidence, and the label is the model's guess about which
+// side of the conversation the entry belongs to.
 //
-// The other citations the model added are either stale - they belong to the
-// value this one replaces - or the assistant's, and neither is the proof of
-// a value the learner just said. The stale ones are dropped rather than the
-// entry, because the entry is the learner's current value and the old one is
-// already recorded as the change.
-func filterWhiteboardLearnerEvidence(cited []uint, stated uint, batch WhiteboardBatch) ([]uint, bool) {
+// The verified message comes first and always stays. It is the message the
+// learner's own words are in, and it is the proof - whether or not the model
+// cited it, because a model that wrote the wrong label on the entry may well
+// have cited the wrong message with it.
+//
+// The other citations the model added are sorted into four kinds.
+//
+// The learner's own messages of this batch are kept: they are the learner's
+// own words about the same value.
+//
+// The citations the board already carries for this very entry are kept: they
+// are the board's own sources for the entry the proposal replaces.
+//
+// The assistant's messages are tolerated but not kept. A model that cites the
+// assistant's confirmation next to the learner's own words has not made the
+// entry wrong - the assistant confirming something is not the learner saying
+// it, so the confirmation is not evidence of the learner's fact and it is left
+// out. It is left out rather than being a reason to lose the entry: an extra
+// citation of something that really happened is not a fabrication.
+//
+// The messages the board carries elsewhere are tolerated and left out as well.
+// A model that cites the message the old value came from is saying where the
+// value changed, not what the value is, and the board has already vouched for
+// that message.
+//
+// The citations that name nothing the session can account for are refused,
+// and the entry with them. An id that does not exist, that belongs to another
+// session, or that belongs to a batch this one cannot see is not a citation
+// the engine can drop and carry on: a proposal that cites messages nobody can
+// check is a proposal the engine has to refuse. Filtering them out instead
+// would let a proposal that invented its sources keep its entry, and the
+// check would be a formality.
+func filterWhiteboardVerifiedEvidence(cited []uint, stated uint, previous []uint,
+	batch WhiteboardBatch, carried map[uint]struct{}) ([]uint, bool) {
+	if stated == 0 {
+		return nil, false
+	}
+	if _, ok := batch.learnerMessage(stated); !ok {
+		// The verified message is not the learner's own message of this
+		// batch, so there is no proof to build the evidence on.
+		return nil, false
+	}
 	ids := make([]uint, 0, len(cited)+1)
-	seen := make(map[uint]struct{}, len(cited)+1)
-	if stated != 0 {
-		ids = append(ids, stated)
-		seen[stated] = struct{}{}
+	seen := map[uint]struct{}{stated: {}}
+	ids = append(ids, stated)
+	previousSet := make(map[uint]struct{}, len(previous))
+	for _, id := range previous {
+		previousSet[id] = struct{}{}
 	}
 	for _, id := range cited {
 		if id == 0 {
@@ -1713,15 +1906,50 @@ func filterWhiteboardLearnerEvidence(cited []uint, stated uint, batch Whiteboard
 			continue
 		}
 		seen[id] = struct{}{}
-		if _, inBatch := batch.learnerMessage(id); !inBatch {
+		if _, inBatch := batch.learnerMessage(id); inBatch {
+			ids = append(ids, id)
 			continue
 		}
-		ids = append(ids, id)
+		if _, own := previousSet[id]; own {
+			ids = append(ids, id)
+			continue
+		}
+		if batch.KnownMessages[id] == WhiteboardMessageRoleAssistant {
+			// The assistant's confirmation of the learner's own words. It
+			// is a real message, and it does not make the entry wrong, but
+			// it is not the learner's evidence - so it is left out of the
+			// evidence rather than being a reason to lose the entry.
+			continue
+		}
+		if _, known := carried[id]; known {
+			// A message the board already carries. It is a real message of
+			// this session, so the citation is not a fabrication, but it is
+			// not evidence of this value either.
+			continue
+		}
+		return nil, false
 	}
 	if len(ids) == 0 {
 		return nil, false
 	}
 	return ids, true
+}
+
+// whiteboardBoardEvidenceIDs are the messages the board already cites.
+//
+// It is the set of messages the session can account for: every id an entry
+// or an unconfirmed statement carries. A citation of one of them names
+// something that really happened, so it is not a fabrication - and it is not
+// evidence of a new value either, because the board already knows what it
+// was for.
+func whiteboardBoardEvidenceIDs(document model.SessionWhiteboardDocument) map[uint]struct{} {
+	ids := make(map[uint]struct{})
+	for _, id := range document.EvidenceMessageIDs() {
+		if id != 0 {
+			ids[id] = struct{}{}
+		}
+	}
+	return ids
 }
 
 // countChangedEntries counts the entries whose contents differ from the old

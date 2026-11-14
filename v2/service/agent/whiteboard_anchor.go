@@ -53,12 +53,12 @@ import (
 // did not hold, so a generator that keeps failing the same one is visible
 // without reading the model's own answer.
 func whiteboardReportClaimRefusals(diagnostics WhiteboardDiagnostics) {
-	reasons := make(map[string]int, len(diagnostics.ClaimCandidates))
-	for _, candidate := range diagnostics.ClaimCandidates {
-		if candidate.Reason == "" {
+	reasons := make(map[string]int, len(diagnostics.Entries))
+	for _, entry := range diagnostics.Entries {
+		if entry.ClaimReason == "" {
 			continue
 		}
-		reasons[candidate.Reason]++
+		reasons[entry.ClaimReason]++
 	}
 	if len(reasons) > 0 {
 		observability.Memory.WhiteboardClaimRejections(reasons)
@@ -79,21 +79,38 @@ func whiteboardReportClaimRefusals(diagnostics WhiteboardDiagnostics) {
 //
 // They are a fixed set, so a diagnostic never carries the learner's own words
 // and never becomes free text in a metric.
+//
+// Every verdict has its own label. A verdict that is not named here used to
+// fall into "ambiguous", which put two different things under one name: a
+// claim that holds and a claim that was never made. A reader of the evidence
+// could not tell "the model said it and the words hold" from "the model said
+// nothing about it", and a claim that holds is not the same thing as an entry
+// on the board.
 const (
 	whiteboardClaimVerdictLabelRejected  = "rejected"
 	whiteboardClaimVerdictLabelUnsettled = "unsettled"
 	whiteboardClaimVerdictLabelAmbiguous = "ambiguous"
+	whiteboardClaimVerdictLabelSettled   = "settled"
+	whiteboardClaimVerdictLabelAbsent    = "absent"
 )
 
 // whiteboardClaimVerdictLabel is the label a verdict is written under.
+//
+// Every verdict is named. The default is the label of the verdict that says
+// nothing was asserted, because that is the one a caller that does not know
+// the verdict has to assume: a claim that was never checked is not evidence.
 func whiteboardClaimVerdictLabel(verdict whiteboardClaimVerdict) string {
 	switch verdict {
 	case whiteboardClaimRejected:
 		return whiteboardClaimVerdictLabelRejected
 	case whiteboardClaimUnsettled:
 		return whiteboardClaimVerdictLabelUnsettled
+	case whiteboardClaimSettled:
+		return whiteboardClaimVerdictLabelSettled
+	case whiteboardClaimAbsent:
+		return whiteboardClaimVerdictLabelAbsent
 	}
-	return whiteboardClaimVerdictLabelAmbiguous
+	return whiteboardClaimVerdictLabelAbsent
 }
 
 // whiteboardClaimsNameKey reports whether any claim names the key.
@@ -120,19 +137,26 @@ func whiteboardClaimsNameKey(claims []WhiteboardLearnerClaim, key string) bool {
 // value the entry wanted to put up: a statement that points at a message that
 // does not mention the value would send a reader looking for words that are
 // not there.
+//
+// It reports the message the statement ended up under and the reason it
+// carries, because a reader of a run has to be able to tell an entry whose
+// words stayed findable from one whose words were lost. Both are zero and
+// empty when no statement was built.
 func whiteboardAppendAnchor(anchors []model.SessionWhiteboardAnchor, entry model.SessionWhiteboardEntry,
 	claim WhiteboardLearnerClaim, hasClaim bool, batch WhiteboardBatch,
-	reason string) []model.SessionWhiteboardAnchor {
+	reason string) ([]model.SessionWhiteboardAnchor, uint, string) {
 	anchor, ok := whiteboardAnchorFor(entry, claim, hasClaim, batch, reason)
 	if !ok {
-		return anchors
+		return anchors, 0, ""
 	}
 	for _, existing := range anchors {
 		if existing.MessageID == anchor.MessageID && existing.Value == anchor.Value {
-			return anchors
+			// The statement is already there. The entry's words are still
+			// findable, under the message they were already found under.
+			return anchors, anchor.MessageID, anchor.Reason
 		}
 	}
-	return append(anchors, anchor)
+	return append(anchors, anchor), anchor.MessageID, anchor.Reason
 }
 
 // whiteboardAnchorFor builds the unconfirmed statement of a refused entry.

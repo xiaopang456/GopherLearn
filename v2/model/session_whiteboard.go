@@ -217,6 +217,19 @@ const (
 	// SessionWhiteboardAnchorKeyAmbiguous says the claim could not be placed
 	// under the entry it was written for.
 	SessionWhiteboardAnchorKeyAmbiguous = "key_ambiguous"
+	// SessionWhiteboardAnchorCitationInvalid says the entry cited a message
+	// the batch never contained, or one the learner's fact may not rest on.
+	//
+	// It is a navigation reason, not a refusal reason: the words are still
+	// the learner's own and they are still findable, but the entry as it was
+	// written could not be kept.
+	SessionWhiteboardAnchorCitationInvalid = "citation_invalid"
+	// SessionWhiteboardAnchorNoClaim says the entry carried no claim of its
+	// own, so nothing said it was the learner's current fact.
+	//
+	// It is a navigation reason as well: the learner's words may still be
+	// found and read back, but they are not a confirmed value.
+	SessionWhiteboardAnchorNoClaim = "no_claim"
 )
 
 // ValidSessionWhiteboardAnchorReason reports whether a reason is one the
@@ -238,7 +251,9 @@ func ValidSessionWhiteboardAnchorReason(reason string) bool {
 		SessionWhiteboardAnchorScopeConflict,
 		SessionWhiteboardAnchorUnsettled,
 		SessionWhiteboardAnchorUnbackedChange,
-		SessionWhiteboardAnchorKeyAmbiguous:
+		SessionWhiteboardAnchorKeyAmbiguous,
+		SessionWhiteboardAnchorCitationInvalid,
+		SessionWhiteboardAnchorNoClaim:
 		return true
 	}
 	return false

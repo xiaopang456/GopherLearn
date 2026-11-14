@@ -528,19 +528,25 @@ func TestTheReasonOfARefusalIsRecorded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Diagnostics.ClaimCandidates) != 1 {
-		t.Fatalf("the diagnostics carry %+v, want the refused candidate",
-			result.Diagnostics.ClaimCandidates)
+	if len(result.Diagnostics.Entries) != 1 {
+		t.Fatalf("the diagnostics carry %+v, want the refused entry",
+			result.Diagnostics.Entries)
 	}
-	candidate := result.Diagnostics.ClaimCandidates[0]
-	if candidate.Reason != model.SessionWhiteboardAnchorSubjectNotInEntry {
-		t.Fatalf("the refusal's reason = %q, want the one that checks the subject", candidate.Reason)
+	entry := result.Diagnostics.Entries[0]
+	if entry.ClaimReason != model.SessionWhiteboardAnchorSubjectNotInEntry {
+		t.Fatalf("the refusal's reason = %q, want the one that checks the subject", entry.ClaimReason)
 	}
-	if candidate.Verdict != whiteboardClaimVerdictLabelRejected {
-		t.Fatalf("the refusal's verdict = %q, want rejected", candidate.Verdict)
+	if entry.ClaimVerdict != whiteboardClaimVerdictLabelRejected {
+		t.Fatalf("the refusal's verdict = %q, want rejected", entry.ClaimVerdict)
 	}
-	if candidate.MessageID != 95 {
-		t.Fatalf("the refusal names message %d, want the learner's own message", candidate.MessageID)
+	if entry.ClaimMessageID != 95 {
+		t.Fatalf("the refusal names message %d, want the learner's own message", entry.ClaimMessageID)
+	}
+	if entry.Outcome != whiteboardEntryOutcomeRefused {
+		t.Fatalf("the entry's outcome = %q, want refused", entry.Outcome)
+	}
+	if entry.OutcomeReason != model.SessionWhiteboardAnchorSubjectNotInEntry {
+		t.Fatalf("the entry's reason = %q, want the one that checks the subject", entry.OutcomeReason)
 	}
 }
 
@@ -629,12 +635,29 @@ func TestTheWholePathFromTheAnswerToTheReadBack(t *testing.T) {
 		t.Fatalf("the read-back grants = %+v, want the learner's own message", grants)
 	}
 	// And the refusal says which check refused it.
-	if len(result.Diagnostics.ClaimCandidates) != 1 {
-		t.Fatalf("the diagnostics carry %+v, want the refused candidate",
-			result.Diagnostics.ClaimCandidates)
+	if len(result.Diagnostics.Entries) != 1 {
+		t.Fatalf("the diagnostics carry %+v, want the refused entry",
+			result.Diagnostics.Entries)
 	}
-	if result.Diagnostics.ClaimCandidates[0].Reason != model.SessionWhiteboardAnchorQuoteNotInMessage {
+	if result.Diagnostics.Entries[0].ClaimReason != model.SessionWhiteboardAnchorQuoteNotInMessage {
 		t.Fatalf("the refusal's reason = %q, want the one that checks the quote",
-			result.Diagnostics.ClaimCandidates[0].Reason)
+			result.Diagnostics.Entries[0].ClaimReason)
+	}
+	// The claim failed, the entry was refused, and the learner's words were
+	// kept findable: the three layers say three different things, and a
+	// reader has to be able to see all three.
+	entry := result.Diagnostics.Entries[0]
+	if entry.ClaimVerdict != whiteboardClaimVerdictLabelRejected {
+		t.Fatalf("the claim's verdict = %q, want rejected", entry.ClaimVerdict)
+	}
+	if entry.Outcome != whiteboardEntryOutcomeRefused {
+		t.Fatalf("the entry's outcome = %q, want refused", entry.Outcome)
+	}
+	if entry.AnchorMessageID == 0 {
+		t.Fatalf("the entry carries no anchor: %+v", entry)
+	}
+	if entry.AnchorReason != model.SessionWhiteboardAnchorQuoteNotInMessage {
+		t.Fatalf("the anchor's reason = %q, want the one that checks the quote",
+			entry.AnchorReason)
 	}
 }
