@@ -117,7 +117,7 @@ func anonymizedBoardOfTheRun() model.SessionWhiteboardDocument {
 			{Key: refusedValueKey, Value: refusedValue, MessageID: refusedValueMessageID,
 				Text: "「背单词」改成每次 45 个吧。", Complete: true,
 				Reason: model.SessionWhiteboardAnchorSubjectNotInQuote},
-			{Key: "delivery_mode", Value: "录音", MessageID: refusedValueMessageID,
+			{Key: "study_format", Value: "录音", MessageID: refusedValueMessageID,
 				Text: "「背单词」改成每次 45 个吧。", Complete: true,
 				Reason: model.SessionWhiteboardAnchorAttributeNotInQuote},
 			{Key: "task_count", Value: "三四个", MessageID: 807,

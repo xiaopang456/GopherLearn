@@ -48,11 +48,11 @@ func boardWithARefusedValue() model.SessionWhiteboardDocument {
 		Unverified: []model.SessionWhiteboardAnchor{
 			// The refused value: the learner's own words carry it, and the
 			// program could not confirm that it is the value of that item.
-			{Key: "pages_per_session", Value: "23 页", MessageID: 93,
+			{Key: "words_per_day", Value: "45 个", MessageID: 93,
 				Text: "背单词改成每次45个吧。", Complete: true,
 				Reason: model.SessionWhiteboardAnchorSubjectNotInQuote},
 			// A statement about something else, from the same batch.
-			{Key: "delivery_mode", Value: "录播", MessageID: 93,
+			{Key: "words_per_session", Value: "45 个", MessageID: 93,
 				Text: "背单词改成每次45个吧。", Complete: true,
 				Reason: model.SessionWhiteboardAnchorAttributeNotInQuote},
 		},
@@ -76,7 +76,7 @@ func TestTheRefusedValueReachesTheWindow(t *testing.T) {
 		t.Fatalf("the window shows no statement of message 93: %v\n%s",
 			rendered.AnchorMessageIDs, rendered.Text)
 	}
-	if !strings.Contains(rendered.Text, "23 页") {
+	if !strings.Contains(rendered.Text, "45 个") {
 		t.Fatalf("the window does not carry the refused value:\n%s", rendered.Text)
 	}
 }
@@ -180,13 +180,13 @@ func TestAValueNobodySettledIsNotShownAsAValue(t *testing.T) {
 	document := model.SessionWhiteboardDocument{
 		SchemaVersion: model.SessionWhiteboardSchemaV3,
 		Unverified: []model.SessionWhiteboardAnchor{
-			{Key: "pages_change_asked", Value: "23 页", MessageID: 93,
+			{Key: "pages_change_asked", Value: "45 个", MessageID: 93,
 				Text: "背单词要是改成每次看45个会怎么样？先别改，我就问问。", Complete: true,
 				Reason: model.SessionWhiteboardAnchorUnsettled},
 		},
 	}
 	rendered := renderWhiteboardBlock(document, boardBudgetOfTheDay)
-	if strings.Contains(rendered.Text, "23 页") {
+	if strings.Contains(rendered.Text, "45 个") {
 		t.Fatalf("the window shows the value of a question that was not a decision:\n%s", rendered.Text)
 	}
 	if !strings.Contains(rendered.Text, "message_ids=93") {
@@ -248,12 +248,12 @@ func TestAStatementWhoseValueIsNotInTheWordsIsNotBuilt(t *testing.T) {
 	}
 	result, err := ApplyWhiteboardProposal(board, WhiteboardProposal{
 		Constraints: []model.SessionWhiteboardEntry{{
-			Key: "pages_per_session", Text: "背单词每次读的个数原为 30 个，现改为 45 个",
+			Key: "words_per_day", Text: "背单词每次读的个数原为 30 个，现改为 45 个",
 			Value: "45 个", Origin: model.SessionWhiteboardOriginUser,
 			SourceMessageIDs: []uint{93},
 		}},
 		Claims: []WhiteboardLearnerClaim{{
-			Key: "pages_per_session", MessageID: 93, Quote: "还是每次看30个吧",
+			Key: "words_per_day", MessageID: 93, Quote: "还是每次看30个吧",
 			Subject: "背单词", Attribute: "每次", Value: "45 个",
 			Stance: "decided", Update: "yes",
 		}},
@@ -286,12 +286,12 @@ func TestTheRefusedValueIsReadableBackThroughTheWholePath(t *testing.T) {
 	}
 	result, err := ApplyWhiteboardProposal(board, WhiteboardProposal{
 		Constraints: []model.SessionWhiteboardEntry{{
-			Key: "pages_per_session", Text: "背单词每次读的个数原为 30 个，现改为 45 个",
+			Key: "words_per_day", Text: "背单词每次读的个数原为 30 个，现改为 45 个",
 			Value: "45 个", Origin: model.SessionWhiteboardOriginUser,
 			SourceMessageIDs: []uint{93, 94},
 		}},
 		Claims: []WhiteboardLearnerClaim{{
-			Key: "pages_per_session", MessageID: 93, Quote: "背单词改成每次45个吧。",
+			Key: "words_per_day", MessageID: 93, Quote: "背单词改成每次45个吧。",
 			Subject: "背单词", Attribute: "每次", Value: "45 个",
 			Stance: "decided", Update: "yes",
 		}},
@@ -316,7 +316,7 @@ func TestTheRefusedValueIsReadableBackThroughTheWholePath(t *testing.T) {
 		SchemaVersion: model.SessionWhiteboardSchemaV3,
 	}, WhiteboardProposal{
 		Constraints: []model.SessionWhiteboardEntry{{
-			Key: "pages_per_session", Text: "背单词每次读的个数原为 30 个，现改为 45 个",
+			Key: "words_per_day", Text: "背单词每次读的个数原为 30 个，现改为 45 个",
 			Value: "45 个", Origin: model.SessionWhiteboardOriginUser,
 			SourceMessageIDs: []uint{51, 93},
 		}},
@@ -375,7 +375,7 @@ func TestTheBoardStillFitsItsBudget(t *testing.T) {
 func TestTheStatementsAreIntroducedBeforeTheyAppear(t *testing.T) {
 	rendered := renderWhiteboardBlock(boardWithARefusedValue(), boardBudgetOfTheDay)
 	header := strings.Index(rendered.Text, whiteboardUnconfirmedHeader)
-	statement := strings.Index(rendered.Text, "23 页")
+	statement := strings.Index(rendered.Text, "45 个")
 	if header < 0 {
 		t.Fatalf("the window does not introduce the statements:\n%s", rendered.Text)
 	}
