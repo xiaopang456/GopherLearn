@@ -194,7 +194,7 @@ func TestTheEvidenceOfAnAttemptCarriesTheCallsTheBodyAndTheRefusedCandidates(t *
 	evidence := newBatchEvidenceCollector(config.AgentConfig{SummarySegmentDebugDump: true}, "run-1")
 
 	result, err := runSegmentBatchAttempts(context.Background(), generator, recorder,
-		evidenceInput(), 1, 1, 0, &outcome, evidence)
+		evidenceInput(), 1, 1, 0, &outcome, evidence, model.SessionWhiteboardDocument{})
 	if err != nil {
 		t.Fatalf("run the batch: %v", err)
 	}
@@ -231,23 +231,32 @@ func TestTheEvidenceOfAnAttemptCarriesTheCallsTheBodyAndTheRefusedCandidates(t *
 	if call.RawOutput != answer {
 		t.Fatalf("the call does not carry the model's own answer:\n%q", call.RawOutput)
 	}
-	if len(record.Claims) != 1 {
-		t.Fatalf("the refused candidates = %d, want 1: %+v", len(record.Claims), record.Claims)
+	if len(record.Entries) != 1 {
+		t.Fatalf("the entries = %d, want 1: %+v", len(record.Entries), record.Entries)
 	}
-	claim := record.Claims[0]
-	if claim.Key != "pages" {
-		t.Fatalf("the refused candidate is not the entry the model named: %+v", claim)
+	entry := record.Entries[0]
+	if entry.Key != "pages" {
+		t.Fatalf("the entry is not the one the model named: %+v", entry)
 	}
-	if claim.MessageID != 95 {
-		t.Fatalf("the refused candidate does not say which message it rested on: %+v", claim)
+	if entry.ClaimMessageID != 95 {
+		t.Fatalf("the entry does not say which message the claim rested on: %+v", entry)
 	}
-	if claim.Verdict != "rejected" {
-		t.Fatalf("verdict = %q, want the refused one", claim.Verdict)
+	if entry.ClaimVerdict != "rejected" {
+		t.Fatalf("verdict = %q, want the refused one", entry.ClaimVerdict)
 	}
-	// The reason is one of the product's fixed reasons, so a candidate never
+	// The reason is one of the product's fixed reasons, so a record never
 	// carries free text into a counter.
-	if !model.ValidSessionWhiteboardAnchorReason(claim.Reason) {
-		t.Fatalf("reason = %q, want one of the product's own reasons", claim.Reason)
+	if !model.ValidSessionWhiteboardAnchorReason(entry.ClaimReason) {
+		t.Fatalf("reason = %q, want one of the product's own reasons", entry.ClaimReason)
+	}
+	// The claim and the entry are two things, and a reader has to be able to
+	// see both: a claim that holds is not an entry on the board, and an
+	// entry that was refused may still have left the words findable.
+	if entry.Outcome == "" {
+		t.Fatalf("the entry does not say what became of it: %+v", entry)
+	}
+	if entry.OutcomeReason == "" {
+		t.Fatalf("the entry does not say why it ended that way: %+v", entry)
 	}
 }
 
@@ -265,7 +274,7 @@ func TestTheFirstFailureAndTheRewriteAfterItAreTwoCalls(t *testing.T) {
 	evidence := newBatchEvidenceCollector(config.AgentConfig{SummarySegmentDebugDump: true}, "run-1")
 
 	if _, err := runSegmentBatchAttempts(context.Background(), generator, recorder,
-		evidenceInput(), 1, 1, 0, &outcome, evidence); err != nil {
+		evidenceInput(), 1, 1, 0, &outcome, evidence, model.SessionWhiteboardDocument{}); err != nil {
 		t.Fatalf("run the batch: %v", err)
 	}
 	records := evidence.set().Records
@@ -303,7 +312,7 @@ func TestTheConsecutiveRewritesThatFailedAreAllKept(t *testing.T) {
 	evidence := newBatchEvidenceCollector(config.AgentConfig{SummarySegmentDebugDump: true}, "run-1")
 
 	if _, err := runSegmentBatchAttempts(context.Background(), generator, recorder,
-		evidenceInput(), 1, 1, 0, &outcome, evidence); err == nil {
+		evidenceInput(), 1, 1, 0, &outcome, evidence, model.SessionWhiteboardDocument{}); err == nil {
 		t.Fatal("a summary that did not fit was stored")
 	}
 	records := evidence.set().Records
@@ -339,7 +348,7 @@ func TestTheOuterRetryIsAnotherAttemptWithItsOwnCalls(t *testing.T) {
 	evidence := newBatchEvidenceCollector(config.AgentConfig{SummarySegmentDebugDump: true}, "run-1")
 
 	if _, err := runSegmentBatchAttempts(context.Background(), generator, recorder,
-		evidenceInput(), 1, 2, 0, &outcome, evidence); err == nil {
+		evidenceInput(), 1, 2, 0, &outcome, evidence, model.SessionWhiteboardDocument{}); err == nil {
 		t.Fatal("an answer that is not a document did not fail the batch")
 	}
 	records := evidence.set().Records
@@ -373,7 +382,7 @@ func TestAnAnswerThatIsTooLongIsMarkedAsTruncated(t *testing.T) {
 	evidence := newBatchEvidenceCollector(config.AgentConfig{SummarySegmentDebugDump: true}, "run-1")
 
 	if _, err := runSegmentBatchAttempts(context.Background(), generator, recorder,
-		evidenceInput(), 1, 1, 0, &outcome, evidence); err == nil {
+		evidenceInput(), 1, 1, 0, &outcome, evidence, model.SessionWhiteboardDocument{}); err == nil {
 		t.Fatal("an answer that is not a document did not fail the batch")
 	}
 	records := evidence.set().Records
@@ -417,9 +426,11 @@ func TestTheEvidenceIsWrittenNextToTheRunAndNotIntoTheResult(t *testing.T) {
 			Index: 1, Kind: EvidenceCallSummary, Outcome: EvidenceOutcomeOK,
 			RawOutput: "the model's own answer", OriginalBytes: len("the model's own answer"),
 		}},
-		Claims: []agent.WhiteboardClaimCandidate{{
-			Key: "pages", Reason: model.SessionWhiteboardAnchorQuoteNotInMessage,
-			MessageID: 95, Verdict: "rejected",
+		Entries: []agent.WhiteboardEntryOutcome{{
+			Key: "pages", ClaimReason: model.SessionWhiteboardAnchorQuoteNotInMessage,
+			ClaimMessageID: 95, ClaimVerdict: "rejected",
+			Outcome: "refused", OutcomeReason: model.SessionWhiteboardAnchorQuoteNotInMessage,
+			AnchorMessageID: 95, AnchorReason: model.SessionWhiteboardAnchorQuoteNotInMessage,
 		}},
 	}}
 	if err := WriteBatchEvidence(dir, records); err != nil {
@@ -428,7 +439,7 @@ func TestTheEvidenceIsWrittenNextToTheRunAndNotIntoTheResult(t *testing.T) {
 
 	written := readEvidenceAttempt(t, dir, 1, 1)
 	for _, field := range []string{"batch", "attempt", "outcome", "reason", "start_message_id",
-		"end_message_id", "segment_body", "calls", "claims"} {
+		"end_message_id", "segment_body", "calls", "entries"} {
 		if _, ok := written[field]; !ok {
 			t.Fatalf("the evidence file has no %q: %v", field, written)
 		}
@@ -468,23 +479,23 @@ func TestTheEvidenceIsWrittenNextToTheRunAndNotIntoTheResult(t *testing.T) {
 		}
 	}
 
-	// A candidate carries the four fields the product gives it and nothing
-	// else: a candidate that carried the learner's own words would put them
-	// into a counter.
-	claims, ok := written["claims"].([]any)
-	if !ok || len(claims) != 1 {
-		t.Fatalf("claims = %v, want one candidate", written["claims"])
+	// An entry carries the three layers and nothing else: an entry that
+	// carried the learner's own words would put them into a counter.
+	entries, ok := written["entries"].([]any)
+	if !ok || len(entries) != 1 {
+		t.Fatalf("entries = %v, want one entry", written["entries"])
 	}
-	candidate, ok := claims[0].(map[string]any)
+	entry, ok := entries[0].(map[string]any)
 	if !ok {
-		t.Fatalf("the candidate is not an object: %v", claims[0])
+		t.Fatalf("the entry is not an object: %v", entries[0])
 	}
-	if len(candidate) != 4 {
-		t.Fatalf("the candidate carries %d fields, want the four of the claim: %v", len(candidate), candidate)
+	if len(entry) != 8 {
+		t.Fatalf("the entry carries %d fields, want the three layers of it: %v", len(entry), entry)
 	}
-	for _, field := range []string{"key", "reason", "message_id", "verdict"} {
-		if _, ok = candidate[field]; !ok {
-			t.Fatalf("the candidate has no %q: %v", field, candidate)
+	for _, field := range []string{"key", "claim_verdict", "claim_reason", "claim_message_id",
+		"outcome", "outcome_reason", "anchor_message_id", "anchor_reason"} {
+		if _, ok = entry[field]; !ok {
+			t.Fatalf("the entry has no %q: %v", field, entry)
 		}
 	}
 

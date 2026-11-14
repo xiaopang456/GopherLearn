@@ -36,6 +36,7 @@ import (
 	"unicode/utf8"
 
 	"GopherAI/config"
+	"GopherAI/model"
 	agent "GopherAI/service/agent"
 )
 
@@ -119,11 +120,96 @@ type BatchEvidence struct {
 	EndMessageID   uint
 	// SegmentBody is the segment content the program made of the answer.
 	SegmentBody string
-	// Claims are the candidates the board refused, with the reason each one
-	// was refused.
-	Claims []agent.WhiteboardClaimCandidate
+	// Entries are what became of every entry the proposal brought, with the
+	// claim's verdict, the entry's own outcome and the anchor that was made.
+	//
+	// The three are kept apart because they are three different facts: a
+	// claim that holds is not an entry on the board, and an entry that was
+	// refused may still have left the learner's words findable.
+	Entries []agent.WhiteboardEntryOutcome
+	// WhiteboardBefore is the board as it stood before this batch.
+	WhiteboardBefore *WhiteboardSnapshot
+	// WhiteboardAfter is the board after this batch. It is absent when the
+	// batch failed, because a failed batch did not change the board.
+	WhiteboardAfter *WhiteboardSnapshot
 	// Calls are the model calls the attempt made, in order.
 	Calls []CallEvidence
+}
+
+// WhiteboardSnapshot is what a board held at one moment of a run.
+//
+// It is a snapshot and not the document: the point of it is to put one
+// batch's before next to its after, so the entries are listed with the key,
+// the value and the messages they cite, and the unconfirmed statements the
+// board carried are listed apart from the entries.
+//
+// The unconfirmed statements are kept apart on purpose. They are the
+// learner's own words that were not confirmed as a current fact, and they
+// are the only thing that keeps a refused value readable - so a snapshot
+// that folded them into the entries would say "the board holds this value"
+// about something the board refused.
+type WhiteboardSnapshot struct {
+	SchemaVersion int                       `json:"schema_version"`
+	Constraints   []WhiteboardEntrySnapshot `json:"constraints,omitempty"`
+	Plan          []WhiteboardEntrySnapshot `json:"plan,omitempty"`
+	OpenItems     []WhiteboardEntrySnapshot `json:"open_items,omitempty"`
+	// Anchors are the unconfirmed statements the board carried.
+	Anchors []WhiteboardAnchorSnapshot `json:"anchors,omitempty"`
+}
+
+// WhiteboardEntrySnapshot is one entry of a board at one moment.
+type WhiteboardEntrySnapshot struct {
+	Key              string `json:"key"`
+	Value            string `json:"value"`
+	Origin           string `json:"origin,omitempty"`
+	SourceMessageIDs []uint `json:"source_message_ids,omitempty"`
+}
+
+// WhiteboardAnchorSnapshot is one unconfirmed statement of a board at one
+// moment.
+//
+// The reason is the reason the statement carries, and the message is the
+// message the learner's own words are in. A statement is navigation: it says
+// the words can be read back, and it does not say the value is current.
+type WhiteboardAnchorSnapshot struct {
+	Key       string `json:"key"`
+	Value     string `json:"value"`
+	MessageID uint   `json:"message_id"`
+	Reason    string `json:"reason"`
+}
+
+// whiteboardSnapshotOf reads a board into a snapshot.
+func whiteboardSnapshotOf(document model.SessionWhiteboardDocument) *WhiteboardSnapshot {
+	snapshot := &WhiteboardSnapshot{SchemaVersion: document.SchemaVersion}
+	snapshot.Constraints = whiteboardEntrySnapshots(document.Constraints)
+	snapshot.Plan = whiteboardEntrySnapshots(document.Plan)
+	snapshot.OpenItems = whiteboardEntrySnapshots(document.OpenItems)
+	for _, anchor := range document.Unverified {
+		snapshot.Anchors = append(snapshot.Anchors, WhiteboardAnchorSnapshot{
+			Key:       anchor.Key,
+			Value:     anchor.Value,
+			MessageID: anchor.MessageID,
+			Reason:    anchor.Reason,
+		})
+	}
+	return snapshot
+}
+
+// whiteboardEntrySnapshots reads a group of entries into snapshots.
+func whiteboardEntrySnapshots(entries []model.SessionWhiteboardEntry) []WhiteboardEntrySnapshot {
+	if len(entries) == 0 {
+		return nil
+	}
+	snapshots := make([]WhiteboardEntrySnapshot, 0, len(entries))
+	for _, entry := range entries {
+		snapshots = append(snapshots, WhiteboardEntrySnapshot{
+			Key:              entry.Key,
+			Value:            entry.Value,
+			Origin:           entry.Origin,
+			SourceMessageIDs: entry.SourceMessageIDs,
+		})
+	}
+	return snapshots
 }
 
 // BatchEvidenceSet is the evidence of one run, and whether the run was
@@ -156,7 +242,13 @@ type batchEvidenceFile struct {
 	EndMessageID   uint                 `json:"end_message_id"`
 	SegmentBody    string               `json:"segment_body"`
 	Calls          []batchEvidenceCall  `json:"calls"`
-	Claims         []batchEvidenceClaim `json:"claims"`
+	Entries        []batchEvidenceEntry `json:"entries,omitempty"`
+	// WhiteboardBefore and WhiteboardAfter are the board around this batch.
+	// They are what says whether a value the model proposed reached the
+	// board, and they are kept beside the entries so that a reader can see
+	// the proposal and its result together.
+	WhiteboardBefore *WhiteboardSnapshot `json:"whiteboard_before,omitempty"`
+	WhiteboardAfter  *WhiteboardSnapshot `json:"whiteboard_after,omitempty"`
 }
 
 // batchEvidenceCall is one call as the attempt file lists it.
@@ -185,18 +277,26 @@ type batchEvidenceCallFile struct {
 	OriginalBytes int    `json:"original_bytes,omitempty"`
 }
 
-// batchEvidenceClaim is one refused candidate, as it is written down.
+// batchEvidenceEntry is one proposed entry, as it is written down.
 //
-// The four fields the product gives it: the key the model gave the entry, the
-// check that refused it, the message the claim rested on and the verdict the
-// engine made of it. The learner's own words are not among them - they are in
-// the raw answer, and a candidate that carried them would put the learner's
-// text into a counter.
-type batchEvidenceClaim struct {
-	Key       string `json:"key"`
-	Reason    string `json:"reason"`
-	MessageID uint   `json:"message_id"`
-	Verdict   string `json:"verdict"`
+// The three layers are written as three groups of fields: what the engine
+// made of the claim, what became of the entry itself, and whether the
+// learner's own words were kept findable. They are kept apart because a
+// reader has to be able to see that a claim passed and the entry did not
+// land, and that an entry was refused and the words are still readable.
+//
+// The learner's own words are not among them - they are in the raw answer,
+// and a record that carried them would put the learner's text into a file
+// that is read by people who do not need it.
+type batchEvidenceEntry struct {
+	Key             string `json:"key"`
+	ClaimVerdict    string `json:"claim_verdict"`
+	ClaimReason     string `json:"claim_reason,omitempty"`
+	ClaimMessageID  uint   `json:"claim_message_id,omitempty"`
+	Outcome         string `json:"outcome"`
+	OutcomeReason   string `json:"outcome_reason,omitempty"`
+	AnchorMessageID uint   `json:"anchor_message_id,omitempty"`
+	AnchorReason    string `json:"anchor_reason,omitempty"`
 }
 
 // WriteBatchEvidence writes the evidence of every attempt next to the run's
@@ -243,10 +343,17 @@ func writeBatchEvidenceAttempt(dir string, record BatchEvidence) error {
 			Truncated: call.Truncated, OriginalBytes: call.OriginalBytes, File: name,
 		})
 	}
-	claims := make([]batchEvidenceClaim, 0, len(record.Claims))
-	for _, claim := range record.Claims {
-		claims = append(claims, batchEvidenceClaim{
-			Key: claim.Key, Reason: claim.Reason, MessageID: claim.MessageID, Verdict: claim.Verdict,
+	entries := make([]batchEvidenceEntry, 0, len(record.Entries))
+	for _, entry := range record.Entries {
+		entries = append(entries, batchEvidenceEntry{
+			Key:             entry.Key,
+			ClaimVerdict:    entry.ClaimVerdict,
+			ClaimReason:     entry.ClaimReason,
+			ClaimMessageID:  entry.ClaimMessageID,
+			Outcome:         entry.Outcome,
+			OutcomeReason:   entry.OutcomeReason,
+			AnchorMessageID: entry.AnchorMessageID,
+			AnchorReason:    entry.AnchorReason,
 		})
 	}
 	name := fmt.Sprintf("batch-%02d-attempt-%02d.json", record.Batch, record.Attempt)
@@ -254,7 +361,8 @@ func writeBatchEvidenceAttempt(dir string, record BatchEvidence) error {
 		RunID: record.RunID, Batch: record.Batch, Attempt: record.Attempt,
 		Outcome: record.Outcome, Reason: record.Reason,
 		StartMessageID: record.StartMessageID, EndMessageID: record.EndMessageID,
-		SegmentBody: record.SegmentBody, Calls: calls, Claims: claims,
+		SegmentBody: record.SegmentBody, Calls: calls, Entries: entries,
+		WhiteboardBefore: record.WhiteboardBefore, WhiteboardAfter: record.WhiteboardAfter,
 	})
 }
 

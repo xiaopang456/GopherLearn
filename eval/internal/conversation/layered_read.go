@@ -172,6 +172,21 @@ type LayeredRead struct {
 	// A window that authorised nothing and a window that authorised only its
 	// segments are different facts, and one number cannot say which.
 	GrantSources map[string]int `json:"grant_sources,omitempty"`
+	// GrantOrigins says, for every authorised message, which card drew the
+	// authorisation and what it was.
+	//
+	// The count in GrantSources says how many authorisations each card drew.
+	// It cannot say whether a given message was readable because the board
+	// confirmed it, because the board only kept the learner's words findable
+	// under an unconfirmed statement, or because a summary segment quoted it.
+	// Those are three different facts, and the third one is the difference
+	// between a value the board holds and a value the board preserved.
+	//
+	// The origins are "whiteboard_anchor", "whiteboard_entry",
+	// "summary_segment", "summary" and "episode". A message may appear
+	// under more than one: a message the board kept and a segment quoted
+	// was authorised twice.
+	GrantOrigins map[string][]uint `json:"grant_origins,omitempty"`
 	// ReadMode is the deployment's long-term memory read path, and
 	// ReadsEvidenceBack says whether that path lets a compressed card's
 	// evidence ids be read back at all. They are reported beside the
@@ -998,7 +1013,7 @@ func seedLayeredState(ctx context.Context, s *Sandbox, messages []model.Message,
 		result, batchErr := runSegmentBatchAttempts(ctx, generator, recorder, agent.SegmentGenerationInput{
 			Whiteboard: whiteboard, PreviousSegment: previous, Messages: batch,
 			FirstMessageID: batch[0].ID, LastMessageID: batch[len(batch)-1].ID,
-		}, outcome.Batches, retryBudget, retryDelay, &outcome, evidence)
+		}, outcome.Batches, retryBudget, retryDelay, &outcome, evidence, seeded.board)
 		if batchErr != nil {
 			// The product's worker moves on and leaves the stretch uncovered.
 			outcome.FinalFailures++
@@ -1058,7 +1073,7 @@ func seedLayeredState(ctx context.Context, s *Sandbox, messages []model.Message,
 func runSegmentBatchAttempts(ctx context.Context, generator agent.SegmentGenerator,
 	recorder *recordingChatModel, input agent.SegmentGenerationInput, batch int,
 	retryBudget int, retryDelay time.Duration, outcome *batchOutcome,
-	evidence *batchEvidenceCollector) (agent.SegmentGenerationResult, error) {
+	evidence *batchEvidenceCollector, boardBefore model.SessionWhiteboardDocument) (agent.SegmentGenerationResult, error) {
 	var result agent.SegmentGenerationResult
 	var batchErr error
 	for attempt := 0; attempt < retryBudget; attempt++ {
@@ -1076,9 +1091,11 @@ func runSegmentBatchAttempts(ctx context.Context, generator agent.SegmentGenerat
 			evidence.add(BatchEvidence{
 				Batch: batch, Attempt: attempt + 1, Outcome: EvidenceOutcomeGenerated,
 				StartMessageID: input.FirstMessageID, EndMessageID: input.LastMessageID,
-				SegmentBody: result.SegmentContent,
-				Claims:      result.Diagnostics.ClaimCandidates,
-				Calls:       calls,
+				SegmentBody:      result.SegmentContent,
+				Entries:          result.Diagnostics.Entries,
+				WhiteboardBefore: whiteboardSnapshotOf(boardBefore),
+				WhiteboardAfter:  whiteboardSnapshotOf(result.Whiteboard),
+				Calls:            calls,
 			})
 			break
 		}
@@ -1093,16 +1110,17 @@ func runSegmentBatchAttempts(ctx context.Context, generator agent.SegmentGenerat
 		// before it gave up are kept: the engine had already refused a
 		// candidate and said why, and the attempt that failed afterwards is
 		// the only place that knowledge existed.
-		claims := []agent.WhiteboardClaimCandidate{}
+		entries := []agent.WhiteboardEntryOutcome{}
 		if diagnostics, ok := agent.SegmentFailureDiagnostics(batchErr); ok {
-			claims = diagnostics.ClaimCandidates
+			entries = diagnostics.Entries
 		}
 		evidence.add(BatchEvidence{
 			Batch: batch, Attempt: attempt + 1, Outcome: EvidenceOutcomeFailed,
 			Reason:         segmentFailureLabel(batchErr),
 			StartMessageID: input.FirstMessageID, EndMessageID: input.LastMessageID,
-			Claims: claims,
-			Calls:  calls,
+			Entries:          entries,
+			WhiteboardBefore: whiteboardSnapshotOf(boardBefore),
+			Calls:            calls,
 		})
 		if attempt == 0 {
 			outcome.FirstFailures++
@@ -1861,6 +1879,7 @@ func checkToolAuthority(s *Sandbox, sessionID string, window agent.ContextWindow
 	grants, set := windowGrantSet(window, run)
 	read.Grants = len(grants)
 	read.GrantSources = grantSources(grants)
+	read.GrantOrigins = grantOrigins(grants, seeded)
 	visible := visibleMessageIDs(window)
 	for _, grant := range grants {
 		if !containsUint(read.GrantedIDs, grant.MessageID) {
@@ -1931,6 +1950,93 @@ func grantSources(grants []agent.HistoryMessageGrant) map[string]int {
 		sources[grant.SourceKind]++
 	}
 	return sources
+}
+
+// The origins an authorisation can have.
+//
+// They are a fixed set, so a reader of a run can tell the cards apart
+// without having to know the product's internal names.
+const (
+	// grantOriginWhiteboardAnchor says the board kept the learner's own
+	// words findable under an unconfirmed statement. The value was not
+	// confirmed; the words are readable.
+	grantOriginWhiteboardAnchor = "whiteboard_anchor"
+	// grantOriginWhiteboardEntry says the board holds the value and cites
+	// the message. The value was confirmed.
+	grantOriginWhiteboardEntry = "whiteboard_entry"
+	// grantOriginSummarySegment says a summary segment quoted the message.
+	grantOriginSummarySegment = "summary_segment"
+	// grantOriginSummary says the rolling summary quoted the message.
+	grantOriginSummary = "summary"
+	// grantOriginEpisode says an episode card quoted the message.
+	grantOriginEpisode = "episode"
+)
+
+// grantOrigins says which card drew each authorisation, and what it was.
+//
+// The board's own authorisations are split by what the board did with the
+// message: an entry that holds the value cites it as evidence, and an
+// unconfirmed statement keeps it findable without confirming it. The product
+// grants both under one kind, so the split has to be made here - and it is
+// the split that says whether a value was confirmed or only preserved.
+func grantOrigins(grants []agent.HistoryMessageGrant, seeded seededLayered) map[string][]uint {
+	if len(grants) == 0 {
+		return nil
+	}
+	anchors := map[uint]struct{}{}
+	entries := map[uint]struct{}{}
+	for _, anchor := range seeded.board.Unverified {
+		if anchor.MessageID != 0 {
+			anchors[anchor.MessageID] = struct{}{}
+		}
+	}
+	for _, group := range [][]model.SessionWhiteboardEntry{
+		seeded.board.Constraints, seeded.board.Plan, seeded.board.OpenItems,
+	} {
+		for _, entry := range group {
+			for _, id := range entry.SourceMessageIDs {
+				if id != 0 {
+					entries[id] = struct{}{}
+				}
+			}
+		}
+	}
+	origins := make(map[string][]uint, 5)
+	add := func(origin string, id uint) {
+		if id == 0 {
+			return
+		}
+		for _, existing := range origins[origin] {
+			if existing == id {
+				return
+			}
+		}
+		origins[origin] = append(origins[origin], id)
+	}
+	for _, grant := range grants {
+		switch grant.SourceKind {
+		case agent.HistorySourceWhiteboard:
+			if _, ok := anchors[grant.MessageID]; ok {
+				add(grantOriginWhiteboardAnchor, grant.MessageID)
+				continue
+			}
+			if _, ok := entries[grant.MessageID]; ok {
+				add(grantOriginWhiteboardEntry, grant.MessageID)
+				continue
+			}
+			add(grantOriginWhiteboardEntry, grant.MessageID)
+		case agent.HistorySourceSummarySegment:
+			add(grantOriginSummarySegment, grant.MessageID)
+		case agent.HistorySourceSummary:
+			add(grantOriginSummary, grant.MessageID)
+		case agent.HistorySourceEpisode:
+			add(grantOriginEpisode, grant.MessageID)
+		}
+	}
+	if len(origins) == 0 {
+		return nil
+	}
+	return origins
 }
 
 // visibleMessageIDs collects every message id the window showed.
