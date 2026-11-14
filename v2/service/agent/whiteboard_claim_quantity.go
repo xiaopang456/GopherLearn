@@ -211,6 +211,28 @@ func whiteboardMeasurementClaim(claim WhiteboardLearnerClaim) bool {
 	return ok && form.hasNumber
 }
 
+// whiteboardSameMeasurement reports whether two values are one measurement.
+//
+// The same number counted in the same unit: "26 页" and "26 页/次" are one
+// measurement, and "26 页" and "26 分钟" are two.
+//
+// A number is not the name of a thing. The pages a learner planned to read
+// and the pages they actually read are two things that may carry the same
+// number, and the program cannot tell them apart by the number. So the
+// number alone is not evidence that two entries are about the same thing.
+func whiteboardSameMeasurement(left, right string) bool {
+	leftForm, leftOk := whiteboardValueForms(left)
+	rightForm, rightOk := whiteboardValueForms(right)
+	if !leftOk || !rightOk {
+		return false
+	}
+	if !leftForm.hasNumber || !rightForm.hasNumber {
+		return false
+	}
+	return leftForm.number == rightForm.number &&
+		whiteboardUnitsCompatible(leftForm.unit, rightForm.unit)
+}
+
 // whiteboardClaimSettledness asks the two questions about the words that a
 // value has to pass before it is a current fact.
 //

@@ -1035,6 +1035,33 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 			continue
 		}
 
+		if isExisting && whiteboardSameMeasurement(previous.Value, entry.Value) &&
+			(previous.Text != text || previous.State != entry.State) {
+			// The entry would take the place of a value the board already
+			// holds, and it brings no new number.
+			//
+			// A number is not the name of a thing. The pages a learner
+			// planned to read and the pages they actually read are two
+			// things, and they may carry the same number. An entry that
+			// carries the number the board already holds may not decide
+			// on its own that the two are one thing: it would replace a
+			// fact the learner still has with a fact about something
+			// else, and the reader would never learn that it happened.
+			//
+			// So the entry is refused here, and the learner's own words
+			// are kept as an unconfirmed statement: a reader can find them
+			// and ask for the message they came from. What the board
+			// holds is left as it was.
+			anchors, outcome.AnchorMessageID, outcome.AnchorReason =
+				whiteboardAppendAnchor(anchors, entry, claim, hasClaim, batch,
+					model.SessionWhiteboardAnchorSameNumber)
+			diagnostics.DroppedEntries++
+			outcome.Outcome = whiteboardEntryOutcomeRefused
+			outcome.OutcomeReason = model.SessionWhiteboardAnchorSameNumber
+			record()
+			continue
+		}
+
 		if learnerStated && origin != model.SessionWhiteboardOriginUser {
 			// The label was wrong; the words were the learner's. The entry
 			// is the learner's own, and it replaces the value it changed.
@@ -1654,6 +1681,16 @@ func whiteboardSupersedingEntry(current model.SessionWhiteboardDocument,
 	matches := 0
 	for _, item := range candidates {
 		if item.key == "" || item.key == key {
+			continue
+		}
+		if whiteboardSameMeasurement(item.entry.Value, entry.Value) {
+			// The candidate carries the number the new entry carries.
+			//
+			// A number is not the name of a thing: the pages a learner
+			// planned and the pages they actually read may carry the same
+			// one. So the number is not enough to say that the new entry
+			// is this entry, and the entry keeps its own key and the
+			// board keeps what it had.
 			continue
 		}
 		if !whiteboardEntryIsOlder(item.entry, learnerMessageID) {
