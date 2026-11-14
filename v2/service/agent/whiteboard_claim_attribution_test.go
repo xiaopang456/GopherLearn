@@ -193,6 +193,109 @@ func TestANewNumberStillTakesThePlaceOfTheOldOne(t *testing.T) {
 	}
 }
 
+// A learner who changes the frequency has said which thing it is about.
+//
+// The pages a learner reads every session and the pages they read every day
+// are two things, and the number may be the same. The learner says which
+// one it is with the frequency, so the entry that names the new frequency
+// is the learner's current value and it takes the place of the old one.
+func TestTheFrequencyTheLearnerChangedIsNotRefused(t *testing.T) {
+	batch := assistantBatch(95, "阅读计划改成每天读41页", 96, "往后按新的频率来。")
+	result, err := ApplyWhiteboardProposal(planPagesBoard(), WhiteboardProposal{
+		Constraints: []model.SessionWhiteboardEntry{
+			ownEntry("reading_plan_pages", "阅读计划每天读 41 页", "41 页", "", 95),
+		},
+		Claims: []WhiteboardLearnerClaim{
+			learnerClaim("reading_plan_pages", 95, "阅读计划改成每天读41页", "阅读计划", "每天读多少页",
+				"41 页", whiteboardClaimStanceDecided),
+		},
+	}, batch, model.SessionWhiteboardSchemaV2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, found := boardEntry(result.Board, "reading_plan_pages")
+	if !found {
+		t.Fatalf("the board does not carry the reading plan: %+v", result.Board.Constraints)
+	}
+	if value.Text != "阅读计划每天读 41 页" {
+		t.Fatalf("the board carries %q, want the frequency the learner named", value.Text)
+	}
+	if result.Diagnostics.VerifiedClaims != 1 {
+		t.Fatalf("verified claims = %d, want 1", result.Diagnostics.VerifiedClaims)
+	}
+	if result.Diagnostics.DroppedEntries != 0 {
+		t.Fatalf("dropped entries = %d, want 0", result.Diagnostics.DroppedEntries)
+	}
+}
+
+// The pages of another frequency do not take over the entry of this one.
+//
+// The board holds the pages a learner reads every session, and the proposal
+// brings the pages they read every day. They are two things, so the new
+// entry keeps its own key and the board keeps what it had.
+func TestThePagesOfAnotherFrequencyDoNotTakeOverThePlan(t *testing.T) {
+	batch := assistantBatch(95, "阅读计划改成每天读41页", 96, "往后按新的频率来。")
+	result, err := ApplyWhiteboardProposal(planPagesBoard(), WhiteboardProposal{
+		Constraints: []model.SessionWhiteboardEntry{
+			ownEntry("pages_per_day", "阅读计划每天读 41 页", "41 页", "", 95),
+		},
+		Claims: []WhiteboardLearnerClaim{
+			learnerClaim("pages_per_day", 95, "阅读计划改成每天读41页", "阅读计划", "每天读多少页",
+				"41 页", whiteboardClaimStanceDecided),
+		},
+	}, batch, model.SessionWhiteboardSchemaV2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := boardValues(result.Board)
+	if values["reading_plan_pages"] != "41 页" {
+		t.Fatalf("the plan was taken over: %+v", result.Board.Constraints)
+	}
+	if values["pages_per_day"] != "41 页" {
+		t.Fatalf("the board = %+v", result.Board.Constraints)
+	}
+}
+
+// A refused entry does not take the batch down with it.
+//
+// The reason of a refusal travels with the board, and the board is written
+// and read as one document. A reason the writer does not know is a board it
+// cannot write, and the whole batch fails with it - so a board that carries
+// a refusal has to be written and read back like any other.
+func TestTheBoardOfARefusedEntryIsWrittenAndReadBack(t *testing.T) {
+	batch := assistantBatch(95, pagesActuallyReadMessage, 96, "好的。")
+	result, err := ApplyWhiteboardProposal(planPagesBoard(), WhiteboardProposal{
+		Constraints: []model.SessionWhiteboardEntry{
+			ownEntry("reading_plan_pages", "阅读计划实际完成 41 页", "41 页", "", 95),
+		},
+		Claims: []WhiteboardLearnerClaim{
+			learnerClaim("reading_plan_pages", 95, pagesActuallyReadMessage, "阅读计划", "实际完成页数",
+				"41 页", whiteboardClaimStanceDecided),
+		},
+	}, batch, model.SessionWhiteboardSchemaV3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Diagnostics.DroppedEntries != 1 {
+		t.Fatalf("dropped entries = %d, want 1", result.Diagnostics.DroppedEntries)
+	}
+	encoded, err := model.MarshalSessionWhiteboardDocument(result.Board)
+	if err != nil {
+		t.Fatalf("the board of a refused entry cannot be written: %v", err)
+	}
+	read, err := model.DecodeSessionWhiteboardDocument(encoded)
+	if err != nil {
+		t.Fatalf("the board of a refused entry cannot be read back: %v", err)
+	}
+	if len(read.Unverified) != 1 {
+		t.Fatalf("the board read back %d statements, want 1", len(read.Unverified))
+	}
+	if read.Unverified[0].Reason != model.SessionWhiteboardAnchorSameNumber {
+		t.Fatalf("the statement carries %q, want %q", read.Unverified[0].Reason,
+			model.SessionWhiteboardAnchorSameNumber)
+	}
+}
+
 // A step that only moves along is not a change of what it is about.
 //
 // The board holds the value and the wording, and the entry says the same

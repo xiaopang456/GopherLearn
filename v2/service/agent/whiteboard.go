@@ -1036,10 +1036,10 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 		}
 
 		if isExisting && whiteboardSameMeasurement(previous.Value, entry.Value) &&
-			previous.Text != text {
+			previous.Text != text && !whiteboardScopeMoves(previous, entry, &claim) {
 			// The entry would take the place of a value the board already
-			// holds, it brings no new number, and it says something else
-			// about it.
+			// holds, it brings no new number, it says something else about
+			// it, and the learner did not say that it is another thing.
 			//
 			// A number is not the name of a thing. The pages a learner
 			// planned to read and the pages they actually read are two
@@ -1047,7 +1047,15 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 			// carries the number the board already holds may not decide
 			// on its own that the two are one thing: it would replace a
 			// fact the learner still has with a fact about something
-			// else, and the reader would never learn that it happened.
+			// else, and the reader would never learn that it happened -
+			// the number on the board would not even change.
+			//
+			// A learner who says the frequency changed has said which
+			// thing it is about: "every day" and "every session" are two
+			// items, and the entry that names the new one replaces the old
+			// one on purpose. So the rule is about the wording of an
+			// item the learner did not move, and it does not reach the
+			// update that names another frequency.
 			//
 			// So the entry is refused here, and the learner's own words
 			// are kept as an unconfirmed statement: a reader can find them
@@ -1686,6 +1694,15 @@ func whiteboardSupersedingEntry(current model.SessionWhiteboardDocument,
 	matches := 0
 	for _, item := range candidates {
 		if item.key == "" || item.key == key {
+			continue
+		}
+		if whiteboardScopeMoves(item.entry, entry, claim) {
+			// The candidate is about another frequency than the new entry.
+			//
+			// The pages a learner reads every session and the pages they
+			// read every day are two things. An entry that names the new
+			// one does not take the place of the old one, and the old one
+			// keeps its key.
 			continue
 		}
 		if whiteboardSameMeasurement(item.entry.Value, entry.Value) {

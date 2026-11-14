@@ -201,6 +201,32 @@ func whiteboardQuantityAttributeHolds(claim WhiteboardLearnerClaim,
 	return true, ""
 }
 
+// whiteboardScopeMoves reports whether a new entry names a scope the old
+// one does not.
+//
+// The pages a learner reads every session and the pages they read every day
+// are two things, and a learner who turns one into the other has said so
+// with the frequency itself. A new entry that names a scope the old one
+// does not is about another item, not another wording of the same one.
+//
+// The claim's attribute is read as well, because a model that names the
+// aspect of the subject may name the frequency there while the entry's own
+// wording leaves it out.
+func whiteboardScopeMoves(old model.SessionWhiteboardEntry, updated model.SessionWhiteboardEntry,
+	claim *WhiteboardLearnerClaim) bool {
+	oldScopes := whiteboardScopesIn(whiteboardEntryDescription(old))
+	newScopes := whiteboardScopesIn(whiteboardEntryDescription(updated))
+	if len(newScopes) == 0 && claim != nil {
+		newScopes = whiteboardScopesIn(claim.Attribute)
+	}
+	for _, scope := range newScopes {
+		if !whiteboardScopesShare([]string{scope}, oldScopes) {
+			return true
+		}
+	}
+	return false
+}
+
 // whiteboardMeasurementClaim reports whether the value of a claim is a
 // measurement.
 //
