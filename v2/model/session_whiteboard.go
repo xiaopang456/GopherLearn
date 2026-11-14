@@ -221,6 +221,16 @@ const (
 	// read and the pages they actually read are two things that may carry
 	// the same number, and the number alone does not say which one an entry
 	// is about.
+	//
+	// It is a refusal reason, not a navigation one: the words are kept
+	// findable, but the value they carried did not become the current one.
+	//
+	// It is a reason the stored format does not know yet, so a board that
+	// carries it cannot be read by the version of the program that came
+	// before this one. The board is written and read by the same version,
+	// and the boundary is the same one the reasons added before it have:
+	// a deployment has to be replaced before it writes a board that carries
+	// a reason the old version does not know.
 	SessionWhiteboardAnchorSameNumber = "same_number"
 	// SessionWhiteboardAnchorKeyAmbiguous says the claim could not be placed
 	// under the entry it was written for.
@@ -259,6 +269,7 @@ func ValidSessionWhiteboardAnchorReason(reason string) bool {
 		SessionWhiteboardAnchorScopeConflict,
 		SessionWhiteboardAnchorUnsettled,
 		SessionWhiteboardAnchorUnbackedChange,
+		SessionWhiteboardAnchorSameNumber,
 		SessionWhiteboardAnchorKeyAmbiguous,
 		SessionWhiteboardAnchorCitationInvalid,
 		SessionWhiteboardAnchorNoClaim:
