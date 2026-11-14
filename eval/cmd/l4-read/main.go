@@ -126,7 +126,7 @@ func run(args []string, out io.Writer) error {
 		return err
 	}
 	read, runErr := conversation.RunLayeredRead(ctx, *repository, *scenario, *question,
-		turns, evidence, accepted, forbidden, toolNames, *stage, *proxy, *chatModel, *scaledConfig)
+		turns, evidence, accepted, forbidden, toolNames, *stage, *proxy, *chatModel, *scaledConfig, *output)
 	fmt.Fprintf(out, "scenario=%s seeded=%d/%d board_in_window=%t segments=%v evidence=%v verdict=%s\n",
 		read.Scenario, read.SeededSegments, read.SeededBoard, read.WhiteboardInWindow,
 		read.SegmentsInWindow, read.EvidenceSeqs, read.Verdict)

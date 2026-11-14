@@ -338,6 +338,18 @@ func (s *Sandbox) verifyIdentity(ctx context.Context) error {
 	return nil
 }
 
+// name is the container's name.
+//
+// It is what a message about a kept sandbox has to say: the container is
+// where the run's own answers still are, and a message that does not name it
+// sends the reader looking in the wrong place.
+func (s *Sandbox) name() string {
+	if s == nil {
+		return ""
+	}
+	return "gl-eval-" + s.nonce
+}
+
 // Close removes only the exact container created by this object after checking
 // its random label. The -v flag only removes that container's anonymous volume.
 func (s *Sandbox) Close(ctx context.Context) error {

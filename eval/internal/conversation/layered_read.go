@@ -319,7 +319,7 @@ type LayeredRead struct {
 // what the read side makes of it.
 func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	turns []Turn, evidenceTurns []int, accepted, forbidden []string,
-	tools []string, stage, proxyBase, chatModel, scaledConfig string) (read LayeredRead, resultErr error) {
+	tools []string, stage, proxyBase, chatModel, scaledConfig, outputDir string) (read LayeredRead, resultErr error) {
 	if len(turns) == 0 {
 		return read, fmt.Errorf("turns are required")
 	}
@@ -426,11 +426,45 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	if err != nil {
 		return read, err
 	}
+	// evidence is what the write phase's attempts produced, kept for a run
+	// that is going to be read afterwards.
+	var evidence *BatchEvidenceSet
+	// evidenceRunID names this run in every piece of evidence it leaves
+	// behind. It is a local name for the local driver: it is never sent to
+	// the provider and it carries nothing about the request.
+	evidenceRunID, err := randomHex(8)
+	if err != nil {
+		return read, err
+	}
 	s, err := NewSandbox(ctx)
 	if err != nil {
 		return read, err
 	}
-	defer func() { resultErr = errors.Join(resultErr, closeSandbox(s)) }()
+	// The evidence is written before the sandbox goes.
+	//
+	// The sandbox holds the model's own answers, and they are the only copy
+	// of what the run produced. A run that tore the sandbox down before the
+	// evidence was written has thrown them away, so the write comes first -
+	// and a write that fails means the sandbox is kept, with the error
+	// saying which container is still there.
+	defer func() {
+		records := []BatchEvidence{}
+		enabled := false
+		if evidence != nil {
+			records = evidence.Records
+			enabled = evidence.Enabled
+		}
+		finishErr := finishRunWithEvidence(outputDir, records, enabled,
+			func() error { return closeSandbox(s) })
+		if finishErr != nil {
+			resultErr = errors.Join(resultErr, finishErr)
+			if errors.Is(finishErr, errEvidenceNotExported) {
+				resultErr = errors.Join(resultErr, fmt.Errorf(
+					"the sandbox was kept because the evidence of the run could not be exported: container=%s",
+					s.name()))
+			}
+		}
+	}()
 	if err = s.InitProductSchema(ctx); err != nil {
 		return read, err
 	}
@@ -467,9 +501,6 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	// reads state nobody wrote measures the reader against a vacuum.
 	seeded := seededLayered{}
 	var batches batchOutcome
-	// evidence is what the write phase's attempts produced, kept for a run
-	// that is going to be read afterwards.
-	var evidence *BatchEvidenceSet
 	// replay is the truncated arm's write phase. It is declared here because
 	// the read phase has to be able to say what the write phase did: a run
 	// whose compaction was refused by the failure cooldown answered without
@@ -483,7 +514,7 @@ func RunLayeredRead(ctx context.Context, repository, scenario, question string,
 	summarySource := armSummarySource(mode, nil)
 	if mode == LayeredArmOn {
 		seeded, batches, evidence, err = seedLayeredState(ctx, s, messages, settings, segmentModel, sessionID,
-			settings.Config.AgentConfig.SummarySegmentMaxAttempts)
+			settings.Config.AgentConfig.SummarySegmentMaxAttempts, evidenceRunID)
 		if err != nil {
 			return read, err
 		}
@@ -754,8 +785,9 @@ type rawFailure struct {
 type recordingChatModel struct {
 	inner modelcomponent.ToolCallingChatModel
 
-	mu   sync.Mutex
-	last string
+	mu    sync.Mutex
+	last  string
+	calls []CallEvidence
 }
 
 func (m *recordingChatModel) Generate(ctx context.Context, input []*schema.Message,
@@ -773,7 +805,88 @@ func (m *recordingChatModel) Generate(ctx context.Context, input []*schema.Messa
 		m.last = out.Content
 		m.mu.Unlock()
 	}
+	m.recordCall(input, out, err)
 	return out, err
+}
+
+// recordCall notes one model call.
+//
+// The call is filed on its own, with its own number and its own kind, because
+// an attempt is not one call: a batch that did not fit is asked for again,
+// and the answer the model gave the first time is not the answer it gave the
+// second time. Filing the attempt under one answer would lose every answer
+// but the last.
+//
+// The identity here is local. Nothing is sent to the provider and no header
+// is kept: the record is about what the model said, not about how it was
+// asked.
+func (m *recordingChatModel) recordCall(input []*schema.Message, out *schema.Message, err error) {
+	call := CallEvidence{Kind: classifySegmentCall(input)}
+	switch {
+	case err != nil:
+		call.Outcome = EvidenceOutcomeFailed
+		call.Reason = "model_error"
+	case out == nil:
+		call.Outcome = EvidenceOutcomeFailed
+		call.Reason = "empty_output"
+	default:
+		call.Outcome = EvidenceOutcomeOK
+		body, truncated, original := truncateAnswer(out.Content)
+		call.RawOutput = body
+		call.Truncated = truncated
+		call.OriginalBytes = original
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	call.Index = len(m.calls) + 1
+	m.calls = append(m.calls, call)
+}
+
+// callCount is how many calls the recorder has seen.
+func (m *recordingChatModel) callCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.calls)
+}
+
+// callsSince returns the calls made after the first n.
+//
+// An attempt takes the calls that were made while it ran, so the calls of
+// one attempt and the calls of the next one do not end up in the same file.
+func (m *recordingChatModel) callsSince(n int) []CallEvidence {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if n < 0 || n >= len(m.calls) {
+		return nil
+	}
+	out := make([]CallEvidence, len(m.calls)-n)
+	copy(out, m.calls[n:])
+	for index := range out {
+		out[index].Index = index + 1
+	}
+	return out
+}
+
+// classifySegmentCall says what a call to the segment writer was for.
+//
+// The kinds are told apart by what the request says: a call that asks for the
+// summary again says so in its request, and a call that asks for the board's
+// changes says so in its system prompt. A request that says neither is a
+// call that writes the summary.
+func classifySegmentCall(input []*schema.Message) string {
+	for _, message := range input {
+		if message == nil {
+			continue
+		}
+		switch {
+		case strings.Contains(message.Content, "This call asks for the CHANGES only"):
+			return EvidenceCallChanges
+		case strings.Contains(message.Content,
+			"The summary of these turns does not fit the window it is read under"):
+			return EvidenceCallRewrite
+		}
+	}
+	return EvidenceCallSummary
 }
 
 func (m *recordingChatModel) Stream(ctx context.Context, input []*schema.Message,
@@ -841,7 +954,7 @@ func (m *recordingChatModel) full() string {
 // reports a hole.
 func seedLayeredState(ctx context.Context, s *Sandbox, messages []model.Message,
 	settings *entry.Settings, chat modelcomponent.ToolCallingChatModel,
-	sessionID string, retryBudget int) (seededLayered, batchOutcome, *BatchEvidenceSet, error) {
+	sessionID string, retryBudget int, runID string) (seededLayered, batchOutcome, *BatchEvidenceSet, error) {
 	outcome := batchOutcome{}
 	agentConfig := settings.Config.AgentConfig
 	if retryBudget < 1 {
@@ -860,7 +973,7 @@ func seedLayeredState(ctx context.Context, s *Sandbox, messages []model.Message,
 	// The evidence of the attempts is kept only when the deployment's debug
 	// dump is on: it is the learner's own words, and a run that is not going
 	// to be read afterwards has no business keeping them.
-	evidence := newBatchEvidenceCollector(agentConfig)
+	evidence := newBatchEvidenceCollector(agentConfig, runID)
 	seeded := seededLayered{}
 	whiteboard := ""
 	previous := ""
@@ -955,14 +1068,17 @@ func runSegmentBatchAttempts(ctx context.Context, generator agent.SegmentGenerat
 				break
 			}
 		}
+		before := recorder.callCount()
 		result, batchErr = generator.GenerateSegment(ctx, input)
+		calls := recorder.callsSince(before)
 		if batchErr == nil {
 			outcome.Attempts++
 			evidence.add(BatchEvidence{
 				Batch: batch, Attempt: attempt + 1, Outcome: EvidenceOutcomeGenerated,
 				StartMessageID: input.FirstMessageID, EndMessageID: input.LastMessageID,
-				RawOutput: result.RawOutput, SegmentBody: result.SegmentContent,
-				Claims: result.Diagnostics.ClaimCandidates,
+				SegmentBody: result.SegmentContent,
+				Claims:      result.Diagnostics.ClaimCandidates,
+				Calls:       calls,
 			})
 			break
 		}
@@ -973,13 +1089,20 @@ func runSegmentBatchAttempts(ctx context.Context, generator agent.SegmentGenerat
 			Reason:  segmentFailureLabel(batchErr),
 			Excerpt: recorder.excerpt(),
 		})
-		// A failed attempt has no segment body and no candidates: the
-		// program never got as far as building them.
+		// A failed attempt has no segment body. The diagnostics it produced
+		// before it gave up are kept: the engine had already refused a
+		// candidate and said why, and the attempt that failed afterwards is
+		// the only place that knowledge existed.
+		claims := []agent.WhiteboardClaimCandidate{}
+		if diagnostics, ok := agent.SegmentFailureDiagnostics(batchErr); ok {
+			claims = diagnostics.ClaimCandidates
+		}
 		evidence.add(BatchEvidence{
 			Batch: batch, Attempt: attempt + 1, Outcome: EvidenceOutcomeFailed,
 			Reason:         segmentFailureLabel(batchErr),
 			StartMessageID: input.FirstMessageID, EndMessageID: input.LastMessageID,
-			RawOutput: recorder.full(),
+			Claims: claims,
+			Calls:  calls,
 		})
 		if attempt == 0 {
 			outcome.FirstFailures++
@@ -2146,10 +2269,10 @@ func WriteLayeredRead(path string, read LayeredRead) error {
 // The ledger is written even when it is empty, so that a reader can tell a run
 // that made no calls from a run whose ledger was never written.
 //
-// The evidence of the batches is written next to them, in its own directory,
-// and only when the deployment's summary segment debug dump was on. It holds
-// the learner's own words, so it stays out of the result file and out of
-// anything that is committed.
+// The evidence of the batches is not written here. It is written by the run
+// itself, before the sandbox that holds the model's own answers is torn
+// down, because that is the only moment at which the evidence and the
+// answers are both still there.
 func WriteLayeredReadFiles(dir string, read LayeredRead) error {
 	encoded, err := json.MarshalIndent(read, "", "  ")
 	if err != nil {
@@ -2164,9 +2287,6 @@ func WriteLayeredReadFiles(dir string, read LayeredRead) error {
 	}
 	if err = os.WriteFile(filepath.Join(dir, "model-calls.json"), append(calls, '\n'), 0o600); err != nil {
 		return err
-	}
-	if read.BatchEvidence != nil && read.BatchEvidence.Enabled {
-		return WriteBatchEvidence(dir, read.BatchEvidence.Records)
 	}
 	return nil
 }
