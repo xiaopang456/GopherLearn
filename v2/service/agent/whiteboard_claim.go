@@ -18,6 +18,14 @@ package agent
 // in the quoted words, the value is the entry's value, and the subject and
 // the attribute are what the entry is about.
 //
+// The attribute is the one part that is not always a sentence of the
+// learner. When the value is a measurement, the attribute is a name for the
+// aspect of the subject the value belongs to, and the three refusals of the
+// run of 2026-11-14 were claims that were dropped because a summary was not
+// in the words. A measurement is therefore checked by what it has - the
+// subject, the unit and the scope - and the words of the learner are read
+// for those.
+//
 // The checks are facts about the messages, not about the meaning of a
 // sentence. What a quote means is still the model's judgement, so the model
 // is asked two questions about it rather than one: what kind of statement it
@@ -283,23 +291,45 @@ func whiteboardVerifyClaim(claim WhiteboardLearnerClaim, entry model.SessionWhit
 		return whiteboardClaimRejected, model.SessionWhiteboardAnchorSubjectNotInEntry
 	}
 	attribute := whiteboardPlainText(claim.Attribute)
-	if attribute == "" || !strings.Contains(quote, attribute) {
-		// The attribute is not what the learner spoke about.
+	if attribute == "" {
+		// The claim does not say what the value is about.
 		return whiteboardClaimRejected, model.SessionWhiteboardAnchorAttributeNotInQuote
 	}
-	if !strings.Contains(whiteboardEntryDescription(entry), attribute) {
-		// One subject carries many attributes, and they are not each
-		// other's values.
-		return whiteboardClaimRejected, model.SessionWhiteboardAnchorAttributeNotInEntry
-	}
-	if !strings.EqualFold(strings.TrimSpace(claim.Stance), whiteboardClaimStanceDecided) {
-		return whiteboardClaimUnsettled, model.SessionWhiteboardAnchorUnsettled
-	}
-	if !strings.EqualFold(strings.TrimSpace(claim.Update), whiteboardClaimUpdateYes) {
-		// The model called the words a decision and then said they do not
-		// update the item. The two answers disagree, so the program acts on
-		// neither: what it cannot make out, it does not write.
-		return whiteboardClaimUnsettled, model.SessionWhiteboardAnchorUnsettled
+	if whiteboardMeasurementClaim(claim) {
+		// A measurement is checked by the three things it has: the thing it
+		// is about (the subject, checked above), the unit it is counted in,
+		// and the scope it holds in. Its attribute is a name for that aspect
+		// and not a sentence the learner said, so it is not looked for in
+		// the quote.
+		//
+		// The model is asked what kind of statement the words were before
+		// the attribute is read. A value the learner only asked about is not
+		// a current fact whatever the attribute is called, and that answer
+		// does not depend on the attribute at all.
+		if verdict, reason := whiteboardClaimSettledness(claim); verdict != whiteboardClaimSettled {
+			return verdict, reason
+		}
+		if holds, reason := whiteboardQuantityAttributeHolds(claim, entry, quote); !holds {
+			return whiteboardClaimRejected, reason
+		}
+	} else {
+		// A name. The attribute is a fact about the learner's words, and it
+		// has to be in them.
+		if !strings.Contains(quote, attribute) {
+			// The attribute is not what the learner spoke about.
+			return whiteboardClaimRejected, model.SessionWhiteboardAnchorAttributeNotInQuote
+		}
+		if !strings.Contains(whiteboardEntryDescription(entry), attribute) {
+			// One subject carries many attributes, and they are not each
+			// other's values.
+			return whiteboardClaimRejected, model.SessionWhiteboardAnchorAttributeNotInEntry
+		}
+		if verdict, reason := whiteboardClaimSettledness(claim); verdict != whiteboardClaimSettled {
+			// The model called the words a decision and then said they do not
+			// update the item. The two answers disagree, so the program acts
+			// on neither: what it cannot make out, it does not write.
+			return verdict, reason
+		}
 	}
 	if !whiteboardScopeHolds(message, claim.Value) {
 		// The model says the learner settled this value, but the learner's
