@@ -267,7 +267,7 @@ func TestTheBoardDoesNotCallTheValueItShowsTheCurrentOne(t *testing.T) {
 	if !strings.Contains(rendered.Text, "Unconfirmed learner statements") {
 		t.Fatalf("the block does not introduce the statements: %s", rendered.Text)
 	}
-	if !strings.Contains(rendered.Text, "not a current value") {
+	if !strings.Contains(rendered.Text, "not the current value") {
 		t.Fatalf("the block does not say the statements are not the current value: %s", rendered.Text)
 	}
 	if strings.Contains(rendered.Text, "the unmarked value is the current one") {
@@ -496,7 +496,7 @@ func TestAMessageTooLongToCarryBecomesAPointerThatCanBeReadBack(t *testing.T) {
 	if strings.Contains(rendered.Text, "candidate value") {
 		t.Fatalf("the block names a candidate value for a statement it did not show: %s", rendered.Text)
 	}
-	if !strings.Contains(rendered.Text, "read it back to see what was said") {
+	if !strings.Contains(rendered.Text, "read them back") {
 		t.Fatalf("the block does not tell the reader to read the message back: %s", rendered.Text)
 	}
 	if !strings.Contains(rendered.Text, "[message_ids=95]") {

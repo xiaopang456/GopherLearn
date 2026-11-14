@@ -38,7 +38,12 @@ const (
 	// does not say which item they are about - so it cannot promise that
 	// the value it shows is the current one either. It says the opposite,
 	// and it says it before a reader meets a value.
-	whiteboardBlockHeaderUnconfirmed = "Current state (server state; what is true now; a value carrying 〔…已改为…〕 was changed later; this board carries unconfirmed learner statements below, so a value shown here may not be the current one):"
+	//
+	// It is also shorter than the plain header, and the room it gives back
+	// goes to the statements: the block's budget is a fixed number, and
+	// every token of it spent on the explanation is one the learner's own
+	// words do not get.
+	whiteboardBlockHeaderUnconfirmed = "Current state (what is true now; 〔…已改为…〕 was changed later; a value here may not be the current one):"
 	// whiteboardUnconfirmedHeader introduces the unconfirmed learner
 	// statements the board carries.
 	//
@@ -47,7 +52,15 @@ const (
 	// current value, and the board does not say which item they are about -
 	// the claim they came from was refused, so the item it named is not
 	// something the board may point at.
-	whiteboardUnconfirmedHeader = "Unconfirmed learner statements (the learner's own words; they were not confirmed as the current state, so they are not a current value, and the board does not say which item they are about):"
+	//
+	// It also says once what every statement below it says on its own:
+	// these are the learner's own words, they were not confirmed, they are
+	// not a current value, and they can be read back. Saying it here
+	// instead of on every line is what leaves the block's budget room for
+	// the statements themselves - and a statement the budget cut is a
+	// statement the model never saw, and an id it never saw is not one it
+	// may read back.
+	whiteboardUnconfirmedHeader = "Unconfirmed learner statements (the learner's own words; not confirmed; not the current value; read them back):"
 	// summarySegmentsBlockHeader introduces the segments.
 	summarySegmentsBlockHeader = "Summary segments (compressed record of earlier turns in this session; the Current state block above is what is true now):"
 )
@@ -134,19 +147,40 @@ func renderWhiteboardBlock(document model.SessionWhiteboardDocument, budget int)
 	// message it came from so that a reader can ask for it. The ids are
 	// collected here because a statement that was not shown authorises
 	// nothing: a reader that may not see it may not read it back either.
+	//
+	// The statements come first as pointers and are given their whole words
+	// afterwards, with what is left. The order matters: a pointer is cheap
+	// and a whole quote is not, so a board that renders the quotes first
+	// shows one statement's words and nothing else, and every other
+	// statement - the one that may carry the value a reader is asking about
+	// - is left out of the window altogether. A statement left out of the
+	// window authorises nothing, so the reader cannot ask for the words
+	// either, and a value the board refused becomes unreachable.
+	//
+	// Every statement gets a pointer, and the words are then spent on as
+	// many of them as fit. The words are shown whole or not at all: a
+	// reader is never shown the beginning of a sentence whose end is
+	// missing, because the end of the sentence is where a condition or a
+	// negation lives.
 	if len(document.Unverified) > 0 {
 		headerCost := rag.EstimateTokens(whiteboardUnconfirmedHeader) + 1
 		if used+headerCost <= budget {
 			body.WriteString("\n" + whiteboardUnconfirmedHeader)
 			used += headerCost
-			for _, anchor := range document.Unverified {
-				line, ok := renderWhiteboardAnchor(anchor, budget-used)
-				if !ok {
+			// Every statement gets a pointer first. The pointer is cheap and
+			// the words are not, so a board that renders the words first
+			// shows one statement's words and nothing else - and every other
+			// statement, including the one that may carry the value a
+			// reader is asking about, is left out of the window altogether.
+			// A statement left out of the window authorises nothing, so the
+			// reader cannot ask for the words either, and a value the board
+			// refused becomes unreachable.
+			lines, shown := renderWhiteboardStatements(document.Unverified, budget, used)
+			for index, anchor := range document.Unverified {
+				if !shown[index] {
 					continue
 				}
-				cost := rag.EstimateTokens(line) + 1
-				body.WriteString("\n" + line)
-				used += cost
+				body.WriteString("\n" + lines[index])
 				out.EvidenceMessageIDs = append(out.EvidenceMessageIDs, anchor.MessageID)
 				out.AnchorMessageIDs = append(out.AnchorMessageIDs, anchor.MessageID)
 				out.Anchors = append(out.Anchors, WhiteboardDisplayAnchor{Key: anchor.Key, Value: anchor.Value, MessageID: anchor.MessageID})
@@ -157,45 +191,101 @@ func renderWhiteboardBlock(document model.SessionWhiteboardDocument, budget int)
 	return out
 }
 
-// renderWhiteboardAnchor renders one unconfirmed learner statement.
+// renderWhiteboardStatements renders the unconfirmed learner statements under
+// their header, in two phases.
 //
-// The words are shown whole or not at all. A statement whose words do not fit
-// the budget is rendered as a pointer: the message is still there, still
-// readable, and the reader is told to read it back rather than shown the
-// beginning of a sentence whose end is missing.
+// The first phase gives every statement a pointer, in the order the board
+// keeps them, and the pointer is cheap: it carries the message id and
+// nothing else. So the first phase decides which statements reach the
+// window, and it decides it by what is left of the budget rather than by
+// what the statements happen to weigh.
 //
-// The candidate value is shown only with the whole message. A value that is
-// named next to half a sentence reads as a decision the learner made, and
-// the half that is missing may be the part that says they did not.
-func renderWhiteboardAnchor(anchor model.SessionWhiteboardAnchor, budget int) (string, bool) {
-	if anchor.Complete && strings.TrimSpace(anchor.Text) != "" {
-		var out strings.Builder
-		out.WriteString("- \"")
-		out.WriteString(strings.TrimSpace(anchor.Text))
-		out.WriteString("\"")
-		if value := strings.TrimSpace(anchor.Value); value != "" &&
-			anchor.Reason != model.SessionWhiteboardAnchorUnsettled {
-			// The candidate value is what the refused entry wanted to put
-			// up. It is a candidate and nothing more: the learner's words
-			// carry it, but the program could not confirm that it is the
-			// value of that item.
-			out.WriteString(" (candidate value: ")
-			out.WriteString(value)
-			out.WriteString(", not confirmed)")
+// The second phase spends what is left on the whole words of as many of
+// those statements as fit. It only ever replaces a pointer with the words
+// of the same statement: it never takes a statement out of the window, and
+// it never brings one in that the first phase left out. That is the point
+// of the two phases - a statement that got a pointer keeps it, so the
+// entrance the budget paid for is never spent twice.
+//
+// The lines are returned in the order the statements are kept, and the
+// shown flags say which of them the window really carries. A statement
+// that is not shown authorises nothing: a reader that may not see it may
+// not read it back either.
+func renderWhiteboardStatements(anchors []model.SessionWhiteboardAnchor, budget, used int) ([]string, []bool) {
+	lines := make([]string, len(anchors))
+	pointerCost := make([]int, len(anchors))
+	shown := make([]bool, len(anchors))
+	for index, anchor := range anchors {
+		lines[index] = renderWhiteboardAnchorPointer(anchor)
+		pointerCost[index] = rag.EstimateTokens(lines[index]) + 1
+		if used+pointerCost[index] > budget {
+			// The statement does not fit: it keeps no line at all, and it
+			// authorises nothing.
+			lines[index] = ""
+			continue
 		}
-		out.WriteString(renderEvidenceIDs([]uint{anchor.MessageID}))
-		if rag.EstimateTokens(out.String())+1 <= budget {
-			return out.String(), true
+		used += pointerCost[index]
+		shown[index] = true
+	}
+	// What is left goes to the whole words, in the order the board keeps the
+	// statements.
+	for index, anchor := range anchors {
+		if !shown[index] || !anchor.Complete || strings.TrimSpace(anchor.Text) == "" {
+			continue
 		}
+		words := renderWhiteboardAnchorWords(anchor)
+		cost := rag.EstimateTokens(words) + 1
+		if used-pointerCost[index]+cost > budget {
+			continue
+		}
+		used += cost - pointerCost[index]
+		lines[index] = words
 	}
-	// The pointer. It carries the message id and nothing else, so a reader
-	// can ask for the message and see the whole of it.
-	pointer := "- there is an unconfirmed learner message here; read it back to see what was said" +
-		renderEvidenceIDs([]uint{anchor.MessageID})
-	if rag.EstimateTokens(pointer)+1 > budget {
-		return "", false
+	return lines, shown
+}
+
+// renderWhiteboardAnchorPointer renders one unconfirmed learner statement as
+// a pointer.
+//
+// The pointer carries the message id and the words "learner message", and
+// nothing else. It does not carry the candidate value, and that is the whole
+// point: a value that is named next to half a sentence reads as a decision
+// the learner made, and the half that is missing may be the part that says
+// they did not. The value is shown with the whole words and never without
+// them, so a pointer never puts a value next to words that may refuse it.
+//
+// The pointer is what makes the statement reachable. The message id in it
+// is what authorises reading the words back, and it is cheap enough that a
+// board can carry one for every statement it holds - which is what makes
+// the refused value readable at all.
+func renderWhiteboardAnchorPointer(anchor model.SessionWhiteboardAnchor) string {
+	return "- learner message" + renderEvidenceIDs([]uint{anchor.MessageID})
+}
+
+// renderWhiteboardAnchorWords renders one unconfirmed learner statement with
+// the learner's own words.
+//
+// The words are the whole message. The candidate value is shown next to them
+// because the whole message is there: a value that is named next to a whole
+// sentence cannot be read as a decision the learner made, because the
+// sentence says what they did with it.
+func renderWhiteboardAnchorWords(anchor model.SessionWhiteboardAnchor) string {
+	var out strings.Builder
+	out.WriteString("- \"")
+	out.WriteString(strings.TrimSpace(anchor.Text))
+	out.WriteString("\"")
+	if value := strings.TrimSpace(anchor.Value); value != "" &&
+		anchor.Reason != model.SessionWhiteboardAnchorUnsettled {
+		// The candidate value is what the refused entry wanted to put
+		// up. It is a candidate and nothing more: the learner's words
+		// carry it, but the program could not confirm that it is the
+		// value of that item.
+		out.WriteString(" (candidate value: ")
+		out.WriteString(value)
+		out.WriteString(", not confirmed)")
 	}
-	return pointer, true
+	out.WriteString(renderEvidenceIDs([]uint{anchor.MessageID}))
+	return out.String()
 }
 
 // unlimitedTokens is a budget large enough that the renderer shows everything.
