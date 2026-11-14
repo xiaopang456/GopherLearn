@@ -214,6 +214,14 @@ const (
 	// SessionWhiteboardAnchorUnbackedChange says the entry replaced a value
 	// the board already held and nothing the learner said was behind it.
 	SessionWhiteboardAnchorUnbackedChange = "unbacked_change"
+	// SessionWhiteboardAnchorSameNumber says the entry would take the place
+	// of a value the board already holds and it brings no new number.
+	//
+	// A number is not the name of a thing. The pages a learner planned to
+	// read and the pages they actually read are two things that may carry
+	// the same number, and the number alone does not say which one an entry
+	// is about.
+	SessionWhiteboardAnchorSameNumber = "same_number"
 	// SessionWhiteboardAnchorKeyAmbiguous says the claim could not be placed
 	// under the entry it was written for.
 	SessionWhiteboardAnchorKeyAmbiguous = "key_ambiguous"
