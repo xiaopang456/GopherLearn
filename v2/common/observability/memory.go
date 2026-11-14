@@ -368,22 +368,6 @@ func (r *MemoryRecorder) WhiteboardUnconfirmedStatementsExpired(count int) {
 	r.logf("memory_metric name=whiteboard_unconfirmed_statements_expired mode=%s count=%d", mode, count)
 }
 
-// WhiteboardUnconfirmedStatementsDropped records the statements that left the
-// board because the document written cannot hold them.
-//
-// It is the count of a write in a version that says nothing about the
-// learner's own words. It is reported rather than dropped in silence,
-// because a statement that disappears without a count is a turn of the
-// conversation that nobody can find afterwards.
-func (r *MemoryRecorder) WhiteboardUnconfirmedStatementsDropped(count int) {
-	mode := r.modeLabel()
-	if count > 0 {
-		r.addTotal("whiteboard_unconfirmed_statement_dropped_total", int64(count))
-		r.add("whiteboard_unconfirmed_statement_dropped_batches_total{mode="+mode+"}", 1)
-	}
-	r.logf("memory_metric name=whiteboard_unconfirmed_statements_dropped mode=%s count=%d", mode, count)
-}
-
 // SummarySegmentAssistant records what one segment carried of the
 // assistant's own products.
 //

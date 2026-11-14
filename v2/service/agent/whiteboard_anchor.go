@@ -72,9 +72,7 @@ func whiteboardReportClaimRefusals(diagnostics WhiteboardDiagnostics) {
 	if diagnostics.ExpiredUnconfirmedStatements > 0 {
 		observability.Memory.WhiteboardUnconfirmedStatementsExpired(diagnostics.ExpiredUnconfirmedStatements)
 	}
-	if diagnostics.DroppedUnconfirmedStatements > 0 {
-		observability.Memory.WhiteboardUnconfirmedStatementsDropped(diagnostics.DroppedUnconfirmedStatements)
-	}
+
 }
 
 // The labels a verdict is written under in a diagnostic.

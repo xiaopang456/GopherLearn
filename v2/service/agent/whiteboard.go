@@ -2,7 +2,6 @@ package agent
 
 import (
 	"fmt"
-	"log"
 	"regexp"
 	"sort"
 	"strconv"
@@ -374,13 +373,7 @@ type WhiteboardDiagnostics struct {
 	// They are not resolved. The learner's words are still unconfirmed; they
 	// are simply no longer carried, and the count says so.
 	ExpiredUnconfirmedStatements int
-	// DroppedUnconfirmedStatements is how many statements left the board
-	// because the document this batch wrote cannot hold them.
-	//
-	// It is the count of a write in a version that says nothing about the
-	// learner's own words, and it is reported rather than dropped in
-	// silence.
-	DroppedUnconfirmedStatements int
+
 	// ClaimCandidates are the candidate entries the engine refused, and the
 	// reason each one was refused.
 	//
@@ -488,8 +481,25 @@ func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal W
 			model.SessionWhiteboardSchemaV1, model.SessionWhiteboardSchemaV2,
 			model.SessionWhiteboardSchemaV3)
 	}
+	// The version the document is written in never goes backwards.
+	//
+	// A session whose board was written in version 3 keeps version 3 when
+	// the mode is turned off: the statements in it are the learner's own
+	// words, and a version 1 document written over it would drop them
+	// without trace. A deployment that never turned the mode on has a
+	// version 1 board and keeps writing version 1, exactly as it always
+	// did.
+	//
+	// The behaviour of the engine is a separate thing from the format of
+	// the document: the mode decides what is checked, and the format
+	// decides what can be stored. Turning the mode off stops the checks;
+	// it does not rewrite the document.
+	written := schemaVersion
+	if current.SchemaVersion == model.SessionWhiteboardSchemaV3 {
+		written = model.SessionWhiteboardSchemaV3
+	}
 	result := WhiteboardResult{
-		Board: model.SessionWhiteboardDocument{SchemaVersion: schemaVersion},
+		Board: model.SessionWhiteboardDocument{SchemaVersion: written},
 	}
 	anchors := make([]model.SessionWhiteboardAnchor, 0, 2)
 	// The mode that does not record the assistant's products keeps the board it
@@ -536,24 +546,16 @@ func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal W
 	// They are carried forward and cleared, not accumulated: a statement the
 	// board has caught up with is dropped, and the newest ones are the ones
 	// kept.
-	if whiteboardCarriesStatements(schemaVersion) {
+	//
+	// They travel with the document, not with the mode. A board that
+	// already carries them keeps carrying them after the mode is turned
+	// off, because the learner's own words are not the mode's business to
+	// throw away.
+	if whiteboardCarriesStatements(written) {
 		kept, resolved, expired := whiteboardMergeAnchors(current, result.Board, anchors)
 		result.Board.Unverified = kept
 		result.Diagnostics.ResolvedUnconfirmedStatements += resolved
 		result.Diagnostics.ExpiredUnconfirmedStatements += expired
-	} else if len(current.Unverified) > 0 {
-		// The version this batch writes cannot hold the statements the
-		// board carries, so they go with the write.
-		//
-		// They are counted and reported rather than dropped in silence: the
-		// count says how many of the learner's own words left the board
-		// with this write, which is what a reader of the counters needs to
-		// know. Turning a switch off does not convert the stored document
-		// back; the next write in the other mode produces a document of
-		// that mode's version.
-		result.Diagnostics.DroppedUnconfirmedStatements += len(current.Unverified)
-		log.Printf("[agent-whiteboard] unconfirmed statements dropped: count=%d written_version=%d",
-			len(current.Unverified), schemaVersion)
 	}
 
 	// One subject does not stay in two places.
@@ -618,7 +620,7 @@ func (d *WhiteboardDiagnostics) add(other WhiteboardDiagnostics) {
 	d.UnconfirmedStatements += other.UnconfirmedStatements
 	d.ResolvedUnconfirmedStatements += other.ResolvedUnconfirmedStatements
 	d.ExpiredUnconfirmedStatements += other.ExpiredUnconfirmedStatements
-	d.DroppedUnconfirmedStatements += other.DroppedUnconfirmedStatements
+
 	d.ClaimCandidates = append(d.ClaimCandidates, other.ClaimCandidates...)
 }
 
