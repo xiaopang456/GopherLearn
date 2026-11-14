@@ -864,10 +864,16 @@ func (g *ModelSegmentGenerator) generateOneCall(ctx context.Context,
 	// A board that does not fit the output budget is not a batch that failed.
 	// The rewrite was the wrong shape for this batch, so the batch is asked
 	// for its changes and the program merges them.
+	var replacedEntries []WhiteboardEntryOutcome
+	for i := range applied.Diagnostics.Entries {
+		applied.Diagnostics.Entries[i].CallIndex = ledger.calls()
+	}
 	if storedWhiteboardTokens(applied.Board) > g.maxOutputTokens {
+		replacedEntries = replacedWhiteboardOutcomes(applied.Diagnostics.Entries)
+		firstDiagnostics := applied.Diagnostics
 		applied, err = g.applyChangesOnly(ctx, ledger, payload, current, batch, applied)
 		if err != nil {
-			return SegmentGenerationResult{}, whiteboardFailureWithDiagnostics(err, applied.Diagnostics)
+			return SegmentGenerationResult{}, whiteboardFailureWithDiagnostics(err, firstDiagnostics)
 		}
 		applied.Diagnostics.DroppedPoints = droppedPoints
 	}
@@ -881,6 +887,10 @@ func (g *ModelSegmentGenerator) generateOneCall(ctx context.Context,
 		markRemovedEntries(&applied.Diagnostics, dropped, "output_budget")
 		applied.Diagnostics.DroppedEntries += len(dropped)
 	}
+	for i := range applied.Diagnostics.Entries {
+		applied.Diagnostics.Entries[i].CallIndex = ledger.calls()
+	}
+	applied.Diagnostics.Entries = append(replacedEntries, applied.Diagnostics.Entries...)
 	applied.Diagnostics.DroppedPoints = droppedPoints
 
 	whiteboardContent, err := model.MarshalSessionWhiteboardDocument(applied.Board)
@@ -1036,9 +1046,15 @@ func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
 		// A board that does not fit the output budget is not a batch that
 		// failed. The rewrite was the wrong shape for this batch, so the
 		// batch is asked for its changes and the program merges them.
+		var replacedEntries []WhiteboardEntryOutcome
+		for i := range applied.Diagnostics.Entries {
+			applied.Diagnostics.Entries[i].CallIndex = ledger.calls()
+		}
 		if storedWhiteboardTokens(applied.Board) > g.maxOutputTokens {
+			replacedEntries = replacedWhiteboardOutcomes(applied.Diagnostics.Entries)
 			applied, err = g.applyChangesOnly(ctx, ledger, payload, current, batch, applied)
 			if err != nil {
+				diagnostics.Entries = append(diagnostics.Entries, replacedEntries...)
 				return SegmentGenerationResult{}, whiteboardFailureWithDiagnostics(err, diagnostics)
 			}
 		}
@@ -1052,6 +1068,11 @@ func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
 			markRemovedEntries(&applied.Diagnostics, droppedBoard, "output_budget")
 			applied.Diagnostics.DroppedEntries += len(droppedBoard)
 		}
+		reconcilePriorCall(&diagnostics, applied.Diagnostics, applied.Board)
+		for i := range applied.Diagnostics.Entries {
+			applied.Diagnostics.Entries[i].CallIndex = ledger.calls()
+		}
+		diagnostics.Entries = append(diagnostics.Entries, replacedEntries...)
 		diagnostics.add(applied.Diagnostics)
 		changes = append(changes, applied.Changes...)
 		current = applied.Board
@@ -1076,6 +1097,9 @@ func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
 		return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonPointSource,
 			droppedPoints: dropped, err: fmt.Errorf("summary segment has no usable point")}
 	}
+	// Recheck every call against the completed batch, preserving earlier
+	// removal causes even if a later call recreates an identical entry.
+	reconcilePriorCall(&diagnostics, WhiteboardDiagnostics{}, current)
 	merged.Points = trimSegmentPoints(points)
 	dropped += len(points) - len(merged.Points)
 	merged.Names = trimSegmentTerms(names)
@@ -2071,4 +2095,22 @@ var citationMarker = regexp.MustCompile(`\[(\d{1,4})\]|［(\d{1,4})］`)
 // stripCitationMarkers removes the knowledge base's citation markers.
 func stripCitationMarkers(text string) string {
 	return citationMarker.ReplaceAllString(text, "")
+}
+
+// A rewrite replaces the first proposed board; keep its decisions without
+// treating them as committed entries of the replacement.
+func replacedWhiteboardOutcomes(entries []WhiteboardEntryOutcome) []WhiteboardEntryOutcome {
+	out := append([]WhiteboardEntryOutcome(nil), entries...)
+	for i := range out {
+		e := &out[i]
+		if e.EntryRetention == "retained" {
+			e.EntryRetention = "removed"
+			e.EntryRetentionReason = "output_rewrite"
+		}
+		if e.AnchorRetention == "retained" {
+			e.AnchorRetention = "removed"
+			e.AnchorRetentionReason = "output_rewrite"
+		}
+	}
+	return out
 }

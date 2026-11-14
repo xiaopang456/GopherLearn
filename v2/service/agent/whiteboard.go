@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -271,7 +272,14 @@ type WhiteboardProposal struct {
 // Every field is a count of an intervention, so a run that shows a rising
 // number of them is showing a generator that is drifting, not a board that is
 // misbehaving.
+type whiteboardRemoval struct{ key, value, reason, group string }
+type anchorRemoval struct {
+	messageID          uint
+	key, value, reason string
+}
 type WhiteboardDiagnostics struct {
+	removedEntries []whiteboardRemoval
+	removedAnchors []anchorRemoval
 	// AppliedEntries is how many entries the proposal contributed.
 	AppliedEntries int
 	// ChangedEntries is how many entries ended up different from the old
@@ -409,7 +417,10 @@ type WhiteboardDiagnostics struct {
 // again from the value being confirmed.
 type WhiteboardEntryOutcome struct {
 	// Key is the model's own name for the entry.
-	Key string
+	Key            string
+	CallIndex      int
+	candidateEntry *model.SessionWhiteboardEntry
+	candidateGroup string
 	// ClaimVerdict is what the engine made of the claim: settled,
 	// unsettled, rejected, ambiguous or absent.
 	//
@@ -599,21 +610,21 @@ func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal W
 	carried := whiteboardBoardEvidenceIDs(current)
 
 	constraints, constraintChanges, constraintDiag, constraintAnchors := applyWhiteboardGroup(
-		current.Constraints, proposal.Constraints, batch, false, schemaVersion, proposal, carried)
+		current.Constraints, proposal.Constraints, batch, false, schemaVersion, proposal, carried, "constraints")
 	result.Board.Constraints = constraints
 	result.Changes = append(result.Changes, constraintChanges...)
 	result.Diagnostics.add(constraintDiag)
 	anchors = append(anchors, constraintAnchors...)
 
 	plan, planChanges, planDiag, planAnchors := applyWhiteboardGroup(
-		current.Plan, proposal.Plan, batch, true, schemaVersion, proposal, carried)
+		current.Plan, proposal.Plan, batch, true, schemaVersion, proposal, carried, "plan")
 	result.Board.Plan = plan
 	result.Changes = append(result.Changes, planChanges...)
 	result.Diagnostics.add(planDiag)
 	anchors = append(anchors, planAnchors...)
 
 	openItems, openChanges, openDiag, openAnchors := applyWhiteboardGroup(
-		current.OpenItems, proposal.OpenItems, batch, false, schemaVersion, proposal, carried)
+		current.OpenItems, proposal.OpenItems, batch, false, schemaVersion, proposal, carried, "open_items")
 	result.Board.OpenItems = openItems
 	result.Changes = append(result.Changes, openChanges...)
 	result.Diagnostics.add(openDiag)
@@ -631,6 +642,22 @@ func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal W
 	// throw away.
 	if whiteboardCarriesStatements(written) {
 		kept, resolved, expired := whiteboardMergeAnchors(current, result.Board, anchors)
+		for _, prior := range current.Unverified {
+			found := false
+			for _, now := range kept {
+				if sameAnchorIdentity(prior, now) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				reason := "anchor_capacity"
+				if whiteboardAnchorResolved(prior, result.Board) {
+					reason = "anchor_resolved"
+				}
+				result.Diagnostics.removedAnchors = append(result.Diagnostics.removedAnchors, anchorRemoval{prior.MessageID, prior.Key, prior.Value, reason})
+			}
+		}
 		result.Board.Unverified = kept
 		result.Diagnostics.ResolvedUnconfirmedStatements += resolved
 		result.Diagnostics.ExpiredUnconfirmedStatements += expired
@@ -658,7 +685,20 @@ func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal W
 	// drop is recorded, so a value that leaves the board can still be found
 	// in the segment that recorded it.
 	reconcileEntryRetention(&result.Diagnostics, result.Board, "moved_or_replaced")
+	anchorsBeforeTrim := append([]model.SessionWhiteboardAnchor(nil), result.Board.Unverified...)
 	droppedForTokens, expiredStatements := trimWhiteboardToTokenLimit(&result.Board)
+	for _, prior := range anchorsBeforeTrim {
+		found := false
+		for _, now := range result.Board.Unverified {
+			if sameAnchorIdentity(prior, now) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			result.Diagnostics.removedAnchors = append(result.Diagnostics.removedAnchors, anchorRemoval{prior.MessageID, prior.Key, prior.Value, "render_budget"})
+		}
+	}
 	markRemovedEntries(&result.Diagnostics, droppedForTokens, "render_budget")
 	reconcileAnchorRetention(&result.Diagnostics, result.Board, "render_budget")
 	for _, change := range droppedForTokens {
@@ -705,6 +745,8 @@ func (d *WhiteboardDiagnostics) add(other WhiteboardDiagnostics) {
 	d.ResolvedUnconfirmedStatements += other.ResolvedUnconfirmedStatements
 	d.ExpiredUnconfirmedStatements += other.ExpiredUnconfirmedStatements
 
+	d.removedEntries = append(d.removedEntries, other.removedEntries...)
+	d.removedAnchors = append(d.removedAnchors, other.removedAnchors...)
 	d.Entries = append(d.Entries, other.Entries...)
 }
 
@@ -790,7 +832,7 @@ func whiteboardEntryForVersion(entry model.SessionWhiteboardEntry, schemaVersion
 // not been read.
 func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []model.SessionWhiteboardEntry,
 	batch WhiteboardBatch, doneFirst bool, schemaVersion int, proposal WhiteboardProposal,
-	carried map[uint]struct{}) ([]model.SessionWhiteboardEntry, []model.SessionSummarySegmentChange, WhiteboardDiagnostics, []model.SessionWhiteboardAnchor) {
+	carried map[uint]struct{}, groupName string) ([]model.SessionWhiteboardEntry, []model.SessionSummarySegmentChange, WhiteboardDiagnostics, []model.SessionWhiteboardAnchor) {
 	var diagnostics WhiteboardDiagnostics
 	anchors := make([]model.SessionWhiteboardAnchor, 0, 2)
 	keyCounts := whiteboardProposalKeyCounts(proposal)
@@ -1141,6 +1183,10 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 		if doneFirst && updated.State == "" && isExisting {
 			updated.State = previous.State
 		}
+		snapshot := updated
+		snapshot.SourceMessageIDs = append([]uint(nil), updated.SourceMessageIDs...)
+		outcome.candidateEntry = &snapshot
+		outcome.candidateGroup = groupName
 		if key != "" {
 			if position, exists := positions[key]; exists {
 				merged[position] = updated
@@ -1179,6 +1225,9 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 
 	trimmed, droppedChanges, droppedDone := trimWhiteboardGroup(merged, doneFirst)
 	markRemovedEntries(&diagnostics, droppedChanges, "item_capacity")
+	for i := range diagnostics.removedEntries {
+		diagnostics.removedEntries[i].group = groupName
+	}
 	diagnostics.DroppedDonePlan += droppedDone
 	diagnostics.DroppedEntries += len(droppedChanges)
 	diagnostics.UnconfirmedStatements = len(anchors)
@@ -2117,6 +2166,11 @@ func findReplacementValue(messages []string, number float64, unit string) (float
 
 // These diagnostics describe the generated board, not a committed row or a rendered window.
 func markRemovedEntries(d *WhiteboardDiagnostics, changes []model.SessionSummarySegmentChange, reason string) {
+	for _, c := range changes {
+		if c.Removed {
+			d.removedEntries = append(d.removedEntries, whiteboardRemoval{key: c.Key, value: strings.TrimSpace(c.OldValue), reason: reason})
+		}
+	}
 	for i := range d.Entries {
 		e := &d.Entries[i]
 		if e.Outcome != whiteboardEntryOutcomeApplied {
@@ -2141,9 +2195,9 @@ func reconcileEntryRetention(d *WhiteboardDiagnostics, board model.SessionWhiteb
 			continue
 		}
 		found := false
-		for _, group := range [][]model.SessionWhiteboardEntry{board.Constraints, board.Plan, board.OpenItems} {
+		for gi, group := range [][]model.SessionWhiteboardEntry{board.Constraints, board.Plan, board.OpenItems} {
 			for _, item := range group {
-				if item.Key == e.Key && strings.TrimSpace(item.Text) == e.candidateText && strings.TrimSpace(item.Value) == e.candidateValue {
+				if e.candidateGroup == []string{"constraints", "plan", "open_items"}[gi] && e.candidateEntry != nil && reflect.DeepEqual(item, *e.candidateEntry) {
 					found = true
 				}
 			}
@@ -2180,6 +2234,66 @@ func reconcileAnchorRetention(d *WhiteboardDiagnostics, board model.SessionWhite
 		} else {
 			e.AnchorRetention = "removed"
 			e.AnchorRetentionReason = missing
+		}
+	}
+}
+
+func sameAnchorIdentity(a, b model.SessionWhiteboardAnchor) bool {
+	return a.MessageID == b.MessageID && a.Key == b.Key && a.Value == b.Value && a.Reason == b.Reason
+}
+
+// reconcilePriorCall marks each earlier version as soon as it leaves the board.
+// A later re-addition must not resurrect that earlier observation.
+func reconcilePriorCall(prior *WhiteboardDiagnostics, later WhiteboardDiagnostics, board model.SessionWhiteboardDocument) {
+	for i := range prior.Entries {
+		e := &prior.Entries[i]
+		if e.Outcome == whiteboardEntryOutcomeApplied && e.EntryRetention != "removed" {
+			replaced := false
+			for _, next := range later.Entries {
+				if e.Key != "" && next.Outcome == whiteboardEntryOutcomeApplied && next.Key == e.Key && next.candidateGroup == e.candidateGroup {
+					replaced = true
+					break
+				}
+			}
+			found := false
+			if e.candidateEntry != nil {
+				for gi, g := range [][]model.SessionWhiteboardEntry{board.Constraints, board.Plan, board.OpenItems} {
+					for _, item := range g {
+						if e.candidateGroup == []string{"constraints", "plan", "open_items"}[gi] && reflect.DeepEqual(item, *e.candidateEntry) {
+							found = true
+						}
+					}
+				}
+			}
+			if !found || replaced {
+				e.EntryRetention = "removed"
+				e.EntryRetentionReason = "updated_or_replaced"
+				for _, event := range later.removedEntries {
+					if event.key == e.Key && event.value == e.candidateValue && (event.group == "" || event.group == e.candidateGroup) {
+						e.EntryRetentionReason = event.reason
+						break
+					}
+				}
+			}
+		}
+		if e.AnchorMessageID != 0 && e.AnchorRetention != "removed" {
+			found := false
+			for _, a := range board.Unverified {
+				if a.MessageID == e.AnchorMessageID && a.Key == e.Key && strings.TrimSpace(a.Value) == e.candidateValue && a.Reason == e.AnchorReason {
+					found = true
+					break
+				}
+			}
+			if !found {
+				e.AnchorRetention = "removed"
+				e.AnchorRetentionReason = "updated_or_replaced"
+				for _, event := range later.removedAnchors {
+					if event.messageID == e.AnchorMessageID && event.key == e.Key && strings.TrimSpace(event.value) == e.candidateValue {
+						e.AnchorRetentionReason = event.reason
+						break
+					}
+				}
+			}
 		}
 	}
 }

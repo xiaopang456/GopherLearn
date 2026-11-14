@@ -292,6 +292,7 @@ type batchEvidenceCallFile struct {
 // that is read by people who do not need it.
 type batchEvidenceEntry struct {
 	Key                   string `json:"key"`
+	CallIndex             int    `json:"call_index,omitempty"`
 	ClaimVerdict          string `json:"claim_verdict"`
 	ClaimReason           string `json:"claim_reason,omitempty"`
 	ClaimMessageID        uint   `json:"claim_message_id,omitempty"`
@@ -353,6 +354,7 @@ func writeBatchEvidenceAttempt(dir string, record BatchEvidence) error {
 	for _, entry := range record.Entries {
 		entries = append(entries, batchEvidenceEntry{
 			Key:             entry.Key,
+			CallIndex:       entry.CallIndex,
 			ClaimVerdict:    entry.ClaimVerdict,
 			ClaimReason:     entry.ClaimReason,
 			ClaimMessageID:  entry.ClaimMessageID,

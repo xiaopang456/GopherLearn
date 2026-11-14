@@ -29,8 +29,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -640,5 +643,148 @@ func TestGeneratedRetentionIsWrittenSeparatelyFromSnapshots(t *testing.T) {
 		if e[key] != want {
 			t.Fatalf("%s=%v want %s", key, e[key], want)
 		}
+	}
+}
+
+type splitExportModel struct{ calls int }
+
+func (m *splitExportModel) WithTools([]*schema.ToolInfo) (modelcomponent.ToolCallingChatModel, error) {
+	return m, nil
+}
+func (m *splitExportModel) Stream(context.Context, []*schema.Message, ...modelcomponent.Option) (*schema.StreamReader[*schema.Message], error) {
+	return nil, errors.New("unused")
+}
+func (m *splitExportModel) Generate(_ context.Context, input []*schema.Message, _ ...modelcomponent.Option) (*schema.Message, error) {
+	m.calls++
+	re := regexp.MustCompile(`\[message_id=(\d+) role=user\]`)
+	match := re.FindStringSubmatch(input[1].Content)
+	if len(match) < 2 {
+		return nil, errors.New("missing learner message")
+	}
+	id, _ := strconv.Atoi(match[1])
+	entries := make([]map[string]any, 5)
+	for i := range entries {
+		entries[i] = map[string]any{"key": fmt.Sprintf("call%d_entry%d", m.calls, i), "text": fmt.Sprintf("entry %d %d", m.calls, i), "value": fmt.Sprintf("%d-%d", m.calls, i), "source_message_ids": []int{id}, "updated_at_message_id": id}
+	}
+	obj := map[string]any{"schema_version": 1, "segment": map[string]any{"topic": "test", "points": []any{map[string]any{"text": "point", "evidence_message_ids": []int{id}, "source": "user"}}}, "whiteboard": map[string]any{"schema_version": 1, "constraints": entries}}
+	raw, _ := json.Marshal(obj)
+	return schema.AssistantMessage(string(raw), nil), nil
+}
+func TestSplitGeneratorFinalRetentionReachesAttemptFile(t *testing.T) {
+	modelStub := &splitExportModel{}
+	recorder := &recordingChatModel{inner: modelStub}
+	generator, err := agent.NewModelSegmentGenerator(recorder, 1200, 2000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generator.UseAssistantContent(true)
+	messages := make([]model.Message, 0, 130)
+	for i := 1; i <= 65; i++ {
+		messages = append(messages, model.Message{ID: uint(2*i - 1), IsUser: true, Content: fmt.Sprintf("turn %d", i)}, model.Message{ID: uint(2 * i), Content: strings.Repeat("assistant explanation ", 100)})
+	}
+	collector := newBatchEvidenceCollector(config.AgentConfig{SummarySegmentDebugDump: true}, "run")
+	result, err := runSegmentBatchAttempts(context.Background(), generator, recorder, agent.SegmentGenerationInput{Messages: messages, FirstMessageID: 1, LastMessageID: 130}, 1, 1, 0, &batchOutcome{}, collector, model.SessionWhiteboardDocument{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if modelStub.calls < 5 {
+		t.Fatalf("only %d calls", modelStub.calls)
+	}
+	dir := t.TempDir()
+	if err = WriteBatchEvidence(dir, collector.set().Records); err != nil {
+		t.Fatal(err)
+	}
+	file := readEvidenceAttempt(t, dir, 1, 1)
+	entries := file["entries"].([]any)
+	found := false
+	for _, raw := range entries {
+		row := raw.(map[string]any)
+		if row["key"] == "call1_entry0" {
+			found = true
+			if row["call_index"] != float64(1) || row["outcome"] != "applied" || row["generated_entry_retention"] != "removed" || row["generated_entry_retention_reason"] != "item_capacity" {
+				t.Fatalf("row=%v", row)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("first call not exported")
+	}
+	for _, entry := range result.Whiteboard.Constraints {
+		if entry.Key == "call1_entry0" {
+			t.Fatal("evicted entry persisted")
+		}
+	}
+}
+
+type splitAnchorExportModel struct{ calls int }
+
+func (m *splitAnchorExportModel) WithTools([]*schema.ToolInfo) (modelcomponent.ToolCallingChatModel, error) {
+	return m, nil
+}
+func (m *splitAnchorExportModel) Stream(context.Context, []*schema.Message, ...modelcomponent.Option) (*schema.StreamReader[*schema.Message], error) {
+	return nil, errors.New("unused")
+}
+func (m *splitAnchorExportModel) Generate(_ context.Context, input []*schema.Message, _ ...modelcomponent.Option) (*schema.Message, error) {
+	m.calls++
+	match := regexp.MustCompile(`\[message_id=(\d+) role=user\]`).FindStringSubmatch(input[1].Content)
+	if len(match) < 2 {
+		return nil, errors.New("missing message")
+	}
+	id, _ := strconv.Atoi(match[1])
+	entry := func(key, value string, ids []int) map[string]any {
+		return map[string]any{"key": key, "text": "每天学习 " + value, "value": value, "source_message_ids": ids, "updated_at_message_id": id}
+	}
+	items := []map[string]any{}
+	if m.calls == 1 {
+		items = append(items, entry("resolved", "30页", []int{id, 99999}), entry("expired", "31页", []int{id, 99999}))
+	} else {
+		if m.calls == 2 {
+			items = append(items, entry("resolved", "30页", []int{id}))
+		}
+		items = append(items, entry(fmt.Sprintf("a%d", m.calls), "31页", []int{id, 99999}))
+	}
+	obj := map[string]any{"schema_version": 1, "segment": map[string]any{"topic": "test", "points": []any{map[string]any{"text": "point", "evidence_message_ids": []int{id}, "source": "user"}}}, "whiteboard": map[string]any{"schema_version": 1, "constraints": items}}
+	b, _ := json.Marshal(obj)
+	return schema.AssistantMessage(string(b), nil), nil
+}
+func TestSplitGeneratorAnchorRetentionReachesAttemptFile(t *testing.T) {
+	fake := &splitAnchorExportModel{}
+	recorder := &recordingChatModel{inner: fake}
+	generator, err := agent.NewModelSegmentGenerator(recorder, 1200, 2000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generator.UseAssistantContent(true)
+	messages := make([]model.Message, 0, 280)
+	for i := 1; i <= 140; i++ {
+		messages = append(messages, model.Message{ID: uint(2*i - 1), IsUser: true, Content: fmt.Sprintf("turn %d 每天学习30页、31页。", i)}, model.Message{ID: uint(2 * i), Content: strings.Repeat("assistant explanation ", 100)})
+	}
+	collector := newBatchEvidenceCollector(config.AgentConfig{SummarySegmentDebugDump: true}, "run")
+	_, err = runSegmentBatchAttempts(context.Background(), generator, recorder, agent.SegmentGenerationInput{Messages: messages, FirstMessageID: 1, LastMessageID: 280}, 1, 1, 0, &batchOutcome{}, collector, model.SessionWhiteboardDocument{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err = WriteBatchEvidence(dir, collector.set().Records); err != nil {
+		t.Fatal(err)
+	}
+	entries := readEvidenceAttempt(t, dir, 1, 1)["entries"].([]any)
+	seen := map[string]bool{}
+	for _, raw := range entries {
+		row := raw.(map[string]any)
+		key, _ := row["key"].(string)
+		if row["call_index"] != float64(1) {
+			continue
+		}
+		if key == "resolved" || key == "expired" {
+			want := map[string]string{"resolved": "anchor_resolved", "expired": "anchor_capacity"}[key]
+			if row["generated_anchor_retention"] != "removed" || row["generated_anchor_retention_reason"] != want {
+				t.Fatalf("%s: %v", key, row)
+			}
+			seen[key] = true
+		}
+	}
+	if !seen["resolved"] || !seen["expired"] {
+		t.Fatalf("missing anchors: %v", seen)
 	}
 }
