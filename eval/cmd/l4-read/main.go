@@ -71,6 +71,8 @@ func run(args []string, out io.Writer) error {
 	timeout := flags.Duration("timeout", 0, "read deadline")
 	checkConfig := flags.Bool("check-config", false,
 		"load the product's configuration, report what it says, and exit without calling a model")
+	expectMode := flags.String("expect-summary-segment-mode", "on",
+		"the layered-summary mode the run needs (on, shadow or off)")
 	expectAssistantContent := flags.String("expect-assistant-content", "on",
 		"the assistant-content switch the run needs (on or off)")
 	expectDebugDump := flags.String("expect-debug-dump", "on",
@@ -85,10 +87,16 @@ func run(args []string, out io.Writer) error {
 		return fmt.Errorf("no positional arguments are accepted")
 	}
 	if *checkConfig {
+		// The overlay goes with the check: the check has to read the same
+		// configuration the run hands the product, or it verifies a run that
+		// does not happen.
 		return runConfigCheck([]string{
 			"-repository", *repository,
+			"-scaled-config", *scaledConfig,
+			"-expect-summary-segment-mode", *expectMode,
 			"-expect-assistant-content", *expectAssistantContent,
 			"-expect-debug-dump", *expectDebugDump,
+			"-chat-model", *chatModel,
 		}, os.Stdout)
 	}
 	if err := pathguard.CheckAll(map[string]string{"output": *output}); err != nil {
