@@ -523,12 +523,18 @@ func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal W
 	}
 	// The version the document is written in never goes backwards.
 	//
-	// A session whose board was written in version 3 keeps version 3 when
-	// the mode is turned off: the statements in it are the learner's own
+	// A board keeps the version it has. A session whose board was written
+	// in version 2 or version 3 keeps that version when the mode is turned
+	// off: the origins and the statements in it are the learner's own
 	// words, and a version 1 document written over it would drop them
 	// without trace. A deployment that never turned the mode on has a
 	// version 1 board and keeps writing version 1, exactly as it always
 	// did.
+	//
+	// The version only moves forward, and it moves when the mode asks for
+	// a newer one: the mode that records the assistant's products writes
+	// version 3, and a board that was already version 2 is written as
+	// version 3 from then on.
 	//
 	// The behaviour of the engine is a separate thing from the format of
 	// the document: the policy decides what is checked, and the format
@@ -536,8 +542,8 @@ func ApplyWhiteboardProposal(current model.SessionWhiteboardDocument, proposal W
 	// of the assistant from reaching the board; it does not rewrite the
 	// document.
 	written := policy.SchemaVersion
-	if current.SchemaVersion == model.SessionWhiteboardSchemaV3 {
-		written = model.SessionWhiteboardSchemaV3
+	if current.SchemaVersion > written {
+		written = current.SchemaVersion
 	}
 	result := WhiteboardResult{
 		Board: model.SessionWhiteboardDocument{SchemaVersion: written},
@@ -745,7 +751,7 @@ func applyWhiteboardGoal(current *model.SessionWhiteboardGoal, proposed *model.S
 	return goal, change, 0, 0
 }
 
-// whiteboardOriginForPolicy is the origin an entry is written with.
+// whiteboardOriginForPolicy is the origin a proposed entry is written with.
 //
 // The field is written only when it says something other than the learner:
 // the learner's own entry is the default, and an entry that does not say so
@@ -755,6 +761,9 @@ func applyWhiteboardGoal(current *model.SessionWhiteboardGoal, proposed *model.S
 // A board that cannot name an assistant's origin cannot hold one: a version
 // 1 document has no origin field, and a policy that does not record the
 // assistant's products has no use for it.
+//
+// This is about a proposal that is being written now. What the board
+// already holds keeps its own origin; see whiteboardEntryCarried.
 func whiteboardOriginForPolicy(origin string, policy WhiteboardPolicy) string {
 	if origin != model.SessionWhiteboardOriginAssistantAccepted {
 		return ""
@@ -768,13 +777,20 @@ func whiteboardOriginForPolicy(origin string, policy WhiteboardPolicy) string {
 	return model.SessionWhiteboardOriginAssistantAccepted
 }
 
-// whiteboardEntryForPolicy is an entry as the board's policy may hold it.
+// whiteboardEntryCarried is an entry the proposal did not mention, kept as
+// the old board has it.
 //
-// An entry the proposal did not mention is carried over from the old board,
-// and it may name a proposal the learner took on. The same rule as for a
-// proposed entry applies to it.
-func whiteboardEntryForPolicy(entry model.SessionWhiteboardEntry, policy WhiteboardPolicy) model.SessionWhiteboardEntry {
-	entry.Origin = whiteboardOriginForPolicy(entry.EntryOrigin(), policy)
+// The origin of an entry that is already on the board is a fact about what
+// happened: the learner took a proposal of the assistant's on, and the board
+// says so. Turning the mode off stops new products of the assistant from
+// reaching the board; it does not rewrite the entries that are already
+// there, and it does not turn one of them into the learner's own.
+//
+// This is a different question from the one the policy answers. The policy
+// decides whether a proposal of the assistant's may reach the board now;
+// this keeps what the board already holds. A board that never had an origin
+// has nothing to keep.
+func whiteboardEntryCarried(entry model.SessionWhiteboardEntry) model.SessionWhiteboardEntry {
 	return entry
 }
 
@@ -802,7 +818,7 @@ func applyWhiteboardGroup(current []model.SessionWhiteboardEntry, proposed []mod
 	// constraint because the generator stopped repeating it would lose the
 	// one thing the learner most needs to survive the next turn.
 	for _, entry := range current {
-		merged = append(merged, whiteboardEntryForPolicy(entry, policy))
+		merged = append(merged, whiteboardEntryCarried(entry))
 		if key := strings.TrimSpace(entry.Key); key != "" {
 			positions[key] = len(merged) - 1
 		}
@@ -1343,7 +1359,6 @@ func whiteboardLearnerEvidence(ids []uint, previous []uint, batch WhiteboardBatc
 
 // filterWhiteboardEvidence narrows the citations of a proposal to the ones
 
-//
 // An entry that was already on the board may keep the citations it had: the
 // generator did not see those messages this time, so it cannot repeat them,
 // and the board must not lose the proof of where a value came from. A
