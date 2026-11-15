@@ -350,3 +350,20 @@ func TestSessionCardEntryMustCiteSomething(t *testing.T) {
 		t.Fatal("an entry that cites nothing was accepted")
 	}
 }
+
+// The worker is shared by both paths, so the job row is the only place that
+// says which path produced it.
+func TestCardFailuresGetTheirOwnJobCodes(t *testing.T) {
+	cases := map[error]string{
+		ErrCardSourceBoundary: "card_source_boundary",
+		ErrCardToolProtocol:   "card_tool_protocol",
+		ErrEmptyCard:          "card_empty",
+		ErrCardInputTooLarge:  "card_input_too_large",
+		ErrCardSourceNotFound: "card_source_not_found",
+	}
+	for err, want := range cases {
+		if got := projectionErrorCode(err); got != want {
+			t.Fatalf("the job code for %v is %q, want %q", err, got, want)
+		}
+	}
+}

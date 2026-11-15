@@ -397,6 +397,22 @@ func projectionErrorCode(err error) string {
 		return "invalid_model_output"
 	case errors.Is(err, ErrProjectionSourceNotFound), errors.Is(err, ErrProjectionTargetMissing):
 		return "source_not_found"
+	// The card path's codes are their own.
+	//
+	// The worker is shared, so a job row is the only place that says which
+	// path produced it. A card failure that recorded the episode's code
+	// would send whoever reads it to the generator's output - the one stage
+	// that was fine.
+	case errors.Is(err, ErrCardSourceBoundary):
+		return "card_source_boundary"
+	case errors.Is(err, ErrCardToolProtocol):
+		return "card_tool_protocol"
+	case errors.Is(err, ErrEmptyCard):
+		return "card_empty"
+	case errors.Is(err, ErrCardInputTooLarge):
+		return "card_input_too_large"
+	case errors.Is(err, ErrCardSourceNotFound):
+		return "card_source_not_found"
 	default:
 		return "projection_failed"
 	}
