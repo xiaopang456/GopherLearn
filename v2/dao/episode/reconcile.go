@@ -16,7 +16,11 @@ type ProjectionGap struct {
 // assistant message is newer than the durable Episode watermark. It repairs a
 // missed online enqueue without treating a half-finished user-only Run as a
 // complete episode source.
-func (r *Repository) ListProjectionGaps(ctx context.Context, limit int) ([]ProjectionGap, error) {
+//
+// The kind says which derived row the gap is measured against. One session
+// may hold an Episode and a card at the same time, and a card that is behind
+// is not repaired by an Episode that is up to date.
+func (r *Repository) ListProjectionGaps(ctx context.Context, limit int, kind model.EpisodeContentKind) ([]ProjectionGap, error) {
 	if r == nil || r.db == nil || limit < 1 || limit > 1000 {
 		return nil, fmt.Errorf("invalid episode reconciliation query")
 	}
@@ -30,11 +34,11 @@ func (r *Repository) ListProjectionGaps(ctx context.Context, limit int) ([]Proje
 			GROUP BY session_id
 		) latest ON latest.session_id = s.id
 		JOIN messages last_message ON last_message.id = latest.latest_message_id AND last_message.session_id = s.id
-		LEFT JOIN episode_memories e ON e.user_id = s.user_id AND e.session_id = s.id
+		LEFT JOIN episode_memories e ON e.user_id = s.user_id AND e.session_id = s.id AND e.content_kind = ?
 		WHERE s.deleted_at IS NULL AND s.user_id > 0 AND s.mode = ?
 		  AND last_message.is_user = FALSE
 		  AND latest.latest_message_id > COALESCE(e.source_last_message_id, 0)
 		ORDER BY last_message.created_at ASC
-		LIMIT ?`, model.SessionModeAgent, limit).Scan(&gaps).Error
+		LIMIT ?`, string(kind.Normalized()), model.SessionModeAgent, limit).Scan(&gaps).Error
 	return gaps, err
 }

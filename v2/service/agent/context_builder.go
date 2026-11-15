@@ -716,8 +716,17 @@ type BudgetBreakdown struct {
 	TopicUserMemory  int `json:"topicUserMemory"`
 	EpisodeMemory    int `json:"episodeMemory"`
 	EpisodeCount     int `json:"episodeCount"`
-	Summary          int `json:"summary"`
-	RecentMessages   int `json:"recentMessages"`
+	// SessionCardMemory is what the session cards cost, and
+	// SessionCardCount is how many were shown.
+	//
+	// The cards share the Episode budget rather than adding one, so a
+	// deployment that switched paths spends the same window on the past as
+	// the one it replaced. The line is separate so a run can tell which
+	// path produced the context it was measured under.
+	SessionCardMemory int `json:"sessionCardMemory"`
+	SessionCardCount  int `json:"sessionCardCount"`
+	Summary           int `json:"summary"`
+	RecentMessages    int `json:"recentMessages"`
 	// RecentMessageFloor is what the newest raw messages were guaranteed
 	// before the compressed blocks were allowed to spend anything. It is the
 	// floor's own cost, reported so a run can see the guarantee being kept:
@@ -803,6 +812,17 @@ type ContextWindow struct {
 	// blended set could not say which card granted what.
 	EpisodeHistoryGrants []HistoryMessageGrant
 	SummaryHistoryGrants []HistoryMessageGrant
+	// SessionCardHistoryGrants are the read-back authorisations the session
+	// cards created.
+	//
+	// They are a list of their own because a card authorises a different
+	// thing: it points at an earlier session, and what may be read back is
+	// bounded by that card's own watermark. A window that had blended them
+	// with the Episode grants could not say which card granted what.
+	SessionCardHistoryGrants []HistoryMessageGrant
+	// SessionCardIDs are the cards this window showed. They are internal
+	// diagnostics and are not part of what the model reads.
+	SessionCardIDs []string
 	// SummarySegmentHistoryGrants are the read-back authorisations the board
 	// and the summary segments created. They are a third list rather than
 	// another kind of summary grant, because a segment is bounded by the
@@ -998,6 +1018,11 @@ type DatabaseContextBuilder struct {
 	mastery  MasteryProvider
 	memory   MemoryProvider
 	episodes EpisodeProvider
+	// cards is the session-card reader. It is nil unless a deployment
+	// explicitly runs the card path, and when it is set the Episodes are not
+	// injected: the two carry the same kind of cross-session context and
+	// showing both would spend the window twice on the same history.
+	cards    SessionCardProvider
 	topics   TopicKeyResolver
 	summary  SummaryProvider
 	planned  PlannedMemoryProvider
@@ -1102,6 +1127,24 @@ func (b *DatabaseContextBuilder) UseEpisodeProvider(provider EpisodeProvider) {
 		provider = EmptyEpisodeProvider{}
 	}
 	b.episodes = provider
+}
+
+// UseSessionCardProvider attaches the session-card reader.
+//
+// It is a setter for the same reason the Episode provider is one: the card
+// path is an explicit opt-in, and a deployment that does not ask for it must
+// carry exactly the window it carried before.
+//
+// Attaching it also detaches the Episode provider. The two carry the same
+// kind of cross-session context, and a window that carried both would show
+// the model two accounts of the same conversation and spend the budget twice.
+func (b *DatabaseContextBuilder) UseSessionCardProvider(provider SessionCardProvider) {
+	if provider == nil {
+		b.cards = nil
+		return
+	}
+	b.cards = provider
+	b.episodes = EmptyEpisodeProvider{}
 }
 
 // UseTopicKeyResolver attaches the shared topic resolution step. Without it the
@@ -1400,6 +1443,20 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 			log.Printf("[agent-context] user memory recall degraded: session=%s error_type=%T", input.SessionID, err)
 			observability.Memory.ProviderDegraded("user_memory")
 			memories = MemoryRecall{}
+		}
+	}
+	// The session cards, when this deployment runs the card path.
+	//
+	// They are fetched outside the planned branch above because the card path
+	// is not one of the planned read modes: it is an alternative to the
+	// Episode path, and a deployment that runs it does not run that one.
+	var cards []model.EpisodeMemory
+	if b.cards != nil && input.EpisodeRecallReady {
+		cards, err = b.cards.RelevantSessionCards(ctx, input)
+		if err != nil {
+			log.Printf("[agent-context] session card recall degraded: session=%s error_type=%T", input.SessionID, err)
+			observability.Memory.ProviderDegraded("session_card")
+			cards = nil
 		}
 	}
 	summary, err := b.summary.SessionSummary(ctx, input)
@@ -1774,6 +1831,28 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		breakdown.EpisodeMemory = messageTokenCost(episodeText)
 		breakdown.EpisodeCount = len(episodeIDs)
 	}
+	// The session cards share the Episode budget.
+	//
+	// They are two ways of carrying cross-session context, and the plan is
+	// explicit that the card path must not widen the window: what the
+	// Episodes spent is what the cards may still spend, so the two together
+	// stay inside one budget rather than two.
+	//
+	// The read-back is not optional on this path. The card is the entry
+	// point to an earlier conversation, and a card whose citations cannot be
+	// read back is a description with no way to the words.
+	cardEvidenceRead := b.config.MemoryReadMode.UsesEpisodeEvidenceRead() || b.cards != nil
+	cardText, cardIDs, cardGrants, err := renderSessionCardsWithinBudget(cards,
+		minInt(remaining-4-breakdown.EpisodeMemory, b.config.MaxEpisodeTokens),
+		cardEvidenceRead)
+	if err != nil {
+		return ContextWindow{}, fmt.Errorf("assemble session card provenance: %w", err)
+	}
+	if cardText != "" {
+		breakdown.SessionCardMemory = messageTokenCost(cardText)
+		breakdown.SessionCardCount = len(cardIDs)
+		remaining -= breakdown.SessionCardMemory
+	}
 	// The current conversation gets its own reference block rather than labels
 	// pasted onto the messages themselves. Rewriting the learner's own text
 	// would corrupt exactly the questions that ask what they actually said.
@@ -1839,11 +1918,14 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	if episodeText != "" {
 		messages = append(messages, schema.SystemMessage(episodeText))
 	}
+	if cardText != "" {
+		messages = append(messages, schema.SystemMessage(cardText))
+	}
 	if currentText != "" {
 		messages = append(messages, schema.SystemMessage(currentText))
 	}
 	messages = append(messages, schema.UserMessage(input.Question))
-	breakdown.Assembled = breakdown.System + breakdown.TaskState + breakdown.Mastery + breakdown.GlobalUserMemory + breakdown.TopicUserMemory + breakdown.EpisodeMemory + breakdown.Summary + breakdown.RecentMessages + breakdown.CurrentQuestion + breakdown.CurrentEvidence + breakdown.PreRetrievalEvidence + breakdown.Whiteboard + breakdown.ResidentSegments + breakdown.RetrievedSegments
+	breakdown.Assembled = breakdown.System + breakdown.TaskState + breakdown.Mastery + breakdown.GlobalUserMemory + breakdown.TopicUserMemory + breakdown.EpisodeMemory + breakdown.SessionCardMemory + breakdown.Summary + breakdown.RecentMessages + breakdown.CurrentQuestion + breakdown.CurrentEvidence + breakdown.PreRetrievalEvidence + breakdown.Whiteboard + breakdown.ResidentSegments + breakdown.RetrievedSegments
 	breakdown.ProjectedInput = breakdown.Assembled + breakdown.EvidenceReserved
 	if breakdown.ProjectedInput > breakdown.InputTarget {
 		return ContextWindow{}, fmt.Errorf("assembled context exceeded target: %d > %d", breakdown.ProjectedInput, breakdown.InputTarget)
@@ -1853,6 +1935,7 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		Messages: messages, Budget: breakdown, EpisodeIDs: episodeIDs,
 		EpisodeSources:       episodeSources,
 		EpisodeHistoryGrants: episodeGrants, SummaryHistoryGrants: summaryGrants,
+		SessionCardHistoryGrants: cardGrants, SessionCardIDs: cardIDs,
 		SummarySegmentHistoryGrants: segmentGrants,
 		WhiteboardEntryMessageIDs:   whiteboardEntryIDs, WhiteboardAnchorMessageIDs: whiteboardAnchorIDs,
 		WhiteboardEntryKeys: whiteboardEntryKeys, WhiteboardDisplayedEntries: whiteboardDisplayedEntries, WhiteboardDisplayedAnchors: whiteboardDisplayedAnchors,

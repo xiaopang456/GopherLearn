@@ -866,7 +866,7 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	// registry can scope itself to what this run may reach.
 	toolInput := input
 	toolInput.HistoryGrants = MergeHistoryMessageGrants(window.EpisodeHistoryGrants, window.SummaryHistoryGrants,
-		window.SummarySegmentHistoryGrants)
+		window.SummarySegmentHistoryGrants, window.SessionCardHistoryGrants)
 	// One authorisation set for the whole turn, shared by every tool that
 	// reads the learner's own words. A tool that opens an older segment
 	// extends it, and the read-back tool sees the extension.

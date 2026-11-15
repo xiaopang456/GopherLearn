@@ -83,6 +83,20 @@ func ManagedSearchIndexFamilies() []ManagedSearchIndexFamily {
 			RequiredAttributes: []string{SummarySegmentFieldUserID, SummarySegmentFieldSegmentID,
 				SummarySegmentFieldSearchBigrams, SummarySegmentFieldVector},
 		},
+		{
+			// The session cards are indexed under their own name for the
+			// same reason the segments are: they are a different document
+			// and a deployment that runs the card path must not have its
+			// cards visible to an Episode search.
+			//
+			// A deployment that configures a different namespace is
+			// reported as an unknown index on purpose. A namespace nobody
+			// declared is worth a look.
+			Name: "session_card", Current: SessionCardIndexName, KeyPrefix: SessionCardKeyPrefix,
+			NamePrefix: "gopherai_session_card_",
+			RequiredAttributes: []string{EpisodeFieldUserID, EpisodeFieldEpisodeID,
+				EpisodeFieldSearchBigrams, EpisodeFieldVector},
+		},
 	}
 }
 

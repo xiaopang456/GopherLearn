@@ -275,3 +275,52 @@ func (r *Repository) ReadOwnedMessagesBySession(ctx context.Context, userID int6
 		Find(&messages).Error
 	return messages, err
 }
+
+// SearchOwnedMessagesBySession finds the messages of one session that contain
+// a keyword.
+//
+// It is the last step of the read-back chain: a card says what a session was
+// about, its summary says what was said in it, and this answers "what exactly
+// did they write there" for the one detail none of the compressions kept.
+//
+// The scope is the whole point. The query is bound to an owner and to one
+// session, and the session join is the ownership check, so a search cannot
+// reach a conversation the learner did not name and this run was not shown.
+// The keyword is matched inside the database rather than in Go, because a
+// search that read the whole session into memory first would be an unbounded
+// read of somebody's history.
+func (r *Repository) SearchOwnedMessagesBySession(ctx context.Context, userID int64,
+	sessionID string, keyword string, limit int) ([]model.Message, error) {
+	if r == nil || r.db == nil || userID <= 0 {
+		return nil, fmt.Errorf("invalid owned message search")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	keyword = strings.TrimSpace(keyword)
+	if sessionID == "" || keyword == "" {
+		return nil, fmt.Errorf("owned message search needs a session and a keyword")
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	var messages []model.Message
+	err := r.db.WithContext(ctx).
+		Joins("JOIN sessions ON sessions.id = messages.session_id AND sessions.deleted_at IS NULL").
+		Where("sessions.user_id = ? AND messages.session_id = ?", userID, sessionID).
+		Where("messages.content LIKE ?", "%"+escapeLike(keyword)+"%").
+		Order("messages.id ASC").Limit(limit).
+		Find(&messages).Error
+	return messages, err
+}
+
+// escapeLike escapes the characters MySQL's LIKE treats as wildcards.
+//
+// A keyword the learner typed may contain a percent sign, and a search that
+// treated it as a wildcard would match every message of the session - the
+// whole conversation, returned because someone typed "%".
+func escapeLike(value string) string {
+	replacer := strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_")
+	return replacer.Replace(value)
+}

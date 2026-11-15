@@ -23,6 +23,15 @@ const (
 	// by the stretch it covers. The same id therefore has different provenances
 	// under the two, and the run has to be able to say which card granted it.
 	HistorySourceWhiteboard = "whiteboard"
+	// HistorySourceSessionCard marks a grant that came from an injected
+	// session card.
+	//
+	// A card is the entry point to an earlier session: it says what that
+	// session was about and points at the messages and summary segments it
+	// was written from. The read-back it authorises is therefore two steps
+	// down - the card, then the source session - and the grant carries the
+	// card's own watermark so a citation above it is refused.
+	HistorySourceSessionCard = "session_card"
 )
 
 // HistoryMessageGrant authorises reading one stored message in one run, and
@@ -70,6 +79,17 @@ type HistoryMessageGrant struct {
 	// at. A board entry cannot cite a message the board does not reach.
 	WhiteboardVersion          uint64
 	WhiteboardCoveredMessageID uint
+
+	// CardID and CardVersion identify the session card a grant was drawn
+	// from, and CardWatermark is that card's own high-water message id.
+	//
+	// They are set on the card's own grants, and on the grants a card
+	// authorised in another session: a summary segment of the source session
+	// is readable only because a card pointed at that session, and the card
+	// is what the check is made against.
+	CardID        string
+	CardVersion   uint64
+	CardWatermark uint
 }
 
 // UsableIn reports whether this grant still means what it claimed when the
@@ -109,16 +129,28 @@ func (g HistoryMessageGrant) UsableIn(run RunContext) bool {
 		// The lower bound is the segment's start. A grant below it is a
 		// message some other stretch covered, and this segment did not say
 		// anything about it.
+		//
+		// The session is this run's own, unless a card authorised the
+		// segment: the source session of a card is another conversation, and
+		// its segments are browsable only because the card pointed there.
 		return g.SegmentSeq > 0 && g.SegmentEndMessageID > 0 &&
 			(g.SegmentStartMessageID == 0 || g.MessageID >= g.SegmentStartMessageID) &&
 			g.MessageID <= g.SegmentEndMessageID &&
-			g.SourceSessionID == strings.TrimSpace(run.SessionID)
+			(g.SourceSessionID == strings.TrimSpace(run.SessionID) || strings.TrimSpace(g.CardID) != "")
 	case HistorySourceWhiteboard:
 		// The board is this session's own current state, and it is bounded by
 		// the message it was last written at.
 		return g.WhiteboardVersion > 0 && g.WhiteboardCoveredMessageID > 0 &&
 			g.MessageID <= g.WhiteboardCoveredMessageID &&
 			g.SourceSessionID == strings.TrimSpace(run.SessionID)
+	case HistorySourceSessionCard:
+		// A card's citation is bounded by the card's own watermark: the
+		// session may have moved on since the card was written, and what the
+		// card said about that later part is not what it said.
+		if strings.TrimSpace(g.CardID) == "" || g.CardVersion == 0 {
+			return false
+		}
+		return g.CardWatermark == 0 || g.MessageID <= g.CardWatermark
 	default:
 		return false
 	}
@@ -141,6 +173,9 @@ func MergeHistoryMessageGrants(groups ...[]HistoryMessageGrant) []HistoryMessage
 		segmentStart, segmentEnd   uint
 		whiteboardVer              uint64
 		whiteboardEnd              uint
+		cardID                     string
+		cardVer                    uint64
+		cardWatermark              uint
 	}
 	var merged []HistoryMessageGrant
 	seen := make(map[grantKey]struct{})
@@ -153,6 +188,7 @@ func MergeHistoryMessageGrants(groups ...[]HistoryMessageGrant) []HistoryMessage
 				segmentSeq: grant.SegmentSeq, segmentStart: grant.SegmentStartMessageID,
 				segmentEnd:    grant.SegmentEndMessageID,
 				whiteboardVer: grant.WhiteboardVersion, whiteboardEnd: grant.WhiteboardCoveredMessageID,
+				cardID: grant.CardID, cardVer: grant.CardVersion, cardWatermark: grant.CardWatermark,
 			}
 			if _, duplicate := seen[key]; duplicate {
 				continue
@@ -300,4 +336,91 @@ func (s *HistoryGrantSet) Covers(messageID uint, sessionID string) bool {
 		}
 	}
 	return false
+}
+
+// CardSessions are the earlier sessions this run may reach because a session
+// card pointed at them.
+//
+// It is the answer to "may this run browse the summary of that other
+// conversation", and the answer is yes only for a session a card in this very
+// run named. The model may not fill in an arbitrary session id: a session
+// nobody showed it is not reachable, and the list here is the whole of what
+// is.
+func (s *HistoryGrantSet) CardSessions() []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seen := make(map[string]struct{})
+	out := make([]string, 0, 4)
+	for _, grants := range s.byMessage {
+		for _, grant := range grants {
+			if grant.SourceKind != HistorySourceSessionCard {
+				continue
+			}
+			session := strings.TrimSpace(grant.SourceSessionID)
+			if session == "" {
+				continue
+			}
+			if _, exists := seen[session]; exists {
+				continue
+			}
+			seen[session] = struct{}{}
+			out = append(out, session)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// AuthorisesSession reports whether this run may read the given session.
+//
+// The run's own session is always readable. An earlier one is readable only
+// when a card in this run pointed at it.
+func (s *HistoryGrantSet) AuthorisesSession(run RunContext, sessionID string) bool {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return false
+	}
+	if sessionID == strings.TrimSpace(run.SessionID) {
+		return true
+	}
+	for _, granted := range s.CardSessions() {
+		if granted == sessionID {
+			return true
+		}
+	}
+	return false
+}
+
+// CardAuthorisation returns the card that pointed at a session.
+//
+// It is the grant that makes a source session reachable, and the card's own
+// identity is what the grants issued against that session carry. A run that
+// reaches a session without naming the card that authorised it would have a
+// way to read an earlier conversation that no card pointed at.
+//
+// The watermark comes with it because it is the ceiling of what the card
+// authorises: the card describes the session as far as it had reached, and a
+// message above that line is not something the card ever saw.
+func (s *HistoryGrantSet) CardAuthorisation(sessionID string) (string, uint64, uint, bool) {
+	if s == nil {
+		return "", 0, 0, false
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, grants := range s.byMessage {
+		for _, grant := range grants {
+			if grant.SourceKind != HistorySourceSessionCard {
+				continue
+			}
+			if strings.TrimSpace(grant.SourceSessionID) != sessionID {
+				continue
+			}
+			return strings.TrimSpace(grant.CardID), grant.CardVersion, grant.CardWatermark, true
+		}
+	}
+	return "", 0, 0, false
 }

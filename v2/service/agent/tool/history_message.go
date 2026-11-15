@@ -101,6 +101,13 @@ type EpisodeEvidenceFacts struct {
 	Status      string
 	IndexStatus string
 	Watermark   uint
+	// ContentKind says which document the row carries.
+	//
+	// One table holds two kinds of derived row, and the citation closure
+	// below belongs to one of them: an Episode cites through its assertions,
+	// a card cites through its entries. A grant that named the wrong kind
+	// would be checked against a closure that is not there.
+	ContentKind string
 	// EvidenceMessageIDs is the closure the stored card cites right now. An id that
 	// is not in it was not cited by this version, whatever the rendered block showed.
 	EvidenceMessageIDs []uint
@@ -144,6 +151,16 @@ const (
 	refusalEpisodeWatermark = "message_past_episode_watermark"
 	refusalVerifierAbsent   = "episode_verifier_not_wired"
 	refusalUnreadable       = "episode_evidence_unreadable"
+
+	// The session card's refusal reasons.
+	//
+	// A card is the same kind of derived row as an Episode and is checked
+	// the same way, with one addition: the row must still be the card the
+	// grant was drawn from. A row that was rewritten as an Episode in the
+	// meantime cites a different closure, and the id the run holds would
+	// not be in it.
+	refusalCardMissing = "session_card_not_found"
+	refusalCardKind    = "session_card_kind_mismatch"
 
 	// The summary segments' refusal reasons.
 	//
@@ -502,7 +519,7 @@ func registerReadBackEvidence(registry *serviceagent.MemoryEvidenceRegistry, own
 	if registry == nil || len(grants) == 0 {
 		return ""
 	}
-	var summary, episode, segment bool
+	var summary, episode, segment, card bool
 	var version uint64
 	for _, grant := range grants {
 		switch grant.SourceKind {
@@ -515,6 +532,11 @@ func registerReadBackEvidence(registry *serviceagent.MemoryEvidenceRegistry, own
 			episode = true
 			if grant.EpisodeVersion > version {
 				version = grant.EpisodeVersion
+			}
+		case serviceagent.HistorySourceSessionCard:
+			card = true
+			if grant.CardVersion > version {
+				version = grant.CardVersion
 			}
 		case serviceagent.HistorySourceSummarySegment:
 			segment = true
@@ -531,6 +553,8 @@ func registerReadBackEvidence(registry *serviceagent.MemoryEvidenceRegistry, own
 		source = "summary+episode"
 	case episode:
 		source = serviceagent.HistorySourceEpisode
+	case card:
+		source = serviceagent.HistorySourceSessionCard
 	case segment:
 		source = serviceagent.HistorySourceSummarySegment
 	}
@@ -578,11 +602,60 @@ func (c *episodeFactsCache) confirm(ctx context.Context, grant serviceagent.Hist
 	switch grant.SourceKind {
 	case serviceagent.HistorySourceEpisode:
 		return c.confirmEpisode(ctx, grant)
+	case serviceagent.HistorySourceSessionCard:
+		return c.confirmCard(ctx, grant)
 	case serviceagent.HistorySourceSummarySegment:
 		return c.confirmSegment(ctx, grant)
 	default:
 		return "", true
 	}
+}
+
+// confirmCard re-establishes a session card's facts.
+//
+// It is the Episode check with the kind added, and the kind is the point: the
+// card and the Episode are two documents in one table, and the citation
+// closure a grant is checked against is the one the row really carries.
+func (c *episodeFactsCache) confirmCard(ctx context.Context, grant serviceagent.HistoryMessageGrant) (string, bool) {
+	if c.reader == nil {
+		return refusalVerifierAbsent, false
+	}
+	entry := c.entry(ctx, grant.CardID)
+	if entry.err != nil {
+		if errors.Is(entry.err, ErrEpisodeEvidenceMissing) {
+			return refusalCardMissing, false
+		}
+		return refusalUnreadable, false
+	}
+	facts := entry.facts
+	if strings.TrimSpace(facts.ContentKind) != string(model.EpisodeContentSessionCard) {
+		return refusalCardKind, false
+	}
+	if strings.TrimSpace(facts.EpisodeID) != strings.TrimSpace(grant.CardID) {
+		return refusalCardMissing, false
+	}
+	if facts.UserID != c.userID {
+		return refusalEpisodeOwner, false
+	}
+	if strings.TrimSpace(facts.SessionID) != strings.TrimSpace(grant.SourceSessionID) {
+		return refusalEpisodeSession, false
+	}
+	if facts.Version == 0 || facts.Version != grant.CardVersion {
+		return refusalEpisodeVersion, false
+	}
+	if facts.Status != string(model.EpisodeStatusActive) {
+		return refusalEpisodeInactive, false
+	}
+	if facts.IndexStatus != string(model.EpisodeIndexIndexed) {
+		return refusalEpisodeIndex, false
+	}
+	if !slices.Contains(facts.EvidenceMessageIDs, grant.MessageID) {
+		return refusalEpisodeClosure, false
+	}
+	if facts.Watermark > 0 && grant.MessageID > facts.Watermark {
+		return refusalEpisodeWatermark, false
+	}
+	return "", true
 }
 
 // confirmSegment re-establishes that a summary segment is still the segment

@@ -51,6 +51,15 @@ const (
 	// and this one answers "what happened earlier in this session" about
 	// stretches the window did not carry.
 	CapabilityBrowseSummarySegments MemoryToolCapability = "browse_summary_segments"
+	// CapabilitySearchSessionHistory searches one earlier conversation for a
+	// word or phrase.
+	//
+	// It is a capability of its own because it reaches further than the
+	// browse tool and in a different way: the browse tool opens the
+	// compressed record of a session, and this one looks for a literal
+	// string inside the session's raw messages. It is the step the plan
+	// calls "the detail the card and the summary did not mention".
+	CapabilitySearchSessionHistory MemoryToolCapability = "search_session_history"
 )
 
 // ToolSurface selects which names the model sees for the same capabilities.
@@ -109,6 +118,10 @@ const (
 	// segments. The name says what it reaches: the segments of the session
 	// in progress, not another one.
 	browseSummarySegmentsToolName = "browse_summary_segments"
+	// searchSessionHistoryToolName searches one earlier conversation's
+	// original words. The name says what it reaches: one conversation's
+	// messages, not a learner's whole history.
+	searchSessionHistoryToolName = "search_session_history"
 )
 
 // toolCapabilities is the mapping, written once.
@@ -128,6 +141,7 @@ var toolCapabilities = map[string]MemoryToolCapability{
 	documentReadToolName:            CapabilityDocumentRead,
 	readHistoryMessageToolName:      CapabilityHistoryRead,
 	browseSummarySegmentsToolName:   CapabilityBrowseSummarySegments,
+	searchSessionHistoryToolName:    CapabilitySearchSessionHistory,
 }
 
 // surfaceNames is the forward direction, also written once. Every capability
@@ -142,6 +156,7 @@ var surfaceNames = map[ToolSurface]map[MemoryToolCapability]string{
 		CapabilityDocumentRead:          documentReadToolName,
 		CapabilityHistoryRead:           readHistoryMessageToolName,
 		CapabilityBrowseSummarySegments: browseSummarySegmentsToolName,
+		CapabilitySearchSessionHistory:  searchSessionHistoryToolName,
 	},
 	SurfaceExplicitActions: {
 		CapabilityEpisodeSearch:         SearchPastSessionsToolName,
@@ -151,6 +166,7 @@ var surfaceNames = map[ToolSurface]map[MemoryToolCapability]string{
 		CapabilityDocumentRead:          documentReadToolName,
 		CapabilityHistoryRead:           readHistoryMessageToolName,
 		CapabilityBrowseSummarySegments: browseSummarySegmentsToolName,
+		CapabilitySearchSessionHistory:  searchSessionHistoryToolName,
 	},
 	SurfaceExplicitSources: {
 		CapabilityEpisodeSearch:         SearchPastSessionsToolName,
@@ -160,6 +176,7 @@ var surfaceNames = map[ToolSurface]map[MemoryToolCapability]string{
 		CapabilityDocumentRead:          documentReadToolName,
 		CapabilityHistoryRead:           readHistoryMessageToolName,
 		CapabilityBrowseSummarySegments: browseSummarySegmentsToolName,
+		CapabilitySearchSessionHistory:  searchSessionHistoryToolName,
 	},
 	// The same names as explicit_sources, deliberately: the priority contract
 	// varies the descriptions and the server's first-tool behaviour, not the
@@ -173,6 +190,7 @@ var surfaceNames = map[ToolSurface]map[MemoryToolCapability]string{
 		CapabilityDocumentRead:          documentReadToolName,
 		CapabilityHistoryRead:           readHistoryMessageToolName,
 		CapabilityBrowseSummarySegments: browseSummarySegmentsToolName,
+		CapabilitySearchSessionHistory:  searchSessionHistoryToolName,
 	},
 }
 

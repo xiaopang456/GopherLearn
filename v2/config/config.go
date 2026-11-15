@@ -473,6 +473,27 @@ type AgentConfig struct {
 	EpisodeMaxOutputTokens          int    `toml:"episodeMaxOutputTokens"`
 	EpisodeMaxMessages              int    `toml:"episodeMaxMessages"`
 
+	// SessionCardMode selects the session-card path: "disabled" or "enabled".
+	//
+	// The default is disabled, and that is the point of the switch. The
+	// production read path stays what it was, the old Episode documents stay
+	// where they are, and the candidate card path is something a deployment
+	// turns on deliberately to compare the two.
+	//
+	// Enabling it replaces the Episode path rather than running beside it.
+	// One session gets one card, written from that session's own summary, and
+	// two generation models would mean two answers to the same question about
+	// the same conversation.
+	SessionCardMode string `toml:"sessionCardMode"`
+	// SessionCardIndexName and SessionCardIndexKeyPrefix are the card
+	// index's namespace.
+	//
+	// They are separate from the Episode index's on purpose: an experiment
+	// that runs both arms against the same Redis must not have one arm's
+	// cards visible to the other's searches.
+	SessionCardIndexName      string `toml:"sessionCardIndexName"`
+	SessionCardIndexKeyPrefix string `toml:"sessionCardIndexKeyPrefix"`
+
 	// SummarySegmentMode decides whether the layered summary writes anything
 	// and whether the new state is read back:
 	//
@@ -743,6 +764,15 @@ func (c AgentConfig) SummaryAssistantContentEnabled() bool {
 	return c.SummaryAssistantContent == "on"
 }
 
+// SessionCardEnabled reports whether the session-card path is running.
+//
+// It is one comparison, and it is a comparison rather than a truthy check on
+// the raw string so that a configuration that was never validated cannot
+// quietly enable the path.
+func (c AgentConfig) SessionCardEnabled() bool {
+	return strings.TrimSpace(c.SessionCardMode) == "enabled"
+}
+
 // EffectiveSummarySegmentMaxInputTokens is what the segment generator's
 // input budget is.
 //
@@ -829,6 +859,12 @@ func defaultConfig() *Config {
 		EpisodeTaskTimeoutSeconds: 30, EpisodeLeaseSeconds: 60, EpisodeRetryDelaySeconds: 15,
 		EpisodeRecoveryIntervalSeconds: 30, EpisodeQuietWindowSeconds: 600,
 		EpisodeMaxAttempts: 3, EpisodeMaxInputTokens: 12000, EpisodeMaxOutputTokens: 1800, EpisodeMaxMessages: 4096,
+		// The session-card path is off until a deployment asks for it. The
+		// namespace is the card index's own, so the two arms of an experiment do
+		// not read each other's rows.
+		SessionCardMode:           "disabled",
+		SessionCardIndexName:      "gopherai_session_card_v1_idx",
+		SessionCardIndexKeyPrefix: "gopherai:session_card:vec:",
 		// The layered summary is on: the write side, the read side and the
 		// fallback that goes with them are assembled together, so a
 		// deployment that says nothing gets the layered summary. "off" is
@@ -1157,6 +1193,15 @@ func (c JwtConfig) Validate() error {
 }
 
 func applyAgentEnv(c *AgentConfig) error {
+	if value, ok := os.LookupEnv("AGENT_SESSION_CARD_MODE"); ok {
+		c.SessionCardMode = strings.TrimSpace(value)
+	}
+	if value, ok := os.LookupEnv("AGENT_SESSION_CARD_INDEX_NAME"); ok {
+		c.SessionCardIndexName = strings.TrimSpace(value)
+	}
+	if value, ok := os.LookupEnv("AGENT_SESSION_CARD_INDEX_KEY_PREFIX"); ok {
+		c.SessionCardIndexKeyPrefix = strings.TrimSpace(value)
+	}
 	if value, ok := os.LookupEnv("AGENT_EPISODE_RECALL_MODE"); ok {
 		c.EpisodeRecallMode = strings.TrimSpace(value)
 	}
@@ -1413,6 +1458,16 @@ func (c AgentConfig) Validate() error {
 	}
 	if c.EpisodeRecallMode != "disabled" && c.EpisodeRecallMode != "shadow_only" && c.EpisodeRecallMode != "inject_enabled" {
 		return fmt.Errorf("episodeRecallMode must be disabled, shadow_only or inject_enabled")
+	}
+	// The card path is parsed rather than defaulted at the point of use: a
+	// typo that silently became "off" would look like a deployment that
+	// opted out, and one that silently became "on" would start replacing
+	// every learner's cross-session memory.
+	if c.SessionCardMode != "disabled" && c.SessionCardMode != "enabled" {
+		return fmt.Errorf("sessionCardMode must be disabled or enabled")
+	}
+	if strings.TrimSpace(c.SessionCardIndexName) == "" || strings.TrimSpace(c.SessionCardIndexKeyPrefix) == "" {
+		return fmt.Errorf("sessionCardIndexName and sessionCardIndexKeyPrefix are required")
 	}
 	mode, err := memoryrecall.ParseReadMode(c.MemoryReadMode)
 	if err != nil {
