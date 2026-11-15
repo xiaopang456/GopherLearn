@@ -47,7 +47,7 @@ func TestHistoryCapabilityAbsentWithoutGrantThroughHTTP(t *testing.T) {
 	})
 	session := createSession(t, app, token, "create-no-grant")
 	runHTTP(t, app, token, session, "run-no-grant", "你好")
-	assertHistoryCapability(t, chat, false)
+	assertHistoryCapability(t, chat, false, assistantContentOf(s))
 }
 func toolMode(s *Settings) {
 	c := &s.Config.AgentConfig
@@ -92,7 +92,7 @@ func TestSummaryGrantGeneratedByOriginalContextAndReadThroughHTTP(t *testing.T) 
 	if !strings.Contains(fmt.Sprint(result["answer"]), "仅使用离线资料") || result["toolCalls"] != float64(1) {
 		t.Fatalf("summary/read chain: %+v requests %s", result, requestText(chat))
 	}
-	assertHistoryCapability(t, chat, true)
+	assertHistoryCapability(t, chat, true, assistantContentOf(s))
 	text := requestText(chat)
 	if !strings.Contains(text, "核对原始约束") || !strings.Contains(text, "reference") {
 		t.Fatalf("summary injection or issued evidence absent: %s", text)
@@ -133,7 +133,7 @@ func TestEpisodeInjectAndShadowUseOriginalRecallAndEvidence(t *testing.T) {
 					t.Fatal("shadow authorized raw read")
 				}
 			}
-			assertHistoryCapability(t, chat, recall == "inject_enabled")
+			assertHistoryCapability(t, chat, recall == "inject_enabled", assistantContentOf(s))
 			want := float64(0)
 			if recall == "inject_enabled" {
 				want = 1

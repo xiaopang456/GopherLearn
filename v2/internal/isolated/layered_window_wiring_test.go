@@ -52,6 +52,12 @@ func TestTheConfiguredBlockBudgetsMatchTheAgentDefaults(t *testing.T) {
 // has to carry a segment needs room for the header as well - 59 + 304 = 363.
 func TestTheEntrySizesThePreselectorFromTheBlockBudget(t *testing.T) {
 	s := testSettings(t)
+	// The budgets this test measures are the ones the mode that does not
+	// record the assistant's products uses. The mode that does record them
+	// raises the per-segment budget to what one whole segment costs, and the
+	// block that carries it with it, so a block of 310 is not a tight block
+	// there - it is one that has to grow first.
+	s.Config.AgentConfig.SummaryAssistantContent = "off"
 	s.Config.AgentConfig.ContextMaxRetrievedSegmentTokens = 310
 	s.Config.AgentConfig.ContextMaxSegmentTokens = 300
 
@@ -77,14 +83,14 @@ func TestTheEntryPreselectorUsesTheShippedBudgets(t *testing.T) {
 		t.Fatalf("build the preselector: %v", err)
 	}
 	segments, perSegment, total := preselector.Limits()
-	if perSegment != s.Config.AgentConfig.ContextMaxSegmentTokens {
+	if perSegment != s.Config.AgentConfig.EffectiveSegmentTokens() {
 		t.Fatalf("one segment is %d in the preselector and %d in the block",
-			perSegment, s.Config.AgentConfig.ContextMaxSegmentTokens)
+			perSegment, s.Config.AgentConfig.EffectiveSegmentTokens())
 	}
-	if total+agentService.SummarySegmentBlockHeaderTokens() != s.Config.AgentConfig.ContextMaxRetrievedSegmentTokens {
+	if total+agentService.SummarySegmentBlockHeaderTokens() != s.Config.AgentConfig.EffectiveRetrievedSegmentTokens() {
 		t.Fatalf("the set is %d plus a %d-token header, against a block of %d",
 			total, agentService.SummarySegmentBlockHeaderTokens(),
-			s.Config.AgentConfig.ContextMaxRetrievedSegmentTokens)
+			s.Config.AgentConfig.EffectiveRetrievedSegmentTokens())
 	}
 	if segments != total/perSegment {
 		t.Fatalf("%d segments do not divide %d by %d", segments, total, perSegment)

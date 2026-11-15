@@ -493,18 +493,22 @@ type AgentConfig struct {
 	// SummaryAssistantContent decides whether the layered summary records
 	// what the assistant produced as well as what the learner said:
 	//
+	//   - "on" records the assistant's products - the exercises, the plan
+	//     items, the names and the numbers it gave - and labels them so the
+	//     reader can tell whose words a line holds. A proposal of the
+	//     assistant's that the learner explicitly took on also becomes the
+	//     board's current state, with both messages cited.
 	//   - "off" records only the learner's own statements. The assistant's
 	//     body is replaced by a placeholder before the generator sees it, and
 	//     everything downstream behaves exactly as it did before.
-	//   - "on" also records the assistant's products - the exercises, the
-	//     plan items, the names and the numbers it gave - and labels them so
-	//     the reader can tell whose words a line holds.
 	//
-	// The default is off. A summary that carries the assistant's own words
-	// is a different thing from one that does not, and the difference has to
-	// be measured before it becomes the default. Turning it on also wants
-	// contextMaxSegmentTokens raised to 450, because a segment that carries
-	// the products as well as the learner's statements needs more room.
+	// The default is on. A summary that carries the assistant's own words is
+	// what a learning assistant is for: the exercises it gave and the plan
+	// it settled with the learner have to be findable later. Turning it off
+	// is what a deployment writes when it wants the older behaviour, and the
+	// switch also wants contextMaxSegmentTokens raised to 450, because a
+	// segment that carries the products as well as the learner's statements
+	// needs more room.
 	SummaryAssistantContent string `toml:"summaryAssistantContent"`
 	// SummarySegmentDebugDump says whether the model's raw answer is kept
 	// beside the segment it produced.
@@ -831,10 +835,10 @@ func defaultConfig() *Config {
 		// the way back to the old rolling summary and "shadow" writes
 		// without being read.
 		SummarySegmentMode: "on",
-		// The assistant's own products are not recorded yet. The behaviour
-		// has to be measured first, and a mode that is measured in every
-		// deployment is not a mode that can be measured.
-		SummaryAssistantContent:                "off",
+		// The assistant's products are recorded. The learner's own facts
+		// are written the same way in both modes: the switch decides what
+		// is remembered, not how a fact is checked.
+		SummaryAssistantContent:                "on",
 		SummarySegmentWorkerCount:              1,
 		SummarySegmentQueueSize:                32,
 		SummarySegmentScanIntervalSeconds:      3,

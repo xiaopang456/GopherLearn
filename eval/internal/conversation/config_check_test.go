@@ -125,8 +125,13 @@ func TestTheConfigurationWithoutTheAgentConfigDoesNotPass(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the check could not read the configuration: %v", err)
 	}
-	if report.SummaryAssistantContent == "on" {
-		t.Fatalf("the assistant-content switch = %q, want the closed arm's value", report.SummaryAssistantContent)
+	// The assistant-content switch is on by default now, so a configuration
+	// that says nothing about it runs the open arm. The check still refuses
+	// this configuration, and it is the debug dump that refuses it: the run
+	// needs it on and nothing here turns it on.
+	if report.SummaryAssistantContent != "on" {
+		t.Fatalf("the assistant-content switch = %q, want the product's default",
+			report.SummaryAssistantContent)
 	}
 	if report.SummarySegmentDebugDump {
 		t.Fatal("the debug dump is on although the configuration says nothing about it")
@@ -379,13 +384,10 @@ summarySegmentDebugDump = true
 	if err != nil {
 		t.Fatalf("the check could not read the configuration: %v", err)
 	}
-	if report.SummaryAssistantContent == "on" {
-		t.Fatal("the check read the switches out of a section the loader ignores")
-	}
 	if report.SummarySegmentDebugDump {
 		t.Fatal("the check read the debug dump out of a section the loader ignores")
 	}
-	// The mode's own default is already on, so the wrong section is caught by
-	// the two switches that are off by default; the mode's own reading is
-	// covered by the overlay tests above.
+	// The mode's own default is already on, and so is the assistant-content
+	// switch's, so the wrong section is caught by the switch that is off by
+	// default; the mode's own reading is covered by the overlay tests above.
 }

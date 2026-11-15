@@ -8,7 +8,7 @@ import (
 func TestNewAnchorReasonsAreRejectedByPriorV3Decoder(t *testing.T) {
 	for _, reason := range []string{
 		SessionWhiteboardAnchorCitationInvalid,
-		SessionWhiteboardAnchorNoClaim,
+		SessionWhiteboardAnchorUnplaced,
 		SessionWhiteboardAnchorSameNumber,
 	} {
 		t.Run(reason, func(t *testing.T) {
@@ -53,7 +53,7 @@ func TestEveryKnownReasonIsAReasonTheBoardMayCarry(t *testing.T) {
 		SessionWhiteboardAnchorSameNumber,
 		SessionWhiteboardAnchorKeyAmbiguous,
 		SessionWhiteboardAnchorCitationInvalid,
-		SessionWhiteboardAnchorNoClaim,
+		SessionWhiteboardAnchorUnplaced,
 	} {
 		t.Run(reason, func(t *testing.T) {
 			if !ValidSessionWhiteboardAnchorReason(reason) {

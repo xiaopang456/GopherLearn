@@ -77,7 +77,7 @@ func TestTheRecentUseRecordDoesNotPushTheNewestSegmentsOut(t *testing.T) {
 	used := agentService.SummarySegmentBlockHeaderTokens()
 	for _, segment := range segments {
 		cost := agentService.RenderedSegmentTokens(segment)
-		if used+cost > s.Config.AgentConfig.ContextMaxResidentSegmentTokens {
+		if used+cost > s.Config.AgentConfig.EffectiveResidentSegmentTokens() {
 			break
 		}
 		used += cost
@@ -185,6 +185,14 @@ func recentUseSettings(t *testing.T) *Settings {
 	t.Helper()
 	s := testSettings(t)
 	s.Config.AgentConfig.SummarySegmentMode = "on"
+	// The budget these tests measure against is the one the mode that does
+	// not record the assistant's products uses. The mode that does record
+	// them raises the per-segment budget to what one whole segment costs,
+	// and the block that carries it with it - and a block with that much
+	// room takes the segment the learner reached for without giving way to
+	// a newest one, which is a different question from the one these tests
+	// ask.
+	s.Config.AgentConfig.SummaryAssistantContent = "off"
 	s.Config.AgentConfig.SummarySegmentTriggerMessages = 100
 	s.Config.AgentConfig.SummarySegmentTriggerTokens = 1000000
 	return s

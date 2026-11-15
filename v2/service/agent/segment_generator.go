@@ -217,15 +217,22 @@ func (g *ModelSegmentGenerator) segmentSchemaVersion() int {
 	return model.SessionSummarySegmentSchemaV1
 }
 
-// boardSchemaVersion is the schema version the board is written in.
+// whiteboardPolicy is what the board's write path does.
 //
-// It is the same decision as the segment's: the mode that does not record
-// the assistant's products writes the board it always wrote.
-func (g *ModelSegmentGenerator) boardSchemaVersion() int {
+// The version the document is written in follows the mode: the mode that
+// records what the assistant produced writes the version that can hold it,
+// and the mode that does not writes the version it always wrote.
+//
+// The rules the engine applies are stated apart from the version, so that
+// they do not follow from the version of the document a session happens to
+// hold. The learner's own facts are written the same way in both modes.
+func (g *ModelSegmentGenerator) whiteboardPolicy() WhiteboardPolicy {
+	policy := WhiteboardPolicy{SchemaVersion: model.SessionWhiteboardSchemaV1}
 	if g != nil && g.assistantContent {
-		return model.SessionWhiteboardSchemaV3
+		policy.SchemaVersion = model.SessionWhiteboardSchemaV3
+		policy.RecordAssistantProducts = true
 	}
-	return model.SessionWhiteboardSchemaV1
+	return policy
 }
 
 // segmentSystemPrompt asks for one object with two halves.
@@ -359,9 +366,9 @@ Output object:
   "whiteboard": {
     "schema_version": 1,
     "goal": {"text": "...", "source_message_ids": [...]},
-    "constraints": [{"key": "<stable key>", "text": "...", "value": "...", "source_message_ids": [...], "origin": "assistant|assistant_accepted", "learner_claim": {"message_id": <id>, "quote": "<the learner's words>", "subject": "<the thing>", "attribute": "<the part of it>", "value": "<the value>", "stance": "decided|proposed|hypothetical|negated|uncertain", "update": "yes|no|unsure"}}],
-    "plan": [{"key": "...", "text": "...", "value": "...", "state": "open|done", "source_message_ids": [...], "origin": "assistant|assistant_accepted", "learner_claim": {...}}],
-    "open_items": [{"key": "...", "text": "...", "source_message_ids": [...], "origin": "assistant|assistant_accepted", "learner_claim": {...}}]
+    "constraints": [{"key": "<stable key>", "text": "...", "value": "...", "source_message_ids": [...], "origin": "assistant|assistant_accepted"}],
+    "plan": [{"key": "...", "text": "...", "value": "...", "state": "open|done", "source_message_ids": [...], "origin": "assistant|assistant_accepted"}],
+    "open_items": [{"key": "...", "text": "...", "source_message_ids": [...], "origin": "assistant|assistant_accepted"}]
   }
 }
 
@@ -371,15 +378,11 @@ Rules:
 - A whiteboard entry that is the learner's own carries no "origin" at all: "origin" is only for your own words. Use "assistant" for a proposal of yours the learner did not take on, and "assistant_accepted" for one the learner explicitly took on.
 - Your own words are cited by YOUR message id. A product of yours - a point, or a whiteboard entry with an "origin" - must cite the id of your message that says it, never the learner's message: a reader reads a cited message back, and a product that cites the learner's message is read back as the learner's.
 - When the learner states a value and you only confirm it, the entry is the learner's: it carries no "origin" and it cites the learner's message. Your confirmation is not the source of the value.
-- Every entry that is the learner's own current fact carries a "learner_claim": the learner's own words behind it. An entry with no "origin" and no "learner_claim" is an entry nobody said.
-- A "learner_claim" says: "message_id" is the learner's message the words come from; "quote" is a part of that message, copied word for word; "subject" is the thing the learner spoke about; "attribute" is the part of that subject the value belongs to; "value" is the value as the learner wrote it; "stance" is what the learner did with it; "update" is whether these words set that value on the item.
-- The "quote" must contain the "value" as the learner wrote it. A quote that does not carry the number is a quote about something else, and the claim is refused.
-- "subject" and "attribute" are the learner's own words, and the entry's own text has to contain them: an entry that does not name what it is about cannot be checked against the learner's words.
-- "stance" is "decided" only when the learner settled it. A value the learner proposed, asked about ("what if it were 41 pages"), ruled out ("do not change it to 41 pages") or was unsure about is "proposed", "hypothetical", "negated" or "uncertain" - and such an entry is not a current fact.
-- "update" is a second question about the same words, and it is asked apart from "stance" on purpose. It is "yes" when these words set that value on that item now, "no" when they do not - the learner was talking about it, asked about it, ruled it out, or said something else about it - and "unsure" when you cannot tell. "stance" says what kind of sentence the words are; "update" says what they do to the item. If the two do not agree, the entry is refused.
-- A "learner_claim" is about the learner's own words. Never write one for your own message, and never let your confirmation stand in for the learner accepting something.
+- An entry of the learner's own carries no "origin" and cites the learner's own message. The program checks that the citation names a message of this session; it does not read the sentence, so write the entry in your own words and keep the value exactly as the learner wrote it.
+- A value the learner only asked about ("what if it were 41 pages"), ruled out ("do not change it to 41 pages") or was unsure about is not a current fact. Leave it out of the whiteboard and keep it in the segment.
 - Record only products: exercises, plan items, recommendations, names you made up, the specific numbers and lists you gave, and the arrangements you settled on. Do not record explanations, do not record general knowledge, and do not record anything you retrieved from the documents.
 - "assistant_accepted" needs the learner to have said so: "good", "let's do it that way", "as you said", or they went and did it ("I finished the first one"). A polite reply ("thanks", "mm") is not acceptance, and neither is asking about something else. When you are not sure, write "assistant". Most of your products should be "assistant".
+- An "assistant_accepted" entry cites BOTH your message that made the proposal and the learner's message after it that took it on. The program checks that both messages exist, that the first is yours and the second is the learner's, and that the learner's message comes after yours. An entry that cites only one of them is not an acceptance and does not reach the board.
 - Do not record an echo: when you only repeat or confirm what the learner already said ("okay, then your seven points"), it stays the learner's point and gets no product of its own.
 - Keep numbers, counts and names exactly as they were written. Do not round them and do not rewrite them: "416 pages" does not become "about 400 pages".
 - Keep the learner's own hedging. If the learner said "主要是", "打算", "可能" or "先试试", the point says the same thing and not "已定", "确定" or "决定". When you are not sure what the learner settled, quote the learner's own words instead of naming a decision.
@@ -424,9 +427,9 @@ Output object:
   },
   "whiteboard_changes": {
     "goal": {"text": "...", "source_message_ids": [...]},
-    "constraints": [{"op": "add|update|remove", "key": "<stable key>", "text": "...", "value": "...", "source_message_ids": [...], "origin": "assistant|assistant_accepted", "learner_claim": {"message_id": <id>, "quote": "<the learner's words>", "subject": "<the thing>", "attribute": "<the part of it>", "value": "<the value>", "stance": "decided|proposed|hypothetical|negated|uncertain", "update": "yes|no|unsure"}}],
-    "plan": [{"op": "add|update|remove", "key": "...", "text": "...", "value": "...", "state": "open|done", "source_message_ids": [...], "origin": "assistant|assistant_accepted", "learner_claim": {...}}],
-    "open_items": [{"op": "add|update|remove", "key": "...", "text": "...", "source_message_ids": [...], "origin": "assistant|assistant_accepted", "learner_claim": {...}}]
+    "constraints": [{"op": "add|update|remove", "key": "<stable key>", "text": "...", "value": "...", "source_message_ids": [...], "origin": "assistant|assistant_accepted"}],
+    "plan": [{"op": "add|update|remove", "key": "...", "text": "...", "value": "...", "state": "open|done", "source_message_ids": [...], "origin": "assistant|assistant_accepted"}],
+    "open_items": [{"op": "add|update|remove", "key": "...", "text": "...", "source_message_ids": [...], "origin": "assistant|assistant_accepted"}]
   }
 }
 
@@ -438,17 +441,13 @@ Rules:
 - Every point carries a "source". "user" is what the learner said. "assistant" is something you produced and the learner did not take a position on. "assistant_accepted" is something you proposed and the learner explicitly took on. A point about your own words is never "user".
 - Record only products: exercises, plan items, recommendations, names you made up, the specific numbers and lists you gave, and the arrangements you settled on. Do not record explanations, do not record general knowledge, and do not record anything you retrieved from the documents.
 - "assistant_accepted" needs the learner to have said so: "good", "let's do it that way", "as you said", or they went and did it ("I finished the first one"). A polite reply ("thanks", "mm") is not acceptance, and neither is asking about something else. When you are not sure, write "assistant". Most of your products should be "assistant".
+- An "assistant_accepted" entry cites BOTH your message that made the proposal and the learner's message after it that took it on. The program checks that both messages exist, that the first is yours and the second is the learner's, and that the learner's message comes after yours. An entry that cites only one of them is not an acceptance and does not reach the board.
 - Do not record an echo: when you only repeat or confirm what the learner already said, it stays the learner's point and gets no product of its own.
 - A whiteboard entry that is the learner's own carries no "origin" at all: "origin" is only for your own words. Use "assistant" for a proposal of yours the learner did not take on, and "assistant_accepted" for one the learner explicitly took on.
 - Your own words are cited by YOUR message id. A product of yours - a point, or a whiteboard entry with an "origin" - must cite the id of your message that says it, never the learner's message: a reader reads a cited message back, and a product that cites the learner's message is read back as the learner's.
 - When the learner states a value and you only confirm it, the entry is the learner's: it carries no "origin" and it cites the learner's message. Your confirmation is not the source of the value.
-- Every entry that is the learner's own current fact carries a "learner_claim": the learner's own words behind it. An entry with no "origin" and no "learner_claim" is an entry nobody said.
-- A "learner_claim" says: "message_id" is the learner's message the words come from; "quote" is a part of that message, copied word for word; "subject" is the thing the learner spoke about; "attribute" is the part of that subject the value belongs to; "value" is the value as the learner wrote it; "stance" is what the learner did with it; "update" is whether these words set that value on the item.
-- The "quote" must contain the "value" as the learner wrote it. A quote that does not carry the number is a quote about something else, and the claim is refused.
-- "subject" and "attribute" are the learner's own words, and the entry's own text has to contain them: an entry that does not name what it is about cannot be checked against the learner's words.
-- "stance" is "decided" only when the learner settled it. A value the learner proposed, asked about ("what if it were 41 pages"), ruled out ("do not change it to 41 pages") or was unsure about is "proposed", "hypothetical", "negated" or "uncertain" - and such an entry is not a current fact.
-- "update" is a second question about the same words, and it is asked apart from "stance" on purpose. It is "yes" when these words set that value on that item now, "no" when they do not - the learner was talking about it, asked about it, ruled it out, or said something else about it - and "unsure" when you cannot tell. "stance" says what kind of sentence the words are; "update" says what they do to the item. If the two do not agree, the entry is refused.
-- A "learner_claim" is about the learner's own words. Never write one for your own message, and never let your confirmation stand in for the learner accepting something.
+- An entry of the learner's own carries no "origin" and cites the learner's own message. The program checks that the citation names a message of this session; it does not read the sentence, so write the entry in your own words and keep the value exactly as the learner wrote it.
+- A value the learner only asked about ("what if it were 41 pages"), ruled out ("do not change it to 41 pages") or was unsure about is not a current fact. Leave it out of the whiteboard and keep it in the segment.
 - Keep numbers, counts and names exactly as they were written. Do not round them and do not rewrite them.
 - Keep the learner's own hedging. If the learner said "主要是", "打算", "可能" or "先试试", the point says the same thing and not "已定", "确定" or "决定". When you are not sure what the learner settled, quote the learner's own words instead of naming a decision.
 - Your guesses and your assessments are not facts about the learner and never become one.
@@ -492,41 +491,39 @@ type whiteboardDeltaEntry struct {
 	State            string `json:"state"`
 	SourceMessageIDs []uint `json:"source_message_ids"`
 	// Origin says whether the entry is the learner's or an assistant
-	// proposal the learner took on. The engine checks the claim against the
-	// citations either way.
+	// proposal the learner took on. The engine checks the citations against
+	// the origin either way.
 	Origin string `json:"origin"`
-	// Claim is the learner's own words behind the entry.
-	Claim *WhiteboardLearnerClaim `json:"learner_claim,omitempty"`
+	// LearnerClaim is the field of the old contract. It is read and ignored.
+	LearnerClaim json.RawMessage `json:"learner_claim,omitempty"`
 }
 
 // whiteboardProposalEntry is one entry of a proposal.
 //
-// It is the stored entry plus the evidence the model offered for it. The
-// claim is not stored with the entry: it is checked while the proposal is
-// applied and it is gone afterwards.
+// It is the stored entry, plus the field the model used to be asked for.
+//
+// The old contract asked the model for a "learner_claim" behind every entry
+// of the learner: the message, a quote of it, the subject, the attribute,
+// the value and the model's own two answers about what the words meant. The
+// program checked those answers against the quote and refused the entry when
+// they did not hold, which refused updates the learner had stated plainly.
+//
+// The field is read and ignored. A model that still writes it - because it
+// was asked to, once - does not fail the batch over a field the board no
+// longer reads.
 type whiteboardProposalEntry struct {
 	model.SessionWhiteboardEntry
-	// Claim is the learner's own words behind the entry.
-	Claim *WhiteboardLearnerClaim `json:"learner_claim,omitempty"`
+	// LearnerClaim is the field of the old contract. It is not read.
+	LearnerClaim json.RawMessage `json:"learner_claim,omitempty"`
 }
 
-// proposalEntries turns the entries of a group into the stored entries and
-// the claims that came with them.
-func proposalEntries(entries []whiteboardProposalEntry) ([]model.SessionWhiteboardEntry, []WhiteboardLearnerClaim) {
+// proposalEntries turns the entries of a group into the stored entries.
+func proposalEntries(entries []whiteboardProposalEntry) []model.SessionWhiteboardEntry {
 	stored := make([]model.SessionWhiteboardEntry, 0, len(entries))
-	claims := make([]WhiteboardLearnerClaim, 0, len(entries))
 	for _, entry := range entries {
 		stored = append(stored, entry.SessionWhiteboardEntry)
-		if entry.Claim == nil {
-			continue
-		}
-		claim := *entry.Claim
-		if strings.TrimSpace(claim.Key) == "" {
-			claim.Key = strings.TrimSpace(entry.Key)
-		}
-		claims = append(claims, claim)
 	}
-	return stored, claims
+	return stored
 }
 
 // The operations a change may name.
@@ -833,12 +830,12 @@ func (g *ModelSegmentGenerator) generateOneCall(ctx context.Context,
 			droppedPoints: droppedPoints, calls: segmentCallRecords(ledger), err: err}
 	}
 
-	current, err := decodeCurrentWhiteboard(input.Whiteboard, g.boardSchemaVersion())
+	current, err := decodeCurrentWhiteboard(input.Whiteboard, g.whiteboardPolicy().SchemaVersion)
 	if err != nil {
 		return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInvalidOutput,
 			calls: segmentCallRecords(ledger), err: err}
 	}
-	applied, err := ApplyWhiteboardProposal(current, whiteboardProposalFor(document), batch, g.boardSchemaVersion())
+	applied, err := ApplyWhiteboardProposal(current, whiteboardProposalFor(document), batch, g.whiteboardPolicy())
 	if err != nil {
 		return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInvalidOutput,
 			calls: segmentCallRecords(ledger), err: err}
@@ -855,10 +852,7 @@ func (g *ModelSegmentGenerator) generateOneCall(ctx context.Context,
 			applied.Diagnostics.DroppedEntries, applied.Diagnostics.DroppedDonePlan,
 			applied.Diagnostics.UnprovenAcceptances, applied.Diagnostics.UnknownOrigins,
 			applied.Diagnostics.MislabeledOrigins, applied.Diagnostics.AssistantProposals)
-		observability.Memory.WhiteboardClaims(applied.Diagnostics.VerifiedClaims,
-			applied.Diagnostics.RejectedClaims, applied.Diagnostics.UnsettledClaims,
-			applied.Diagnostics.UnbackedChanges)
-		whiteboardReportClaimRefusals(applied.Diagnostics)
+		whiteboardReportUnconfirmedStatements(applied.Diagnostics)
 	}()
 
 	// A board that does not fit the output budget is not a batch that failed.
@@ -934,7 +928,7 @@ func (g *ModelSegmentGenerator) generateOneCall(ctx context.Context,
 // with the result.
 func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
 	input SegmentGenerationInput) (SegmentGenerationResult, error) {
-	current, err := decodeCurrentWhiteboard(input.Whiteboard, g.boardSchemaVersion())
+	current, err := decodeCurrentWhiteboard(input.Whiteboard, g.whiteboardPolicy().SchemaVersion)
 	if err != nil {
 		return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInvalidOutput, err: err}
 	}
@@ -965,9 +959,7 @@ func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
 			diagnostics.DroppedEntries, diagnostics.DroppedDonePlan,
 			diagnostics.UnprovenAcceptances, diagnostics.UnknownOrigins,
 			diagnostics.MislabeledOrigins, diagnostics.AssistantProposals)
-		observability.Memory.WhiteboardClaims(diagnostics.VerifiedClaims, diagnostics.RejectedClaims,
-			diagnostics.UnsettledClaims, diagnostics.UnbackedChanges)
-		whiteboardReportClaimRefusals(diagnostics)
+		whiteboardReportUnconfirmedStatements(diagnostics)
 	}()
 	remaining := input.Messages
 	ledger := &segmentCallLedger{}
@@ -1038,7 +1030,7 @@ func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
 		names = append(names, segment.Names...)
 		numbers = append(numbers, segment.Numbers...)
 
-		applied, err := ApplyWhiteboardProposal(current, whiteboardProposalFor(document), batch, g.boardSchemaVersion())
+		applied, err := ApplyWhiteboardProposal(current, whiteboardProposalFor(document), batch, g.whiteboardPolicy())
 		if err != nil {
 			return SegmentGenerationResult{}, segmentFailure{reason: segmentReasonInvalidOutput,
 				calls: segmentCallRecords(ledger), err: err}
@@ -1157,23 +1149,17 @@ func (g *ModelSegmentGenerator) generateCalls(ctx context.Context,
 
 // whiteboardProposalFor turns what the model answered into a proposal.
 //
-// The claims come with it: they are the learner's own words behind the
-// entries, and the board engine needs them to tell the learner's statement
-// from the assistant's.
+// The entries carry their own citations, and the citations are what the
+// engine checks: that they name a message of this session, that the message
+// has the role the entry needs, and that a proposal of the assistant's the
+// learner took on cites the assistant's message and a learner message after
+// it.
 func whiteboardProposalFor(document segmentGenerationDocument) WhiteboardProposal {
-	constraints, constraintClaims := proposalEntries(document.Whiteboard.Constraints)
-	plan, planClaims := proposalEntries(document.Whiteboard.Plan)
-	openItems, openItemClaims := proposalEntries(document.Whiteboard.OpenItems)
-	claims := make([]WhiteboardLearnerClaim, 0, len(constraintClaims)+len(planClaims)+len(openItemClaims))
-	claims = append(claims, constraintClaims...)
-	claims = append(claims, planClaims...)
-	claims = append(claims, openItemClaims...)
 	return WhiteboardProposal{
 		Goal:        document.Whiteboard.Goal,
-		Constraints: constraints,
-		Plan:        plan,
-		OpenItems:   openItems,
-		Claims:      claims,
+		Constraints: proposalEntries(document.Whiteboard.Constraints),
+		Plan:        proposalEntries(document.Whiteboard.Plan),
+		OpenItems:   proposalEntries(document.Whiteboard.OpenItems),
 	}
 }
 
@@ -1203,7 +1189,7 @@ func (g *ModelSegmentGenerator) applyChangesOnly(ctx context.Context, ledger *se
 		ledger.unusable(segmentPurposeChanges, segmentReasonInvalidOutput)
 		return rewrite, nil
 	}
-	merged, claims, err := mergeWhiteboardDelta(current, delta, g.boardSchemaVersion())
+	merged, err := mergeWhiteboardDelta(current, delta, g.whiteboardPolicy().SchemaVersion)
 	if err != nil {
 		return rewrite, nil
 	}
@@ -1212,8 +1198,7 @@ func (g *ModelSegmentGenerator) applyChangesOnly(ctx context.Context, ledger *se
 		Constraints: merged.Constraints,
 		Plan:        merged.Plan,
 		OpenItems:   merged.OpenItems,
-		Claims:      claims,
-	}, batch, g.boardSchemaVersion())
+	}, batch, g.whiteboardPolicy())
 	if err != nil {
 		return rewrite, nil
 	}
@@ -1393,17 +1378,16 @@ func decodeSegmentDeltaDocument(content string) (segmentDeltaDocument, error) {
 // would fail a batch over bookkeeping the model cannot check, and the engine
 // behind this call re-validates every citation anyway.
 //
-// The claims come back with the board: the changes the model wrote carry the
-// learner's own words behind them, and the engine still needs them.
+// The citations come back with the board: the changes the model wrote carry
+// the messages they were drawn from, and the engine checks them.
 func mergeWhiteboardDelta(current model.SessionWhiteboardDocument,
-	delta segmentDeltaDocument, schemaVersion int) (model.SessionWhiteboardDocument, []WhiteboardLearnerClaim, error) {
+	delta segmentDeltaDocument, schemaVersion int) (model.SessionWhiteboardDocument, error) {
 	merged := model.SessionWhiteboardDocument{
 		SchemaVersion: schemaVersion,
 		Constraints:   append([]model.SessionWhiteboardEntry(nil), current.Constraints...),
 		Plan:          append([]model.SessionWhiteboardEntry(nil), current.Plan...),
 		OpenItems:     append([]model.SessionWhiteboardEntry(nil), current.OpenItems...),
 	}
-	claims := make([]WhiteboardLearnerClaim, 0, 8)
 	if current.Goal != nil {
 		goal := *current.Goal
 		goal.SourceMessageIDs = append([]uint(nil), current.Goal.SourceMessageIDs...)
@@ -1423,32 +1407,30 @@ func mergeWhiteboardDelta(current model.SessionWhiteboardDocument,
 		{"plan", &merged.Plan, delta.WhiteboardChanges.Plan},
 		{"open_items", &merged.OpenItems, delta.WhiteboardChanges.OpenItems},
 	} {
-		mergedEntries, groupClaims, err := mergeWhiteboardGroup(*group.entries, group.changes)
+		mergedEntries, err := mergeWhiteboardGroup(*group.entries, group.changes)
 		if err != nil {
-			return model.SessionWhiteboardDocument{}, nil, err
+			return model.SessionWhiteboardDocument{}, err
 		}
 		*group.entries = mergedEntries
-		claims = append(claims, groupClaims...)
 	}
-	return merged, claims, nil
+	return merged, nil
 }
 
 // mergeWhiteboardGroup applies the changes of one group.
 func mergeWhiteboardGroup(current []model.SessionWhiteboardEntry,
-	changes []whiteboardDeltaEntry) ([]model.SessionWhiteboardEntry, []WhiteboardLearnerClaim, error) {
+	changes []whiteboardDeltaEntry) ([]model.SessionWhiteboardEntry, error) {
 	entries := append([]model.SessionWhiteboardEntry(nil), current...)
-	claims := make([]WhiteboardLearnerClaim, 0, len(changes))
 	for _, change := range changes {
 		key := strings.TrimSpace(change.Key)
 		if key == "" {
-			return nil, nil, segmentFailure{reason: segmentReasonInvalidOutput,
+			return nil, segmentFailure{reason: segmentReasonInvalidOutput,
 				err: fmt.Errorf("summary segment change has no key")}
 		}
 		op := strings.ToLower(strings.TrimSpace(change.Op))
 		switch op {
 		case whiteboardDeltaAdd, whiteboardDeltaUpdate, whiteboardDeltaRemove:
 		default:
-			return nil, nil, segmentFailure{reason: segmentReasonInvalidOutput,
+			return nil, segmentFailure{reason: segmentReasonInvalidOutput,
 				err: fmt.Errorf("summary segment change names an unknown operation %q", change.Op)}
 		}
 		at := -1
@@ -1478,16 +1460,8 @@ func mergeWhiteboardGroup(current []model.SessionWhiteboardEntry,
 				SourceMessageIDs: append([]uint(nil), change.SourceMessageIDs...),
 			})
 		}
-		if op == whiteboardDeltaRemove || change.Claim == nil {
-			continue
-		}
-		claim := *change.Claim
-		if strings.TrimSpace(claim.Key) == "" {
-			claim.Key = key
-		}
-		claims = append(claims, claim)
 	}
-	return entries, claims, nil
+	return entries, nil
 }
 
 // decodeSegmentGenerationDocument parses what the model answered.

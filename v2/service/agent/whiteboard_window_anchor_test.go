@@ -250,14 +250,9 @@ func TestAStatementWhoseValueIsNotInTheWordsIsNotBuilt(t *testing.T) {
 		Constraints: []model.SessionWhiteboardEntry{{
 			Key: "words_per_day", Text: "背单词每次读的个数原为 30 个，现改为 45 个",
 			Value: "45 个", Origin: model.SessionWhiteboardOriginUser,
-			SourceMessageIDs: []uint{93},
+			SourceMessageIDs: []uint{51, 93},
 		}},
-		Claims: []WhiteboardLearnerClaim{{
-			Key: "words_per_day", MessageID: 93, Quote: "还是每次看30个吧",
-			Subject: "背单词", Attribute: "每次", Value: "45 个",
-			Stance: "decided", Update: "yes",
-		}},
-	}, batch, model.SessionWhiteboardSchemaV3)
+	}, batch, assistantProductsPolicy(model.SessionWhiteboardSchemaV3))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,12 +285,7 @@ func TestTheRefusedValueIsReadableBackThroughTheWholePath(t *testing.T) {
 			Value: "45 个", Origin: model.SessionWhiteboardOriginUser,
 			SourceMessageIDs: []uint{93, 94},
 		}},
-		Claims: []WhiteboardLearnerClaim{{
-			Key: "words_per_day", MessageID: 93, Quote: "背单词改成每次45个吧。",
-			Subject: "背单词", Attribute: "每次", Value: "45 个",
-			Stance: "decided", Update: "yes",
-		}},
-	}, batch, model.SessionWhiteboardSchemaV3)
+	}, batch, assistantProductsPolicy(model.SessionWhiteboardSchemaV3))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,8 +295,8 @@ func TestTheRefusedValueIsReadableBackThroughTheWholePath(t *testing.T) {
 		t.Fatalf("the board = %+v, want the learner's new value", result.Board.Constraints)
 	}
 	if len(result.Diagnostics.Entries) != 1 ||
-		result.Diagnostics.Entries[0].ClaimVerdict != whiteboardClaimVerdictLabelSettled {
-		t.Fatalf("the diagnostics = %+v, want one settled claim", result.Diagnostics.Entries)
+		result.Diagnostics.Entries[0].Outcome != whiteboardEntryOutcomeApplied {
+		t.Fatalf("the diagnostics = %+v, want the one entry that landed", result.Diagnostics.Entries)
 	}
 
 	// Now the other side of the board: an entry that cites a message this
@@ -320,7 +310,7 @@ func TestTheRefusedValueIsReadableBackThroughTheWholePath(t *testing.T) {
 			Value: "45 个", Origin: model.SessionWhiteboardOriginUser,
 			SourceMessageIDs: []uint{51, 93},
 		}},
-	}, batch, model.SessionWhiteboardSchemaV3)
+	}, batch, assistantProductsPolicy(model.SessionWhiteboardSchemaV3))
 	if err != nil {
 		t.Fatal(err)
 	}

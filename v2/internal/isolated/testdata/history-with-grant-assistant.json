@@ -1,0 +1,20 @@
+{
+  "description": "Read back the learner's own words for a message an episode cites, and the assistant's own words for a message a summary segment or the board cites. Use it when the learner asks what they actually said, or when an episode entry is too compressed to answer from. Only ids listed in an injected episode's message_ids, a summary segment's message_ids or the board's message_ids can be read. A message that comes back with role assistant is what the assistant said at the time: it cannot prove what the learner said.",
+  "name": "read_history_message",
+  "schema": {
+    "properties": {
+      "message_ids": {
+        "items": {
+          "type": "integer"
+        },
+        "description": "Message ids taken verbatim from the message_ids field of an episode entry. At most five.",
+        "type": "array"
+      }
+    },
+    "additionalProperties": false,
+    "required": [
+      "message_ids"
+    ],
+    "type": "object"
+  }
+}

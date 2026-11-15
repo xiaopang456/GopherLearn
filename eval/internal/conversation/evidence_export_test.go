@@ -52,16 +52,21 @@ import (
 // a real conversation into a repository.
 const evidenceLearnerText = "阅读计划以后每次读 41 页"
 
-// evidenceProposal is an answer whose learner claim does not hold.
+// evidenceProposal is an answer whose entry cites a message the batch never
+// held.
 //
-// The model quotes words the learner did not say, so the board refuses the
-// entry. The refusal is what the evidence has to show: which entry, which
-// check, and on which message.
+// The board refuses the entry, because a proposal that cites what it cannot
+// check has to lose the entry. The refusal is what the evidence has to show:
+// which entry, which check, and on which message.
+//
+// The answer also carries a learner_claim, because the model that wrote it
+// was asked for one. The program reads it and ignores it: a field the
+// contract no longer has must not make an old answer unreadable.
 func evidenceProposal() string {
 	return `{"schema_version":1,"segment":{"topic":"阅读计划","points":[` +
 		`{"text":"学习者把阅读计划改成了每次读 41 页","evidence_message_ids":[95]}]},` +
 		`"whiteboard":{"schema_version":2,"constraints":[` +
-		`{"key":"pages","text":"阅读计划每次读 41 页","value":"41 页/次","source_message_ids":[95],` +
+		`{"key":"pages","text":"阅读计划每次读 41 页","value":"41 页/次","source_message_ids":[51,95],` +
 		`"learner_claim":{"message_id":95,"quote":"阅读计划以后每次读55页","subject":"阅读计划",` +
 		`"attribute":"页","value":"41页","stance":"decided","update":"yes"}}]}}`
 }
@@ -85,7 +90,7 @@ func evidenceLongProposal() string {
 	return `{"schema_version":1,"segment":{"topic":"阅读计划","points":[` +
 		strings.Join(points, ",") + `]},` +
 		`"whiteboard":{"schema_version":2,"constraints":[` +
-		`{"key":"pages","text":"阅读计划每次读 41 页","value":"41 页/次","source_message_ids":[95],` +
+		`{"key":"pages","text":"阅读计划每次读 41 页","value":"41 页/次","source_message_ids":[51,95],` +
 		`"learner_claim":{"message_id":95,"quote":"阅读计划以后每次读55页","subject":"阅读计划",` +
 		`"attribute":"页","value":"41页","stance":"decided","update":"yes"}}]}}`
 }
@@ -241,25 +246,19 @@ func TestTheEvidenceOfAnAttemptCarriesTheCallsTheBodyAndTheRefusedCandidates(t *
 	if entry.Key != "pages" {
 		t.Fatalf("the entry is not the one the model named: %+v", entry)
 	}
-	if entry.ClaimMessageID != 95 {
-		t.Fatalf("the entry does not say which message the claim rested on: %+v", entry)
-	}
-	if entry.ClaimVerdict != "rejected" {
-		t.Fatalf("verdict = %q, want the refused one", entry.ClaimVerdict)
+	if entry.Outcome != "refused" {
+		t.Fatalf("the entry's outcome = %q, want the refused one", entry.Outcome)
 	}
 	// The reason is one of the product's fixed reasons, so a record never
 	// carries free text into a counter.
-	if !model.ValidSessionWhiteboardAnchorReason(entry.ClaimReason) {
-		t.Fatalf("reason = %q, want one of the product's own reasons", entry.ClaimReason)
+	if !model.ValidSessionWhiteboardAnchorReason(entry.OutcomeReason) {
+		t.Fatalf("reason = %q, want one of the product's own reasons", entry.OutcomeReason)
 	}
-	// The claim and the entry are two things, and a reader has to be able to
-	// see both: a claim that holds is not an entry on the board, and an
+	// What became of the entry and where the learner's own words stayed
+	// findable are two things, and a reader has to be able to see both: an
 	// entry that was refused may still have left the words findable.
-	if entry.Outcome == "" {
-		t.Fatalf("the entry does not say what became of it: %+v", entry)
-	}
-	if entry.OutcomeReason == "" {
-		t.Fatalf("the entry does not say why it ended that way: %+v", entry)
+	if entry.AnchorMessageID != 95 {
+		t.Fatalf("the entry does not say where the learner's own words are: %+v", entry)
 	}
 }
 
@@ -430,10 +429,9 @@ func TestTheEvidenceIsWrittenNextToTheRunAndNotIntoTheResult(t *testing.T) {
 			RawOutput: "the model's own answer", OriginalBytes: len("the model's own answer"),
 		}},
 		Entries: []agent.WhiteboardEntryOutcome{{
-			Key: "pages", ClaimReason: model.SessionWhiteboardAnchorQuoteNotInMessage,
-			ClaimMessageID: 95, ClaimVerdict: "rejected",
-			Outcome: "refused", OutcomeReason: model.SessionWhiteboardAnchorQuoteNotInMessage,
-			AnchorMessageID: 95, AnchorReason: model.SessionWhiteboardAnchorQuoteNotInMessage,
+			Key: "pages",
+			Outcome: "refused", OutcomeReason: model.SessionWhiteboardAnchorCitationInvalid,
+			AnchorMessageID: 95, AnchorReason: model.SessionWhiteboardAnchorCitationInvalid,
 		}},
 	}}
 	if err := WriteBatchEvidence(dir, records); err != nil {
@@ -492,10 +490,10 @@ func TestTheEvidenceIsWrittenNextToTheRunAndNotIntoTheResult(t *testing.T) {
 	if !ok {
 		t.Fatalf("the entry is not an object: %v", entries[0])
 	}
-	if len(entry) != 8 {
-		t.Fatalf("the entry carries %d fields, want the three layers of it: %v", len(entry), entry)
+	if len(entry) != 5 {
+		t.Fatalf("the entry carries %d fields, want the two layers of it: %v", len(entry), entry)
 	}
-	for _, field := range []string{"key", "claim_verdict", "claim_reason", "claim_message_id",
+	for _, field := range []string{"key",
 		"outcome", "outcome_reason", "anchor_message_id", "anchor_reason"} {
 		if _, ok = entry[field]; !ok {
 			t.Fatalf("the entry has no %q: %v", field, entry)

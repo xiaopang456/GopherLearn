@@ -121,11 +121,10 @@ type BatchEvidence struct {
 	// SegmentBody is the segment content the program made of the answer.
 	SegmentBody string
 	// Entries are what became of every entry the proposal brought, with the
-	// claim's verdict, the entry's own outcome and the anchor that was made.
+	// entry's own outcome and the anchor that was made.
 	//
-	// The three are kept apart because they are three different facts: a
-	// claim that holds is not an entry on the board, and an entry that was
-	// refused may still have left the learner's words findable.
+	// The two are kept apart because they are two different facts: an entry
+	// that was refused may still have left the learner's words findable.
 	Entries []agent.WhiteboardEntryOutcome
 	// WhiteboardBefore is the board as it stood before this batch.
 	WhiteboardBefore *WhiteboardSnapshot
@@ -281,11 +280,10 @@ type batchEvidenceCallFile struct {
 
 // batchEvidenceEntry is one proposed entry, as it is written down.
 //
-// The three layers are written as three groups of fields: what the engine
-// made of the claim, what became of the entry itself, and whether the
-// learner's own words were kept findable. They are kept apart because a
-// reader has to be able to see that a claim passed and the entry did not
-// land, and that an entry was refused and the words are still readable.
+// The two layers are written as two groups of fields: what became of the
+// entry itself, and whether the learner's own words were kept findable. They
+// are kept apart because a reader has to be able to see that an entry was
+// refused and the words are still readable.
 //
 // The learner's own words are not among them - they are in the raw answer,
 // and a record that carried them would put the learner's text into a file
@@ -293,9 +291,6 @@ type batchEvidenceCallFile struct {
 type batchEvidenceEntry struct {
 	Key                   string `json:"key"`
 	CallIndex             int    `json:"call_index,omitempty"`
-	ClaimVerdict          string `json:"claim_verdict"`
-	ClaimReason           string `json:"claim_reason,omitempty"`
-	ClaimMessageID        uint   `json:"claim_message_id,omitempty"`
 	Outcome               string `json:"outcome"`
 	OutcomeReason         string `json:"outcome_reason,omitempty"`
 	AnchorMessageID       uint   `json:"anchor_message_id,omitempty"`
@@ -355,9 +350,6 @@ func writeBatchEvidenceAttempt(dir string, record BatchEvidence) error {
 		entries = append(entries, batchEvidenceEntry{
 			Key:             entry.Key,
 			CallIndex:       entry.CallIndex,
-			ClaimVerdict:    entry.ClaimVerdict,
-			ClaimReason:     entry.ClaimReason,
-			ClaimMessageID:  entry.ClaimMessageID,
 			Outcome:         entry.Outcome,
 			OutcomeReason:   entry.OutcomeReason,
 			AnchorMessageID: entry.AnchorMessageID,

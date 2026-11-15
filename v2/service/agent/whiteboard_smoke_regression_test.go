@@ -13,21 +13,29 @@ package agent
 //
 // The cases are the ones the smoke produced:
 //
-//   - the learner's verified new value with the assistant's confirmation
-//     beside it;
+//   - the learner's own new value, which is the one the old check refused;
 //   - the same entry with the assistant's label on it;
-//   - an entry with no claim at all that cites another batch's message;
+//   - an entry that cites another batch's message;
 //   - a citation of a message that does not exist;
-//   - the learner ruling the value out;
-//   - the learner only asking what would happen;
-//   - a value that belongs to another thing.
+//   - a value the learner ruled out by saying the same number in other words;
+//   - a proposal of the assistant's nobody took on;
+//   - a proposal of the assistant's the learner took on.
 //
 // The first two are the ones that were broken: the learner's own words
 // settled the value, the entry was dropped anyway, and the words went with
 // it. The last five are the ones that have to keep working: a value nobody
-// settled, a value that was ruled out and a value that belongs to another
-// thing must not become the current one, and the learner's words must stay
+// settled, a citation the program cannot check and a proposal nobody agreed
+// to must not become the current one, and the learner's words must stay
 // findable all the same.
+//
+// What the program does not do is read what a sentence means. It checks that
+// a citation names a message of this session, that the message has the role
+// the entry needs, and that a proposal of the assistant's the learner took on
+// cites the assistant's message and a learner message after it. Everything
+// else - whether the learner meant what the model wrote down, whether they
+// only asked about it, whether they ruled it out - is the model's judgement,
+// and the engine leaves it to the model. The two cases at the end of this
+// file say what that costs.
 
 import (
 	"testing"
@@ -77,10 +85,7 @@ func TestTheAssistantConfirmationBesideTheVerifiedValueCostsNothing(t *testing.T
 	batch := assistantBatch(93, "背单词改成每次45个吧。", 94, "好，之后按45个来。")
 	result, err := ApplyWhiteboardProposal(smokeBoard(), WhiteboardProposal{
 		Constraints: []model.SessionWhiteboardEntry{smokeEntryOf(model.SessionWhiteboardOriginUser, 93, 94)},
-		Claims: []WhiteboardLearnerClaim{
-			learnerClaim("words_per_day", 93, "背单词改成每次45个吧。", "背单词", "每次", "45 个", "decided", "yes"),
-		},
-	}, batch, model.SessionWhiteboardSchemaV3)
+	}, batch, assistantProductsPolicy(model.SessionWhiteboardSchemaV3))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,9 +105,6 @@ func TestTheAssistantConfirmationBesideTheVerifiedValueCostsNothing(t *testing.T
 		}
 	}
 	entry := smokeEntry(t, result)
-	if entry.ClaimVerdict != whiteboardClaimVerdictLabelSettled {
-		t.Fatalf("the claim's verdict = %q, want settled", entry.ClaimVerdict)
-	}
 	if entry.Outcome != whiteboardEntryOutcomeApplied {
 		t.Fatalf("the entry's outcome = %q, want applied", entry.Outcome)
 	}
@@ -114,18 +116,15 @@ func TestTheAssistantConfirmationBesideTheVerifiedValueCostsNothing(t *testing.T
 // The same entry with the assistant's label on it takes the same path.
 //
 // The label is the model's guess about which side of the conversation the
-// entry belongs to, and the claim is the evidence. A guess the evidence
-// contradicts is not a reason to lose the value.
+// entry belongs to, and the citations are the facts. A guess the citations
+// contradict is not a reason to lose the value.
 func TestTheEntryLabelledTheAssistantsTakesTheSamePath(t *testing.T) {
 	batch := assistantBatch(93, "背单词改成每次45个吧。", 94, "好，之后按45个来。")
 	result, err := ApplyWhiteboardProposal(smokeBoard(), WhiteboardProposal{
 		Constraints: []model.SessionWhiteboardEntry{
 			smokeEntryOf(model.SessionWhiteboardOriginAssistantAccepted, 93, 94),
 		},
-		Claims: []WhiteboardLearnerClaim{
-			learnerClaim("words_per_day", 93, "背单词改成每次45个吧。", "背单词", "每次", "45 个", "decided", "yes"),
-		},
-	}, batch, model.SessionWhiteboardSchemaV3)
+	}, batch, assistantProductsPolicy(model.SessionWhiteboardSchemaV3))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,37 +140,38 @@ func TestTheEntryLabelledTheAssistantsTakesTheSamePath(t *testing.T) {
 			t.Fatalf("the entry's evidence = %v, want the learner's own message alone",
 				entry.SourceMessageIDs)
 		}
+		if entry.EntryOrigin() != model.SessionWhiteboardOriginUser {
+			t.Fatalf("the entry's origin = %q, want the learner's: the words were the learner's",
+				entry.EntryOrigin())
+		}
 	}
 	if result.Diagnostics.MislabeledOrigins != 1 {
 		t.Fatalf("the mislabelled origins = %d, want 1", result.Diagnostics.MislabeledOrigins)
 	}
 	entry := smokeEntry(t, result)
-	if entry.ClaimVerdict != whiteboardClaimVerdictLabelSettled {
-		t.Fatalf("the claim's verdict = %q, want settled", entry.ClaimVerdict)
-	}
 	if entry.Outcome != whiteboardEntryOutcomeApplied {
 		t.Fatalf("the entry's outcome = %q, want applied", entry.Outcome)
 	}
 }
 
-// The entry carries no claim and cites another batch's message.
+// The entry cites another batch's message.
 //
-// Two facts are in play. The citation of the other batch's message is not a
-// citation this batch may hold, so the entry does not go on the board: a
-// proposal that cites what it cannot check is refused.
+// The citation of the other batch's message is not a citation this batch may
+// hold, so the entry does not go on the board: a proposal that cites what it
+// cannot check is refused.
 //
 // And the learner's own words are not lost with it. They are kept as an
 // unconfirmed statement under the message of this batch that really carries
 // the value, so a reader can read them back. The statement is navigation:
 // the board still holds nothing that is confirmed.
-func TestAnEntryWithoutAClaimKeepsTheLearnersWordsFindable(t *testing.T) {
+func TestAnEntryThatCitesAnotherBatchIsRefusedAndTheWordsStayFindable(t *testing.T) {
 	batch := assistantBatch(95, "背单词改成每次45个吧。", 96, "好，之后按45个来。")
 	result, err := ApplyWhiteboardProposal(smokeBoard(), WhiteboardProposal{
 		Constraints: []model.SessionWhiteboardEntry{
 			ownEntry("words_per_day", "背单词每次读的个数原为 30 个，现改为 45 个", "45 个",
 				model.SessionWhiteboardOriginUser, 51, 95),
 		},
-	}, batch, model.SessionWhiteboardSchemaV3)
+	}, batch, assistantProductsPolicy(model.SessionWhiteboardSchemaV3))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,10 +201,6 @@ func TestAnEntryWithoutAClaimKeepsTheLearnersWordsFindable(t *testing.T) {
 			anchor.Reason)
 	}
 	entry := smokeEntry(t, result)
-	if entry.ClaimVerdict != whiteboardClaimVerdictLabelAbsent {
-		t.Fatalf("the claim's verdict = %q, want absent: the entry carried no claim",
-			entry.ClaimVerdict)
-	}
 	if entry.Outcome != whiteboardEntryOutcomeRefused {
 		t.Fatalf("the entry's outcome = %q, want refused", entry.Outcome)
 	}
@@ -216,17 +212,14 @@ func TestAnEntryWithoutAClaimKeepsTheLearnersWordsFindable(t *testing.T) {
 // A citation of a message that does not exist refuses the entry.
 //
 // The check may not be got past by filtering the bad citation out: a
-// proposal that invented its sources has to lose the entry, even when the
-// claim itself holds. The learner's own words are still kept, so the reader
-// can still find them - but the value does not land.
+// proposal that invented its sources has to lose the entry. The learner's own
+// words are still kept, so the reader can still find them - but the value
+// does not land.
 func TestACitationOfAMessageThatIsNotThereRefusesTheEntry(t *testing.T) {
 	batch := assistantBatch(93, "背单词改成每次45个吧。", 94, "好，之后按45个来。")
 	result, err := ApplyWhiteboardProposal(smokeBoard(), WhiteboardProposal{
 		Constraints: []model.SessionWhiteboardEntry{smokeEntryOf(model.SessionWhiteboardOriginUser, 93, 9999)},
-		Claims: []WhiteboardLearnerClaim{
-			learnerClaim("words_per_day", 93, "背单词改成每次45个吧。", "背单词", "每次", "45 个", "decided", "yes"),
-		},
-	}, batch, model.SessionWhiteboardSchemaV3)
+	}, batch, assistantProductsPolicy(model.SessionWhiteboardSchemaV3))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,9 +231,6 @@ func TestACitationOfAMessageThatIsNotThereRefusesTheEntry(t *testing.T) {
 		t.Fatalf("the fabricated entries = %d, want 1", result.Diagnostics.FabricatedEntries)
 	}
 	entry := smokeEntry(t, result)
-	if entry.ClaimVerdict != whiteboardClaimVerdictLabelSettled {
-		t.Fatalf("the claim's verdict = %q, want settled", entry.ClaimVerdict)
-	}
 	if entry.Outcome != whiteboardEntryOutcomeRefused {
 		t.Fatalf("the entry's outcome = %q, want refused", entry.Outcome)
 	}
@@ -259,6 +249,13 @@ func TestACitationOfAMessageThatIsNotThereRefusesTheEntry(t *testing.T) {
 // The new value is in the learner's words, and the words say it is not to be
 // used. The board keeps the value that holds now, and the learner's words
 // stay findable so a reader can see what was said.
+//
+// What is checked here is not the negation: it is that the entry carries the
+// number the board already holds, says something else about it, and is not
+// about another frequency. An entry like that would replace a fact the
+// learner still has with a fact about something else, and the reader would
+// never learn that it happened - the number on the board would not even
+// change.
 func TestTheRuledOutValueIsNotTheLearnersValue(t *testing.T) {
 	board := model.SessionWhiteboardDocument{
 		SchemaVersion: model.SessionWhiteboardSchemaV3,
@@ -272,10 +269,7 @@ func TestTheRuledOutValueIsNotTheLearnersValue(t *testing.T) {
 			ownEntry("words_per_day", "背单词每次看 30 个，不改 45 个", "每次 30 个",
 				model.SessionWhiteboardOriginUser, 93),
 		},
-		Claims: []WhiteboardLearnerClaim{
-			learnerClaim("words_per_day", 93, "还是每次看30个吧，别改成45个", "背单词", "每次看多少个", "30 个", "decided", "yes"),
-		},
-	}, batch, model.SessionWhiteboardSchemaV3)
+	}, batch, assistantProductsPolicy(model.SessionWhiteboardSchemaV3))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,62 +279,170 @@ func TestTheRuledOutValueIsNotTheLearnersValue(t *testing.T) {
 			result.Board.Constraints)
 	}
 	entry := smokeEntry(t, result)
-	if entry.ClaimVerdict != whiteboardClaimVerdictLabelRejected {
-		t.Fatalf("the claim's verdict = %q, want rejected", entry.ClaimVerdict)
-	}
 	if entry.Outcome != whiteboardEntryOutcomeRefused {
 		t.Fatalf("the entry's outcome = %q, want refused", entry.Outcome)
+	}
+	if entry.OutcomeReason != model.SessionWhiteboardAnchorSameNumber {
+		t.Fatalf("the entry's reason = %q, want the one that names the number",
+			entry.OutcomeReason)
 	}
 	if entry.AnchorMessageID == 0 {
 		t.Fatalf("the entry carries no anchor: the learner's words are lost: %+v", entry)
 	}
 }
 
-// The learner ruled the value out and the entry named the value itself.
+// The learner's own new value replaces the old one.
 //
-// This is the case the check exists for: the new value is the entry's value,
-// so nothing but the claim stands between the learner's words and the
-// board. The claim says the value was ruled out, and the entry does not go
-// on the board.
-func TestTheRuledOutValueDoesNotLandEvenWhenTheEntryNamesIt(t *testing.T) {
+// This is the case the smoke was about. The learner says "改成每轮9道题吧",
+// and the model writes the value down as "每轮 9 道题" - words the learner
+// never used, about a plan the learner did not name. The board takes it: what
+// the learner said is what the learner said, and the program does not ask
+// the model to say it the same way twice.
+func TestTheLearnersOwnNewValueReplacesTheOldOne(t *testing.T) {
 	board := model.SessionWhiteboardDocument{
 		SchemaVersion: model.SessionWhiteboardSchemaV3,
 		Constraints: []model.SessionWhiteboardEntry{
-			ownEntry("words_per_day", "背单词每次 30 个", "每次 30 个", "", 51),
+			ownEntry("round_question_count", "每轮先做 14 道题。", "14 道", "", 59),
 		},
 	}
-	batch := assistantBatch(93, "背单词还是每次30个，别改成45个", 94, "好的。")
+	batch := assistantBatch(93, "改成每轮9道题吧。", 94, "好，之后按9道来。")
 	result, err := ApplyWhiteboardProposal(board, WhiteboardProposal{
 		Constraints: []model.SessionWhiteboardEntry{
-			ownEntry("words_per_day", "背单词每次 45 个", "每次 45 个",
+			ownEntry("round_question_count", "每轮 9 道题", "9 道题",
 				model.SessionWhiteboardOriginUser, 93),
 		},
-		Claims: []WhiteboardLearnerClaim{
-			learnerClaim("words_per_day", 93, "背单词还是每次30个，别改成45个", "背单词", "每次", "45 个", "negated", "yes"),
-		},
-	}, batch, model.SessionWhiteboardSchemaV3)
+	}, batch, assistantProductsPolicy(model.SessionWhiteboardSchemaV3))
 	if err != nil {
 		t.Fatal(err)
 	}
 	values := boardValues(result.Board)
-	if values["words_per_day"] != "每次 30 个" {
-		t.Fatalf("the board = %+v, want the old value: the learner ruled the new one out",
-			result.Board.Constraints)
+	if values["round_question_count"] != "9 道题" {
+		t.Fatalf("the board = %+v, want the learner's new value", result.Board.Constraints)
 	}
 	entry := smokeEntry(t, result)
-	if entry.ClaimVerdict != whiteboardClaimVerdictLabelUnsettled {
-		t.Fatalf("the claim's verdict = %q, want unsettled", entry.ClaimVerdict)
-	}
-	if entry.Outcome != whiteboardEntryOutcomeRefused {
-		t.Fatalf("the entry's outcome = %q, want refused", entry.Outcome)
+	if entry.Outcome != whiteboardEntryOutcomeApplied {
+		t.Fatalf("the entry's outcome = %q, want applied", entry.Outcome)
 	}
 }
 
-// The learner only asked what would happen.
+// A proposal of the assistant's nobody took on does not become the learner's
+// state.
 //
-// A question is not a decision. The value stays what it was, and the words
-// stay findable - a learner who asked is worth being able to read back.
-func TestTheValueTheLearnerOnlyAskedAboutDoesNotLand(t *testing.T) {
+// The three exercises the assistant offered are a product of the assistant's,
+// and they stay one: they are in the summary segment, labelled as the
+// assistant's, and they are not on the board. The board is what the learner
+// decided, and a proposal nobody agreed to is not a decision.
+func TestAProposalNobodyTookOnIsNotTheLearnersState(t *testing.T) {
+	batch := assistantBatch(93, "给我三道动态规划的练习", 94, "1. 最长递增子序列 2. 0-1 背包 3. 区间 DP")
+	result, err := ApplyWhiteboardProposal(smokeBoard(), WhiteboardProposal{
+		Constraints: []model.SessionWhiteboardEntry{
+			ownEntry("practice_set", "三道动态规划的练习", "三道",
+				model.SessionWhiteboardOriginAssistant, 94),
+		},
+	}, batch, assistantProductsPolicy(model.SessionWhiteboardSchemaV3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Board.Constraints) != 0 {
+		t.Fatalf("the proposal is on the board: %+v", result.Board.Constraints)
+	}
+	if result.Diagnostics.AssistantProposals != 1 {
+		t.Fatalf("the assistant's proposals = %d, want 1", result.Diagnostics.AssistantProposals)
+	}
+	entry := smokeEntry(t, result)
+	if entry.Outcome != whiteboardEntryOutcomeRefused {
+		t.Fatalf("the entry's outcome = %q, want refused", entry.Outcome)
+	}
+	if entry.OutcomeReason != whiteboardEntryReasonAssistantProduct {
+		t.Fatalf("the entry's reason = %q, want the one that names the product",
+			entry.OutcomeReason)
+	}
+}
+
+// The learner takes the proposal on.
+//
+// The assistant offered three exercises in its own message, and the learner
+// said "好，就这样" after it. The two messages together are what makes it an
+// acceptance, so the board keeps the content that was accepted and cites
+// both sides.
+func TestAProposalTheLearnerTookOnBecomesTheBoardsState(t *testing.T) {
+	batch := withLearnerMessage(
+		assistantBatch(93, "给我三道动态规划的练习", 94, "1. 最长递增子序列 2. 0-1 背包 3. 区间 DP"),
+		95, "好，就这样")
+	result, err := ApplyWhiteboardProposal(smokeBoard(), WhiteboardProposal{
+		Constraints: []model.SessionWhiteboardEntry{
+			ownEntry("practice_set", "三道动态规划的练习", "三道",
+				model.SessionWhiteboardOriginAssistantAccepted, 94, 95),
+		},
+	}, batch, assistantProductsPolicy(model.SessionWhiteboardSchemaV3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Board.Constraints) != 1 {
+		t.Fatalf("the board = %+v, want the accepted content", result.Board.Constraints)
+	}
+	entry := result.Board.Constraints[0]
+	if entry.Value != "三道" {
+		t.Fatalf("the board holds %q, want the content that was accepted", entry.Value)
+	}
+	if entry.EntryOrigin() != model.SessionWhiteboardOriginAssistantAccepted {
+		t.Fatalf("the entry's origin = %q, want the one that says the learner took it on",
+			entry.EntryOrigin())
+	}
+	if !whiteboardCitesID(entry.SourceMessageIDs, 94) || !whiteboardCitesID(entry.SourceMessageIDs, 95) {
+		t.Fatalf("the entry's evidence = %v, want the assistant's message and the learner's answer",
+			entry.SourceMessageIDs)
+	}
+}
+
+// A proposal the learner did not take on is not an acceptance.
+//
+// The model says the learner took the proposal on, and the citations do not
+// show it: the learner's message came before the assistant's, so there is no
+// acceptance to point at, and the value is not in the learner's own words
+// either.
+//
+// The program cannot tell what a sentence means, so it goes by what it can
+// check. An acceptance that is not shown is not an acceptance, and the entry
+// stays what it is - a product of the assistant's.
+func TestAProposalTheLearnerDidNotTakeOnIsNotAnAcceptance(t *testing.T) {
+	batch := assistantBatch(94, "我想把数学补一补", 95, "我给你排了三周的复习计划")
+	result, err := ApplyWhiteboardProposal(smokeBoard(), WhiteboardProposal{
+		Constraints: []model.SessionWhiteboardEntry{
+			ownEntry("review_plan", "三周的复习计划", "三周计划",
+				model.SessionWhiteboardOriginAssistantAccepted, 94, 95),
+		},
+	}, batch, assistantProductsPolicy(model.SessionWhiteboardSchemaV3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Board.Constraints) != 0 {
+		t.Fatalf("the board = %+v, want no entry: the acceptance is not shown", result.Board.Constraints)
+	}
+	if result.Diagnostics.UnprovenAcceptances != 1 {
+		t.Fatalf("the unproven acceptances = %d, want 1", result.Diagnostics.UnprovenAcceptances)
+	}
+	entry := smokeEntry(t, result)
+	if entry.Outcome != whiteboardEntryOutcomeRefused {
+		t.Fatalf("the entry's outcome = %q, want refused", entry.Outcome)
+	}
+	if entry.OutcomeReason != whiteboardEntryReasonUnprovenAcceptance {
+		t.Fatalf("the entry's reason = %q, want the one that names the acceptance",
+			entry.OutcomeReason)
+	}
+}
+
+// The program does not read a question out of the learner's words.
+//
+// The learner asked what would happen and said not to change anything yet,
+// and the model wrote the value down anyway. The program cannot tell that
+// apart from a decision: telling "改成 45 个" from "改成 45 个会怎么样" is
+// reading the sentence, and the engine does not read sentences.
+//
+// This is the known limit of the design, and it is why the prompt asks the
+// model not to write down a value the learner only asked about. The test is
+// here to say what the limit is, not to say that it is a good idea.
+func TestTheProgramDoesNotReadAQuestionOutOfTheLearnersWords(t *testing.T) {
 	board := model.SessionWhiteboardDocument{
 		SchemaVersion: model.SessionWhiteboardSchemaV3,
 		Constraints: []model.SessionWhiteboardEntry{
@@ -353,98 +455,46 @@ func TestTheValueTheLearnerOnlyAskedAboutDoesNotLand(t *testing.T) {
 			ownEntry("words_per_day", "背单词每次看 45 个", "每次 45 个",
 				model.SessionWhiteboardOriginUser, 93),
 		},
-		Claims: []WhiteboardLearnerClaim{
-			learnerClaim("words_per_day", 93, "背单词要是改成每次看45个会怎么样？先别改，我就问问。",
-				"背单词", "每次看", "45 个", "hypothetical", "no"),
-		},
-	}, batch, model.SessionWhiteboardSchemaV3)
+	}, batch, assistantProductsPolicy(model.SessionWhiteboardSchemaV3))
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The engine took the value the model wrote down: it has no way of
+	// knowing that the learner only asked about it.
 	values := boardValues(result.Board)
-	if values["words_per_day"] != "每次 30 个" {
-		t.Fatalf("the board = %+v, want the old value: a question is not a decision",
-			result.Board.Constraints)
-	}
-	entry := smokeEntry(t, result)
-	if entry.ClaimVerdict != whiteboardClaimVerdictLabelUnsettled {
-		t.Fatalf("the claim's verdict = %q, want unsettled", entry.ClaimVerdict)
-	}
-	if entry.Outcome != whiteboardEntryOutcomeRefused {
-		t.Fatalf("the entry's outcome = %q, want refused", entry.Outcome)
-	}
-	if entry.AnchorMessageID == 0 {
-		t.Fatalf("the entry carries no anchor: the learner's words are lost: %+v", entry)
+	if values["words_per_day"] != "每次 45 个" {
+		t.Fatalf("the board = %+v, want the value the model wrote down", result.Board.Constraints)
 	}
 }
 
-// The value belongs to another thing.
+// The program does not read a negation out of the learner's words either.
 //
-// The learner spoke about something else, so the claim about this entry does
-// not hold. The entry does not go on the board, and the board keeps what it
-// had.
-func TestTheValueOfAnotherThingIsNotThisEntry(t *testing.T) {
+// The learner ruled the value out and the model wrote the ruled-out value
+// down. The engine cannot tell that apart from a decision, for the same
+// reason as the question above.
+//
+// What it can do is not write two values of the same thing on top of each
+// other: the entry carries a number the board does not hold, so it is the
+// learner's current value as far as the program is concerned.
+func TestTheProgramDoesNotReadANegationOutOfTheLearnersWords(t *testing.T) {
 	board := model.SessionWhiteboardDocument{
 		SchemaVersion: model.SessionWhiteboardSchemaV3,
 		Constraints: []model.SessionWhiteboardEntry{
 			ownEntry("words_per_day", "背单词每次 30 个", "每次 30 个", "", 51),
 		},
 	}
-	batch := assistantBatch(95, "跑步改成每次45个", 96, "好。")
+	batch := assistantBatch(93, "背单词还是每次30个，别改成45个", 94, "好的。")
 	result, err := ApplyWhiteboardProposal(board, WhiteboardProposal{
 		Constraints: []model.SessionWhiteboardEntry{
 			ownEntry("words_per_day", "背单词每次 45 个", "每次 45 个",
-				model.SessionWhiteboardOriginUser, 95),
+				model.SessionWhiteboardOriginUser, 93),
 		},
-		Claims: []WhiteboardLearnerClaim{
-			learnerClaim("words_per_day", 95, "跑步改成每次45个", "跑步", "每次", "45 个", "decided", "yes"),
-		},
-	}, batch, model.SessionWhiteboardSchemaV3)
+	}, batch, assistantProductsPolicy(model.SessionWhiteboardSchemaV3))
 	if err != nil {
 		t.Fatal(err)
 	}
 	values := boardValues(result.Board)
-	if values["words_per_day"] != "每次 30 个" {
-		t.Fatalf("the board = %+v, want the old value: the learner spoke about another thing",
-			result.Board.Constraints)
-	}
-	entry := smokeEntry(t, result)
-	if entry.ClaimVerdict != whiteboardClaimVerdictLabelRejected {
-		t.Fatalf("the claim's verdict = %q, want rejected", entry.ClaimVerdict)
-	}
-	if entry.Outcome != whiteboardEntryOutcomeRefused {
-		t.Fatalf("the entry's outcome = %q, want refused", entry.Outcome)
-	}
-	if entry.ClaimReason != model.SessionWhiteboardAnchorSubjectNotInEntry {
-		t.Fatalf("the claim's reason = %q, want the one that checks the subject",
-			entry.ClaimReason)
-	}
-}
-
-// Every verdict has its own name.
-//
-// A claim that holds and a claim that was never made are two different
-// facts, and a diagnostic that calls both of them "ambiguous" cannot tell a
-// reader which one happened.
-func TestEveryVerdictHasItsOwnName(t *testing.T) {
-	labels := map[string]whiteboardClaimVerdict{}
-	for _, verdict := range []whiteboardClaimVerdict{
-		whiteboardClaimRejected, whiteboardClaimUnsettled,
-		whiteboardClaimSettled, whiteboardClaimAbsent,
-	} {
-		label := whiteboardClaimVerdictLabel(verdict)
-		if label == "" {
-			t.Fatalf("verdict %d has no label", verdict)
-		}
-		if other, taken := labels[label]; taken {
-			t.Fatalf("verdicts %d and %d share the label %q", other, verdict, label)
-		}
-		labels[label] = verdict
-	}
-	if whiteboardClaimVerdictLabel(whiteboardClaimSettled) == whiteboardClaimVerdictLabelAmbiguous {
-		t.Fatal("a claim that holds is written under the ambiguous name")
-	}
-	if whiteboardClaimVerdictLabel(whiteboardClaimAbsent) == whiteboardClaimVerdictLabelAmbiguous {
-		t.Fatal("a claim that was never made is written under the ambiguous name")
+	if values["words_per_day"] != "每次 45 个" {
+		t.Fatalf("the board = %+v, want the value the model wrote down", result.Board.Constraints)
 	}
 }

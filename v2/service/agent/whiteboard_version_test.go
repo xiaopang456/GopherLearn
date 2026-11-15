@@ -66,7 +66,7 @@ func TestTurningTheModeOffKeepsTheVersionAndTheStatements(t *testing.T) {
 		Constraints: []model.SessionWhiteboardEntry{
 			ownEntry("pages", "读书计划每次读 26 页", "26 页/次", "", 51),
 		},
-	}, anchorBatch(anchorChangeText), model.SessionWhiteboardSchemaV1)
+	}, anchorBatch(anchorChangeText), learnerOnlyPolicy(model.SessionWhiteboardSchemaV1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,11 +90,12 @@ func TestTurningTheModeOffKeepsTheVersionAndTheStatements(t *testing.T) {
 		t.Fatalf("expired statements = %d, want 0: nothing was crowded out",
 			result.Diagnostics.ExpiredUnconfirmedStatements)
 	}
-	// The mode is off, so the claim checks do not run: the entry the
-	// proposal brought is judged the way that mode has always judged it.
-	if result.Diagnostics.RejectedClaims != 0 {
-		t.Fatalf("rejected claims = %d, want 0: the mode does not run the claim checks",
-			result.Diagnostics.RejectedClaims)
+	// The mode is off, so the products of the assistant do not reach the
+	// board: the entry the proposal brought is judged the way that mode has
+	// always judged it.
+	if result.Diagnostics.AssistantProposals != 0 {
+		t.Fatalf("assistant proposals = %d, want 0: the mode does not record them",
+			result.Diagnostics.AssistantProposals)
 	}
 	// And the document that is written is a valid version 3 one.
 	content, err := model.MarshalSessionWhiteboardDocument(result.Board)
@@ -124,7 +125,7 @@ func TestADeploymentThatNeverTurnedTheModeOnKeepsItsOwnPath(t *testing.T) {
 		Constraints: []model.SessionWhiteboardEntry{
 			ownEntry("pages", "读书计划每次读 26 页", "26 页/次", "", 51),
 		},
-	}, anchorBatch(anchorChangeText), model.SessionWhiteboardSchemaV1)
+	}, anchorBatch(anchorChangeText), learnerOnlyPolicy(model.SessionWhiteboardSchemaV1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,8 +157,7 @@ func TestTheVersionThatExistedBeforeTheStatementsNeverCarriesThem(t *testing.T) 
 		Constraints: []model.SessionWhiteboardEntry{
 			ownEntry("pages", "读书计划每次读 41 页", "41 页/次", model.SessionWhiteboardOriginUser, 95),
 		},
-		Claims: []WhiteboardLearnerClaim{anchorParaphrasedClaim()},
-	}, anchorBatch(anchorChangeText), model.SessionWhiteboardSchemaV2)
+	}, anchorBatch(anchorChangeText), assistantProductsPolicy(model.SessionWhiteboardSchemaV2))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,9 +165,10 @@ func TestTheVersionThatExistedBeforeTheStatementsNeverCarriesThem(t *testing.T) 
 		t.Fatalf("the board carries %+v, want none: this version cannot hold them",
 			result.Board.Unverified)
 	}
-	// The claim is still checked in this version: the entry was refused.
-	if result.Diagnostics.RejectedClaims != 1 {
-		t.Fatalf("rejected claims = %d, want 1", result.Diagnostics.RejectedClaims)
+	// The learner's own value is written in this version as well: the
+	// rules that write it do not follow from the version.
+	if got := boardValues(result.Board)["pages"]; got != "41 页/次" {
+		t.Fatalf("the board holds %q, want the learner's new value", got)
 	}
 }
 
@@ -176,11 +177,17 @@ func TestTheVersionThatExistedBeforeTheStatementsNeverCarriesThem(t *testing.T) 
 // wrote.
 func TestTheGeneratorWritesTheVersionThatHoldsTheStatements(t *testing.T) {
 	on := &ModelSegmentGenerator{assistantContent: true}
-	if got := on.boardSchemaVersion(); got != model.SessionWhiteboardSchemaV3 {
+	if got := on.whiteboardPolicy().SchemaVersion; got != model.SessionWhiteboardSchemaV3 {
 		t.Fatalf("the board version = %d, want %d", got, model.SessionWhiteboardSchemaV3)
 	}
+	if !on.whiteboardPolicy().RecordAssistantProducts {
+		t.Fatal("the mode that records the assistant's products does not say so")
+	}
 	off := &ModelSegmentGenerator{assistantContent: false}
-	if got := off.boardSchemaVersion(); got != model.SessionWhiteboardSchemaV1 {
+	if got := off.whiteboardPolicy().SchemaVersion; got != model.SessionWhiteboardSchemaV1 {
 		t.Fatalf("the board version = %d, want %d", got, model.SessionWhiteboardSchemaV1)
+	}
+	if off.whiteboardPolicy().RecordAssistantProducts {
+		t.Fatal("the mode that does not record the assistant's products says it does")
 	}
 }

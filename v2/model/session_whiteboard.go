@@ -165,9 +165,14 @@ func (e SessionWhiteboardEntry) EntryOrigin() string {
 
 // The reasons a learner's own words could not be confirmed as a current fact.
 //
-// They are a fixed set, because they end up in a metric label and in a stored
-// board: a reason that could carry the learner's own words would carry the
-// learner's own words into a place that is not the learner's own session.
+// They are a fixed set, because they end up in a stored board: a reason that
+// could carry the learner's own words would carry the learner's own words
+// into a place that is not the learner's own session.
+//
+// Most of them were written by the claim check that is no longer there: they
+// say which of the model's own answers about the learner's words did not
+// hold. Nothing writes them any more, and they are kept because the boards
+// that carry them are still read.
 const (
 	// SessionWhiteboardAnchorStanceUnknown says the claim did not report what
 	// kind of statement the learner's words were.
@@ -242,12 +247,17 @@ const (
 	// the learner's own and they are still findable, but the entry as it was
 	// written could not be kept.
 	SessionWhiteboardAnchorCitationInvalid = "citation_invalid"
-	// SessionWhiteboardAnchorNoClaim says the entry carried no claim of its
-	// own, so nothing said it was the learner's current fact.
+	// SessionWhiteboardAnchorUnplaced says the entry could not be placed:
+	// the program could not read what the entry said about itself, and it
+	// had no evidence it could check.
 	//
 	// It is a navigation reason as well: the learner's words may still be
 	// found and read back, but they are not a confirmed value.
-	SessionWhiteboardAnchorNoClaim = "no_claim"
+	//
+	// The stored value is the one the boards written before the claim check
+	// was removed carry, and it is kept so that those boards are still
+	// read: a document that carries an unknown reason is refused.
+	SessionWhiteboardAnchorUnplaced = "no_claim"
 )
 
 // ValidSessionWhiteboardAnchorReason reports whether a reason is one the
@@ -272,7 +282,7 @@ func ValidSessionWhiteboardAnchorReason(reason string) bool {
 		SessionWhiteboardAnchorSameNumber,
 		SessionWhiteboardAnchorKeyAmbiguous,
 		SessionWhiteboardAnchorCitationInvalid,
-		SessionWhiteboardAnchorNoClaim:
+		SessionWhiteboardAnchorUnplaced:
 		return true
 	}
 	return false

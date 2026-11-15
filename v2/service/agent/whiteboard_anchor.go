@@ -2,25 +2,24 @@ package agent
 
 // The unconfirmed learner statement.
 //
-// A refused entry takes two things with it: the value it wanted to put on the
-// board, and the learner's own words behind it. The value is refused on
-// purpose - the program could not confirm it, so it is not the current fact.
-// The words are a different matter: they are the learner's own words, they
-// are still true, and before this they went with the entry. A board that said
-// the old value and no sign that the learner had said something else is a
-// board that lost a turn of the conversation.
+// A refused entry takes one thing with it: the learner's own words behind it.
+// The value is refused on purpose - the program could not place it, so it is
+// not the current fact. The words are a different matter: they are the
+// learner's own words, they are still true, and before this they went with
+// the entry. A board that said the old value and no sign that the learner had
+// said something else is a board that lost a turn of the conversation.
 //
 // So the two are separated. The value stays refused: it never becomes the
-// current state, and the board never presents it as one. The words are kept as
-// an unconfirmed statement: the message they came from can be read back, and
-// the reader can see what the learner actually said.
+// current state, and the board never presents it as one. The words are kept
+// as an unconfirmed statement: the message they came from can be read back,
+// and the reader can see what the learner actually said.
 //
 // Three rules keep the statement from becoming a second kind of fact.
 //
-// The first is that it does not say what it is about. A refused claim is a
-// claim the program could not confirm, and everything in it is therefore
+// The first is that it does not say what it is about. A refused entry is an
+// entry the program could not place, and everything in it is therefore
 // unconfirmed - including the name of the item it spoke about. A statement
-// that hung itself on an entry because the rejected claim named the same
+// that hung itself on an entry because the refused entry named the same
 // subject would be hanging itself on a field that was refused for a reason.
 // So the statement says where the words are (which message) and what was
 // refused (the reason), and it says nothing about which entry they were
@@ -47,22 +46,13 @@ import (
 	"GopherAI/model"
 )
 
-// whiteboardReportClaimRefusals reports why the batch refused its candidates.
+// whiteboardReportUnconfirmedStatements reports the statements the batch left
+// behind.
 //
-// The counters say how many claims did not hold. This says which check they
-// did not hold, so a generator that keeps failing the same one is visible
-// without reading the model's own answer.
-func whiteboardReportClaimRefusals(diagnostics WhiteboardDiagnostics) {
-	reasons := make(map[string]int, len(diagnostics.Entries))
-	for _, entry := range diagnostics.Entries {
-		if entry.ClaimReason == "" {
-			continue
-		}
-		reasons[entry.ClaimReason]++
-	}
-	if len(reasons) > 0 {
-		observability.Memory.WhiteboardClaimRejections(reasons)
-	}
+// The counts say how many of the learner's own words the board could not
+// place as a current fact, and how many of those the board has since caught
+// up with.
+func whiteboardReportUnconfirmedStatements(diagnostics WhiteboardDiagnostics) {
 	if diagnostics.UnconfirmedStatements > 0 {
 		observability.Memory.WhiteboardUnconfirmedStatements(diagnostics.UnconfirmedStatements)
 	}
@@ -72,63 +62,6 @@ func whiteboardReportClaimRefusals(diagnostics WhiteboardDiagnostics) {
 	if diagnostics.ExpiredUnconfirmedStatements > 0 {
 		observability.Memory.WhiteboardUnconfirmedStatementsExpired(diagnostics.ExpiredUnconfirmedStatements)
 	}
-
-}
-
-// The labels a verdict is written under in a diagnostic.
-//
-// They are a fixed set, so a diagnostic never carries the learner's own words
-// and never becomes free text in a metric.
-//
-// Every verdict has its own label. A verdict that is not named here used to
-// fall into "ambiguous", which put two different things under one name: a
-// claim that holds and a claim that was never made. A reader of the evidence
-// could not tell "the model said it and the words hold" from "the model said
-// nothing about it", and a claim that holds is not the same thing as an entry
-// on the board.
-const (
-	whiteboardClaimVerdictLabelRejected  = "rejected"
-	whiteboardClaimVerdictLabelUnsettled = "unsettled"
-	whiteboardClaimVerdictLabelAmbiguous = "ambiguous"
-	whiteboardClaimVerdictLabelSettled   = "settled"
-	whiteboardClaimVerdictLabelAbsent    = "absent"
-)
-
-// whiteboardClaimVerdictLabel is the label a verdict is written under.
-//
-// Every verdict is named. The default is the label of the verdict that says
-// nothing was asserted, because that is the one a caller that does not know
-// the verdict has to assume: a claim that was never checked is not evidence.
-func whiteboardClaimVerdictLabel(verdict whiteboardClaimVerdict) string {
-	switch verdict {
-	case whiteboardClaimRejected:
-		return whiteboardClaimVerdictLabelRejected
-	case whiteboardClaimUnsettled:
-		return whiteboardClaimVerdictLabelUnsettled
-	case whiteboardClaimSettled:
-		return whiteboardClaimVerdictLabelSettled
-	case whiteboardClaimAbsent:
-		return whiteboardClaimVerdictLabelAbsent
-	}
-	return whiteboardClaimVerdictLabelAbsent
-}
-
-// whiteboardClaimsNameKey reports whether any claim names the key.
-//
-// A claim that cannot be placed under its entry is not evidence, and the
-// entry is then judged without it. That is a refusal of its own, so it is
-// recorded as one rather than left to look like an entry nobody wrote.
-func whiteboardClaimsNameKey(claims []WhiteboardLearnerClaim, key string) bool {
-	key = strings.TrimSpace(key)
-	if key == "" {
-		return false
-	}
-	for _, claim := range claims {
-		if strings.TrimSpace(claim.Key) == key {
-			return true
-		}
-	}
-	return false
 }
 
 // whiteboardAppendAnchor adds the unconfirmed statement of a refused entry.
@@ -143,9 +76,9 @@ func whiteboardClaimsNameKey(claims []WhiteboardLearnerClaim, key string) bool {
 // words stayed findable from one whose words were lost. Both are zero and
 // empty when no statement was built.
 func whiteboardAppendAnchor(anchors []model.SessionWhiteboardAnchor, entry model.SessionWhiteboardEntry,
-	claim WhiteboardLearnerClaim, hasClaim bool, batch WhiteboardBatch,
+	candidates []uint, batch WhiteboardBatch,
 	reason string) ([]model.SessionWhiteboardAnchor, uint, string) {
-	anchor, ok := whiteboardAnchorFor(entry, claim, hasClaim, batch, reason)
+	anchor, ok := whiteboardAnchorFor(entry, candidates, batch, reason)
 	if !ok {
 		return anchors, 0, ""
 	}
@@ -161,19 +94,19 @@ func whiteboardAppendAnchor(anchors []model.SessionWhiteboardAnchor, entry model
 
 // whiteboardAnchorFor builds the unconfirmed statement of a refused entry.
 //
-// The words it points at are the learner's own, in this batch: the message the
-// claim rests on, and the messages the entry cites. A message is only used
-// when it really carries the value the entry wanted to put on the board, so a
-// statement is never built out of a message that does not mention it.
+// The words it points at are the learner's own, in this batch: the messages
+// the entry cites. A message is only used when it really carries the value
+// the entry wanted to put on the board, so a statement is never built out of
+// a message that does not mention it.
 //
 // The message is kept whole or not at all. A message that is too long to be
 // carried whole becomes a pointer: the reader is told to read it back rather
 // than shown half of it.
 //
-// The reason says why the value was not confirmed. It is one of a fixed set,
-// so it never carries the learner's own words.
-func whiteboardAnchorFor(entry model.SessionWhiteboardEntry, claim WhiteboardLearnerClaim,
-	hasClaim bool, batch WhiteboardBatch, reason string) (model.SessionWhiteboardAnchor, bool) {
+// The reason says why the value was not placed. It is one of a fixed set, so
+// it never carries the learner's own words.
+func whiteboardAnchorFor(entry model.SessionWhiteboardEntry, candidates []uint,
+	batch WhiteboardBatch, reason string) (model.SessionWhiteboardAnchor, bool) {
 	if reason == "" {
 		return model.SessionWhiteboardAnchor{}, false
 	}
@@ -183,9 +116,12 @@ func whiteboardAnchorFor(entry model.SessionWhiteboardEntry, claim WhiteboardLea
 		// nothing a reader could be looking for.
 		return model.SessionWhiteboardAnchor{}, false
 	}
-	for _, id := range whiteboardAnchorCandidates(entry, claim, hasClaim, batch) {
+	for _, id := range candidates {
 		text, ok := whiteboardBatchMessage(batch, id)
 		if !ok {
+			// Only the learner's own messages of this batch are words the
+			// learner said. The assistant confirming something is not the
+			// learner saying it.
 			continue
 		}
 		if !whiteboardQuoteCarriesValue(text, value) {
@@ -205,42 +141,6 @@ func whiteboardAnchorFor(entry model.SessionWhiteboardEntry, claim WhiteboardLea
 		return anchor, true
 	}
 	return model.SessionWhiteboardAnchor{}, false
-}
-
-// whiteboardAnchorCandidates are the messages an unconfirmed statement may be
-// built from.
-//
-// The claim's own message comes first: it is the message the model said the
-// words came from. The messages the entry cites come after, because an entry
-// that cites the learner's message is a claim about that message whether or
-// not the claim was written well.
-//
-// Every candidate is a learner message of this batch. An assistant message is
-// never one: the assistant confirming something is not the learner saying it.
-func whiteboardAnchorCandidates(entry model.SessionWhiteboardEntry, claim WhiteboardLearnerClaim,
-	hasClaim bool, batch WhiteboardBatch) []uint {
-	candidates := make([]uint, 0, len(entry.SourceMessageIDs)+1)
-	seen := make(map[uint]struct{}, len(entry.SourceMessageIDs)+1)
-	add := func(id uint) {
-		if id == 0 {
-			return
-		}
-		if _, done := seen[id]; done {
-			return
-		}
-		if _, ok := whiteboardBatchMessage(batch, id); !ok {
-			return
-		}
-		seen[id] = struct{}{}
-		candidates = append(candidates, id)
-	}
-	if hasClaim {
-		add(claim.MessageID)
-	}
-	for _, id := range entry.SourceMessageIDs {
-		add(id)
-	}
-	return candidates
 }
 
 // whiteboardAnchorNavigation is the statement without its words.

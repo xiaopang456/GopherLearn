@@ -87,10 +87,7 @@ func TestTheLearnersChangedValueIsTheCurrentValue(t *testing.T) {
 		Constraints: []model.SessionWhiteboardEntry{
 			ownEntry("pages", "栗矶每次读 41 页", "41 页/次", model.SessionWhiteboardOriginAssistantAccepted, 51, 95, 96),
 		},
-		Claims: []WhiteboardLearnerClaim{
-			learnerClaim("pages", 95, "栗矶改成每次 41 页", "栗矶", "页", "41页", "decided"),
-		},
-	}, batch, model.SessionWhiteboardSchemaV2)
+	}, batch, assistantProductsPolicy(model.SessionWhiteboardSchemaV2))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,10 +120,7 @@ func TestTheReplacedValueIsMarkedAsChangedLater(t *testing.T) {
 		Constraints: []model.SessionWhiteboardEntry{
 			ownEntry("pages", "栗矶每次读 41 页", "41 页/次", model.SessionWhiteboardOriginAssistantAccepted, 51, 95, 96),
 		},
-		Claims: []WhiteboardLearnerClaim{
-			learnerClaim("pages", 95, "栗矶改成每次 41 页", "栗矶", "页", "41页", "decided"),
-		},
-	}, batch, model.SessionWhiteboardSchemaV2)
+	}, batch, assistantProductsPolicy(model.SessionWhiteboardSchemaV2))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +151,7 @@ func TestTheAssistantRepeatingTheOldValueDoesNotPutItBack(t *testing.T) {
 		Constraints: []model.SessionWhiteboardEntry{
 			ownEntry("pages", "每次读 26 页", "26 页/次", model.SessionWhiteboardOriginAssistantAccepted, 51),
 		},
-	}, batch, model.SessionWhiteboardSchemaV2)
+	}, batch, assistantProductsPolicy(model.SessionWhiteboardSchemaV2))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +172,7 @@ func TestAnAcceptedProposalKeepsItsOrigin(t *testing.T) {
 		Constraints: []model.SessionWhiteboardEntry{
 			ownEntry("plan", "按三道练习来", "三道", model.SessionWhiteboardOriginAssistantAccepted, 32, 33),
 		},
-	}, batch, model.SessionWhiteboardSchemaV2)
+	}, batch, assistantProductsPolicy(model.SessionWhiteboardSchemaV2))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,6 +188,10 @@ func TestAnAcceptedProposalKeepsItsOrigin(t *testing.T) {
 // The assistant proposed it and the learner only asked about it. The proposal
 // is not a current fact, so it does not go on the board - and it does not
 // become the learner's decision either.
+//
+// The model writes it as the assistant's proposal, and that is what the board
+// takes it for: a product of the assistant's, kept in the summary segment and
+// findable there, and never the learner's current state.
 func TestAProposalTheLearnerOnlyAskedAboutIsNotTheLearnersDecision(t *testing.T) {
 	current := model.SessionWhiteboardDocument{SchemaVersion: model.SessionWhiteboardSchemaV2}
 	batch := withLearnerMessage(
@@ -201,17 +199,17 @@ func TestAProposalTheLearnerOnlyAskedAboutIsNotTheLearnersDecision(t *testing.T)
 		33, "第三题有点难")
 	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{
 		Constraints: []model.SessionWhiteboardEntry{
-			ownEntry("plan", "按三道练习来", "三道", model.SessionWhiteboardOriginAssistantAccepted, 31, 32),
+			ownEntry("plan", "按三道练习来", "三道", model.SessionWhiteboardOriginAssistant, 31, 32),
 		},
-	}, batch, model.SessionWhiteboardSchemaV2)
+	}, batch, assistantProductsPolicy(model.SessionWhiteboardSchemaV2))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(result.Board.Constraints) != 0 {
 		t.Fatalf("the proposal is on the board: %+v", result.Board.Constraints)
 	}
-	if result.Diagnostics.UnprovenAcceptances != 1 {
-		t.Fatalf("unproven acceptances = %d, want 1", result.Diagnostics.UnprovenAcceptances)
+	if result.Diagnostics.AssistantProposals != 1 {
+		t.Fatalf("the assistant's proposals = %d, want 1", result.Diagnostics.AssistantProposals)
 	}
 }
 
@@ -230,10 +228,7 @@ func TestTheLearnersOwnChangeLabelledAsTheAssistantsIsTheLearners(t *testing.T) 
 		Constraints: []model.SessionWhiteboardEntry{
 			ownEntry("deadline", "楠濑提前 5 天交", "5 天", model.SessionWhiteboardOriginAssistantAccepted, 53, 111, 112),
 		},
-		Claims: []WhiteboardLearnerClaim{
-			learnerClaim("deadline", 111, "楠濑改成提前 5 天交", "楠濑", "天", "5天", "decided"),
-		},
-	}, batch, model.SessionWhiteboardSchemaV2)
+	}, batch, assistantProductsPolicy(model.SessionWhiteboardSchemaV2))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,10 +261,7 @@ func TestTheCurrentValueSurvivesATightBoard(t *testing.T) {
 		Constraints: []model.SessionWhiteboardEntry{
 			ownEntry("pages", "栗矶每次读 41 页", "41 页/次", model.SessionWhiteboardOriginAssistantAccepted, 51, 95, 96),
 		},
-		Claims: []WhiteboardLearnerClaim{
-			learnerClaim("pages", 95, "栗矶改成每次 41 页", "栗矶", "页", "41页", "decided"),
-		},
-	}, batch, model.SessionWhiteboardSchemaV2)
+	}, batch, assistantProductsPolicy(model.SessionWhiteboardSchemaV2))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +335,7 @@ func TestTheModeWithoutTheAssistantsProductsIsUnchanged(t *testing.T) {
 		Constraints: []model.SessionWhiteboardEntry{
 			ownEntry("pages", "每次读 41 页", "41 页/次", "", 95),
 		},
-	}, batch, model.SessionWhiteboardSchemaV1)
+	}, batch, learnerOnlyPolicy(model.SessionWhiteboardSchemaV1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -376,10 +368,7 @@ func TestTheRenamedEntryReplacesTheOneItNames(t *testing.T) {
 		Constraints: []model.SessionWhiteboardEntry{
 			ownEntry("plan_venue", "椿澧的场地由青禾馆改到白鹭馆", "白鹭馆", model.SessionWhiteboardOriginAssistantAccepted, 97, 98),
 		},
-		Claims: []WhiteboardLearnerClaim{
-			learnerClaim("plan_venue", 97, "场地那边临时被占用，椿澧以后改到白鹭馆", "椿澧", "场地", "白鹭馆", "decided"),
-		},
-	}, batch, model.SessionWhiteboardSchemaV2)
+	}, batch, assistantProductsPolicy(model.SessionWhiteboardSchemaV2))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -401,7 +390,7 @@ func TestTheAssistantsClaimOfExecutionIsNotAFact(t *testing.T) {
 		Plan: []model.SessionWhiteboardEntry{
 			ownEntry("venue_booked", "场地已借好", "已借好", model.SessionWhiteboardOriginAssistant, 31),
 		},
-	}, batch, model.SessionWhiteboardSchemaV2)
+	}, batch, assistantProductsPolicy(model.SessionWhiteboardSchemaV2))
 	if err != nil {
 		t.Fatal(err)
 	}

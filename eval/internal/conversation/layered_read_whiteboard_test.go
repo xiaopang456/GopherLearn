@@ -170,7 +170,7 @@ func TestFinalReadFileReportsOnlyRenderedBoardOrigins(t *testing.T) {
 		{"both", "short", true, true}, {"entry only", "short", true, false}, {"anchor only", strings.Repeat("long ", 100), false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			board := model.SessionWhiteboardDocument{SchemaVersion: model.SessionWhiteboardSchemaV3, Constraints: []model.SessionWhiteboardEntry{{Key: "k", Text: tc.entryText, Value: "v", SourceMessageIDs: []uint{7}}}, Unverified: []model.SessionWhiteboardAnchor{{Key: "k", Value: "v", MessageID: 7, Reason: model.SessionWhiteboardAnchorNoClaim}}}
+			board := model.SessionWhiteboardDocument{SchemaVersion: model.SessionWhiteboardSchemaV3, Constraints: []model.SessionWhiteboardEntry{{Key: "k", Text: tc.entryText, Value: "v", SourceMessageIDs: []uint{7}}}, Unverified: []model.SessionWhiteboardAnchor{{Key: "k", Value: "v", MessageID: 7, Reason: model.SessionWhiteboardAnchorUnplaced}}}
 			provider := &stubLayeredProvider{snapshot: agent.LayeredSummarySnapshot{Board: &model.SessionWhiteboard{Version: 1, CoveredMessageID: 7}, BoardDocument: board, CoveredMessageID: 7}}
 			found := false
 			for budget := 1; budget < 500; budget++ {

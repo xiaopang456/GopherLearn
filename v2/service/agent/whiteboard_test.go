@@ -42,7 +42,7 @@ func TestWhiteboardReplacesTheValueUnderTheSameKey(t *testing.T) {
 		Constraints: []model.SessionWhiteboardEntry{
 			whiteboardEntry("duration", "每天学习 48 分钟", "48 分钟", 21),
 		},
-	}, whiteboardBatch(21), model.SessionWhiteboardSchemaV1)
+	}, whiteboardBatch(21), learnerOnlyPolicy(model.SessionWhiteboardSchemaV1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestWhiteboardKeepsTheOldCitationsOfAnUnchangedEntry(t *testing.T) {
 	proposed.UpdatedAtMessageID = 21
 	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{
 		Constraints: []model.SessionWhiteboardEntry{proposed},
-	}, whiteboardBatch(21), model.SessionWhiteboardSchemaV1)
+	}, whiteboardBatch(21), learnerOnlyPolicy(model.SessionWhiteboardSchemaV1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestWhiteboardKeepsAnEntryTheProposalLeftOut(t *testing.T) {
 			whiteboardEntry("duration", "每天学习 30 分钟", "30 分钟", 11),
 		},
 	}
-	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{}, whiteboardBatch(21), model.SessionWhiteboardSchemaV1)
+	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{}, whiteboardBatch(21), learnerOnlyPolicy(model.SessionWhiteboardSchemaV1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestWhiteboardDropsAnEntryThatCitesAMessageItNeverSaw(t *testing.T) {
 			whiteboardEntry("invented", "学员喜欢手写笔记", "手写", 99),
 			whiteboardEntry("deadline", "考试在 9 月", "9 月", 21),
 		},
-	}, whiteboardBatch(21), model.SessionWhiteboardSchemaV1)
+	}, whiteboardBatch(21), learnerOnlyPolicy(model.SessionWhiteboardSchemaV1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestWhiteboardTrimsInsteadOfRejectingWhenThereAreTooManyEntries(t *testing.
 		entry.UpdatedAtMessageID = uint(21 + index)
 		proposed = append(proposed, entry)
 	}
-	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{Constraints: proposed}, whiteboardBatch(21), model.SessionWhiteboardSchemaV1)
+	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{Constraints: proposed}, whiteboardBatch(21), learnerOnlyPolicy(model.SessionWhiteboardSchemaV1))
 	if err != nil {
 		t.Fatalf("an oversized proposal must not fail: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestWhiteboardDropsFinishedPlanEntriesFirst(t *testing.T) {
 		}
 		proposed = append(proposed, entry)
 	}
-	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{Plan: proposed}, whiteboardBatch(21), model.SessionWhiteboardSchemaV1)
+	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{Plan: proposed}, whiteboardBatch(21), learnerOnlyPolicy(model.SessionWhiteboardSchemaV1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func TestWhiteboardKeepsTheGoalWhenTheProposalHasNone(t *testing.T) {
 			Text: "学完 RPC 粘包", SourceMessageIDs: []uint{11}, UpdatedAtMessageID: 11,
 		},
 	}
-	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{}, whiteboardBatch(21), model.SessionWhiteboardSchemaV1)
+	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{}, whiteboardBatch(21), learnerOnlyPolicy(model.SessionWhiteboardSchemaV1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestWhiteboardDropsAnUnsourcedGoal(t *testing.T) {
 	}
 	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{
 		Goal: &model.SessionWhiteboardGoal{Text: "改成别的目标", SourceMessageIDs: []uint{99}},
-	}, whiteboardBatch(21), model.SessionWhiteboardSchemaV1)
+	}, whiteboardBatch(21), learnerOnlyPolicy(model.SessionWhiteboardSchemaV1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ func TestWhiteboardTruncatesAnEntryThatIsTooLong(t *testing.T) {
 	long := strings.Repeat("很长的文字", 80)
 	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{
 		Constraints: []model.SessionWhiteboardEntry{whiteboardEntry("note", long, "", 21)},
-	}, whiteboardBatch(21), model.SessionWhiteboardSchemaV1)
+	}, whiteboardBatch(21), learnerOnlyPolicy(model.SessionWhiteboardSchemaV1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +283,7 @@ func TestWhiteboardReportsAValueTheBatchLooksLikeItReplaced(t *testing.T) {
 		MessageIDs: []uint{21}, Messages: []string{"改成 48 分钟吧"},
 		FirstMessageID: 21, LastMessageID: 21,
 	}
-	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{}, batch, model.SessionWhiteboardSchemaV1)
+	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{}, batch, learnerOnlyPolicy(model.SessionWhiteboardSchemaV1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func TestWhiteboardDoesNotReportAValueOfAnotherUnit(t *testing.T) {
 		MessageIDs: []uint{21}, Messages: []string{"另外还有 2 小时的阅读时间"},
 		FirstMessageID: 21, LastMessageID: 21,
 	}
-	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{}, batch, model.SessionWhiteboardSchemaV1)
+	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{}, batch, learnerOnlyPolicy(model.SessionWhiteboardSchemaV1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +327,7 @@ func TestWhiteboardLeavesTheBoardAloneWhenNothingWasProposed(t *testing.T) {
 			whiteboardEntry("duration", "每天学习 30 分钟", "30 分钟", 11),
 		},
 	}
-	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{}, whiteboardBatch(21), model.SessionWhiteboardSchemaV1)
+	result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{}, whiteboardBatch(21), learnerOnlyPolicy(model.SessionWhiteboardSchemaV1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +345,7 @@ func TestWhiteboardDropsAnEntryWithAnUnusableCitation(t *testing.T) {
 	for _, ids := range [][]uint{{0}, {21, 21}} {
 		result, err := ApplyWhiteboardProposal(current, WhiteboardProposal{
 			Constraints: []model.SessionWhiteboardEntry{whiteboardEntry("note", "条目", "", ids...)},
-		}, whiteboardBatch(21), model.SessionWhiteboardSchemaV1)
+		}, whiteboardBatch(21), learnerOnlyPolicy(model.SessionWhiteboardSchemaV1))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -459,7 +459,7 @@ func TestEntryRetentionReportsCapacityAndOutputTrimming(t *testing.T) {
 	for i := range entries {
 		entries[i] = whiteboardEntry(fmt.Sprintf("key%d", i), fmt.Sprintf("entry %d", i), fmt.Sprintf("value %d", i), 21)
 	}
-	result, err := ApplyWhiteboardProposal(model.SessionWhiteboardDocument{SchemaVersion: model.SessionWhiteboardSchemaV1}, WhiteboardProposal{Constraints: entries}, whiteboardBatch(21), model.SessionWhiteboardSchemaV1)
+	result, err := ApplyWhiteboardProposal(model.SessionWhiteboardDocument{SchemaVersion: model.SessionWhiteboardSchemaV1}, WhiteboardProposal{Constraints: entries}, whiteboardBatch(21), learnerOnlyPolicy(model.SessionWhiteboardSchemaV1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,7 +492,7 @@ func TestAnchorRetentionDistinguishesCapacityAndRenderBudget(t *testing.T) {
 		t.Fatal(d)
 	}
 	d.Entries[0].AnchorRetention = ""
-	board.Unverified = []model.SessionWhiteboardAnchor{{MessageID: 10, Value: "v", Reason: model.SessionWhiteboardAnchorNoClaim}}
+	board.Unverified = []model.SessionWhiteboardAnchor{{MessageID: 10, Value: "v", Reason: model.SessionWhiteboardAnchorUnplaced}}
 	reconcileAnchorRetention(&d, board, "anchor_capacity")
 	if d.Entries[0].AnchorRetention != "retained" {
 		t.Fatal(d)

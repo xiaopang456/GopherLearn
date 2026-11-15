@@ -44,3 +44,10 @@ rerankEnabled = false
 # watch the write side writes summarySegmentMode = "shadow".
 # [agentConfig]
 # summarySegmentMode = "on"
+
+# The assistant's own products are recorded too: the exercises it gave, the
+# plan it settled with the learner, the names and the numbers it offered. A
+# deployment that wants only the learner's own statements writes
+# summaryAssistantContent = "off" and restarts.
+# [agentConfig]
+# summaryAssistantContent = "off"

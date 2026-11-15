@@ -250,10 +250,17 @@ func TestTheBoardOnlyTakesAnAcceptedProposalThatIsProven(t *testing.T) {
 		name     string
 		ids      string
 		onBoard  bool
+		origin   string
 		unproven int
 	}{
-		{name: "proven", ids: "[31,32]", onBoard: true},
-		{name: "the learner spoke first", ids: "[30,31]", onBoard: false, unproven: 1},
+		{name: "proven", ids: "[31,32]", onBoard: true,
+			origin: model.SessionWhiteboardOriginAssistantAccepted},
+		// The learner asked for the exercises and the assistant's message
+		// is cited beside it, so the acceptance is not shown. The value
+		// is the learner's own - they asked for three - so the entry is
+		// the learner's, and it is not an accepted proposal.
+		{name: "the learner spoke first", ids: "[30,31]", onBoard: true,
+			origin: model.SessionWhiteboardOriginUser},
 		{name: "no learner message at all", ids: "[31]", onBoard: false, unproven: 1},
 		// A message that is not there is refused earlier: the citation
 		// itself is the problem, and the entry is dropped for that reason
@@ -273,6 +280,12 @@ func TestTheBoardOnlyTakesAnAcceptedProposalThatIsProven(t *testing.T) {
 			onBoard := len(result.Whiteboard.Constraints) == 1
 			if onBoard != testCase.onBoard {
 				t.Fatalf("on the board = %v, want %v (%+v)", onBoard, testCase.onBoard, result.Whiteboard.Constraints)
+			}
+			if onBoard && testCase.origin != "" {
+				origin := result.Whiteboard.Constraints[0].EntryOrigin()
+				if origin != testCase.origin {
+					t.Fatalf("the entry's origin = %q, want %q", origin, testCase.origin)
+				}
 			}
 			if result.Diagnostics.UnprovenAcceptances != testCase.unproven {
 				t.Fatalf("unproven acceptances = %d, want %d",

@@ -558,7 +558,7 @@ func TestThePreselectorSpendsItsBudgetOnWhatTheWindowSends(t *testing.T) {
 func TestRenderedWhiteboardOriginsFollowVisibleStatements(t *testing.T) {
 	board := model.SessionWhiteboardDocument{SchemaVersion: model.SessionWhiteboardSchemaV3,
 		Constraints: []model.SessionWhiteboardEntry{{Key: "k", Text: strings.Repeat("entry ", 80), Value: "v", SourceMessageIDs: []uint{7}}},
-		Unverified:  []model.SessionWhiteboardAnchor{{Key: "k", MessageID: 7, Reason: model.SessionWhiteboardAnchorNoClaim}},
+		Unverified:  []model.SessionWhiteboardAnchor{{Key: "k", MessageID: 7, Reason: model.SessionWhiteboardAnchorUnplaced}},
 	}
 	full := renderWhiteboardBlock(board, unlimitedTokens)
 	if len(full.EntryMessageIDs) != 1 || len(full.AnchorMessageIDs) != 1 {

@@ -14,7 +14,15 @@ import (
 	"time"
 )
 
-func assertHistoryCapability(t *testing.T, chat *captureModel, want bool) {
+// assertHistoryCapability checks the history tool the model was actually
+// shown.
+//
+// The tool has two contracts: the base one, and the one the summary's
+// assistant-content mode adds. The mode decides which one the run reads, and
+// the contract is compared against the bytes that were measured for that
+// mode - a run whose tool promised more must not be compared against the
+// contract that promised less.
+func assertHistoryCapability(t *testing.T, chat *captureModel, want bool, assistantContent bool) {
 	t.Helper()
 	requests := chat.all()
 	if len(requests) == 0 {
@@ -35,7 +43,11 @@ func assertHistoryCapability(t *testing.T, chat *captureModel, want bool) {
 			continue
 		}
 		found = true
-		expected, err := os.ReadFile("testdata/history-with-grant.json")
+		golden := "testdata/history-with-grant.json"
+		if assistantContent {
+			golden = "testdata/history-with-grant-assistant.json"
+		}
+		expected, err := os.ReadFile(golden)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -53,6 +65,16 @@ func assertHistoryCapability(t *testing.T, chat *captureModel, want bool) {
 		t.Fatalf("actual first request history capability=%v want=%v: %s", found, want, requestText(chat))
 	}
 }
+// assistantContentOf reports whether the deployment's settings record what the
+// assistant produced. It is what decides which contract of the history tool
+// the run reads.
+func assistantContentOf(s *Settings) bool {
+	if s == nil {
+		return false
+	}
+	return s.Config.AgentConfig.SummaryAssistantContentEnabled()
+}
+
 func seedHistorySummary(t *testing.T, db *gorm.DB, session string, document model.SessionSummaryDocument, watermark uint) {
 	t.Helper()
 	content, err := json.Marshal(document)
@@ -114,7 +136,7 @@ func TestHistoryCapabilityRequiresVisibleUsableSummaryGrantThroughHTTP(t *testin
 				}
 			}
 			runHTTP(t, app, token, session, "run-summary-visibility", "你好")
-			assertHistoryCapability(t, chat, false)
+			assertHistoryCapability(t, chat, false, assistantContentOf(s))
 			if kind == "trimmed" {
 				shown := false
 				for _, request := range chat.all() {
@@ -170,7 +192,7 @@ func TestUnavailableEpisodeGrantDoesNotExposeHistoryThroughHTTP(t *testing.T) {
 				}
 				t.Log("ORIGINAL_CONTEXT_REJECTED invalid Episode version before model request")
 			} else {
-				assertHistoryCapability(t, chat, false)
+				assertHistoryCapability(t, chat, false, assistantContentOf(s))
 			}
 		})
 	}
@@ -188,7 +210,7 @@ func TestHistoryExecutionRevalidatesOriginalRulesThroughHTTP(t *testing.T) {
 				if n == 1 {
 					// Fault injection after ContextBuilder and Tools have built the actual
 					// model request, before original handler store revalidation. No grant is supplied.
-					assertHistoryCapability(t, chat, true)
+					assertHistoryCapability(t, chat, true, assistantContentOf(s))
 					var err error
 					switch fault {
 					case "version-change":
@@ -261,10 +283,34 @@ func TestHistoryExecutionRevalidatesOriginalRulesThroughHTTP(t *testing.T) {
 				if err := json.Unmarshal([]byte(m.Content), &output); err != nil {
 					t.Fatal(err)
 				}
-				if len(output.Messages) != 0 {
-					t.Fatalf("refused raw message leaked: %s", m.Content)
-				}
-				if fault == "source-session-owner-change" || fault == "message-role-change" {
+				if fault == "source-session-owner-change" {
+					if len(output.Messages) != 0 {
+						t.Fatalf("refused raw message leaked: %s", m.Content)
+					}
+					found = true
+				} else if fault == "message-role-change" {
+					// The message is the assistant's now, not the
+					// learner's. The mode that records what the
+					// assistant produced may read such a message back,
+					// and the read says whose words it is - what it
+					// must never do is hand it over as the learner's
+					// own words.
+					if assistantContentOf(s) {
+						if len(output.Messages) != 1 {
+							t.Fatalf("the assistant's own message was not read back: %s", m.Content)
+						}
+						var view struct {
+							Role string `json:"role"`
+						}
+						if err := json.Unmarshal(output.Messages[0], &view); err != nil {
+							t.Fatal(err)
+						}
+						if view.Role != "assistant" {
+							t.Fatalf("the message was handed over as the learner's: %s", m.Content)
+						}
+					} else if len(output.Messages) != 0 {
+						t.Fatalf("refused raw message leaked: %s", m.Content)
+					}
 					found = true
 				} else {
 					requested := grantedID
@@ -286,8 +332,19 @@ func TestHistoryExecutionRevalidatesOriginalRulesThroughHTTP(t *testing.T) {
 			if !found {
 				t.Fatalf("no actual history refusal observation: %s", requestText(chat))
 			}
-			if strings.Contains(requestText(chat), "PRIVATE_GRANTED_ORIGINAL") || strings.Contains(requestText(chat), "PRIVATE_FOREIGN_ORIGINAL") || strings.Contains(requestText(chat), "PRIVATE_UNGRANTED_ORIGINAL") {
-				t.Fatal("unauthorized original reached model")
+			// The granted original may come back in one case only: the
+			// mode that records what the assistant produced reads the
+			// assistant's own words too, and the fault made this message
+			// the assistant's. It comes back labelled as the assistant's,
+			// which is what it is now.
+			leaked := []string{"PRIVATE_FOREIGN_ORIGINAL", "PRIVATE_UNGRANTED_ORIGINAL"}
+			if !(assistantContentOf(s) && fault == "message-role-change") {
+				leaked = append(leaked, "PRIVATE_GRANTED_ORIGINAL")
+			}
+			for _, secret := range leaked {
+				if strings.Contains(requestText(chat), secret) {
+					t.Fatalf("unauthorized original reached model: %s", secret)
+				}
 			}
 		})
 	}
