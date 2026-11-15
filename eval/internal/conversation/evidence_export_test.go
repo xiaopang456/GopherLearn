@@ -429,7 +429,7 @@ func TestTheEvidenceIsWrittenNextToTheRunAndNotIntoTheResult(t *testing.T) {
 			RawOutput: "the model's own answer", OriginalBytes: len("the model's own answer"),
 		}},
 		Entries: []agent.WhiteboardEntryOutcome{{
-			Key: "pages",
+			Key:     "pages",
 			Outcome: "refused", OutcomeReason: model.SessionWhiteboardAnchorCitationInvalid,
 			AnchorMessageID: 95, AnchorReason: model.SessionWhiteboardAnchorCitationInvalid,
 		}},

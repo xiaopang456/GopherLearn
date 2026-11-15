@@ -65,6 +65,7 @@ func assertHistoryCapability(t *testing.T, chat *captureModel, want bool, assist
 		t.Fatalf("actual first request history capability=%v want=%v: %s", found, want, requestText(chat))
 	}
 }
+
 // assistantContentOf reports whether the deployment's settings record what the
 // assistant produced. It is what decides which contract of the history tool
 // the run reads.

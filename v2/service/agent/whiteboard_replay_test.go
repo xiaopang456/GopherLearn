@@ -110,16 +110,16 @@ type replayCall struct {
 
 // replayEvidence is one attempt of one batch.
 type replayEvidence struct {
-	Batch           int           `json:"batch"`
-	Attempt         int           `json:"attempt"`
-	Outcome         string        `json:"outcome"`
-	StartMessageID  uint          `json:"start_message_id"`
-	EndMessageID    uint          `json:"end_message_id"`
-	SegmentBody     string        `json:"segment_body"`
-	Calls           []replayCall  `json:"calls"`
-	Entries         []replayEntry `json:"entries"`
-	WhiteboardBefore *replayBoard `json:"whiteboard_before"`
-	WhiteboardAfter  *replayBoard `json:"whiteboard_after"`
+	Batch            int           `json:"batch"`
+	Attempt          int           `json:"attempt"`
+	Outcome          string        `json:"outcome"`
+	StartMessageID   uint          `json:"start_message_id"`
+	EndMessageID     uint          `json:"end_message_id"`
+	SegmentBody      string        `json:"segment_body"`
+	Calls            []replayCall  `json:"calls"`
+	Entries          []replayEntry `json:"entries"`
+	WhiteboardBefore *replayBoard  `json:"whiteboard_before"`
+	WhiteboardAfter  *replayBoard  `json:"whiteboard_after"`
 }
 
 // replayCallFile is the answer of one model call.
@@ -247,22 +247,22 @@ func replayTexts(raws []string) map[string]string {
 // its subject, attribute, stance or update did not match the learner's words
 // is an entry the claim layer refused, and the claim layer is gone.
 var replayClaimReasons = map[string]bool{
-	model.SessionWhiteboardAnchorStanceUnknown:      true,
-	model.SessionWhiteboardAnchorUpdateUnknown:      true,
-	model.SessionWhiteboardAnchorMessageNotLearner:  true,
-	model.SessionWhiteboardAnchorQuoteMissing:       true,
-	model.SessionWhiteboardAnchorQuoteNotInMessage:  true,
-	model.SessionWhiteboardAnchorValueNotInQuote:    true,
-	model.SessionWhiteboardAnchorValueUnitMismatch:  true,
-	model.SessionWhiteboardAnchorValueMismatch:      true,
-	model.SessionWhiteboardAnchorSubjectNotInQuote:  true,
-	model.SessionWhiteboardAnchorSubjectNotInEntry:  true,
+	model.SessionWhiteboardAnchorStanceUnknown:       true,
+	model.SessionWhiteboardAnchorUpdateUnknown:       true,
+	model.SessionWhiteboardAnchorMessageNotLearner:   true,
+	model.SessionWhiteboardAnchorQuoteMissing:        true,
+	model.SessionWhiteboardAnchorQuoteNotInMessage:   true,
+	model.SessionWhiteboardAnchorValueNotInQuote:     true,
+	model.SessionWhiteboardAnchorValueUnitMismatch:   true,
+	model.SessionWhiteboardAnchorValueMismatch:       true,
+	model.SessionWhiteboardAnchorSubjectNotInQuote:   true,
+	model.SessionWhiteboardAnchorSubjectNotInEntry:   true,
 	model.SessionWhiteboardAnchorAttributeNotInQuote: true,
 	model.SessionWhiteboardAnchorAttributeNotInEntry: true,
-	model.SessionWhiteboardAnchorScopeConflict:      true,
-	model.SessionWhiteboardAnchorUnsettled:          true,
-	model.SessionWhiteboardAnchorUnbackedChange:     true,
-	model.SessionWhiteboardAnchorKeyAmbiguous:       true,
+	model.SessionWhiteboardAnchorScopeConflict:       true,
+	model.SessionWhiteboardAnchorUnsettled:           true,
+	model.SessionWhiteboardAnchorUnbackedChange:      true,
+	model.SessionWhiteboardAnchorKeyAmbiguous:        true,
 }
 
 // replayPolicy is the write path the replay uses.
@@ -286,9 +286,9 @@ func replayPolicy(version int) WhiteboardPolicy {
 // old contract let a claim overrule that label, and the new one has no claim
 // to overrule it with.
 var replayContractReasons = map[string]bool{
-	whiteboardEntryOutcomeDropped + "/" + whiteboardEntryReasonDuplicateKey:     true,
-	whiteboardEntryOutcomeRefused + "/" + whiteboardEntryReasonAssistantProduct:  true,
-	whiteboardEntryOutcomeRefused + "/" + whiteboardEntryReasonUnprovenAcceptance: true,
+	whiteboardEntryOutcomeDropped + "/" + whiteboardEntryReasonDuplicateKey:            true,
+	whiteboardEntryOutcomeRefused + "/" + whiteboardEntryReasonAssistantProduct:        true,
+	whiteboardEntryOutcomeRefused + "/" + whiteboardEntryReasonUnprovenAcceptance:      true,
 	whiteboardEntryOutcomeRefused + "/" + model.SessionWhiteboardAnchorCitationInvalid: true,
 	whiteboardEntryOutcomeRefused + "/" + model.SessionWhiteboardAnchorSameNumber:      true,
 }
@@ -366,9 +366,9 @@ func TestTheRecordedProposalsReplayThroughTheEngineAsItIsNow(t *testing.T) {
 				missingTexts += missing
 				input := SegmentGenerationInput{
 					Messages:        replayMessagesInRange(messages, record.StartMessageID, record.EndMessageID),
-					FirstMessageID: record.StartMessageID,
-					LastMessageID:  record.EndMessageID,
-					Whiteboard:     "",
+					FirstMessageID:  record.StartMessageID,
+					LastMessageID:   record.EndMessageID,
+					Whiteboard:      "",
 					PreviousSegment: previous,
 				}
 				batch := whiteboardBatchFor(input, true)
