@@ -500,15 +500,30 @@ func (m *offlineChat) cardDocument(input []*schema.Message) (string, error) {
 	// find: the arm would measure a card path that found no card.
 	if len(document.Arrangements) == 0 && len(document.AssistantProducts) == 0 {
 		for _, segment := range request.Segments {
-			for _, point := range segment.Points {
+			for position, point := range segment.Points {
 				text := strings.TrimSpace(point)
 				if text == "" {
 					continue
 				}
-				document.Arrangements = append(document.Arrangements, model.SessionCardEntry{
-					Text: offlineCardText(text), Status: model.SessionCardStatusStated,
-					SegmentSeqs: []int{segment.Seq},
-				})
+				// The card payload carries the points as plain texts, so the
+				// only attribution left is the order: the fake's summary
+				// writes the learner's point first and the assistant's
+				// second. Writing the assistant's product into the
+				// learner's "arrangements" would say the learner had settled
+				// something the assistant only proposed, and a card that
+				// misattributes is worse than a card that says less.
+				entry := model.SessionCardEntry{Text: offlineCardText(text), SegmentSeqs: []int{segment.Seq}}
+				switch position {
+				case 0:
+					entry.Status = model.SessionCardStatusStated
+					document.Arrangements = append(document.Arrangements, entry)
+				case 1:
+					entry.Status = model.SessionCardStatusAssistantProposed
+					document.AssistantProducts = append(document.AssistantProducts, entry)
+				default:
+					// The fake writes one point per role, so a third point is
+					// something the fake did not write and is left out.
+				}
 			}
 		}
 	}
@@ -629,25 +644,28 @@ func (m *offlineChat) segmentDocument(input []*schema.Message) string {
 // for what the learner said and find nothing, and the attempt would say the
 // card path found nothing while the card was sitting in the index.
 func segmentPayloadMessages(payload string) (learner, product uint, learnerText, productText string) {
-	for _, match := range segmentPayloadMessage.FindAllStringSubmatchIndex(payload, -1) {
+	matches := segmentPayloadMessage.FindAllStringSubmatchIndex(payload, -1)
+	for index, match := range matches {
 		id, err := strconv.ParseUint(payload[match[2]:match[3]], 10, 64)
 		if err != nil {
 			continue
 		}
 		role := payload[match[4]:match[5]]
-		// The text is what follows the marker on the same line.
-		rest := payload[match[1]:]
-		if end := strings.IndexByte(rest, '\n'); end >= 0 {
-			rest = rest[:end]
+		// The text is what follows the marker, up to the next marker. A
+		// message may span several lines, so the line is not the end of it.
+		end := len(payload)
+		if index+1 < len(matches) {
+			end = matches[index+1][0]
 		}
+		text := strings.TrimSpace(payload[match[1]:end])
 		switch role {
 		case "user":
 			if learner == 0 {
-				learner, learnerText = uint(id), rest
+				learner, learnerText = uint(id), text
 			}
 		case "assistant":
 			if product == 0 {
-				product, productText = uint(id), rest
+				product, productText = uint(id), text
 			}
 		}
 	}
