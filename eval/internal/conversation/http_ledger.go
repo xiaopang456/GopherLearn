@@ -57,6 +57,15 @@ func modelHTTPHandler(ledger *ModelLedger, roles RolePrompts, backend http.Handl
 		if shown, sessions := ReadShownCards(request.Messages); shown {
 			ledger.calls[id-1].CardSessions = sessions
 		}
+		// The cross-session memory the request carried is read out of the same
+		// body: the product does not persist the memories it showed, so the
+		// request is the only record of what the model was given. The kind
+		// says whether it was a card or an Episode, and the text says what it
+		// said.
+		memory := ReadShownMemory(request.Messages)
+		ledger.calls[id-1].ShownMemoryKind = memory.Kind
+		ledger.calls[id-1].InjectedText = memory.Text
+		ledger.calls[id-1].InjectedMessageIDs = memory.MessageIDs
 		// The tool table is in the same body. The two arms do not carry the
 		// same table, so the attempt has to say which one it was given.
 		if names := ToolNamesFromBody(raw); len(names) > 0 {

@@ -816,15 +816,10 @@ func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, env
 	// The request body is the record of what the model was shown, and the
 	// ledger keeps the cards it carried with each call. So the card evidence
 	// is read out of the recorded calls rather than out of the arm's own
-	// bookkeeping.
-	if err := recordCardArmEvidence(result.SessionCard, s, env.UserID, questionSession, ObserveCardCalls(result.Calls), asked); err != nil {
+	// bookkeeping: the tool table, the memory block and the tool states all
+	// come from the requests that were actually sent.
+	if err := recordCardArmEvidence(result.SessionCard, s, env.UserID, questionSession, ObserveCardCalls(result.Calls), asked, result.Calls); err != nil {
 		resultErr = errors.Join(resultErr, err)
-	}
-	// The tool table is the same record: the two arms are offered different
-	// tools, and an attempt that does not say which table it was given has
-	// not said what it measured.
-	if result.SessionCard != nil {
-		result.SessionCard.ToolTable = AnswerToolTable(result.Calls)
 	}
 	var usageErr error
 	result.UsageByRole, usageErr = SummarizeCalls(result.Calls)

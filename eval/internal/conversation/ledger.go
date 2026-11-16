@@ -63,7 +63,23 @@ type ModelCall struct {
 	// The two arms do not carry the same table, and a comparison that does
 	// not say so would be comparing something the reader cannot see.
 	ToolTable []string `json:"tool_table,omitempty"`
-	Error     string   `json:"error,omitempty"`
+	// ShownMemoryKind says which cross-session memory the request carried:
+	// "card", "episode" or "none".
+	//
+	// It is read out of the request body, because the product keeps the ids
+	// of the memories it showed in the window but does not persist them, and
+	// the request body is the only place left that says what the model was
+	// actually shown.
+	ShownMemoryKind string `json:"shown_memory_kind,omitempty"`
+	// InjectedText is the cross-session memory block itself, truncated. It is
+	// the difference between "the memory was there" and "the memory was there
+	// and said this".
+	InjectedText string `json:"injected_text,omitempty"`
+	// InjectedMessageIDs are the messages the injected block cited. They are
+	// the block's own citations, so they say which conversation the memory
+	// was written from.
+	InjectedMessageIDs []uint `json:"injected_message_ids,omitempty"`
+	Error              string `json:"error,omitempty"`
 }
 type ModelLedger struct {
 	mu    sync.Mutex
@@ -393,6 +409,14 @@ func (m *ledgerModel) start(method string, input []*schema.Message) (int, error)
 		m.ledger.calls[id-1].CardSessions = sessions
 		m.ledger.mu.Unlock()
 	}
+	// The cross-session memory the prompt carried is read out of the same
+	// prompt, so the in-process path says what the model was given as well.
+	memory := ReadShownMemory(input)
+	m.ledger.mu.Lock()
+	m.ledger.calls[id-1].ShownMemoryKind = memory.Kind
+	m.ledger.calls[id-1].InjectedText = memory.Text
+	m.ledger.calls[id-1].InjectedMessageIDs = memory.MessageIDs
+	m.ledger.mu.Unlock()
 	m.ledger.mu.Lock()
 	if len(m.ledger.pendingTools) > 0 {
 		m.ledger.calls[id-1].ToolTable = append([]string(nil), m.ledger.pendingTools...)

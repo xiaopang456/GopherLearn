@@ -487,7 +487,7 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 	// the ledger keeps the cards each request carried. So the card evidence
 	// is read out of the recorded calls rather than out of the arm's own
 	// bookkeeping.
-	if err := recordCardArmEvidence(result.SessionCard, s, primary.Session.UserID, questionSession, ObserveCardCalls(result.Calls), asked); err != nil {
+	if err := recordCardArmEvidence(result.SessionCard, s, primary.Session.UserID, questionSession, ObserveCardCalls(result.Calls), asked, result.Calls); err != nil {
 		resultErr = errors.Join(resultErr, err)
 	}
 	var usageErr error

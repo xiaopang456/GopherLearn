@@ -110,16 +110,48 @@ func AnswerToolTable(calls []ModelCall) []string {
 	return table
 }
 
-// ToolUsageEntry says what happened to one tool.
+// The states a tool can be in.
 //
-// The three states are kept apart because they are three different findings:
-// a tool the product never registered cannot be called at all, a tool the
-// product registered but did not offer in this request cannot be called in
-// this request, and a tool that was offered and not called is a fact about
-// the answer, not about the wiring.
+// They are kept apart because they are three different findings: a tool the
+// product never registered cannot be called at all, a tool the product
+// registered but did not offer in this request cannot be called in this
+// request, and a tool that was offered and not called is a fact about the
+// answer, not about the wiring. A reader who collapses them reads "the model
+// did not use the tool" into a sentence that is about the product.
+const (
+	// ToolStateOfferedCalled says the request carried the tool and the answer
+	// called it.
+	ToolStateOfferedCalled = "offered_called"
+	// ToolStateOfferedNotCalled says the request carried the tool and the
+	// answer did not call it.
+	ToolStateOfferedNotCalled = "offered_not_called"
+	// ToolStateRegisteredNotOffered says the product registers the tool for
+	// this arm and this request did not carry it.
+	ToolStateRegisteredNotOffered = "registered_not_offered"
+	// ToolStateNotRegistered says the product does not register the tool for
+	// this arm, so it could not have been called.
+	ToolStateNotRegistered = "not_registered"
+	// ToolStateCalledWithoutOffering says the answer called a tool that the
+	// recorded request did not carry. The harness's view of the request was
+	// incomplete, and the evidence says so instead of guessing.
+	ToolStateCalledWithoutOffering = "called_without_offering"
+)
+
+// ToolUsageEntry says what happened to one tool.
 type ToolUsageEntry struct {
 	// Name is the tool.
 	Name string `json:"name"`
+	// State is one of the five states above. It is the row's conclusion.
+	State string `json:"state"`
+	// Registered says the product registers the tool for this arm.
+	//
+	// It is established two ways, and the harness says which one it used by
+	// the state it reports: a tool the request carried is registered, because
+	// the product cannot offer a tool it does not have; the tools the product
+	// registers but did not offer are established by the product's own
+	// registration rule, which the harness mirrors for the one tool whose
+	// registration differs between the two arms.
+	Registered bool `json:"registered"`
 	// Offered says the request carried the tool's schema.
 	Offered bool `json:"offered"`
 	// Called says the answer actually called it.
@@ -128,42 +160,118 @@ type ToolUsageEntry struct {
 	Calls int `json:"calls"`
 }
 
-// ToolUsage reads what happened to every tool of the request.
+// ToolUsageInput is what the harness knows about the tools of a request.
+type ToolUsageInput struct {
+	// Offered names the tools the request carried.
+	Offered []string
+	// Registered names the tools the product registers for this arm and this
+	// request did not carry.
+	Registered []string
+	// Compared names the tools the comparison asks about, whether or not this
+	// arm touched them. It is how "the old path does not register this tool"
+	// becomes a row of the evidence instead of an absence nobody can see.
+	Compared []string
+	// Steps are the answer's tool rounds.
+	Steps []model.AgentStep
+}
+
+// ToolUsage reads what happened to every tool the comparison asks about.
 //
-// The harness can see the tools a request carried and the tools an answer
-// called. It CANNOT see the product's registry, so "the product never
-// registered it" and "the product registered it but did not offer it here"
-// are one state here: the tool was not offered in this request. Telling the
-// two apart needs the registry to be exposed, and that is a product-side
-// change rather than a harness one.
-func ToolUsage(offered []string, steps []model.AgentStep) []ToolUsageEntry {
+// The three states are told apart as far as the harness can tell them. The
+// product's registry is assembled inside its own internal wiring, which a
+// harness in another module cannot import, so the registration of a tool that
+// was not offered is established by the mirrored registration rule. That rule
+// covers the one tool whose registration differs between the two arms; a tool
+// that neither arm offered is simply not a row, because nothing the harness
+// saw says anything about it.
+func ToolUsage(input ToolUsageInput) []ToolUsageEntry {
 	calls := map[string]int{}
-	for _, step := range steps {
+	for _, step := range input.Steps {
 		if step.Type != model.AgentStepTool {
 			continue
 		}
 		calls[step.ToolName]++
 	}
+	offered := map[string]bool{}
+	for _, name := range input.Offered {
+		if name = strings.TrimSpace(name); name != "" {
+			offered[name] = true
+		}
+	}
+	registered := map[string]bool{}
+	for _, name := range input.Registered {
+		if name = strings.TrimSpace(name); name != "" {
+			registered[name] = true
+		}
+	}
 	seen := map[string]struct{}{}
 	var out []ToolUsageEntry
-	for _, name := range offered {
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
 		if _, exists := seen[name]; exists {
-			continue
+			return
 		}
 		seen[name] = struct{}{}
-		out = append(out, ToolUsageEntry{Name: name, Offered: true, Called: calls[name] > 0, Calls: calls[name]})
+		entry := ToolUsageEntry{
+			Name: name,
+			// A tool the request carried is registered: the product cannot
+			// offer a tool it does not have.
+			Registered: registered[name] || offered[name],
+			Offered:    offered[name],
+			Called:     calls[name] > 0,
+			Calls:      calls[name],
+		}
+		switch {
+		case entry.Offered && entry.Called:
+			entry.State = ToolStateOfferedCalled
+		case entry.Offered:
+			entry.State = ToolStateOfferedNotCalled
+		case entry.Called:
+			entry.State = ToolStateCalledWithoutOffering
+		case entry.Registered:
+			entry.State = ToolStateRegisteredNotOffered
+		default:
+			entry.State = ToolStateNotRegistered
+		}
+		out = append(out, entry)
 	}
-	// A tool the answer called that the harness did not see offered is worth
-	// saying: it means the harness's view of the request was incomplete.
-	for name, count := range calls {
-		if _, exists := seen[name]; exists {
-			continue
-		}
-		seen[name] = struct{}{}
-		out = append(out, ToolUsageEntry{Name: name, Offered: false, Called: true, Calls: count})
+	for _, name := range input.Offered {
+		add(name)
+	}
+	for _, name := range input.Compared {
+		add(name)
+	}
+	for name := range calls {
+		add(name)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// AnswerShownMemory reads the cross-session memory the answer was given.
+//
+// The last answer request is the one that was in front of the model when it
+// answered, the same rule the tool table follows.
+func AnswerShownMemory(calls []ModelCall) ShownMemory {
+	shown := ShownMemory{}
+	for _, call := range calls {
+		if call.Role != "answer" {
+			continue
+		}
+		if call.ShownMemoryKind == "" {
+			continue
+		}
+		shown = ShownMemory{
+			Kind:       call.ShownMemoryKind,
+			Sessions:   call.CardSessions,
+			MessageIDs: call.InjectedMessageIDs,
+			Text:       call.InjectedText,
+		}
+	}
+	return shown
 }
 
 // The memory block the product puts into the window.
@@ -246,11 +354,14 @@ func truncateMemoryText(text string) string {
 
 // extractMemoryBlock returns the part of the prompt that carries the
 // cross-session memory.
+//
+// The markers are the headers the product itself writes, so the block is cut
+// where the product put it rather than at a phrase that might occur in the
+// conversation.
 func extractMemoryBlock(text string) string {
 	markers := []string{
 		"Relevant cross-session episodes",
-		"Session cards",
-		"session card",
+		"Relevant session cards",
 	}
 	start := -1
 	for _, marker := range markers {

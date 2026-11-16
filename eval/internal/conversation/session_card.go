@@ -216,6 +216,32 @@ type CardArmEvidence struct {
 	// does not, and a comparison that does not say so would be comparing
 	// something the reader cannot see.
 	ToolTable []string `json:"tool_table,omitempty"`
+	// ToolUsage says what happened to every tool the comparison asks about,
+	// one row per tool, with the three states kept apart: not registered,
+	// registered but not offered in this request, and offered but not called.
+	// The three are different findings, and a reader who collapses them reads
+	// "the model did not use the tool" into a sentence about the product.
+	ToolUsage []ToolUsageEntry `json:"tool_usage,omitempty"`
+	// SearchTrace is the retrieval trace of the answer: the intent the model
+	// expressed, the tool's own verdict and the records it brought back. It
+	// is read out of the tool rounds the product persisted, so "the search
+	// ran and found nothing" and "the search never ran" are told apart.
+	SearchTrace []SearchTrace `json:"search_trace,omitempty"`
+	// InjectedText is the cross-session memory the answer was actually given,
+	// as it was sent to the model. It is what separates "the memory was
+	// there" from "the memory was there and said this".
+	InjectedText string `json:"injected_text,omitempty"`
+	// InjectedMessageIDs are the messages the injected block cited, and
+	// InjectedSessions are the conversations those messages were in. The
+	// citations are the block's own, so the conversations are read out of
+	// the messages rather than out of the arm's own bookkeeping.
+	InjectedMessageIDs []uint   `json:"injected_message_ids,omitempty"`
+	InjectedSessions   []string `json:"injected_sessions,omitempty"`
+	// InjectedWithinSourceSessions says every cited message belongs to one of
+	// the arm's own source conversations. A block that cited something else
+	// would be a memory the learner was shown without a grant, and the
+	// comparison has to be able to say that it did not happen.
+	InjectedWithinSourceSessions bool `json:"injected_within_source_sessions"`
 	// ShownCard says the answer was given the card block, and
 	// ShownCardSessions are the source conversations that block named.
 	//
@@ -259,9 +285,6 @@ type CardArmEvidence struct {
 	// ShownMemoryKind says which memory block the prompt carried: "card",
 	// "episode" or "none". It is read out of the prompt the model was sent.
 	ShownMemoryKind string `json:"shown_memory_kind,omitempty"`
-	// InjectedSessions are the conversations the injected memory block was
-	// about, read out of the same prompt.
-	InjectedSessions []string `json:"injected_sessions,omitempty"`
 	// IndexName and KeyPrefix are the namespace this arm wrote into.
 	IndexName string `json:"index_name,omitempty"`
 	KeyPrefix string `json:"key_prefix,omitempty"`
@@ -316,6 +339,36 @@ const (
 	cardToolSearchHistory = "search_session_history"
 	cardToolReadHistory   = "read_history_message"
 )
+
+// cardOnlyTool is the tool the card path registers and the old path does not.
+//
+// It is the product's own registration rule (v2/internal/isolated/wiring.go):
+// the cross-session search tool is registered only under the card path,
+// because the old path has no source conversation to search in. The product
+// assembles its registry inside its own internal wiring, which a harness in
+// another module cannot import, so the rule is mirrored here - the same way
+// the layered arm's tool table is mirrored.
+//
+// It is also the one tool whose registration differs between the two arms, so
+// it is the one tool whose absence is a fact about the registration rather
+// than about the request. Every other tool is registered for both arms, and
+// a tool the other arm offered and this one did not is a tool this request
+// did not carry.
+const cardOnlyTool = cardToolSearchHistory
+
+// registeredToolsFor returns the tools the product registers for this arm and
+// this arm's request did not carry.
+//
+// Only the card-only tool can be named: it is the one tool whose registration
+// differs between the arms, and the difference is known from the arm's own
+// mode. The rest of the registry is established by the request that carried
+// it, because the product cannot offer a tool it does not have.
+func registeredToolsFor(memoryKind string) []string {
+	if strings.TrimSpace(memoryKind) == string(model.EpisodeContentSessionCard) {
+		return []string{cardOnlyTool}
+	}
+	return nil
+}
 
 // toolRecordLimit is the length the product truncates a tool record to.
 //
@@ -861,10 +914,11 @@ func CardsForSessions(ctx context.Context, db *gorm.DB, userID int64, sessions [
 // provenance, and the card arm's answer carries the card rows it was shown;
 // the two are read back from the rows rather than from the arm's own name.
 func recordCardArmEvidence(evidence *CardArmEvidence, sandbox *Sandbox, userID int64,
-	questionSessionID string, observation CardObservation, questions []QuestionResult) error {
+	questionSessionID string, observation CardObservation, questions []QuestionResult, calls []ModelCall) error {
 	if evidence == nil {
 		return nil
 	}
+	var allSteps []model.AgentStep
 	for _, asked := range questions {
 		steps := ReadCardArmSteps(asked.Steps)
 		evidence.Tools = append(evidence.Tools, steps.Tools...)
@@ -875,7 +929,29 @@ func recordCardArmEvidence(evidence *CardArmEvidence, sandbox *Sandbox, userID i
 		evidence.SearchHitsTruncated = evidence.SearchHitsTruncated || steps.HitsTruncated
 		evidence.ReadBackTruncated = evidence.ReadBackTruncated || steps.ReadBackTruncated
 		evidence.ToolRecordsTruncated = evidence.ToolRecordsTruncated || steps.RecordsTruncated
+		allSteps = append(allSteps, asked.Steps...)
 	}
+	// The tool table is the same record the request was: the two arms are
+	// offered different tools, and an attempt that does not say which table
+	// it was given has not said what it measured.
+	offered := AnswerToolTable(calls)
+	evidence.ToolTable = offered
+	evidence.ToolUsage = ToolUsage(ToolUsageInput{
+		Offered:    offered,
+		Registered: registeredToolsFor(evidence.MemoryKind),
+		Compared:   []string{cardOnlyTool},
+		Steps:      allSteps,
+	})
+	// The retrieval trace comes from the product's own tool rounds, so the
+	// intent and the verdict beside it are the product's, not a reading of
+	// the answer text.
+	evidence.SearchTrace = ReadSearchTrace(allSteps)
+	// The memory the answer was given comes from the request that was sent.
+	shown := AnswerShownMemory(calls)
+	evidence.ShownMemoryKind = shown.Kind
+	evidence.InjectedText = shown.Text
+	evidence.InjectedMessageIDs = shown.MessageIDs
+	evidence.InjectedSessions = shown.Sessions
 	evidence.ShownCardObserved = observation.Known
 	evidence.ShownCard = observation.Shown()
 	evidence.ShownCardSessions = observation.Sessions
@@ -883,6 +959,21 @@ func recordCardArmEvidence(evidence *CardArmEvidence, sandbox *Sandbox, userID i
 		return nil
 	}
 	ctx := context.Background()
+	// The conversations the injected memory came from are read out of the
+	// messages it cited. The block's own citations are the record, and the
+	// messages say which conversation they were in - so a block that cited
+	// something outside the arm's own conversations is caught here rather
+	// than assumed away.
+	if len(evidence.InjectedMessageIDs) > 0 {
+		sessions, err := SessionsForMessageIDs(ctx, sandbox.db, userID, evidence.InjectedMessageIDs)
+		if err != nil {
+			return err
+		}
+		evidence.InjectedSessions = sessions
+	}
+	if len(evidence.InjectedSessions) > 0 {
+		evidence.InjectedWithinSourceSessions = WithinSessions(evidence.InjectedSessions, evidence.SourceSessions)
+	}
 	sources, err := ReadMessageEpisodeSources(ctx, sandbox.db, userID, questionSessionID)
 	if err != nil {
 		return err
@@ -1113,7 +1204,6 @@ func DriveArm(ctx context.Context, sandbox *Sandbox, snapshot Snapshot, arm *Car
 			return evidence, err
 		}
 		evidence.Published = true
-		evidence.PublishedTargetMessageID = target
 		if err := sandbox.MakeProjectionDue(ctx, conversation.Session.UserID, conversation.Session.ID); err != nil {
 			evidence.Error = err.Error()
 			return evidence, err
@@ -1137,6 +1227,11 @@ func DriveArm(ctx context.Context, sandbox *Sandbox, snapshot Snapshot, arm *Car
 		if conversation.Session.ID == evidence.SourceSessionID {
 			evidence.Card = row
 			evidence.Memory = row
+			// The target belongs to the conversation the question is about.
+			// An attempt with several conversations would otherwise report the
+			// last one's target beside the first one's card, and the two would
+			// describe different conversations.
+			evidence.PublishedTargetMessageID = target
 		}
 	}
 	// The question is asked in a conversation of its own, derived from the
