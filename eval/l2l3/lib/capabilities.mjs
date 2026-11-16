@@ -18,6 +18,7 @@ export const Capability = Object.freeze({
   MemoryDraft: 'memory_draft',
   HistoryRead: 'history_read',
   BrowseSummarySegments: 'browse_summary_segments',
+  SearchSessionHistory: 'search_session_history',
   Unknown: 'unknown',
 })
 
@@ -29,6 +30,7 @@ export const KNOWN_CAPABILITIES = Object.freeze([
   Capability.MemoryDraft,
   Capability.HistoryRead,
   Capability.BrowseSummarySegments,
+  Capability.SearchSessionHistory,
 ])
 
 export const TOOL_CAPABILITIES = Object.freeze({
@@ -43,6 +45,7 @@ export const TOOL_CAPABILITIES = Object.freeze({
   save_memory_draft: Capability.MemoryDraft,
   read_history_message: Capability.HistoryRead,
   browse_summary_segments: Capability.BrowseSummarySegments,
+  search_session_history: Capability.SearchSessionHistory,
 })
 
 /**
