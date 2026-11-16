@@ -875,10 +875,10 @@ func defaultConfig() *Config {
 		// The session-card path is off until a deployment asks for it. The
 		// namespace is the card index's own, so the two arms of an experiment do
 		// not read each other's rows.
-		SessionCardMode:           "disabled",
+		SessionCardMode:            "disabled",
 		SessionCardMaxOutputTokens: 4000,
-		SessionCardIndexName:      "gopherai_session_card_v1_idx",
-		SessionCardIndexKeyPrefix: "gopherai:session_card:vec:",
+		SessionCardIndexName:       "gopherai_session_card_v1_idx",
+		SessionCardIndexKeyPrefix:  "gopherai:session_card:vec:",
 		// The layered summary is on: the write side, the read side and the
 		// fallback that goes with them are assembled together, so a
 		// deployment that says nothing gets the layered summary. "off" is
