@@ -3,6 +3,7 @@ package agenttool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"GopherAI/model"
@@ -265,5 +266,88 @@ func TestSearchSessionHistoryIsAKnownCapability(t *testing.T) {
 	}
 	if name != SearchSessionHistoryName {
 		t.Fatalf("the capability names the tool %q", name)
+	}
+}
+
+// A search in this run's own conversation has no card behind it.
+//
+// The third step of the chain - card, then summary, then the original words -
+// does not stop at the run's own conversation: a detail the summary of this
+// very conversation did not keep is still a detail the model has to be able to
+// read back. There is no card to confirm such a hit against, because the
+// search looked in the conversation the run is already in; what authorises it
+// is the owner and the conversation, and the read-back query binds both again.
+func TestASearchHitInThisConversationIsReadableBackInFull(t *testing.T) {
+	searcher := &fakeSessionSearcher{messages: []model.Message{
+		{ID: 21, SessionID: historyRunSession, IsUser: true, Content: "\u7ec6\u8282\uff1a\u6211\u7528\u7684\u662f\u957f\u5ea6\u524d\u7f00"},
+	}}
+	registry, err := NewSearchSessionHistoryRegistry(searcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := serviceagent.RunContext{UserID: 7, SessionID: historyRunSession, Question: "\u6211\u521a\u624d\u600e\u4e48\u5199\u7684"}
+	run.GrantSet = serviceagent.NewHistoryGrantSet(run, nil)
+	tools, err := registry.Tools(context.Background(), run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := callSearch(t, tools[0], "", "\u957f\u5ea6\u524d\u7f00")
+	if out.Status != searchSessionStatusOK || len(out.Matches) != 1 {
+		t.Fatalf("the search reported %q and %+v", out.Status, out.Matches)
+	}
+	held := run.GrantSet.Grants(21)
+	if len(held) == 0 {
+		t.Fatal("the searched message is not readable back")
+	}
+	for _, grant := range held {
+		if grant.SourceKind != serviceagent.HistorySourceSessionSearch {
+			t.Fatalf("the grant has the wrong kind: %+v", grant)
+		}
+		if grant.SourceSessionID != historyRunSession {
+			t.Fatalf("the grant names the session %q", grant.SourceSessionID)
+		}
+		if grant.CardID != "" {
+			t.Fatalf("a hit in this run's own conversation names a card: %+v", grant)
+		}
+	}
+	// The read-back must not go looking for a card: there is none, and a
+	// verifier that is asked anyway would refuse the hit.
+	reader := &fakeHistoryReader{rows: map[uint]model.Message{
+		21: userMessage(21, historyRunSession, "\u7ec6\u8282\uff1a\u6211\u7528\u7684\u662f\u957f\u5ea6\u524d\u7f00"),
+	}}
+	evidence := EpisodeEvidenceReaderFunc(func(_ context.Context, _ int64, episodeID string) (EpisodeEvidenceFacts, error) {
+		return EpisodeEvidenceFacts{}, fmt.Errorf("no card should be consulted for %q", episodeID)
+	})
+	readTools := newHistoryToolsWithEvidence(t, reader, evidence, historyRun(
+		serviceagent.HistoryMessageGrant{
+			MessageID: 21, SourceKind: serviceagent.HistorySourceSessionSearch,
+			SourceSessionID: historyRunSession,
+		}))
+	read := invokeRead(t, readTools, 21)
+	if len(read.Messages) != 1 || read.Messages[0].MessageID != 21 {
+		t.Fatalf("the search hit was not read back: %+v", read)
+	}
+}
+
+// A search hit may not name another conversation without a card.
+//
+// The card is what opens an earlier conversation, so a hit that claims to come
+// from one and carries no card is refused rather than believed.
+func TestASearchHitInAnotherConversationNeedsACard(t *testing.T) {
+	reader := &fakeHistoryReader{rows: map[uint]model.Message{
+		22: userMessage(22, "session-elsewhere", "\u522b\u4eba\u7684\u539f\u8bdd"),
+	}}
+	readTools := newHistoryTools(t, reader, historyRun(
+		summaryGrant(5, historyRunSession),
+		serviceagent.HistoryMessageGrant{
+			MessageID: 22, SourceKind: serviceagent.HistorySourceSessionSearch,
+			SourceSessionID: "session-elsewhere",
+		}))
+	read := invokeRead(t, readTools, 22)
+	if len(read.Messages) != 0 {
+		t.Fatalf("a hit without a card was read back: %+v", read)
+	}
+	if len(read.Refused) != 1 || read.Refused[0] != 22 {
+		t.Fatalf("the hit was not refused: %+v", read)
 	}
 }

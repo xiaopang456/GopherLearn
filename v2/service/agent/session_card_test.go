@@ -116,8 +116,18 @@ func TestSessionCardGrantAboutTheCurrentSessionOpensNoEarlierSession(t *testing.
 		t.Fatal("a session no card pointed at is readable")
 	}
 	// The current session is not listed as an earlier conversation either:
-	// the list is what says "this one is from before".
+	// the list is what says "this one is from before". The scope of a card
+	// about the run's own conversation is refused for the same reason, and
+	// the refusal is what this asserts - so another session's scope is set
+	// as well, and the list is shown to be non-empty.
+	grants.SetCardScope(CardScope{SessionID: "current-session", CardID: "card-1",
+		CardVersion: 2, CardWatermark: 144})
+	grants.SetCardScope(CardScope{SessionID: "other-session", CardID: "card-2",
+		CardVersion: 3, CardWatermark: 220})
 	sessions := grants.CardSessions()
+	if len(sessions) != 1 || sessions[0] != "other-session" {
+		t.Fatalf("the card sessions are %v", sessions)
+	}
 	for _, session := range sessions {
 		if session == "current-session" {
 			t.Fatalf("the run's own session is listed as an earlier one: %v", sessions)

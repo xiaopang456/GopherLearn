@@ -296,6 +296,13 @@ type HistoryGrantSet struct {
 	// the learner may browse. A grant set that derived "which sessions are
 	// reachable" from the cited message ids would deny that conversation.
 	cardScopes map[string]CardScope
+	// sessionID is the conversation this run is in.
+	//
+	// It is here to keep the run's own conversation out of the card scopes: a
+	// card about the conversation being answered is not a door to the past, and
+	// a scope that named it would let the run read its own present as if it
+	// were its past.
+	sessionID string
 }
 
 // NewHistoryGrantSet filters a merged grant list down to what this run may act
@@ -308,10 +315,15 @@ type HistoryGrantSet struct {
 // "this id in it may be read".
 func NewHistoryGrantSet(run RunContext, grants []HistoryMessageGrant) *HistoryGrantSet {
 	set := &HistoryGrantSet{byMessage: make(map[uint][]HistoryMessageGrant, len(grants)),
-		cardScopes: make(map[string]CardScope, len(run.CardScopes))}
+		cardScopes: make(map[string]CardScope, len(run.CardScopes)),
+		sessionID:  strings.TrimSpace(run.SessionID)}
 	for _, scope := range run.CardScopes {
 		session := strings.TrimSpace(scope.SessionID)
 		if session == "" || strings.TrimSpace(scope.CardID) == "" || scope.CardVersion == 0 {
+			continue
+		}
+		if session == set.sessionID {
+			// The run's own conversation is never an earlier one.
 			continue
 		}
 		set.cardScopes[session] = scope
@@ -516,6 +528,11 @@ func (s *HistoryGrantSet) SetCardScope(scope CardScope) {
 	}
 	session := strings.TrimSpace(scope.SessionID)
 	if session == "" || strings.TrimSpace(scope.CardID) == "" || scope.CardVersion == 0 {
+		return
+	}
+	if session == s.sessionID {
+		// The run's own conversation is not an earlier conversation, and a
+		// scope that named it would open the present as if it were the past.
 		return
 	}
 	s.mu.Lock()

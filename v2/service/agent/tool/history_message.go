@@ -369,7 +369,8 @@ func (r *HistoryMessageRegistry) Tools(ctx context.Context, run serviceagent.Run
 	// the same facts, and re-reading the row per id would turn two tool calls into a
 	// query per citation.
 	facts := &episodeFactsCache{reader: r.episodeEvidence, segments: r.segmentEvidence, userID: userID,
-		loaded: map[string]episodeFactsEntry{}, segmentLoaded: map[int]segmentFactsEntry{}}
+		sessionID: strings.TrimSpace(run.SessionID),
+		loaded:    map[string]episodeFactsEntry{}, segmentLoaded: map[int]segmentFactsEntry{}}
 	// A message this run reads back is evidence the learner actually said those words,
 	// and the only thing that can make a citation to them legal. The registry comes from
 	// the run, exactly like memory_search's does, so the reference the tool issues is the
@@ -589,6 +590,12 @@ type episodeFactsCache struct {
 	// episode card, and one store's miss is not the other's.
 	segments SummarySegmentEvidenceReader
 	userID   int64
+	// sessionID is the conversation this run is in.
+	//
+	// A search hit found in this run's own conversation has no card behind
+	// it, so the check that decides it is "is this the conversation the run
+	// is in", and answering that needs to know which conversation that is.
+	sessionID string
 
 	mu     sync.Mutex
 	loaded map[string]episodeFactsEntry
@@ -662,6 +669,23 @@ func (c *episodeFactsCache) confirmCard(ctx context.Context, grant serviceagent.
 // the ceiling: the card read the session as far as it had reached, and a
 // message above that line is not something it ever saw.
 func (c *episodeFactsCache) confirmSearch(ctx context.Context, grant serviceagent.HistoryMessageGrant) (string, bool) {
+	// A hit found in this run's own conversation has no card behind it: the
+	// search looked in the conversation the run is already in, so the card
+	// there is to look at is the one that does not exist. What authorises the
+	// hit is the owner and the conversation, and the read-back query binds
+	// both again - the same authority a summary grant rests on, and confirmed
+	// the same way.
+	//
+	// The one thing such a hit may not do is name another conversation, so
+	// the session is checked here rather than assumed. A grant that names
+	// another conversation without a card never reaches this point: the
+	// grant set refuses it before it is stored.
+	if strings.TrimSpace(grant.CardID) == "" {
+		if c.sessionID == "" || strings.TrimSpace(grant.SourceSessionID) != c.sessionID {
+			return refusalEpisodeSession, false
+		}
+		return "", true
+	}
 	facts, reason, ok := c.cardFacts(ctx, grant)
 	if !ok {
 		return reason, false

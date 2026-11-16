@@ -227,3 +227,89 @@ func TestBrowseSummarySegmentsKeepsTheOldSchemaWithoutTheCardPath(t *testing.T) 
 		t.Fatal("the card path did not change the tool contract")
 	}
 }
+
+// boardWithDuration builds the board of the conversation a card opened.
+//
+// The board is read live, so the value it holds now is the value of this
+// moment, and the message it was last written at says how far that moment is
+// from the card.
+func boardWithDuration(t *testing.T, value string, updatedAt uint) *model.SessionWhiteboard {
+	t.Helper()
+	document := model.SessionWhiteboardDocument{
+		SchemaVersion: model.SessionWhiteboardSchemaV1,
+		Constraints: []model.SessionWhiteboardEntry{{
+			Key: "duration", Text: "\u6bcf\u5929\u7ec3\u591a\u4e45", Value: value,
+			UpdatedAtMessageID: updatedAt,
+		}},
+	}
+	encoded, err := model.MarshalSessionWhiteboardDocument(document)
+	if err != nil {
+		t.Fatalf("encode board: %v", err)
+	}
+	return &model.SessionWhiteboard{UserID: 7, SessionID: "source-session", Content: encoded}
+}
+
+// durationSegment is one segment that recorded a value the board has since
+// replaced.
+func durationSegment(t *testing.T) model.SessionSummarySegment {
+	t.Helper()
+	segment := browseSegment(t, 1, 1, 30, "RPC \u62c6\u5305", []model.SessionSummarySegmentPoint{
+		{Text: "\u51b3\u5b9a\u4f7f\u7528\u957f\u5ea6\u5b57\u6bb5\u62c6\u5305", EvidenceMessageIDs: []uint{12}},
+	})
+	segment.WhiteboardChanges = `[{"key":"duration","old_value":"","new_value":"30 \u5206\u949f","new_message_ids":[12]}]`
+	return segment
+}
+
+// The board of the other conversation is read live, and what it holds now may
+// be a change the card never saw.
+//
+// The card described that conversation as far as its watermark, and every step
+// inside that conversation stops at that line. A board written after the
+// watermark is such a step, and the note that carries its value would hand the
+// model a change from past the card's line.
+func TestBrowseSummarySegmentsDoesNotShowTheOtherBoardsChangesAboveTheCardWatermark(t *testing.T) {
+	browser := &fakeSegmentBrowser{segments: []model.SessionSummarySegment{durationSegment(t)},
+		board: boardWithDuration(t, "48 \u5206\u949f", 200)}
+	registry, err := NewBrowseSummarySegmentsRegistry(browser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.UseSessionParameter(true)
+	tools, err := registry.Tools(context.Background(), cardBrowseRun())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := callBrowseIn(t, tools[0], "source-session", "\u62c6\u5305")
+	if out.Status != browseStatusOK || len(out.Segments) != 1 {
+		t.Fatalf("the browse reported %q/%q and %+v", out.Status, out.Reason, out.Segments)
+	}
+	if len(out.Segments[0].WhiteboardStatus) != 0 {
+		t.Fatalf("a change above the card's watermark was shown: %+v", out.Segments[0].WhiteboardStatus)
+	}
+}
+
+// A board written within the card's watermark is still shown.
+//
+// The crop is not a blanket suppression: a change the card could have seen is
+// exactly the kind of warning a reader of that conversation needs, and the
+// note says which value is the current one.
+func TestBrowseSummarySegmentsShowsTheOtherBoardsChangesWithinTheCardWatermark(t *testing.T) {
+	browser := &fakeSegmentBrowser{segments: []model.SessionSummarySegment{durationSegment(t)},
+		board: boardWithDuration(t, "48 \u5206\u949f", 100)}
+	registry, err := NewBrowseSummarySegmentsRegistry(browser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.UseSessionParameter(true)
+	tools, err := registry.Tools(context.Background(), cardBrowseRun())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := callBrowseIn(t, tools[0], "source-session", "\u62c6\u5305")
+	if out.Status != browseStatusOK || len(out.Segments) != 1 {
+		t.Fatalf("the browse reported %q/%q and %+v", out.Status, out.Reason, out.Segments)
+	}
+	if len(out.Segments[0].WhiteboardStatus) != 1 {
+		t.Fatalf("a change within the card's watermark was not shown: %+v", out.Segments[0].WhiteboardStatus)
+	}
+}

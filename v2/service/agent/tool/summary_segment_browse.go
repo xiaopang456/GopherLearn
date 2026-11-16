@@ -363,7 +363,7 @@ func (r *BrowseSummarySegmentsRegistry) browse(ctx context.Context, run servicea
 	grants := make([]serviceagent.HistoryMessageGrant, 0, 8)
 	tokens := 0
 	for _, segment := range segments {
-		browsed, ok := r.render(segment, document)
+		browsed, ok := r.render(segment, document, cardWatermark)
 		if !ok {
 			continue
 		}
@@ -488,8 +488,14 @@ type browsedSegment struct {
 }
 
 // render turns one stored segment into the view the model reads.
+// The watermark is the card's, and it is zero for this run's own conversation.
+//
+// The board of another conversation is read live, so what it holds now may be
+// a change that happened after the card was written. That change is past the
+// card's line, and the note that carries it is dropped rather than trimmed: a
+// trimmed note would still carry the later value.
 func (r *BrowseSummarySegmentsRegistry) render(segment model.SessionSummarySegment,
-	document model.SessionWhiteboardDocument) (browsedSegment, bool) {
+	document model.SessionWhiteboardDocument, watermark uint) (browsedSegment, bool) {
 	content, err := model.DecodeSessionSummarySegmentContent(segment.Content)
 	if err != nil {
 		return browsedSegment{}, false
@@ -506,6 +512,13 @@ func (r *BrowseSummarySegmentsRegistry) render(segment model.SessionSummarySegme
 	view.NamesAndNumbers = append(view.NamesAndNumbers, content.Names...)
 	view.NamesAndNumbers = append(view.NamesAndNumbers, content.Numbers...)
 	for _, note := range serviceagent.SummarySegmentSupersessionNotes(segment, document) {
+		if watermark > 0 && note.ChangedAtMessageID > watermark {
+			// The board was written after the card that opened this
+			// conversation was written. What it holds now is a change the
+			// card never saw, so saying "this value was replaced" would hand
+			// the model a value from past the card's line.
+			continue
+		}
 		view.WhiteboardStatus = append(view.WhiteboardStatus,
 			fmt.Sprintf("%s: %s -> %s（第 %d 轮，以当前状态为准）", note.Key, note.OldValue, note.CurrentValue,
 				note.ChangedAtMessageID))
