@@ -777,6 +777,10 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 			if sessionSearchErr != nil {
 				return nil, fmt.Errorf("initialize agent session history search tool: %v", sessionSearchErr)
 			}
+			// The same switch the read-back path uses: a deployment that does
+			// not record the assistant's products does not get them back
+			// through a search either.
+			sessionSearchTools.UseAssistantContent(conf.AgentConfig.SummaryAssistantContentEnabled())
 			registries = append(registries, sessionSearchTools)
 		}
 		if memoryReadMode.UsesMemorySearchTool() {

@@ -135,6 +135,25 @@ func TestSessionCardGrantAboutTheCurrentSessionOpensNoEarlierSession(t *testing.
 	}
 }
 
+// The rule is enforced on the production path as well.
+//
+// The scopes reach the run through the window, and the grant set reads them
+// from there - not through the setter the other test uses. A scope naming the
+// run's own conversation has to be refused on that path too, or the list of
+// earlier conversations could contain the conversation being answered.
+func TestTheWindowScopesCannotNameTheRunsOwnConversation(t *testing.T) {
+	run := RunContext{UserID: 7, SessionID: "current-session"}
+	run.CardScopes = []CardScope{
+		{SessionID: "current-session", CardID: "card-1", CardVersion: 2, CardWatermark: 144},
+		{SessionID: "source-session", CardID: "card-2", CardVersion: 3, CardWatermark: 220},
+	}
+	grants := NewHistoryGrantSet(run, nil)
+	sessions := grants.CardSessions()
+	if len(sessions) != 1 || sessions[0] != "source-session" {
+		t.Fatalf("the card sessions are %v", sessions)
+	}
+}
+
 // The card's own watermark bounds what it authorises.
 func TestSessionCardGrantIsBoundedByTheCardWatermark(t *testing.T) {
 	run := RunContext{UserID: 7, SessionID: "current-session"}

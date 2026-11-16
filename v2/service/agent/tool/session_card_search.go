@@ -99,6 +99,16 @@ type SessionMessageSearcher interface {
 type SearchSessionHistoryRegistry struct {
 	searcher SessionMessageSearcher
 	surface  serviceagent.ToolSurface
+	// assistantContent says the deployment's summary records what the
+	// assistant produced, and that the assistant's own words may therefore
+	// be shown and read back.
+	//
+	// It is off by default. With it off, a search returns the learner's own
+	// words only, and the read-back path filters the assistant's messages
+	// the same way: a search that showed the assistant's words would put
+	// them in front of the model in a place the model cannot cite, which
+	// is exactly what the switch says must not happen.
+	assistantContent bool
 }
 
 // NewSearchSessionHistoryRegistry builds the registry.
@@ -112,6 +122,19 @@ func NewSearchSessionHistoryRegistry(searcher SessionMessageSearcher) (*SearchSe
 // UseToolSurface changes only the name and description shown to the model.
 func (r *SearchSessionHistoryRegistry) UseToolSurface(surface serviceagent.ToolSurface) {
 	r.surface = surface
+}
+
+// UseAssistantContent turns the assistant's own words on or off.
+//
+// With it off, a search returns the learner's own words only. The read-back
+// path makes the same distinction, and the two have to agree: a search that
+// showed the assistant's words while the read-back refused them would let the
+// model quote words it is not allowed to cite.
+func (r *SearchSessionHistoryRegistry) UseAssistantContent(enabled bool) {
+	if r == nil {
+		return
+	}
+	r.assistantContent = enabled
 }
 
 // Tools returns the search tool for one run.
@@ -198,6 +221,13 @@ func (r *SearchSessionHistoryRegistry) search(ctx context.Context, run serviceag
 		// had reached, and a message above that line is not something the
 		// card ever saw - so it is not part of what this run may reach.
 		if watermark > 0 && message.ID > watermark {
+			continue
+		}
+		if !message.IsUser && !r.assistantContent {
+			// The deployment's switch says the assistant's own words are not
+			// part of what may be shown. The read-back path filters them the
+			// same way, so a search that showed them would hand the model
+			// words it may not quote.
 			continue
 		}
 		text, truncated := boundRunes(message.Content, maxSearchSessionSnippet)

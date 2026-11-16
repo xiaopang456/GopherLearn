@@ -97,6 +97,11 @@ func TestSearchSessionHistoryFindsTheWordInTheSourceSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The deployment's default is that the summary records the assistant's
+	// products, and the wiring passes that switch to this tool: the
+	// assistant's own words are searchable in that mode. The mode that does
+	// not record them has its own test below.
+	registry.UseAssistantContent(true)
 	run := cardRun()
 	tools, err := registry.Tools(context.Background(), run)
 	if err != nil {
@@ -349,5 +354,50 @@ func TestASearchHitInAnotherConversationNeedsACard(t *testing.T) {
 	}
 	if len(read.Refused) != 1 || read.Refused[0] != 22 {
 		t.Fatalf("the hit was not refused: %+v", read)
+	}
+}
+
+// The search and the read-back agree about the assistant's own words.
+//
+// A deployment that does not record the assistant's products does not get
+// them back through a search either. The read-back path refuses an assistant
+// row when the switch is off, so a search that showed it would hand the model
+// words it may not quote - the one place where the two paths would disagree.
+func TestTheSearchAndTheReadBackAgreeAboutTheAssistantsWords(t *testing.T) {
+	searcher := &fakeSessionSearcher{messages: []model.Message{
+		{ID: 31, SessionID: "source-session", IsUser: true, Content: "\u6211\u7528\u957f\u5ea6\u524d\u7f00\u62c6\u5305"},
+		{ID: 32, SessionID: "source-session", IsUser: false, Content: "\u52a9\u624b\u7ed9\u7684\u62c6\u5305\u7ec3\u4e60"},
+	}}
+	registry, err := NewSearchSessionHistoryRegistry(searcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Off: the learner's own words come back, the assistant's do not.
+	registry.UseAssistantContent(false)
+	run := cardRun()
+	tools, err := registry.Tools(context.Background(), run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := callSearch(t, tools[0], "source-session", "\u62c6\u5305")
+	if out.Status != searchSessionStatusOK || len(out.Matches) != 1 {
+		t.Fatalf("the search returned %q and %+v", out.Status, out.Matches)
+	}
+	if out.Matches[0].MessageID != 31 {
+		t.Fatalf("the search returned %+v", out.Matches)
+	}
+	for _, grant := range run.GrantSet.Grants(32) {
+		t.Fatalf("the assistant's row was authorised: %+v", grant)
+	}
+	// On: both come back.
+	registry.UseAssistantContent(true)
+	onRun := cardRun()
+	onTools, err := registry.Tools(context.Background(), onRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	onOut := callSearch(t, onTools[0], "source-session", "\u62c6\u5305")
+	if onOut.Status != searchSessionStatusOK || len(onOut.Matches) != 2 {
+		t.Fatalf("the search returned %q and %+v", onOut.Status, onOut.Matches)
 	}
 }
