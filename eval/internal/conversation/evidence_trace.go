@@ -69,7 +69,22 @@ type SearchTrace struct {
 // The harness parses the product's line rather than the tool's raw JSON: the
 // line is what the product chose to keep, and it is the same line in every
 // deployment.
-var searchSummaryPattern = regexp.MustCompile(`status=(\S+)\s+reason=(\S+)\s+cards=(\d+)\s+refs=(\S*)`)
+var (
+	searchSummaryPattern   = regexp.MustCompile(`status=(\S+)\s+reason=(\S+)\s+cards=(\d+)\s+refs=(\S*)`)
+	searchTruncatedPattern = regexp.MustCompile(`truncated=(true|false)`)
+)
+
+// searchToolNames are the tools whose record is a retrieval.
+//
+// The cross-session search returns its own JSON and the memory search returns
+// the summary line; the harness reads both. The list is explicit because
+// other tools answer with JSON as well, and a read-back that happened to
+// carry a "status" field is not a retrieval.
+var searchToolNames = map[string]bool{
+	"memory_search":          true,
+	"search_past_sessions":   true,
+	"search_session_history": true,
+}
 
 // searchArguments reads the intent out of a search call's arguments.
 //
@@ -82,6 +97,22 @@ type searchArguments struct {
 	TopK  int      `json:"top_k"`
 }
 
+// searchSessionOutput is the cross-session search's own answer shape.
+//
+// It is the tool's JSON: the status and the reason are its verdict, and the
+// matches are the messages it brought back. The harness reads it because the
+// product's summary line is only written for the memory search, and a
+// harness that read only that line would report a cross-session search that
+// really ran as a search that never happened.
+type searchSessionOutput struct {
+	Status  string `json:"status"`
+	Reason  string `json:"reason"`
+	Matches []struct {
+		MessageID uint `json:"message_id"`
+	} `json:"matches"`
+	Truncated bool `json:"truncated"`
+}
+
 // ReadSearchTrace reads the retrieval trace out of the answer's tool rounds.
 //
 // Only the searches are traced. A browse or a read-back is not a retrieval:
@@ -90,19 +121,31 @@ type searchArguments struct {
 func ReadSearchTrace(steps []model.AgentStep) []SearchTrace {
 	var out []SearchTrace
 	for _, step := range steps {
-		if step.Type != model.AgentStepTool {
+		if step.Type != model.AgentStepTool || !searchToolNames[step.ToolName] {
 			continue
 		}
-		match := searchSummaryPattern.FindStringSubmatch(step.ResultSummary)
-		if len(match) != 5 {
+		trace, ok := readSearchTrace(step)
+		if !ok {
 			continue
 		}
-		trace := SearchTrace{
-			Tool:      step.ToolName,
-			Status:    match[1],
-			Reason:    match[2],
-			Truncated: len(step.ResultSummary) >= toolRecordLimit,
-		}
+		out = append(out, trace)
+	}
+	return out
+}
+
+// readSearchTrace reads one search call's record.
+func readSearchTrace(step model.AgentStep) (SearchTrace, bool) {
+	trace := SearchTrace{Tool: step.ToolName}
+	var arguments searchArguments
+	if err := json.Unmarshal([]byte(step.ArgumentsSummary), &arguments); err == nil {
+		trace.Query = arguments.Query
+		trace.Kinds = arguments.Kinds
+		trace.TopK = arguments.TopK
+	}
+	// The memory search's own line.
+	if match := searchSummaryPattern.FindStringSubmatch(step.ResultSummary); len(match) == 5 {
+		trace.Status = match[1]
+		trace.Reason = match[2]
 		if cards, err := strconv.Atoi(match[3]); err == nil {
 			trace.Cards = cards
 		}
@@ -111,15 +154,35 @@ func ReadSearchTrace(steps []model.AgentStep) []SearchTrace {
 				trace.Refs = append(trace.Refs, ref)
 			}
 		}
-		var arguments searchArguments
-		if err := json.Unmarshal([]byte(step.ArgumentsSummary), &arguments); err == nil {
-			trace.Query = arguments.Query
-			trace.Kinds = arguments.Kinds
-			trace.TopK = arguments.TopK
-		}
-		out = append(out, trace)
+		trace.Truncated = summaryTruncated(step.ResultSummary)
+		return trace, true
 	}
-	return out
+	// The cross-session search's own JSON.
+	var payload searchSessionOutput
+	if err := json.Unmarshal([]byte(step.ResultSummary), &payload); err != nil || payload.Status == "" {
+		return trace, false
+	}
+	trace.Status = payload.Status
+	trace.Reason = payload.Reason
+	trace.Cards = len(payload.Matches)
+	for _, match := range payload.Matches {
+		trace.Refs = append(trace.Refs, strconv.FormatUint(uint64(match.MessageID), 10))
+	}
+	trace.Truncated = payload.Truncated
+	return trace, true
+}
+
+// summaryTruncated says whether the product's own record said the call was
+// cut short.
+//
+// The line carries the flag, so it is read from there rather than guessed
+// from the length of the record: the product truncates by runes and the
+// harness would be counting bytes.
+func summaryTruncated(summary string) bool {
+	if match := searchTruncatedPattern.FindStringSubmatch(summary); len(match) == 2 {
+		return match[1] == "true"
+	}
+	return len(summary) >= toolRecordLimit
 }
 
 // SessionsForMessageIDs reads the conversations the given messages are in.
@@ -172,6 +235,25 @@ func SessionsForMessageIDs(ctx context.Context, db *gorm.DB, userID int64, ids [
 	sort.Strings(sessions)
 	return sessions, nil
 }
+
+// The states of the injected memory's authorisation.
+//
+// They are three because the findings are three: a memory the learner was
+// shown without a grant, a memory that came from their own conversations, and
+// nothing to check at all. A boolean would say the first and the third the
+// same way, and a reader would take "the learner was shown something they
+// were not granted" out of a run that simply injected nothing.
+const (
+	// InjectedSourceWithin says every cited message belongs to one of the
+	// arm's own source conversations.
+	InjectedSourceWithin = "within"
+	// InjectedSourceOutside says at least one cited message belongs to a
+	// conversation the arm was never given.
+	InjectedSourceOutside = "outside"
+	// InjectedSourceUnknown says there was nothing to check: no memory was
+	// injected, or the block cited no message the harness could resolve.
+	InjectedSourceUnknown = "unknown"
+)
 
 // WithinSessions says whether every one of the given conversations is one of
 // the allowed ones.

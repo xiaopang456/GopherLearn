@@ -312,33 +312,41 @@ type ShownMemory struct {
 // The text of the block is kept as well, truncated: what the answer was given
 // is the difference between "the memory was there" and "the memory was
 // there and said this".
+//
+// Only the system messages are scanned, and only one of them carries the
+// block. The product sends the block as its own system message
+// (v2/service/agent/context_builder.go:1927-1930), so a question that happens
+// to quote the header cannot be mistaken for the memory, and the text that
+// follows the block in the prompt - the learner's own question - cannot be
+// read as part of it.
 func ReadShownMemory(prompt []*schema.Message) ShownMemory {
-	var joined strings.Builder
 	for _, message := range prompt {
-		if message == nil {
+		if message == nil || message.Role != schema.System {
 			continue
 		}
-		joined.WriteString(message.Content)
-		joined.WriteString("\n")
-	}
-	text := joined.String()
-	switch {
-	case episodeBlockHeader.MatchString(text):
-		return ShownMemory{
-			Kind:       "episode",
-			MessageIDs: episodeBlockMessageIDs(text),
-			Text:       truncateMemoryText(extractMemoryBlock(text)),
+		text := message.Content
+		switch {
+		case episodeBlockHeader.MatchString(text):
+			return ShownMemory{
+				Kind:       "episode",
+				MessageIDs: episodeBlockMessageIDs(text),
+				Text:       truncateMemoryText(extractMemoryBlock(text)),
+			}
+		case cardBlockHeader.MatchString(text):
+			_, sessions := ReadShownCards([]*schema.Message{message})
+			return ShownMemory{
+				Kind: "card",
+				// The card names the conversation it came from, and it cites
+				// the messages it was written from. Both are kept: the name is
+				// the card's own claim and the ids are what the harness can
+				// check against the database.
+				Sessions:   sessions,
+				MessageIDs: episodeBlockMessageIDs(text),
+				Text:       truncateMemoryText(extractMemoryBlock(text)),
+			}
 		}
-	case cardBlockHeader.MatchString(text):
-		_, sessions := ReadShownCards(prompt)
-		return ShownMemory{
-			Kind:     "card",
-			Sessions: sessions,
-			Text:     truncateMemoryText(extractMemoryBlock(text)),
-		}
-	default:
-		return ShownMemory{Kind: "none"}
 	}
+	return ShownMemory{Kind: "none"}
 }
 
 // memoryBlockLimit is how much of the injected block the evidence keeps.

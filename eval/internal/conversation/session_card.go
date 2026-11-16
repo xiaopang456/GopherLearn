@@ -237,11 +237,21 @@ type CardArmEvidence struct {
 	// the messages rather than out of the arm's own bookkeeping.
 	InjectedMessageIDs []uint   `json:"injected_message_ids,omitempty"`
 	InjectedSessions   []string `json:"injected_sessions,omitempty"`
-	// InjectedWithinSourceSessions says every cited message belongs to one of
-	// the arm's own source conversations. A block that cited something else
-	// would be a memory the learner was shown without a grant, and the
-	// comparison has to be able to say that it did not happen.
-	InjectedWithinSourceSessions bool `json:"injected_within_source_sessions"`
+	// InjectedDeclaredSessions are the conversations the block named itself.
+	// A card names the conversation it was written from; an Episode block
+	// does not, and its source has to be looked up from the rows. The field
+	// is always there so that "the block named none" is a fact on the record
+	// rather than an absent key.
+	InjectedDeclaredSessions []string `json:"injected_declared_sessions"`
+	// InjectedSourceCheck says whether the injected memory came from the
+	// arm's own conversations: "within", "outside" or "unknown".
+	//
+	// It is three states and not a boolean because "the learner was shown
+	// something they were not granted" and "nothing was shown" are different
+	// findings, and a boolean says both. The check does not trust the
+	// block's own claim: the cited messages are looked up in the database
+	// and the conversations they are in are the ones that are checked.
+	InjectedSourceCheck string `json:"injected_source_check,omitempty"`
 	// ShownCard says the answer was given the card block, and
 	// ShownCardSessions are the source conversations that block named.
 	//
@@ -951,7 +961,14 @@ func recordCardArmEvidence(evidence *CardArmEvidence, sandbox *Sandbox, userID i
 	evidence.ShownMemoryKind = shown.Kind
 	evidence.InjectedText = shown.Text
 	evidence.InjectedMessageIDs = shown.MessageIDs
-	evidence.InjectedSessions = shown.Sessions
+	// The declared sessions are always a list, even an empty one: "the block
+	// named no conversation" is a fact about the block, and a null on the
+	// record would read as "the harness did not look".
+	evidence.InjectedDeclaredSessions = shown.Sessions
+	if evidence.InjectedDeclaredSessions == nil {
+		evidence.InjectedDeclaredSessions = []string{}
+	}
+	evidence.InjectedSourceCheck = InjectedSourceUnknown
 	evidence.ShownCardObserved = observation.Known
 	evidence.ShownCard = observation.Shown()
 	evidence.ShownCardSessions = observation.Sessions
@@ -964,15 +981,24 @@ func recordCardArmEvidence(evidence *CardArmEvidence, sandbox *Sandbox, userID i
 	// messages say which conversation they were in - so a block that cited
 	// something outside the arm's own conversations is caught here rather
 	// than assumed away.
+	//
+	// The card's own claim (the conversation it names) is kept beside this
+	// one, and the check is made against the conversations the citations
+	// actually resolve to. A block that names one conversation and cites
+	// another is then visible as the disagreement it is.
 	if len(evidence.InjectedMessageIDs) > 0 {
 		sessions, err := SessionsForMessageIDs(ctx, sandbox.db, userID, evidence.InjectedMessageIDs)
 		if err != nil {
 			return err
 		}
 		evidence.InjectedSessions = sessions
-	}
-	if len(evidence.InjectedSessions) > 0 {
-		evidence.InjectedWithinSourceSessions = WithinSessions(evidence.InjectedSessions, evidence.SourceSessions)
+		if len(sessions) > 0 {
+			if WithinSessions(sessions, evidence.SourceSessions) {
+				evidence.InjectedSourceCheck = InjectedSourceWithin
+			} else {
+				evidence.InjectedSourceCheck = InjectedSourceOutside
+			}
+		}
 	}
 	sources, err := ReadMessageEpisodeSources(ctx, sandbox.db, userID, questionSessionID)
 	if err != nil {

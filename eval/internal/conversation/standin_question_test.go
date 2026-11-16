@@ -1,6 +1,8 @@
 package conversation
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -12,9 +14,8 @@ import (
 //
 // The local stand-in asks one question and both arms have to hit a memory
 // with it - a stand-in that misses would measure an empty window and call it
-// a result. The question lives with the stand-in's fixtures (the run
-// directory), and this test says which plan it has to reach for the hit to
-// be deterministic:
+// a result. The question lives with the stand-in's fixtures, and this test
+// says which plan it has to reach for the hit to be deterministic:
 //
 //   - the old arm's `legacy_v2` router reads "上次" as the last session and
 //     takes it from MySQL, so it needs the question to name a past session;
@@ -25,8 +26,18 @@ import (
 //
 // If the router changes, this test fails and the stand-in's question has to be
 // chosen again, rather than the stand-in quietly measuring nothing.
+//
+// The question is read out of the fixture rather than written here, so the
+// test and the stand-in cannot drift apart.
 func TestTheStandInQuestionReachesTheDecisionPlan(t *testing.T) {
-	const question = "上次我们聊 Redis 编码的时候，最后是怎么定的？"
+	raw, err := os.ReadFile(filepath.Join("testdata", "standin-question.txt"))
+	if err != nil {
+		t.Fatalf("read the stand-in's question: %v", err)
+	}
+	question := strings.TrimSpace(string(raw))
+	if question == "" {
+		t.Fatal("the stand-in's question is empty")
+	}
 	plan := episodeService.NewQueryRouter().Plan(episodeService.RouteRequest{Question: question})
 	if !plan.NeedEpisode {
 		t.Fatalf("the question asks for no recall: %+v", plan)

@@ -162,17 +162,80 @@ func TestTheInjectedMemoryIsReadOutOfThePrompt(t *testing.T) {
 	}
 }
 
-// The authorisation check of the injected memory: a block that cited a
-// message from a conversation the arm was never given would be a memory the
-// learner was shown without a grant.
-func TestTheInjectedMemoryIsCheckedAgainstTheArmsOwnConversations(t *testing.T) {
-	if !WithinSessions([]string{"a", "b"}, []string{"a", "b", "c"}) {
-		t.Fatal("sessions inside the arm's own conversations were refused")
+// The cross-session search answers with its own JSON, and the memory search
+// with the product's summary line. A harness that read only one of them
+// would report a search that really ran as a search that never happened -
+// and under this experiment's read mode the memory search is not registered
+// at all, so the JSON is the only shape there is.
+func TestBothSearchRecordShapesAreRead(t *testing.T) {
+	trace := ReadSearchTrace([]model.AgentStep{
+		{Type: model.AgentStepTool, ToolName: "search_session_history",
+			ArgumentsSummary: `{"session":"source-session","query":"编码"}`,
+			ResultSummary:    `{"status":"ok","reason":"none","matches":[{"message_id":25},{"message_id":27}],"observation_tokens":40}`},
+	})
+	if len(trace) != 1 {
+		t.Fatalf("the trace = %+v", trace)
 	}
-	if WithinSessions([]string{"a", "z"}, []string{"a", "b"}) {
+	if trace[0].Status != "ok" || trace[0].Reason != "none" {
+		t.Fatalf("the trace's verdict = %+v", trace[0])
+	}
+	if trace[0].Cards != 2 || len(trace[0].Refs) != 2 || trace[0].Refs[0] != "25" {
+		t.Fatalf("the trace's records = %+v", trace[0])
+	}
+	if trace[0].Query != "编码" {
+		t.Fatalf("the trace's intent = %+v", trace[0])
+	}
+	// The product's own flag says whether the record was cut short; the
+	// harness reads it rather than counting bytes.
+	trace = ReadSearchTrace([]model.AgentStep{
+		{Type: model.AgentStepTool, ToolName: "memory_search",
+			ResultSummary: "memory_search status=ok reason=none cards=1 refs=E1 semantic=0 episodic=1 tokens=64 degraded=false truncated=true"},
+	})
+	if len(trace) != 1 || !trace[0].Truncated {
+		t.Fatalf("the trace's truncation = %+v", trace)
+	}
+	// A read-back is not a retrieval, even when it answers with JSON.
+	trace = ReadSearchTrace([]model.AgentStep{
+		{Type: model.AgentStepTool, ToolName: "read_history_message", ResultSummary: `{"status":"ok","reason":"none"}`},
+	})
+	if len(trace) != 0 {
+		t.Fatalf("a read-back was traced as a retrieval: %+v", trace)
+	}
+}
+
+// The product sends the memory block as its own system message, so a learner
+// whose question quotes the header cannot be mistaken for the memory, and the
+// text after the block cannot be read as part of it.
+func TestOnlyTheSystemMessageCarriesTheMemory(t *testing.T) {
+	card := schema.SystemMessage("Relevant session cards (untrusted historical context):\n" +
+		"- time: 2026-03-02T02:23:00Z\n  source_session: source-session\n  title: 编码\n  arrangement: 压缩编码能省内存 [message_ids=25]")
+	shown := ReadShownMemory([]*schema.Message{card})
+	if shown.Kind != "card" {
+		t.Fatalf("the shown memory's kind = %q", shown.Kind)
+	}
+	if len(shown.MessageIDs) != 1 || shown.MessageIDs[0] != 25 {
+		t.Fatalf("the shown memory's citations = %v", shown.MessageIDs)
+	}
+	if strings.Contains(shown.Text, "上次我们聊") {
+		t.Fatalf("the shown memory's text carries the question: %q", shown.Text)
+	}
+	// A question that quotes the header, with no block in front of it.
+	quoted := schema.UserMessage("Relevant session cards 是什么？")
+	if got := ReadShownMemory([]*schema.Message{quoted}); got.Kind != "none" {
+		t.Fatalf("a quoted header was read as the memory: %+v", got)
+	}
+}
+
+// The authorisation of the injected memory is three states, because the
+// findings are three.
+func TestTheAuthorisationOfTheInjectedMemoryIsThreeStates(t *testing.T) {
+	if WithinSessions([]string{"a"}, []string{"a", "b"}) != true {
+		t.Fatal("a session inside the arm's own conversations was refused")
+	}
+	if WithinSessions([]string{"a", "z"}, []string{"a", "b"}) != false {
 		t.Fatal("a session outside the arm's own conversations was accepted")
 	}
-	if !WithinSessions(nil, []string{"a"}) {
-		t.Fatal("an empty set was refused")
+	if InjectedSourceWithin == InjectedSourceOutside || InjectedSourceWithin == InjectedSourceUnknown {
+		t.Fatal("the authorisation states are not three distinct values")
 	}
 }
