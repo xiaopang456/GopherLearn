@@ -519,7 +519,7 @@ func registerReadBackEvidence(registry *serviceagent.MemoryEvidenceRegistry, own
 	if registry == nil || len(grants) == 0 {
 		return ""
 	}
-	var summary, episode, segment, card bool
+	var summary, episode, segment, card, search bool
 	var version uint64
 	for _, grant := range grants {
 		switch grant.SourceKind {
@@ -538,6 +538,17 @@ func registerReadBackEvidence(registry *serviceagent.MemoryEvidenceRegistry, own
 			if grant.CardVersion > version {
 				version = grant.CardVersion
 			}
+		case serviceagent.HistorySourceSessionSearch:
+			// A keyword search inside a conversation the learner owns. It
+			// gets its own source label so that the ledger can tell a
+			// card's own citation from a word found in the conversation the
+			// card opened. The two are different facts about how the answer
+			// reached the learner's original words, and an audit that
+			// cannot tell them apart cannot say which one was used.
+			search = true
+			if grant.CardVersion > version {
+				version = grant.CardVersion
+			}
 		case serviceagent.HistorySourceSummarySegment:
 			segment = true
 		case serviceagent.HistorySourceWhiteboard:
@@ -553,6 +564,8 @@ func registerReadBackEvidence(registry *serviceagent.MemoryEvidenceRegistry, own
 		source = "summary+episode"
 	case episode:
 		source = serviceagent.HistorySourceEpisode
+	case search:
+		source = serviceagent.HistorySourceSessionSearch
 	case card:
 		source = serviceagent.HistorySourceSessionCard
 	case segment:
@@ -604,6 +617,8 @@ func (c *episodeFactsCache) confirm(ctx context.Context, grant serviceagent.Hist
 		return c.confirmEpisode(ctx, grant)
 	case serviceagent.HistorySourceSessionCard:
 		return c.confirmCard(ctx, grant)
+	case serviceagent.HistorySourceSessionSearch:
+		return c.confirmSearch(ctx, grant)
 	case serviceagent.HistorySourceSummarySegment:
 		return c.confirmSegment(ctx, grant)
 	default:
@@ -617,37 +632,9 @@ func (c *episodeFactsCache) confirm(ctx context.Context, grant serviceagent.Hist
 // card and the Episode are two documents in one table, and the citation
 // closure a grant is checked against is the one the row really carries.
 func (c *episodeFactsCache) confirmCard(ctx context.Context, grant serviceagent.HistoryMessageGrant) (string, bool) {
-	if c.reader == nil {
-		return refusalVerifierAbsent, false
-	}
-	entry := c.entry(ctx, grant.CardID)
-	if entry.err != nil {
-		if errors.Is(entry.err, ErrEpisodeEvidenceMissing) {
-			return refusalCardMissing, false
-		}
-		return refusalUnreadable, false
-	}
-	facts := entry.facts
-	if strings.TrimSpace(facts.ContentKind) != string(model.EpisodeContentSessionCard) {
-		return refusalCardKind, false
-	}
-	if strings.TrimSpace(facts.EpisodeID) != strings.TrimSpace(grant.CardID) {
-		return refusalCardMissing, false
-	}
-	if facts.UserID != c.userID {
-		return refusalEpisodeOwner, false
-	}
-	if strings.TrimSpace(facts.SessionID) != strings.TrimSpace(grant.SourceSessionID) {
-		return refusalEpisodeSession, false
-	}
-	if facts.Version == 0 || facts.Version != grant.CardVersion {
-		return refusalEpisodeVersion, false
-	}
-	if facts.Status != string(model.EpisodeStatusActive) {
-		return refusalEpisodeInactive, false
-	}
-	if facts.IndexStatus != string(model.EpisodeIndexIndexed) {
-		return refusalEpisodeIndex, false
+	facts, reason, ok := c.cardFacts(ctx, grant)
+	if !ok {
+		return reason, false
 	}
 	if !slices.Contains(facts.EvidenceMessageIDs, grant.MessageID) {
 		return refusalEpisodeClosure, false
@@ -656,6 +643,78 @@ func (c *episodeFactsCache) confirmCard(ctx context.Context, grant serviceagent.
 		return refusalEpisodeWatermark, false
 	}
 	return "", true
+}
+
+// confirmSearch re-establishes a keyword search hit.
+//
+// A search hit is checked against the card that opened the conversation, and
+// the check is deliberately not the citation closure. A card cites the
+// messages it was written from, so its citations are inside its closure; a
+// search finds the detail the card and the summary did not keep, so its hits
+// are outside that closure by definition. Holding the hit to the closure
+// would refuse every hit the search exists to find, and the third step of
+// the chain - card, then summary, then the original words - would be
+// unreachable.
+//
+// What is checked is the card itself: that it is still there, still this
+// card, still this version, still active, still indexed, still owned by this
+// learner, and still about the session the hit was found in. The watermark is
+// the ceiling: the card read the session as far as it had reached, and a
+// message above that line is not something it ever saw.
+func (c *episodeFactsCache) confirmSearch(ctx context.Context, grant serviceagent.HistoryMessageGrant) (string, bool) {
+	facts, reason, ok := c.cardFacts(ctx, grant)
+	if !ok {
+		return reason, false
+	}
+	if facts.Watermark > 0 && grant.MessageID > facts.Watermark {
+		return refusalEpisodeWatermark, false
+	}
+	return "", true
+}
+
+// cardFacts re-establishes the card a grant was drawn from.
+//
+// The checks are the ones every card-drawn grant shares: the row is still
+// there, it is still a card, it is still the same card at the same version,
+// it is still active and indexed, it belongs to this learner, and it is
+// about the session the grant names. What the caller adds on top is the
+// check that differs between the kinds - the citation closure for a card's
+// own citation, and nothing for a search hit.
+func (c *episodeFactsCache) cardFacts(ctx context.Context,
+	grant serviceagent.HistoryMessageGrant) (EpisodeEvidenceFacts, string, bool) {
+	if c.reader == nil {
+		return EpisodeEvidenceFacts{}, refusalVerifierAbsent, false
+	}
+	entry := c.entry(ctx, grant.CardID)
+	if entry.err != nil {
+		if errors.Is(entry.err, ErrEpisodeEvidenceMissing) {
+			return EpisodeEvidenceFacts{}, refusalCardMissing, false
+		}
+		return EpisodeEvidenceFacts{}, refusalUnreadable, false
+	}
+	facts := entry.facts
+	if strings.TrimSpace(facts.ContentKind) != string(model.EpisodeContentSessionCard) {
+		return facts, refusalCardKind, false
+	}
+	if strings.TrimSpace(facts.EpisodeID) != strings.TrimSpace(grant.CardID) {
+		return facts, refusalCardMissing, false
+	}
+	if facts.UserID != c.userID {
+		return facts, refusalEpisodeOwner, false
+	}
+	if strings.TrimSpace(facts.SessionID) != strings.TrimSpace(grant.SourceSessionID) {
+		return facts, refusalEpisodeSession, false
+	}
+	if facts.Version == 0 || facts.Version != grant.CardVersion {
+		return facts, refusalEpisodeVersion, false
+	}
+	if facts.Status != string(model.EpisodeStatusActive) {
+		return facts, refusalEpisodeInactive, false
+	}
+	if facts.IndexStatus != string(model.EpisodeIndexIndexed) {
+		return facts, refusalEpisodeIndex, false
+	}
+	return facts, "", true
 }
 
 // confirmSegment re-establishes that a summary segment is still the segment

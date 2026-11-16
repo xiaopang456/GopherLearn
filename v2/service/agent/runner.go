@@ -504,6 +504,16 @@ type RunContext struct {
 	// extends the same set, so the read-back tool can read back the ids the
 	// browse tool just showed the model.
 	GrantSet *HistoryGrantSet
+	// CardScopes are the earlier conversations the session cards in this
+	// turn opened.
+	//
+	// They travel apart from the grants because a card authorises a
+	// session and not only the messages it happens to cite: a card whose
+	// entries point at summary segments and at no raw message still opens
+	// a conversation the learner may browse. A grant set that derived
+	// "which sessions are reachable" from the cited message ids would deny
+	// that conversation.
+	CardScopes []CardScope
 	// Relevance is what the server-side pre-retrieval found before the model
 	// was asked anything. It is server-owned and nil when no pre-retrieval ran.
 	//
@@ -867,6 +877,11 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	toolInput := input
 	toolInput.HistoryGrants = MergeHistoryMessageGrants(window.EpisodeHistoryGrants, window.SummaryHistoryGrants,
 		window.SummarySegmentHistoryGrants, window.SessionCardHistoryGrants)
+	// The card scopes are set before the grant set is built, because the grant
+	// set reads them: they are what says which earlier conversations this turn
+	// opened, and a tool that browses one of them asks the set rather than the
+	// model.
+	toolInput.CardScopes = window.SessionCardScopes
 	// One authorisation set for the whole turn, shared by every tool that
 	// reads the learner's own words. A tool that opens an older segment
 	// extends it, and the read-back tool sees the extension.

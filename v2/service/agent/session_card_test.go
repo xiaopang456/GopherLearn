@@ -31,12 +31,19 @@ func TestSessionCardRendersTheSourceSessionAndTheStatuses(t *testing.T) {
 		[]model.SessionCardEntry{{Text: "每轮9道题", Status: model.SessionCardStatusStated, MessageIDs: []uint{12}}},
 		[]model.SessionCardEntry{{Text: "三道练习", Status: model.SessionCardStatusAssistantProposed, MessageIDs: []uint{13}, SegmentSeqs: []int{2}}},
 	)
-	text, ids, grants, err := renderSessionCardsWithinBudget([]model.EpisodeMemory{card}, 1000, true)
+	text, ids, grants, scopes, err := renderSessionCardsWithinBudget([]model.EpisodeMemory{card}, 1000, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if text == "" || len(ids) != 1 || ids[0] != "card-1" {
 		t.Fatalf("the card was not rendered: %q %v", text, ids)
+	}
+	// The scope is what opens the source conversation, and it is issued for
+	// every card the window shows - not only for the ones that cite a raw
+	// message.
+	if len(scopes) != 1 || scopes[0].SessionID != "source-session" ||
+		scopes[0].CardID != "card-1" || scopes[0].CardVersion != 2 {
+		t.Fatalf("the card scope is %+v", scopes)
 	}
 	for _, want := range []string{"source_session: source-session", "arrangement: 每轮9道题",
 		"assistant_product: 三道练习", "status=assistant_proposed", "message_ids=13", "segments=2"} {
@@ -74,28 +81,29 @@ func TestSessionCardBudgetDropsWholeCards(t *testing.T) {
 	card := cardRow("card-1", "source-session", []model.SessionCardEntry{
 		{Text: "每轮9道题", Status: model.SessionCardStatusStated, MessageIDs: []uint{12}},
 	}, nil)
-	text, ids, grants, err := renderSessionCardsWithinBudget([]model.EpisodeMemory{card}, 4, true)
+	text, ids, grants, scopes, err := renderSessionCardsWithinBudget([]model.EpisodeMemory{card}, 4, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if text != "" || len(ids) != 0 || len(grants) != 0 {
-		t.Fatalf("a card that did not fit was shown: %q %v %v", text, ids, grants)
+	if text != "" || len(ids) != 0 || len(grants) != 0 || len(scopes) != 0 {
+		t.Fatalf("a card that did not fit was shown: %q %v %v %v", text, ids, grants, scopes)
 	}
 }
 
-// A card of the current session is not shown again.
-func TestSessionCardProviderIsNotAskedForTheCurrentSession(t *testing.T) {
-	// The exclusion lives in the store, and this test states the rule the
-	// store implements: the current session's own card is not a candidate.
+// A card that opens the run's own session grants nothing extra.
+//
+// The exclusion of the current session's own card lives in the store, and
+// this test states the rule the authorisation set implements: a grant set
+// built from a card about the current session may not name that session as
+// an earlier conversation, or the run would read its own present as if it
+// were its past.
+func TestSessionCardGrantAboutTheCurrentSessionOpensNoEarlierSession(t *testing.T) {
 	card := cardRow("card-1", "current-session", []model.SessionCardEntry{
 		{Text: "每轮9道题", Status: model.SessionCardStatusStated, MessageIDs: []uint{12}},
 	}, nil)
 	if card.SessionID != "current-session" {
 		t.Fatal("the fixture is wrong")
 	}
-	// The grant set of a run in this session must not authorise this card's
-	// own session through a card, or the run would read back its own
-	// conversation as if it were an earlier one.
 	run := RunContext{UserID: 7, SessionID: "current-session"}
 	grants := NewHistoryGrantSet(run, []HistoryMessageGrant{{
 		MessageID: 12, SourceKind: HistorySourceSessionCard,
@@ -106,6 +114,14 @@ func TestSessionCardProviderIsNotAskedForTheCurrentSession(t *testing.T) {
 	}
 	if grants.AuthorisesSession(run, "other-session") {
 		t.Fatal("a session no card pointed at is readable")
+	}
+	// The current session is not listed as an earlier conversation either:
+	// the list is what says "this one is from before".
+	sessions := grants.CardSessions()
+	for _, session := range sessions {
+		if session == "current-session" {
+			t.Fatalf("the run's own session is listed as an earlier one: %v", sessions)
+		}
 	}
 }
 
@@ -129,6 +145,8 @@ func TestSessionCardGrantSetNamesTheSourceSessions(t *testing.T) {
 		{MessageID: 13, SourceKind: HistorySourceSessionCard, SourceSessionID: "source-session",
 			CardID: "card-1", CardVersion: 2, CardWatermark: 144},
 	})
+	grants.SetCardScope(CardScope{SessionID: "source-session", CardID: "card-1",
+		CardVersion: 2, CardWatermark: 144})
 	sessions := grants.CardSessions()
 	if len(sessions) != 1 || sessions[0] != "source-session" {
 		t.Fatalf("the card sessions are %v", sessions)
@@ -136,6 +154,30 @@ func TestSessionCardGrantSetNamesTheSourceSessions(t *testing.T) {
 	cardID, version, watermark, ok := grants.CardAuthorisation("source-session")
 	if !ok || cardID != "card-1" || version != 2 || watermark != 144 {
 		t.Fatalf("the card authorisation is %q %d %d %v", cardID, version, watermark, ok)
+	}
+}
+
+// A card that cites summary segments and no raw message still opens its
+// conversation.
+//
+// This is the case a grant set built from the message grants would get
+// wrong: such a card grants no message at all, so the conversation it points
+// at would look unreachable and the whole chain would stop at the card.
+func TestACardThatCitesNoRawMessageStillOpensItsConversation(t *testing.T) {
+	run := RunContext{UserID: 7, SessionID: "current-session"}
+	grants := NewHistoryGrantSet(run, nil)
+	grants.cardScopes["source-session"] = CardScope{
+		SessionID: "source-session", CardID: "card-1", CardVersion: 2, CardWatermark: 144,
+	}
+	if !grants.AuthorisesSession(run, "source-session") {
+		t.Fatal("a conversation a card opened is not reachable")
+	}
+	sessions := grants.CardSessions()
+	if len(sessions) != 1 || sessions[0] != "source-session" {
+		t.Fatalf("the card sessions are %v", sessions)
+	}
+	if grants.AuthorisesSession(run, "other-session") {
+		t.Fatal("a conversation no card opened is reachable")
 	}
 }
 

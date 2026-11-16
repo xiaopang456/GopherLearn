@@ -64,6 +64,63 @@ func TestContextBuilderInjectsSessionCardsAndGrantsTheirCitations(t *testing.T) 
 	}
 }
 
+// The window says which earlier conversations the cards opened.
+//
+// The scope is what the browse and search tools ask the authorisation set
+// about, so a window that did not carry it would leave those tools unable to
+// open the conversation the card was pointing at - and the chain would stop
+// at the card.
+func TestContextBuilderCarriesTheCardScopesIntoTheWindow(t *testing.T) {
+	config := DefaultContextConfig()
+	config.MaxEpisodeTokens = 1000
+	builder, err := NewContextBuilder(config, &fakeHistoryReader{}, nil, nil, nil, staticSummary("current-session summary"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	card := model.EpisodeMemory{
+		ID: "card-1", UserID: 7, SessionID: "source-session",
+		ContentKind: model.EpisodeContentSessionCard,
+		Title:       "Go 并发练习",
+		Card: model.SessionCardDocument{
+			Version:  model.SessionCardContentVersion,
+			Title:    "Go 并发练习",
+			Synopsis: "讨论了每轮题量。",
+			Arrangements: []model.SessionCardEntry{
+				{Text: "每轮9道题", Status: model.SessionCardStatusStated, MessageIDs: []uint{12}},
+			},
+		},
+		SearchText: "Go 并发练习", SourceLastMessageID: 144,
+		LastMessageAt: time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC),
+		Version:       2, Status: model.EpisodeStatusActive, IndexStatus: model.EpisodeIndexIndexed,
+	}
+	builder.UseSessionCardProvider(SessionCardProviderFunc(func(context.Context, RunContext) ([]model.EpisodeMemory, error) {
+		return []model.EpisodeMemory{card}, nil
+	}))
+	window, err := builder.Build(context.Background(), RunContext{UserID: 7, SessionID: "current", Question: "上次题量怎么定的？", EpisodeRecallReady: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(window.SessionCardScopes) != 1 {
+		t.Fatalf("the window carries %d card scopes", len(window.SessionCardScopes))
+	}
+	scope := window.SessionCardScopes[0]
+	if scope.SessionID != "source-session" || scope.CardID != "card-1" || scope.CardVersion != 2 {
+		t.Fatalf("the card scope is %+v", scope)
+	}
+	if scope.CardWatermark != 144 {
+		t.Fatalf("the card scope lost the card's watermark: %+v", scope)
+	}
+	// The scope opens the conversation for the tools of this turn.
+	run := RunContext{UserID: 7, SessionID: "current", CardScopes: window.SessionCardScopes}
+	grants := NewHistoryGrantSet(run, MergeHistoryMessageGrants(window.SessionCardHistoryGrants))
+	if !grants.AuthorisesSession(run, "source-session") {
+		t.Fatal("the conversation the card opened is not reachable")
+	}
+	if grants.AuthorisesSession(run, "some-other-session") {
+		t.Fatal("a conversation no card opened is reachable")
+	}
+}
+
 // The card path replaces the Episode path: attaching the card provider
 // detaches the Episode provider, so a window never carries two accounts of
 // the same conversation.

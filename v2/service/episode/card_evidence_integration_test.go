@@ -112,6 +112,69 @@ func TestCardEvidenceCarriesTheTailTheSummaryHasNotCovered(t *testing.T) {
 	}
 }
 
+// A segment that cannot be decoded is a gap in the compressed state.
+//
+// The watermark says how far the compressed state has been read. Raising it
+// past a segment that could not be read would make the card claim a coverage
+// it does not have, and the tail of raw messages would start above the gap
+// and skip it entirely - so the stretch would be neither summarised nor
+// shown.
+func TestCardEvidenceStopsTheWatermarkAtAnUnreadableSegment(t *testing.T) {
+	db := openCardTestDB(t)
+	user, session := createCardSession(t, db, "unreadable")
+	messages := createCardMessages(t, db, session.ID, 5)
+	goodContent, err := model.MarshalSessionSummarySegmentContent(model.SessionSummarySegmentContent{
+		SchemaVersion: model.SessionSummarySegmentSchemaV1, Topic: "第一段",
+		Points: []model.SessionSummarySegmentPoint{{Text: "每轮9道题", EvidenceMessageIDs: []uint{messages[0].ID}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	good := model.SessionSummarySegment{
+		UserID: user.ID, SessionID: session.ID, Seq: 1,
+		StartMessageID: messages[0].ID, EndMessageID: messages[0].ID,
+		StartAt: messages[0].CreatedAt, EndAt: messages[0].CreatedAt,
+		Topic: "第一段", Content: goodContent, TokenEstimate: 100,
+	}
+	broken := model.SessionSummarySegment{
+		UserID: user.ID, SessionID: session.ID, Seq: 2,
+		StartMessageID: messages[1].ID, EndMessageID: messages[2].ID,
+		StartAt: messages[1].CreatedAt, EndAt: messages[2].CreatedAt,
+		Topic: "读不出来的一段", Content: "{not json", TokenEstimate: 100,
+	}
+	if err := db.Create(&good).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&broken).Error; err != nil {
+		t.Fatal(err)
+	}
+	loader, err := NewDatabaseCardEvidenceLoader(db, 128)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := messages[4].ID
+	evidence, err := loader.LoadCardEvidence(context.Background(), user.ID, session.ID, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The watermark stops at the segment that could be read.
+	if evidence.SummaryWatermark != messages[0].ID {
+		t.Fatalf("the summary reaches %d, want %d", evidence.SummaryWatermark, messages[0].ID)
+	}
+	// And the raw messages take over from there, so the stretch the broken
+	// segment covered is read as original words rather than skipped.
+	if len(evidence.Messages) == 0 {
+		t.Fatal("the gap was left unread")
+	}
+	if evidence.Messages[0].ID != messages[1].ID {
+		t.Fatalf("the raw tail starts at %d, want %d", evidence.Messages[0].ID, messages[1].ID)
+	}
+	if evidence.Messages[len(evidence.Messages)-1].ID != target {
+		t.Fatalf("the raw tail ends at %d, want %d",
+			evidence.Messages[len(evidence.Messages)-1].ID, target)
+	}
+}
+
 // A board written after the target describes a state the card may not cover.
 func TestCardEvidenceIgnoresABoardThatReachesPastTheTarget(t *testing.T) {
 	db := openCardTestDB(t)

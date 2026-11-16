@@ -174,13 +174,26 @@ func (l *DatabaseCardEvidenceLoader) LoadCardEvidence(ctx context.Context, userI
 		return CardEvidence{}, err
 	}
 	view.Segments = segments
+	// The watermark is the message id up to which the compressed state has
+	// been read. A segment that cannot be decoded is a gap in that state:
+	// the stretch it covered was summarised, and the summary is unreadable,
+	// so nothing about that stretch may be claimed as covered. The watermark
+	// therefore stops at the last segment that was actually read, and the
+	// raw messages from there on fill the gap - the card sees the original
+	// words instead of a summary it could not read.
+	//
+	// Raising the watermark past an unreadable segment would make the card
+	// claim a coverage it does not have, and the tail of raw messages would
+	// start above the gap and skip it entirely.
 	for _, segment := range segments {
 		content, decodeErr := model.DecodeSessionSummarySegmentContent(segment.Content)
 		if decodeErr != nil {
 			// A segment that cannot be read is not a segment. It is left out
 			// rather than failing the whole card: the rest of the session's
-			// compressed state is still true.
-			continue
+			// compressed state is still true. What it may not do is let the
+			// watermark move past the stretch it covered, so the walk stops
+			// here and the raw messages take over from there.
+			break
 		}
 		view.SegmentContent = append(view.SegmentContent, content)
 		if segment.EndMessageID > view.SummaryWatermark {

@@ -293,7 +293,7 @@ func (r *BrowseSummarySegmentsRegistry) browse(ctx context.Context, run servicea
 	// answer for any session this learner owns - including one the model
 	// invented.
 	targetSession := strings.TrimSpace(requestedSession)
-	cardID, cardVersion := "", uint64(0)
+	cardID, cardVersion, cardWatermark := "", uint64(0), uint(0)
 	if targetSession == "" {
 		targetSession = run.SessionID
 	} else if targetSession != strings.TrimSpace(run.SessionID) {
@@ -302,13 +302,18 @@ func (r *BrowseSummarySegmentsRegistry) browse(ctx context.Context, run servicea
 			out.Reason = browseReasonSessionNotAllowed
 			return out, nil
 		}
-		granted, version, _, ok := run.GrantSet.CardAuthorisation(targetSession)
+		granted, version, ceiling, ok := run.GrantSet.CardAuthorisation(targetSession)
 		if !ok {
 			out.Status = browseStatusNoEvidence
 			out.Reason = browseReasonSessionNotAllowed
 			return out, nil
 		}
-		cardID, cardVersion = granted, version
+		// The ceiling comes with the card because it is the ceiling of every
+		// step taken in that conversation. The card described the session as
+		// far as it had reached, and the grants issued for the segments read
+		// here carry it, so a message above that line is not something the
+		// card ever saw and is not readable back either.
+		cardID, cardVersion, cardWatermark = granted, version, ceiling
 	}
 	limit := input.MaxResults
 	if limit <= 0 {
@@ -318,6 +323,23 @@ func (r *BrowseSummarySegmentsRegistry) browse(ctx context.Context, run servicea
 		limit = maxBrowseSummarySegments
 	}
 	segments, err := r.resolve(ctx, run, targetSession, input, limit)
+	if err == nil && cardWatermark > 0 {
+		// Another conversation, opened through a card. The card described
+		// that session as far as it had reached, and a segment that reaches
+		// past that line is a stretch of the conversation the card never
+		// saw. Showing it would make the browse reach further than the
+		// search does, and the two are the same door into the same
+		// conversation: a detail the search refuses to find must not be
+		// readable by browsing around it.
+		bounded := make([]model.SessionSummarySegment, 0, len(segments))
+		for _, segment := range segments {
+			if segment.EndMessageID > cardWatermark {
+				continue
+			}
+			bounded = append(bounded, segment)
+		}
+		segments = bounded
+	}
 	if err != nil {
 		if ctxErr := contextError(ctx); ctxErr != nil {
 			return nil, ctxErr
@@ -366,7 +388,7 @@ func (r *BrowseSummarySegmentsRegistry) browse(ctx context.Context, run servicea
 		out.Segments = append(out.Segments, browsed.view)
 		// The grants follow the trimming: an id of a point that was cut
 		// is an id the model never saw.
-		grants = append(grants, r.grantsForView(targetSession, segment, browsed, cardID, cardVersion)...)
+		grants = append(grants, r.grantsForView(targetSession, segment, browsed, cardID, cardVersion, cardWatermark)...)
 		r.recordRecentUse(ctx, run, segment.Seq)
 	}
 	out.ObservationTokens = tokens
@@ -507,7 +529,7 @@ func renderSegmentPoints(points []model.SessionSummarySegmentPoint) []string {
 // or after it ends was not one of the messages this segment compressed.
 func (r *BrowseSummarySegmentsRegistry) grantsForView(sessionID string,
 	segment model.SessionSummarySegment, browsed browsedSegment,
-	cardID string, cardVersion uint64) []serviceagent.HistoryMessageGrant {
+	cardID string, cardVersion uint64, cardWatermark uint) []serviceagent.HistoryMessageGrant {
 	grants := make([]serviceagent.HistoryMessageGrant, 0, 8)
 	for _, point := range browsed.points {
 		for _, id := range point.EvidenceMessageIDs {
@@ -523,9 +545,10 @@ func (r *BrowseSummarySegmentsRegistry) grantsForView(sessionID string,
 				SegmentStartMessageID: segment.StartMessageID,
 				SegmentEndMessageID:   segment.EndMessageID,
 				// A segment of another conversation is reachable only
-				// because a card pointed at it, and the card is what the
-				// grant is checked against.
-				CardID: cardID, CardVersion: cardVersion,
+				// because a card opened it, and the card is what the
+				// grant is checked against. Its watermark comes along so
+				// that the read is bounded by what the card saw.
+				CardID: cardID, CardVersion: cardVersion, CardWatermark: cardWatermark,
 			})
 		}
 	}

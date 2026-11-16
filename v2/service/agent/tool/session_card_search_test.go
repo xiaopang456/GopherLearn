@@ -56,6 +56,12 @@ func cardRun() serviceagent.RunContext {
 		SourceSessionID: "source-session", CardID: "card-1", CardVersion: 2, CardWatermark: 144,
 	}}
 	run.GrantSet = serviceagent.NewHistoryGrantSet(run, run.HistoryGrants)
+	// The scope is what opens the conversation. The message grants say which
+	// id in it may be read; the scope says that the conversation itself is
+	// reachable, which is what lets the model browse and search it.
+	run.GrantSet.SetCardScope(serviceagent.CardScope{
+		SessionID: "source-session", CardID: "card-1", CardVersion: 2, CardWatermark: 144,
+	})
 	return run
 }
 
@@ -177,6 +183,75 @@ func TestSearchSessionHistoryReadsTheRunsOwnSession(t *testing.T) {
 	if out.Status != searchSessionStatusOK || len(out.Matches) != 1 {
 		t.Fatalf("the search reported %q and %+v", out.Status, out.Matches)
 	}
+}
+
+// The whole third step: a hit the search found is readable back in full.
+//
+// The search finds the detail the card and the summary did not keep, so the
+// message it found is outside the card's citation closure. Registered as a
+// card citation, every hit the search exists to find would be refused at the
+// read-back with "not in the card's closure" - and the chain would stop at
+// the search, with the model holding a message id it could never read.
+func TestASearchHitIsReadableBackInFull(t *testing.T) {
+	searcher := &fakeSessionSearcher{messages: []model.Message{
+		{ID: 13, SessionID: "source-session", IsUser: true, Content: "细节：我用的是长度前缀"},
+	}}
+	registry, err := NewSearchSessionHistoryRegistry(searcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := cardRun()
+	tools, err := registry.Tools(context.Background(), run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := callSearch(t, tools[0], "source-session", "长度前缀")
+	if out.Status != searchSessionStatusOK || len(out.Matches) != 1 {
+		t.Fatalf("the search reported %q and %+v", out.Status, out.Matches)
+	}
+	// The grant the search issued is a search grant, not a card citation.
+	held := run.GrantSet.Grants(13)
+	if len(held) == 0 {
+		t.Fatal("the searched message is not readable back")
+	}
+	for _, grant := range held {
+		if grant.SourceKind != serviceagent.HistorySourceSessionSearch {
+			t.Fatalf("the grant has the wrong kind: %+v", grant)
+		}
+		if grant.SourceSessionID != "source-session" {
+			t.Fatalf("the grant names the session %q", grant.SourceSessionID)
+		}
+	}
+	// And the read-back tool honours it: the store agrees that the card is
+	// there, and the message is read.
+	reader := &fakeHistoryReader{rows: map[uint]model.Message{
+		13: userMessage(13, "source-session", "细节：我用的是长度前缀"),
+	}}
+	readTools := newHistoryToolsWithEvidence(t, reader, agreeingCardEvidence(), historyRun(
+		serviceagent.HistoryMessageGrant{
+			MessageID: 13, SourceKind: serviceagent.HistorySourceSessionSearch,
+			SourceSessionID: "source-session", CardID: "card-1", CardVersion: 2, CardWatermark: 144,
+		}))
+	read := invokeRead(t, readTools, 13)
+	if len(read.Messages) != 1 || read.Messages[0].MessageID != 13 {
+		t.Fatalf("the search hit was not read back: %+v", read)
+	}
+}
+
+// agreeingCardEvidence reads a card back the way the store would when
+// nothing has changed since the render.
+func agreeingCardEvidence() EpisodeEvidenceReader {
+	return EpisodeEvidenceReaderFunc(func(_ context.Context, userID int64, episodeID string) (EpisodeEvidenceFacts, error) {
+		return EpisodeEvidenceFacts{EpisodeID: episodeID, UserID: userID,
+			SessionID: "source-session", Version: 2, Status: string(model.EpisodeStatusActive),
+			IndexStatus: string(model.EpisodeIndexIndexed), Watermark: 144,
+			ContentKind: string(model.EpisodeContentSessionCard),
+			// The card cites message 12, and not the searched one. The
+			// searched message is outside the closure by definition, which
+			// is the whole point of the search.
+			EvidenceMessageIDs: []uint{12},
+		}, nil
+	})
 }
 
 // The tool is a known capability, so the runner's bookkeeping finds it.

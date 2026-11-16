@@ -823,6 +823,14 @@ type ContextWindow struct {
 	// SessionCardIDs are the cards this window showed. They are internal
 	// diagnostics and are not part of what the model reads.
 	SessionCardIDs []string
+	// SessionCardScopes are the earlier conversations the cards in this
+	// window opened.
+	//
+	// They are separate from the grants because a card authorises a session
+	// and not only the messages it happens to cite: a card whose entries
+	// point at summary segments and at no raw message still opens a
+	// conversation the learner may browse and search.
+	SessionCardScopes []CardScope
 	// SummarySegmentHistoryGrants are the read-back authorisations the board
 	// and the summary segments created. They are a third list rather than
 	// another kind of summary grant, because a segment is bounded by the
@@ -1842,7 +1850,7 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	// point to an earlier conversation, and a card whose citations cannot be
 	// read back is a description with no way to the words.
 	cardEvidenceRead := b.config.MemoryReadMode.UsesEpisodeEvidenceRead() || b.cards != nil
-	cardText, cardIDs, cardGrants, err := renderSessionCardsWithinBudget(cards,
+	cardText, cardIDs, cardGrants, cardScopes, err := renderSessionCardsWithinBudget(cards,
 		minInt(remaining-4-breakdown.EpisodeMemory, b.config.MaxEpisodeTokens),
 		cardEvidenceRead)
 	if err != nil {
@@ -1936,6 +1944,7 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		EpisodeSources:       episodeSources,
 		EpisodeHistoryGrants: episodeGrants, SummaryHistoryGrants: summaryGrants,
 		SessionCardHistoryGrants: cardGrants, SessionCardIDs: cardIDs,
+		SessionCardScopes:           cardScopes,
 		SummarySegmentHistoryGrants: segmentGrants,
 		WhiteboardEntryMessageIDs:   whiteboardEntryIDs, WhiteboardAnchorMessageIDs: whiteboardAnchorIDs,
 		WhiteboardEntryKeys: whiteboardEntryKeys, WhiteboardDisplayedEntries: whiteboardDisplayedEntries, WhiteboardDisplayedAnchors: whiteboardDisplayedAnchors,

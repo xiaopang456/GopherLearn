@@ -156,7 +156,12 @@ func (r *SearchSessionHistoryRegistry) search(ctx context.Context, run serviceag
 	if limit > maxSearchSessionResults {
 		limit = maxSearchSessionResults
 	}
-	// The session to search, and the card that authorised it.
+	// The session to search, and the card that opened it.
+	//
+	// In this run's own conversation there is no card: the owner check and
+	// the session binding in the query are the whole of the authority. In
+	// another conversation there has to be a card, and its watermark is the
+	// ceiling of what may be read back from there.
 	targetSession := strings.TrimSpace(input.Session)
 	cardID, cardVersion, watermark := "", uint64(0), uint(0)
 	if targetSession == "" {
@@ -209,13 +214,18 @@ func (r *SearchSessionHistoryRegistry) search(ctx context.Context, run serviceag
 			Text:   text, Truncated: truncated,
 		})
 		tokens += rag.EstimateTokens(text) + 8
-		if cardID != "" {
-			grants = append(grants, serviceagent.HistoryMessageGrant{
-				MessageID: message.ID, SourceKind: serviceagent.HistorySourceSessionCard,
-				SourceSessionID: targetSession,
-				CardID:          cardID, CardVersion: cardVersion, CardWatermark: watermark,
-			})
-		}
+		// The hit is registered under the search kind rather than the card
+		// kind, and the difference is the whole point of the third step. A
+		// card cites the messages it was written from, so its ids are inside
+		// its citation closure; a search finds the detail the card and the
+		// summary did not keep, so its hits are outside that closure by
+		// definition. Registered as a card citation, every hit the search
+		// exists to find would be refused at the read-back.
+		grants = append(grants, serviceagent.HistoryMessageGrant{
+			MessageID: message.ID, SourceKind: serviceagent.HistorySourceSessionSearch,
+			SourceSessionID: targetSession,
+			CardID:          cardID, CardVersion: cardVersion, CardWatermark: watermark,
+		})
 	}
 	out.ObservationTokens = tokens
 	// The ids the search just showed the model are now readable back in full,

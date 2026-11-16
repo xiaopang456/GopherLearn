@@ -58,13 +58,14 @@ const (
 // carrying the same amount of cross-session context, and a deployment that
 // switches paths must not also double the window it spends on the past.
 func renderSessionCardsWithinBudget(cards []model.EpisodeMemory, budget int,
-	evidenceRead bool) (string, []string, []HistoryMessageGrant, error) {
+	evidenceRead bool) (string, []string, []HistoryMessageGrant, []CardScope, error) {
 	if budget <= messageTokenCost(sessionCardHeader) || len(cards) == 0 {
-		return "", nil, nil, nil
+		return "", nil, nil, nil, nil
 	}
 	blocks := make([]string, 0, 3)
 	ids := make([]string, 0, 3)
 	grants := make([]HistoryMessageGrant, 0, 12)
+	scopes := make([]CardScope, 0, 3)
 	seen := make(map[uint]struct{}, 12)
 	used := messageTokenCost(sessionCardHeader)
 	for _, card := range cards {
@@ -82,6 +83,16 @@ func renderSessionCardsWithinBudget(cards []model.EpisodeMemory, budget int,
 		blocks = append(blocks, block)
 		ids = append(ids, card.ID)
 		used += cost
+		// The scope says "this conversation is open to you". It is issued for
+		// every card the window shows, whether or not the card cites a raw
+		// message: a card that points only at summary segments still opens a
+		// session the learner may browse and search.
+		scopes = append(scopes, CardScope{
+			SessionID:     card.SessionID,
+			CardID:        card.ID,
+			CardVersion:   card.Version,
+			CardWatermark: card.SourceLastMessageID,
+		})
 		if !evidenceRead {
 			continue
 		}
@@ -105,9 +116,9 @@ func renderSessionCardsWithinBudget(cards []model.EpisodeMemory, budget int,
 		}
 	}
 	if len(blocks) == 0 {
-		return "", nil, nil, nil
+		return "", nil, nil, nil, nil
 	}
-	return sessionCardHeader + "\n" + strings.Join(blocks, "\n"), ids, grants, nil
+	return sessionCardHeader + "\n" + strings.Join(blocks, "\n"), ids, grants, scopes, nil
 }
 
 // renderSessionCard renders one card.
