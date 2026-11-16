@@ -47,6 +47,7 @@ func run(args []string, out io.Writer) error {
 	cardKeyPrefix := flags.String("card-key-prefix", "", "the card index's key prefix; the default is derived from the arm")
 	memoryReadMode := flags.String("memory-read-mode", "legacy_v2", "the product's read path; both arms use the same one")
 	episodeRecallMode := flags.String("episode-recall-mode", "", "the product's Episode recall switch: disabled, shadow_only or inject_enabled; the default follows the arm")
+	memoryWait := flags.Duration("memory-wait", 0, "how long the arm waits for the memory to be indexed; the default depends on the environment")
 	stopFile := flags.String("stop-file", "", "private stop-file path, watched during execution")
 	timeout := flags.Duration("timeout", 0, "attempt deadline; the default depends on the environment")
 	proxy := flags.String("proxy", "", "counting proxy base URL (real mode)")
@@ -225,7 +226,7 @@ func run(args []string, out io.Writer) error {
 			return err
 		}
 		*userID, *userName = id, name
-		environment, err = realEnvironment(flags, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel, userID, userName, sessionID, *mode, *sessionCardMode, indexName, keyPrefix, *memoryReadMode, *episodeRecallMode, *questionSession)
+		environment, err = realEnvironment(flags, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel, userID, userName, sessionID, *mode, *sessionCardMode, indexName, keyPrefix, *memoryReadMode, *episodeRecallMode, *questionSession, *memoryWait)
 		if err != nil {
 			return err
 		}
@@ -403,7 +404,7 @@ func run(args []string, out io.Writer) error {
 // realEnvironment collects the paid-run wiring. The index password is read
 // from the process environment so that it never reaches a command line, an
 // output file, or an error message.
-func realEnvironment(flags *flag.FlagSet, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel *string, userID *int64, userName, sessionID *string, mode, sessionCardMode, cardIndexName, cardKeyPrefix, memoryReadMode, episodeRecallMode, questionSession string) (conversation.RealEnvironment, error) {
+func realEnvironment(flags *flag.FlagSet, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel *string, userID *int64, userName, sessionID *string, mode, sessionCardMode, cardIndexName, cardKeyPrefix, memoryReadMode, episodeRecallMode, questionSession string, memoryWait time.Duration) (conversation.RealEnvironment, error) {
 	var environment conversation.RealEnvironment
 	if *proxy == "" || *redis == "" || *storage == "" || *chatModel == "" || *embeddingModel == "" || *rerankModel == "" || *userID <= 0 || *userName == "" || *sessionID == "" {
 		return environment, fmt.Errorf("the real mode needs the proxy, index, storage, models and evaluation identity")
@@ -444,6 +445,10 @@ func realEnvironment(flags *flag.FlagSet, proxy, redis, redisPassword, storage, 
 		QuestionSession:           questionSession,
 		SessionCardIndexName:      cardIndexName,
 		SessionCardIndexKeyPrefix: cardKeyPrefix,
+		// How long the arm waits for the memory to be indexed. Zero means
+		// the environment's own default, which is the paid run's: the
+		// stand-in answers in milliseconds and a real model does not.
+		MemoryWaitTimeout: memoryWait,
 	}
 	return environment, environment.Validate()
 }

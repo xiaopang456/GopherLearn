@@ -40,6 +40,29 @@ import (
 	"gorm.io/gorm"
 )
 
+const (
+	// realProjectionTaskTimeoutSeconds is how long the projection worker may
+	// take on one attempt in a paid run.
+	//
+	// The product's default is thirty seconds. A card's writer answers with
+	// the whole session's document - one call, but a long one - so thirty
+	// seconds cuts it off. The product's own configuration refuses a task
+	// timeout above one hundred and twenty seconds, and this is that
+	// ceiling: the evaluation does not move the product's bound, it uses it.
+	realProjectionTaskTimeoutSeconds = 120
+	// realProjectionLeaseSeconds is the lease that has to outlast the task
+	// timeout: the configuration refuses a lease that is not longer.
+	realProjectionLeaseSeconds = 180
+	// realMemoryWaitDefault is how long the arm waits for the memory to be
+	// indexed when the run does not say.
+	//
+	// It is LONGER than the worker's task timeout on purpose. The arm has to
+	// still be waiting when the worker gives up on a projection: an arm that
+	// gives up first tears the product down, and the worker then records a
+	// CANCELLED projection - which reads like the model's fault and is not.
+	realMemoryWaitDefault = 15 * time.Minute
+)
+
 // RealEnvironment describes where a paid evaluation run finds its model
 // endpoints, its shared knowledge index, and its evaluation identity.
 type RealEnvironment struct {
@@ -84,6 +107,22 @@ type RealEnvironment struct {
 	// SessionCardIndexName and SessionCardIndexKeyPrefix are that namespace.
 	SessionCardIndexName      string
 	SessionCardIndexKeyPrefix string
+	// MemoryWaitTimeout is how long the arm waits for the memory to be
+	// indexed.
+	//
+	// The default of ninety seconds was written for the local stand-in,
+	// which answers in milliseconds. A real model does not: publishing the
+	// projection is only the start, and the memory is indexed after the
+	// product's worker has generated the document (one call for a card, one
+	// call per assertion for an Episode), embedded it and written it to the
+	// index. Ninety seconds cuts that chain short, and the attempt then
+	// tears the product down while the projection is still running - which
+	// the worker records as a cancelled projection rather than a timeout.
+	//
+	// Zero means the arm's own default. The two arms use the same number:
+	// the Episode arm is the slower one, because it verifies every
+	// assertion separately.
+	MemoryWaitTimeout time.Duration
 	// MemoryReadMode is the product's read path. It is written into the
 	// product's configuration rather than left to the product's default, and
 	// it is exported with the attempt: an arm that does not say which read
@@ -169,6 +208,18 @@ func CardArmForEnvironment(env RealEnvironment) *CardArm {
 		Mode:              CardArmModeOff,
 		MemoryReadMode:    strings.TrimSpace(env.MemoryReadMode),
 		EpisodeRecallMode: strings.TrimSpace(env.EpisodeRecallMode),
+		// The wait comes from the environment, so that a paid run can say how
+		// long it waited for the memory to be indexed. Without it the arm
+		// waited ninety seconds, which is the stand-in's timescale, and a real
+		// model's projection was cancelled mid-flight.
+		//
+		// A run that says nothing gets the paid run's own default, not the
+		// stand-in's: the two timescales are not the same, and the shorter
+		// one is the one that cancels a projection.
+		WaitTimeout: env.MemoryWaitTimeout,
+	}
+	if arm.WaitTimeout <= 0 {
+		arm.WaitTimeout = realMemoryWaitDefault
 	}
 	if env.SessionCardMode == CardArmModeOn {
 		arm.Mode = CardArmModeOn
@@ -352,6 +403,21 @@ func realSettings(repository, storage string, env RealEnvironment) (*entry.Setti
 	settings.Config.RagModelConfig.RagChatThinkingDialect = config.ChatThinkingDialectDeepSeek
 	settings.Config.AgentThinkingEnabled = true
 	settings.Config.AgentConfig.EpisodeQuietWindowSeconds = 86400
+	// The projection worker's own task timeout, and the lease that has to
+	// outlast it.
+	//
+	// The product's default is thirty seconds, which is enough for a model
+	// that answers in milliseconds and not enough for one that does not: the
+	// card writer answers with a whole session's document, and the Episode
+	// writer answers once per assertion to verify it. The worker kills a
+	// projection that runs past its task timeout, and a killed projection is
+	// recorded as a failed one.
+	//
+	// The two are the same kind of setting as the quiet window above: the
+	// evaluation hands the product a configuration, and the configuration is
+	// what decides how long a background attempt may take.
+	settings.Config.AgentConfig.EpisodeTaskTimeoutSeconds = realProjectionTaskTimeoutSeconds
+	settings.Config.AgentConfig.EpisodeLeaseSeconds = realProjectionLeaseSeconds
 	settings.Config.RedisPassword = env.RedisPassword
 	// The arm is read by the product at startup, so it is set before the
 	// configuration is validated: a run that asked for a mode the product
