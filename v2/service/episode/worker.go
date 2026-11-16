@@ -405,6 +405,8 @@ func projectionErrorCode(err error) string {
 	// that was fine.
 	case errors.Is(err, ErrCardSourceBoundary):
 		return "card_source_boundary"
+	case errors.Is(err, ErrCardOutputTruncated):
+		return "card_output_truncated"
 	case errors.Is(err, ErrCardToolProtocol):
 		return "card_tool_protocol"
 	case errors.Is(err, ErrEmptyCard):

@@ -485,6 +485,19 @@ type AgentConfig struct {
 	// two generation models would mean two answers to the same question about
 	// the same conversation.
 	SessionCardMode string `toml:"sessionCardMode"`
+	// SessionCardMaxOutputTokens is how many tokens the card writer may use.
+	//
+	// It is its own number and not the Episode's, because the two write
+	// different documents. The Episode writes assertions and stops; the card
+	// writes a whole session's title, synopsis, topics and entries, and it
+	// writes them INTO A TOOL CALL - so the budget holds the whole document
+	// plus the JSON wrapper around it.
+	//
+	// With the Episode's 1800 the card's own arguments ran into the cap on a
+	// real session: the model wrote 1800 tokens, the arguments stopped in the
+	// middle of the JSON, and the decoder refused the document. The failure
+	// looked like a protocol violation, and the protocol was fine.
+	SessionCardMaxOutputTokens int `toml:"sessionCardMaxOutputTokens"`
 	// SessionCardIndexName and SessionCardIndexKeyPrefix are the card
 	// index's namespace.
 	//
@@ -863,6 +876,7 @@ func defaultConfig() *Config {
 		// namespace is the card index's own, so the two arms of an experiment do
 		// not read each other's rows.
 		SessionCardMode:           "disabled",
+		SessionCardMaxOutputTokens: 4000,
 		SessionCardIndexName:      "gopherai_session_card_v1_idx",
 		SessionCardIndexKeyPrefix: "gopherai:session_card:vec:",
 		// The layered summary is on: the write side, the read side and the
@@ -1202,6 +1216,13 @@ func applyAgentEnv(c *AgentConfig) error {
 	if value, ok := os.LookupEnv("AGENT_SESSION_CARD_INDEX_KEY_PREFIX"); ok {
 		c.SessionCardIndexKeyPrefix = strings.TrimSpace(value)
 	}
+	if value, ok := os.LookupEnv("AGENT_SESSION_CARD_MAX_OUTPUT_TOKENS"); ok {
+		parsed, parseErr := strconv.Atoi(strings.TrimSpace(value))
+		if parseErr != nil {
+			return fmt.Errorf("AGENT_SESSION_CARD_MAX_OUTPUT_TOKENS must be a number")
+		}
+		c.SessionCardMaxOutputTokens = parsed
+	}
 	if value, ok := os.LookupEnv("AGENT_EPISODE_RECALL_MODE"); ok {
 		c.EpisodeRecallMode = strings.TrimSpace(value)
 	}
@@ -1468,6 +1489,9 @@ func (c AgentConfig) Validate() error {
 	}
 	if strings.TrimSpace(c.SessionCardIndexName) == "" || strings.TrimSpace(c.SessionCardIndexKeyPrefix) == "" {
 		return fmt.Errorf("sessionCardIndexName and sessionCardIndexKeyPrefix are required")
+	}
+	if c.SessionCardMaxOutputTokens < 256 || c.SessionCardMaxOutputTokens > 32000 {
+		return fmt.Errorf("sessionCardMaxOutputTokens must be between 256 and 32000")
 	}
 	mode, err := memoryrecall.ParseReadMode(c.MemoryReadMode)
 	if err != nil {

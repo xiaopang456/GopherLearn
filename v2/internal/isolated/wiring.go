@@ -1096,7 +1096,7 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 			return nil, fmt.Errorf("initialize session card evidence loader: %v", cardLoaderErr)
 		}
 		cardGenerator, cardGeneratorErr := episodeService.NewModelCardGenerator(agentModel,
-			conf.AgentConfig.EpisodeMaxInputTokens, conf.AgentConfig.EpisodeMaxOutputTokens)
+			conf.AgentConfig.EpisodeMaxInputTokens, cardOutputTokens(conf.AgentConfig))
 		if cardGeneratorErr != nil {
 			return nil, fmt.Errorf("initialize session card generator: %v", cardGeneratorErr)
 		}
@@ -1434,6 +1434,25 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	}
 	handler := buildRouter(runtime.documents, conf, registration)
 	return &Application{Lifecycle: l, Handler: handler, Agent: configuredAgentService, Runner: agentRunner, Context: contextBuilder, Documents: runtime.documents, EpisodeIndex: deletionEpisodeIndex}, nil
+}
+
+// cardOutputTokens is how many tokens the card writer may use.
+//
+// The card writes its whole document into a tool call, so its budget has to
+// hold the document AND the JSON wrapper around it. The Episode's 1800 was
+// written for a document of assertions, and a card of a real session ran into
+// it: the model used every token it was given, the arguments stopped in the
+// middle of the JSON, and the decoder refused the document as a protocol
+// violation.
+//
+// A deployment that says nothing gets the card's own budget. A deployment
+// that sets one gets that one, and the number is validated with the rest of
+// the configuration.
+func cardOutputTokens(agent config.AgentConfig) int {
+	if agent.SessionCardMaxOutputTokens > 0 {
+		return agent.SessionCardMaxOutputTokens
+	}
+	return agent.EpisodeMaxOutputTokens
 }
 
 // buildSummarySegmentPreselector builds the preselector on the budgets the

@@ -21,6 +21,16 @@ var (
 	ErrEmptyCard = errors.New("session card generator returned no document")
 	// ErrCardToolProtocol is a generator that broke the tool protocol.
 	ErrCardToolProtocol = errors.New("session card generator violated tool protocol")
+	// ErrCardOutputTruncated is a generator whose answer stopped at the
+	// output budget.
+	//
+	// It is a different failure from the protocol violation and it has its
+	// own code, because the two need different fixes. A protocol violation
+	// is the model's mistake; a truncated answer is the BUDGET's mistake -
+	// the model wrote a whole card and the budget cut it in the middle, so
+	// the JSON never closed. Reporting the second as the first sends the
+	// reader after the model instead of after the number.
+	ErrCardOutputTruncated = errors.New("session card generator answer was truncated")
 	// ErrCardSourceBoundary is a card that cited something it was not shown.
 	ErrCardSourceBoundary = errors.New("session card generator violated source boundary")
 	// ErrCardInputTooLarge is evidence that does not fit the input budget.
@@ -200,6 +210,15 @@ func buildCardPayload(evidence CardEvidence) cardPayload {
 }
 
 // decodeCardToolResponse reads the forced tool call.
+//
+// The two ways a card can go wrong are kept apart. A card whose arguments are
+// NOT JSON at all was cut off: the model wrote a whole card and the output
+// budget stopped it in the middle, so the JSON never closed. A card whose
+// arguments ARE JSON but do not fit the document - an unknown field, a
+// trailing byte, a wrong version - is a protocol violation, and the model's.
+//
+// The difference matters because the fixes are different: the first needs a
+// bigger budget, the second needs a different answer.
 func decodeCardToolResponse(response *schema.Message) (model.SessionCardDocument, error) {
 	if response == nil {
 		return model.SessionCardDocument{}, ErrEmptyCard
@@ -207,7 +226,13 @@ func decodeCardToolResponse(response *schema.Message) (model.SessionCardDocument
 	if len(response.ToolCalls) != 1 || response.ToolCalls[0].Function.Name != cardToolName {
 		return model.SessionCardDocument{}, ErrCardToolProtocol
 	}
-	document, err := model.DecodeSessionCardDocumentUnchecked([]byte(response.ToolCalls[0].Function.Arguments))
+	arguments := response.ToolCalls[0].Function.Arguments
+	if !json.Valid([]byte(arguments)) {
+		// The arguments are not JSON. The most common way for that to happen
+		// is a cut-off answer, so it is reported as one.
+		return model.SessionCardDocument{}, fmt.Errorf("%w: the tool arguments are not valid json", ErrCardOutputTruncated)
+	}
+	document, err := model.DecodeSessionCardDocumentUnchecked([]byte(arguments))
 	if err != nil {
 		return model.SessionCardDocument{}, fmt.Errorf("%w: %v", ErrCardToolProtocol, err)
 	}

@@ -128,6 +128,64 @@ func TestCardGeneratorKeepsALaterChangeApartFromTheAcceptance(t *testing.T) {
 	}
 }
 
+// A card whose arguments stop in the middle of the JSON was cut off by the
+// output budget.
+//
+// It is not a protocol violation: the model wrote a whole card and the
+// budget stopped it. The two need different fixes - a bigger budget for the
+// first, a different answer for the second - so they are told apart.
+func TestACutOffCardIsReportedAsTruncatedAndNotAsAProtocolViolation(t *testing.T) {
+	now := time.Now()
+	evidence := cardEvidenceFor(
+		model.Message{ID: 1, SessionID: "session-card", IsUser: true, Content: "题量", CreatedAt: now},
+	)
+	// The arguments stop in the middle of the JSON: the document is not
+	// closed.
+	chat := &cardChat{responses: []*schema.Message{cardToolResponse(`{
+		"version":1,
+		"title":"题量",
+		"synopsis":"题量。",
+		"arrangements":[{"text":"每轮9道题","status":"stated","message_ids":[1]}]`)}}
+	generator, err := NewModelCardGenerator(chat, 4096, 1200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = generator.Generate(context.Background(), evidence)
+	if !errors.Is(err, ErrCardOutputTruncated) {
+		t.Fatalf("a cut-off card was reported as %v, want the truncation", err)
+	}
+	if errors.Is(err, ErrCardToolProtocol) {
+		t.Fatalf("a cut-off card was reported as a protocol violation: %v", err)
+	}
+}
+
+// A card whose arguments are JSON but do not fit the document is a protocol
+// violation - the model's, not the budget's.
+func TestAWellFormedCardWithAnUnknownFieldIsAProtocolViolation(t *testing.T) {
+	now := time.Now()
+	evidence := cardEvidenceFor(
+		model.Message{ID: 1, SessionID: "session-card", IsUser: true, Content: "题量", CreatedAt: now},
+	)
+	chat := &cardChat{responses: []*schema.Message{cardToolResponse(`{
+		"version":1,
+		"title":"题量",
+		"synopsis":"题量。",
+		"arrangements":[{"text":"每轮9道题","status":"stated","message_ids":[1]}],
+		"assistant_products":[],"open_items":[],
+		"summary":"多出来的一个字段"}`)}}
+	generator, err := NewModelCardGenerator(chat, 4096, 1200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = generator.Generate(context.Background(), evidence)
+	if !errors.Is(err, ErrCardToolProtocol) {
+		t.Fatalf("a card with an unknown field was reported as %v, want the protocol violation", err)
+	}
+	if errors.Is(err, ErrCardOutputTruncated) {
+		t.Fatalf("a card with an unknown field was reported as a truncation: %v", err)
+	}
+}
+
 func TestCardGeneratorRefusesACitationItWasNeverShown(t *testing.T) {
 	now := time.Now()
 	evidence := cardEvidenceFor(
@@ -355,11 +413,12 @@ func TestSessionCardEntryMustCiteSomething(t *testing.T) {
 // says which path produced it.
 func TestCardFailuresGetTheirOwnJobCodes(t *testing.T) {
 	cases := map[error]string{
-		ErrCardSourceBoundary: "card_source_boundary",
-		ErrCardToolProtocol:   "card_tool_protocol",
-		ErrEmptyCard:          "card_empty",
-		ErrCardInputTooLarge:  "card_input_too_large",
-		ErrCardSourceNotFound: "card_source_not_found",
+		ErrCardSourceBoundary:  "card_source_boundary",
+		ErrCardToolProtocol:    "card_tool_protocol",
+		ErrCardOutputTruncated: "card_output_truncated",
+		ErrEmptyCard:           "card_empty",
+		ErrCardInputTooLarge:   "card_input_too_large",
+		ErrCardSourceNotFound:  "card_source_not_found",
 	}
 	for err, want := range cases {
 		if got := projectionErrorCode(err); got != want {
