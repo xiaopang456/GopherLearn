@@ -25,7 +25,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -94,6 +93,12 @@ type RealEnvironment struct {
 	// needs "inject_enabled" or nothing is injected; the card arm needs
 	// "disabled", because the card path replaces the Episode path.
 	EpisodeRecallMode string
+	// QuestionSession is the conversation the question is asked in.
+	//
+	// It is named by the run, because two questions of the same preparation
+	// must not be asked in the same conversation: the second one would find
+	// the first one's answer in the history.
+	QuestionSession string
 }
 
 // The read path and the recall switch a run may ask for.
@@ -471,12 +476,153 @@ func PrepareRealProductReport(ctx context.Context, repository string, histories 
 	for _, history := range histories {
 		sessionIDs = append(sessionIDs, history.SessionID)
 	}
+	// The preparation publishes the projection and waits for the memories to
+	// be indexed, so that the archive carries a memory for every conversation
+	// and the queries can reuse it.
+	//
+	// This is where the product has to run: the worker that writes the memory
+	// is the product's own worker, and the index it writes into is the shared
+	// one the queries will search.
+	arm := CardArmForEnvironment(env)
+	// The preparation is the FIRST use of this learner's partition, so the
+	// isolation gate applies here: the index must be empty, or the projection
+	// would land on top of somebody else's rows.
+	if _, err = requireEmptyUserIndexes(ctx, env); err != nil {
+		return report, err
+	}
+	projection, projectionCalls, err := projectArmMemories(ctx, repository, env.StorageDir, env, s, sessionIDs, arm)
+	if err != nil {
+		return report, err
+	}
+	report.Projection = projection
+	// The projection's calls belong to this preparation: they are the
+	// generation of the memory, and a preparation whose ledger does not carry
+	// them is a preparation whose cost nobody can see.
+	report.Calls = append(report.Calls, projectionCalls...)
 	report.Snapshot, err = s.CaptureMany(ctx, env.UserID, sessionIDs)
 	if err != nil {
 		return report, err
 	}
+	report.Snapshot.IndexEntries = projection.IndexEntries
 	report.UsageByRole, err = SummarizeCalls(report.Calls)
 	return report, errors.Join(err, nil)
+}
+
+// projectArmMemories publishes the projection of every conversation of the
+// attempt and waits for the memory to be indexed.
+//
+// It boots the product, because the worker that writes the memory and the
+// indexer that indexes it are the product's own. The product is stopped
+// again before the archive is written: the archive is what the queries
+// reuse, and the queries must not depend on a process that is still running.
+func projectArmMemories(ctx context.Context, repository, storage string, env RealEnvironment,
+	s *Sandbox, sessionIDs []string, arm *CardArm) (*ArmProjection, []ModelCall, error) {
+	out := &ArmProjection{Mode: arm.Mode, MemoryKind: arm.MemoryKind(), Sessions: sessionIDs}
+	if err := arm.Validate(); err != nil {
+		return out, nil, err
+	}
+	password, err := randomHex(24)
+	if err != nil {
+		return out, nil, err
+	}
+	hash, err := utils.HashPassword(password)
+	if err != nil {
+		return out, nil, err
+	}
+	// The product logs in as the evaluation user, and the user has to be
+	// there with the hash the harness knows.
+	if err = (guardedStore{s}).with(ctx, func(tx *gorm.DB) error {
+		return tx.Model(&model.User{}).Where("id = ?", env.UserID).
+			Update("password", hash).Error
+	}); err != nil {
+		return out, nil, err
+	}
+	dir, err := os.MkdirTemp("", "gl-prepare-product-")
+	if err != nil {
+		return out, nil, err
+	}
+	defer os.RemoveAll(dir)
+	ledger := &ModelLedger{}
+	defer func() {
+		if !ledger.Complete() {
+			err = errors.Join(err, fmt.Errorf("preparation model telemetry incomplete"))
+		}
+	}()
+	runtime, err := bootProduct(ctx, repository, storage, env, s, dir, ledger, password)
+	if err != nil {
+		return out, nil, err
+	}
+	defer runtime.stop()
+	for _, sessionID := range sessionIDs {
+		published, due, waited, waitErr := s.PublishAndAwaitMemory(ctx, env.UserID, sessionID, arm)
+		if published {
+			out.Published++
+		}
+		if due {
+			out.Due++
+		}
+		out.WaitMilliseconds += waited
+		if waitErr != nil {
+			out.Error = waitErr.Error()
+			return out, ledger.Calls(), waitErr
+		}
+	}
+	// The memory row is written by the projector and the index entry by the
+	// indexer, and they are two steps. The row can say "indexed" before the
+	// index entry exists, so the archive records what the index really holds:
+	// an archive whose index does not agree with it would make every query
+	// that reuses it fail its own gate, and the reason has to be visible.
+	state, err := readMemoryIndexState(ctx, redisKeyLister{client: redisClientFor(env)}, env.UserID, env.cardIndexPrefix())
+	if err != nil {
+		out.Error = err.Error()
+		return out, ledger.Calls(), err
+	}
+	out.IndexEntries = state.EpisodeEntries + state.MemoryEntries + state.CardEntries
+	out.IndexReadable = true
+	if out.IndexEntries < len(sessionIDs) {
+		// The archive is written anyway, and it says what the index held.
+		//
+		// The gate of a query compares the index with what the preparation
+		// recorded, not with the number of memories: the two are different
+		// facts, and a query that refuses to run because the preparation
+		// under-indexed would hide the very thing it is meant to show.
+		out.Error = fmt.Sprintf("the shared index holds %d entr(ies) and the preparation produced %d", out.IndexEntries, len(sessionIDs))
+	}
+	return out, ledger.Calls(), nil
+}
+
+// memoryRowsOf reads the memory rows the archive carries into the evidence
+// the attempt keeps.
+func memoryRowsOf(snapshot Snapshot) []*CardRow {
+	out := make([]*CardRow, 0, len(snapshot.Memories))
+	for _, memory := range snapshot.Memories {
+		out = append(out, MemoryRowOf(&memory))
+	}
+	return out
+}
+
+// ArmProjection is what the preparation projected.
+type ArmProjection struct {
+	// Mode is the arm: "disabled" is the old Episode, "enabled" the card.
+	Mode string `json:"mode"`
+	// MemoryKind is the kind of document the arm projected.
+	MemoryKind string `json:"memory_kind"`
+	// Sessions are the conversations that were projected.
+	Sessions []string `json:"sessions,omitempty"`
+	// Published counts the conversations whose projection was published, and
+	// Due the ones whose job was moved into the present.
+	Published int `json:"published"`
+	Due       int `json:"due"`
+	// WaitMilliseconds is how long the preparation waited for the memories.
+	WaitMilliseconds int64 `json:"wait_ms"`
+	// IndexEntries is how many entries the shared index held for this learner
+	// when the archive was written. It is read from the index, not counted
+	// from the archive, so a disagreement between the two is visible.
+	IndexEntries int `json:"index_entries"`
+	// IndexReadable says the index could be read at all.
+	IndexReadable bool `json:"index_readable"`
+	// Error says why the preparation could not project, when it could not.
+	Error string `json:"error,omitempty"`
 }
 
 // RunRealProduct restores one prepared conversation into a fresh evaluation
@@ -504,7 +650,10 @@ func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, env
 	if err := env.Validate(); err != nil {
 		return result, err
 	}
-	before, err := requireEmptyUserIndexes(ctx, env)
+	// The query reuses the preparation, so the index is NOT empty: it holds
+	// the memories the preparation projected. What has to hold is that the index
+	// agrees with the archive.
+	before, err := checkSnapshotIndexes(ctx, env, snapshot)
 	result.MemoryIndexEvidence.BeforeAnswer = before
 	if err != nil {
 		return result, err
@@ -582,103 +731,52 @@ func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, env
 		return result, err
 	}
 	ledger := &ModelLedger{}
-	roles, err := LoadRolePrompts(repository, memoryrecall.ReadMode(settings.Config.MemoryReadMode))
-	if err != nil {
-		return result, err
-	}
-	wire := realWire(ledger, roles, env.ProxyBaseURL)
-	defer wire.Close()
-	connection, err := s.ConnectionInfo(ctx)
-	if err != nil {
-		return result, err
-	}
-	settings.Config.MysqlHost = connection.Host
-	settings.Config.MysqlPort, err = strconv.Atoi(connection.Port)
-	if err != nil {
-		return result, err
-	}
-	settings.Config.MysqlDatabaseName = connection.Database
-	settings.Config.MysqlUser = connection.User
-	settings.Config.MysqlPassword = connection.Password
-	settings.Config.RedisHost, settings.Config.RedisPort, err = splitRedisAddress(env.RedisAddress)
-	if err != nil {
-		return result, err
-	}
-	settings.Entry.ChatBaseURL = wire.URL + "/v1"
-	settings.Config.RagRerankEndpoint = wire.URL + "/v1/rerank"
-	settings.Config.RagEmbeddingBaseURL = wire.URL + "/v1"
-	settings.Config.JwtConfig.Key, err = randomHex(32)
-	if err != nil {
-		return result, err
-	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return result, err
-	}
-	address := listener.Addr().(*net.TCPAddr)
-	settings.Config.MainConfig.Host = "127.0.0.1"
-	settings.Config.MainConfig.Port = address.Port
-	listener.Close()
-	path := filepath.Join(dir, "product.toml")
-	oldToken, hadToken := os.LookupEnv("RAG_RERANK_AUTH_TOKEN")
-	if err = os.Setenv("RAG_RERANK_AUTH_TOKEN", settings.Config.RagRerankToken); err != nil {
-		return result, err
-	}
-	defer func() {
-		if hadToken {
-			os.Setenv("RAG_RERANK_AUTH_TOKEN", oldToken)
-		} else {
-			os.Unsetenv("RAG_RERANK_AUTH_TOKEN")
-		}
-	}()
-	if err = writeEntryConfig(path, settings); err != nil {
-		return result, err
-	}
-	loaded, err := entry.Load(path)
-	if err != nil {
-		return result, err
-	}
-	if loaded.Config.EpisodeQuietWindowSeconds != 86400 || loaded.Entry.Migrate || !loaded.Config.RagRerankEnabled || loaded.Config.RagRerankEndpoint != wire.URL+"/v1/rerank" {
-		return result, fmt.Errorf("unexpected standard entry settings")
-	}
+	dir2 := dir
+	// The observed interval starts BEFORE the product is started. The product
+	// does work when it starts - the startup index audit reconciles the
+	// derived indexes with the database - and a call the harness cannot
+	// account for is a call the harness cannot claim to have measured.
 	result.Audit.Started = time.Now().UTC()
-	product := startStandardProduct(path)
-	defer func() { resultErr = errors.Join(resultErr, product.stop()) }()
-	client := &http.Client{Timeout: 5 * time.Minute, Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	defer client.CloseIdleConnections()
-	base := "http://" + settings.Address()
-	token, err := loginStandardProduct(ctx, product, client, base, env.UserName, password)
+	runtime, err := bootProduct(ctx, repository, env.StorageDir, env, s, dir2, ledger, password)
 	if err != nil {
 		return result, err
 	}
+	defer func() { resultErr = errors.Join(resultErr, runtime.stop()) }()
+	client := runtime.client
+	base := runtime.base
+	token := runtime.token
+	settings = runtime.settings
 	result.Audit.Before, result.BeforeCounts, err = s.ObserveJobs(ctx)
 	if err != nil {
 		return result, err
 	}
-	// The preparation phase. BOTH arms publish the projection, wait for the
-	// memory to be indexed and open a second conversation to ask the question
-	// in.
+	// The query phase. The memories were projected by the preparation and
+	// travel with the archive, so the query does NOT project them again: it
+	// restores them and asks.
 	//
-	// The old arm is not the exception. An old arm that did not project would
-	// be asked a question in a conversation that holds no Episode at all, and
-	// its answer would say more about the wiring than about the memory: that
-	// is the one comparison that cannot be read as a comparison of the two
-	// memory formats.
-	//
-	// EVERY conversation of the attempt is projected, not only the one the
-	// question is about: the retrieval has to choose between them, and a
-	// database that holds only the target conversation would measure nothing
-	// about the choosing.
+	// What the query still owns is the conversation it asks in. It opens one
+	// of its own, and it is not one of the archive's conversations: a question
+	// asked in the conversation the memory came from would find the raw
+	// messages anyway, and the test conversations must not become candidates
+	// for the retrieval.
 	arm := CardArmForEnvironment(env)
-	armEvidence, armErr := DriveArm(ctx, s, snapshot, arm)
-	result.SessionCard = armEvidence
-	if armErr != nil {
-		// A projection that failed is a failure of the attempt, not an answer
-		// that found nothing. The error code says which, and the attempt
-		// must not go on to produce an answer that would be read as one.
-		return result, armErr
+	armEvidence := &CardArmEvidence{
+		Mode: arm.Mode, MemoryKind: arm.MemoryKind(),
+		MemoryReadMode:    strings.TrimSpace(arm.MemoryReadMode),
+		EpisodeRecallMode: strings.TrimSpace(arm.EpisodeRecallMode),
+		SourceSessions:    snapshot.SessionIDs(),
+		Memories:          memoryRowsOf(snapshot),
+		Ready:             len(snapshot.Memories) > 0,
 	}
-	questionSession := armEvidence.QuestionSessionID
+	result.SessionCard = armEvidence
+	questionSession := strings.TrimSpace(env.QuestionSession)
+	if questionSession == "" {
+		questionSession = QuestionSessionID(env.SessionID)
+	}
+	if err = s.CreateQuestionSession(ctx, env.UserID, env.UserName, questionSession); err != nil {
+		return result, err
+	}
+	armEvidence.QuestionSessionID = questionSession
 	// The preparation phase ends here: the source data and the memory version
 	// are fixed, and nothing may be generated from here to the answer.
 	result.Audit.Prepared = time.Now().UTC()
@@ -698,9 +796,8 @@ func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, env
 	defer cancel()
 	barrierErr := journal.AnswerBarrier(collect)
 	result.Audit.After, result.AfterCounts, err = s.ObserveJobs(collect)
-	stopErr := product.stop()
+	stopErr := runtime.stop()
 	result.ShutdownComplete = stopErr == nil
-	wire.Close()
 	var stoppedErr error
 	_, result.StoppedCounts, stoppedErr = s.ObserveJobs(collect)
 	result.Events, result.Audit.ExecutedInQueryPhase, resultErr = journal.Finish(collect)

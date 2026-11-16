@@ -234,6 +234,10 @@ type WarmupReport struct {
 	// memories are written before the conversation is prepared, so that the
 	// product sees them while the conversation is built.
 	SeededMemories SeedMemoryReport `json:"seeded_memories"`
+	// Projection is what the preparation projected: the conversations it
+	// published, the kind of document it published, and how long it waited
+	// for the memories to be indexed.
+	Projection *ArmProjection `json:"projection,omitempty"`
 }
 
 func PrepareOfflineProduct(ctx context.Context, repository string, histories []History, input AttemptInput) (Snapshot, []ModelCall, error) {

@@ -166,10 +166,15 @@ func uniqueUserIDs(ids []int64) []int64 {
 	return kept
 }
 
+// redisClientFor opens a short-lived client against the shared index.
+func redisClientFor(env RealEnvironment) *redis.Client {
+	return redis.NewClient(&redis.Options{Addr: env.RedisAddress, Password: env.RedisPassword, Protocol: 2})
+}
+
 // observeMemoryIndexes opens one short-lived client against the shared
 // evaluation index and reads the state for the evaluation user.
 func observeMemoryIndexes(ctx context.Context, env RealEnvironment) (MemoryIndexState, error) {
-	client := redis.NewClient(&redis.Options{Addr: env.RedisAddress, Password: env.RedisPassword, Protocol: 2})
+	client := redisClientFor(env)
 	defer client.Close()
 	return readMemoryIndexState(ctx, redisKeyLister{client: client}, env.UserID, env.cardIndexPrefix())
 }
@@ -190,10 +195,49 @@ func checkEmptyUserIndexes(ctx context.Context, lister indexKeyLister, userID in
 	return state, nil
 }
 
+// requireEmptyUserIndexes rejects stale derived views instead of deleting data
+// or letting one repeat alter the initial memory state of the next repeat.
+//
+// It is the gate of a FIRST preparation: the evaluation user's own entries
+// must be absent, so that the preparation starts from a clean partition and
+// its own projection is the only thing in it.
+//
+// A query that reuses a preparation does NOT go through this gate. Its own
+// rows are the ones the preparation made, and requiring them to be absent
+// would refuse every legal reuse. It goes through checkSnapshotIndexes
+// instead, which asks whether the index holds what the archive says it holds.
 func requireEmptyUserIndexes(ctx context.Context, env RealEnvironment) (MemoryIndexState, error) {
 	client := redis.NewClient(&redis.Options{Addr: env.RedisAddress, Password: env.RedisPassword, Protocol: 2})
 	defer client.Close()
 	return checkEmptyUserIndexes(ctx, redisKeyLister{client: client}, env.UserID, env.cardIndexPrefix())
+}
+
+// checkSnapshotIndexes asks whether the index holds what the archive says it
+// held.
+//
+// A reuse is legal when the index holds what the preparation recorded: the
+// preparation projected the memories, the index points at them, and the query
+// restores them. It is not legal when the index holds rows the archive does
+// not know about (something else wrote into this partition) or when it is
+// missing rows the archive recorded (the preparation's index did not survive).
+//
+// The comparison is with the archive's own record and NOT with the number of
+// memories: the index is a projection of the memories, and a projection that
+// is behind is a fact about the projection, not a broken archive.
+func checkSnapshotIndexes(ctx context.Context, env RealEnvironment, snapshot Snapshot) (MemoryIndexState, error) {
+	client := redis.NewClient(&redis.Options{Addr: env.RedisAddress, Password: env.RedisPassword, Protocol: 2})
+	defer client.Close()
+	state, err := readMemoryIndexState(ctx, redisKeyLister{client: client}, env.UserID, env.cardIndexPrefix())
+	if err != nil {
+		return state, err
+	}
+	carried := snapshot.IndexEntries
+	if state.EpisodeEntries+state.MemoryEntries+state.CardEntries != carried {
+		return state, fmt.Errorf(
+			"the shared index holds %d entr(ies) for this learner and the archive was written with %d: the index and the archive do not agree",
+			state.EpisodeEntries+state.MemoryEntries+state.CardEntries, carried)
+	}
+	return state, nil
 }
 
 // cardIndexPrefix is the key prefix of the card arm's own rows, when the run

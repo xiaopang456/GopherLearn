@@ -142,6 +142,14 @@ type ExpectedConfiguration struct {
 	// SessionCardIndexName is the namespace the run needs the card arm to
 	// write into.
 	SessionCardIndexName string `json:"session_card_index_name,omitempty"`
+	// SessionCardIndexKeyPrefix is the key prefix of that namespace.
+	//
+	// The index name and the key prefix are two halves of one namespace, and
+	// the prefix is the half that decides which rows a search can see: two
+	// arms that agreed on the index name but not on the prefix would write
+	// into one index and read each other's rows. So a check that compares the
+	// name and ignores the prefix says the namespace matches when it does not.
+	SessionCardIndexKeyPrefix string `json:"session_card_index_key_prefix,omitempty"`
 	// MemoryReadMode is the read path the run needs. It is empty when the run
 	// does not say, and then it is not compared.
 	MemoryReadMode string `json:"memory_read_mode,omitempty"`
@@ -251,6 +259,11 @@ func (r ConfigurationReport) MatchesExpected(expected ExpectedConfiguration) boo
 		return false
 	}
 	if expected.SessionCardIndexName != "" && r.SessionCardIndexName != expected.SessionCardIndexName {
+		return false
+	}
+	// The key prefix is compared with the index name, for the same reason:
+	// it is the other half of the namespace the card arm writes into.
+	if expected.SessionCardIndexKeyPrefix != "" && r.SessionCardIndexPrefix != expected.SessionCardIndexKeyPrefix {
 		return false
 	}
 	// The read path and the recall switch are compared only when the run

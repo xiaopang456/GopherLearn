@@ -28,6 +28,24 @@ type SessionSnapshot struct {
 // is asked in a further one, which never carries any of them.
 type Snapshot struct {
 	Sessions []SessionSnapshot `json:"sessions"`
+	// Memories are the memory rows the preparation projected: the Episodes or
+	// the session cards, one per conversation.
+	//
+	// They travel with the archive because the queries reuse it. A query that
+	// restores the conversations but not the memories would have to project
+	// them again - once per question - and the preparation would cost as much
+	// as the whole comparison. The index is in the shared Redis and the rows
+	// are here, so a restored attempt finds exactly the memories the
+	// preparation produced.
+	Memories []model.EpisodeMemory `json:"memories,omitempty"`
+	// IndexEntries is how many entries the shared index held for this
+	// learner when the preparation wrote the archive.
+	//
+	// It is the state the query has to find again: a query that reuses the
+	// archive compares the index with THIS number and not with the number of
+	// memories. The two are different facts - the index is a projection of
+	// the memories, and a projection that is behind is not a broken archive.
+	IndexEntries int `json:"index_entries,omitempty"`
 }
 
 // Primary is the attempt's own conversation.
@@ -66,6 +84,15 @@ func (s Snapshot) MessageCount() int {
 	return total
 }
 
+// MemoryIDs names the memory rows the archive carries.
+func (s Snapshot) MemoryIDs() []string {
+	out := make([]string, 0, len(s.Memories))
+	for _, memory := range s.Memories {
+		out = append(out, memory.ID)
+	}
+	return out
+}
+
 // Validate rejects foreign rows, reordered messages, dangling summary
 // evidence, and a set of conversations that does not belong to one learner.
 func (s Snapshot) Validate() error {
@@ -96,6 +123,20 @@ func (s Snapshot) Validate() error {
 				return fmt.Errorf("conversation %d: message %d is already in the attempt", index+1, message.ID)
 			}
 			seenMessages[message.ID] = struct{}{}
+		}
+	}
+	// The memory rows belong to the same learner and to the conversations
+	// this archive carries. A row of somebody else's would be read back as
+	// this learner's memory.
+	for _, memory := range s.Memories {
+		if memory.UserID != ownerID {
+			return fmt.Errorf("memory %s belongs to another learner", memory.ID)
+		}
+		if _, exists := seenSessions[memory.SessionID]; !exists {
+			return fmt.Errorf("memory %s belongs to a conversation the attempt does not carry", memory.ID)
+		}
+		if !memory.ContentKind.Valid() {
+			return fmt.Errorf("memory %s has an unknown content kind", memory.ID)
 		}
 	}
 	return nil

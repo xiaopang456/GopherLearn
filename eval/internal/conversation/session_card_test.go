@@ -2,6 +2,7 @@ package conversation
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -172,6 +173,12 @@ func TestApplyCardArmPutsTheSwitchIntoTheProductConfiguration(t *testing.T) {
 // in another conversation - and the audit has to be able to tell the
 // preparation phase from the query phase, or the card's own work would be
 // read as a violation.
+//
+// The read side is asserted too, and that is the half a run like this used to
+// leave out. An attempt that checked only the write side could pass with a
+// card that was written, indexed and never read: the retrieval would have
+// found nothing, the answer would have been given no card, and the attempt
+// would have called that a measurement of the card path.
 func TestTheCardArmWritesACardAndAsksInAnotherConversation(t *testing.T) {
 	if os.Getenv("GL_SANDBOX_TEST") != "1" {
 		t.Skip("requires local Docker MySQL and Redis images")
@@ -181,7 +188,7 @@ func TestTheCardArmWritesACardAndAsksInAnotherConversation(t *testing.T) {
 	repository := filepath.Join("..", "..", "..")
 	turns := make([]Turn, 4)
 	for i := range turns {
-		turns[i] = testTurn(i)
+		turns[i] = cardTurn(i)
 	}
 	warmup, err := PrepareOfflineProductReport(ctx, repository, SingleHistory("synthetic-evaluation", turns), AttemptInput{})
 	if err != nil {
@@ -191,7 +198,7 @@ func TestTheCardArmWritesACardAndAsksInAnotherConversation(t *testing.T) {
 		IndexName: "gopherai_session_card_eval_idx", KeyPrefix: "gopherai:session_card:eval:",
 		WaitTimeout: 90 * time.Second}
 	result, err := RunOfflineProduct(ctx, repository, warmup.Snapshot, AttemptInput{
-		Questions:   []Question{{Text: "我们之前讨论过的那个练习安排是什么？"}},
+		Questions:   []Question{{Text: cardQuestion}},
 		SessionCard: arm,
 	})
 	if err != nil {
@@ -222,6 +229,47 @@ func TestTheCardArmWritesACardAndAsksInAnotherConversation(t *testing.T) {
 	if evidence.Card.SourceLastMessageID == 0 {
 		t.Fatalf("the card does not say how far it reaches: %+v", evidence.Card)
 	}
+	// The read side. The prompt the model was sent is the record of what the
+	// model was shown, and the attempt has to have read it: "the prompt carried
+	// no card" and "the attempt never saw the prompt" are two different facts,
+	// and only the first one is a measurement.
+	if !evidence.ShownCardObserved {
+		t.Fatalf("the attempt could not read the prompt the model was sent: %+v", evidence)
+	}
+	if !evidence.ShownCard {
+		t.Fatalf("the answer was given no card: %+v", evidence)
+	}
+	if !containsString(evidence.ShownCardSessions, evidence.SourceSessionID) {
+		t.Fatalf("the card block named other conversations: %+v", evidence.ShownCardSessions)
+	}
+	// The card that was shown is the card that was written: the row is read
+	// back from the database rather than taken from the arm's own bookkeeping.
+	if !containsString(evidence.RecallSources, evidence.Card.ID) {
+		t.Fatalf("the recalled memories do not include the card: %+v", evidence)
+	}
+	if kind := evidence.RecallKinds[evidence.Card.ID]; kind != string(model.EpisodeContentSessionCard) {
+		t.Fatalf("the recalled memory is a %q, not a session card: %+v", kind, evidence.RecallKinds)
+	}
+	if !containsString(evidence.RecallSessions, evidence.SourceSessionID) {
+		t.Fatalf("the recall came from other conversations: %+v", evidence.RecallSessions)
+	}
+	if containsString(evidence.RecallSessions, evidence.QuestionSessionID) {
+		t.Fatalf("the recall came from the question's own conversation: %+v", evidence.RecallSessions)
+	}
+	// And the ledger says the same thing about the request that was sent.
+	answerCalls := 0
+	for _, call := range result.Calls {
+		if call.Role != "answer" {
+			continue
+		}
+		answerCalls++
+		if !containsString(call.CardSessions, evidence.SourceSessionID) {
+			t.Fatalf("the answer's request carried no card: %+v", call.CardSessions)
+		}
+	}
+	if answerCalls == 0 {
+		t.Fatalf("the attempt made no answer call: %+v", result.Calls)
+	}
 	if !result.BackgroundAudit.Valid {
 		t.Fatalf("the audit did not certify the run: %+v", result.Audit)
 	}
@@ -248,4 +296,36 @@ func TestTheCardArmWritesACardAndAsksInAnotherConversation(t *testing.T) {
 	if answerCalls == 0 {
 		t.Fatalf("the answer's call was not attributed to the answer phase: %+v", result.Calls)
 	}
+}
+
+// cardTurn is a turn of the source conversation that carries a strong
+// identifier.
+//
+// The offline fake embedding is all zeroes, so the vector channel cannot tell
+// one card from another. The exact identifier channel can: the identifier is
+// in the source conversation and in the question, so the card written from
+// that conversation is the card the retrieval has to find - without the test
+// reaching into the product's own scoring.
+func cardTurn(i int) Turn {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(i) * time.Minute)
+	return Turn{
+		User:      fmt.Sprintf("我们之前讨论过 KamaRPC 的拆包练习，第%d轮", i),
+		Assistant: fmt.Sprintf("KamaRPC 的粘包处理用长度字段，第%d轮结论", i),
+		UserAt:    base, AssistantAt: base.Add(time.Second),
+	}
+}
+
+// cardQuestion is what the card arm asks. It points at the earlier
+// conversation and names the same identifier, so the retrieval has a reason to
+// look for the card that conversation produced.
+const cardQuestion = "我们之前讨论过的 KamaRPC 拆包练习是什么？"
+
+// containsString says whether the list holds the value.
+func containsString(list []string, value string) bool {
+	for _, item := range list {
+		if item == value {
+			return true
+		}
+	}
+	return false
 }

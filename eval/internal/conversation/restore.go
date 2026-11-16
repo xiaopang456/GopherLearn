@@ -63,6 +63,16 @@ func restoreIntoEmpty(ctx context.Context, db *gorm.DB, snapshot Snapshot) error
 				}
 			}
 		}
+		// The memory rows come back with the conversations. The shared index
+		// still points at them, so a query that restores them finds the same
+		// memories the preparation projected, and it does not have to pay
+		// for the projection again.
+		for _, memory := range snapshot.Memories {
+			row := memory
+			if err := tx.Omit("Session").Create(&row).Error; err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 }

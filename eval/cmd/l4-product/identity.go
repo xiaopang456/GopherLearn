@@ -61,6 +61,14 @@ type identityInput struct {
 	// part of the identity, so the two arms of the comparison never share a
 	// database.
 	sessionCardMode string
+	// scope names the preparation the attempt belongs to.
+	//
+	// The preparation is done once per arm, and every question of that arm
+	// reuses it. The identity therefore follows the scope and not the
+	// question: a query that ran under a different identity would restore
+	// the archive into a database that does not belong to the learner the
+	// memories belong to.
+	scope string
 }
 
 // deriveScenarioIdentity decides which evaluation user one attempt runs as.
@@ -77,7 +85,14 @@ func deriveScenarioIdentity(explicit map[string]bool, in identityInput) (int64, 
 		return in.userID, in.userName, nil
 	}
 	missing := make([]string, 0, 4)
-	for _, name := range []string{"run-id", "arm", "qid", "condition"} {
+	required := []string{"run-id", "arm", "condition"}
+	// The qid names the question. When the attempt belongs to a scope - a
+	// preparation that several questions share - the scope names the
+	// identity instead, and the qid is only the label of the record.
+	if strings.TrimSpace(in.scope) == "" {
+		required = append(required, "qid")
+	}
+	for _, name := range required {
 		if !explicit[name] {
 			missing = append(missing, name)
 		}
@@ -95,7 +110,15 @@ func deriveScenarioIdentity(explicit map[string]bool, in identityInput) (int64, 
 	if path == "" {
 		path = conversation.CardArmModeOff
 	}
-	return scenarioIdentityForPath(in.run, in.arm, in.qid, in.condition, path)
+	// The scope names the preparation. When it is given, the identity follows
+	// it and every question of that preparation shares one user and one
+	// archive. Without it, the identity follows the question, which is the
+	// older behaviour: one preparation per question.
+	scope := strings.TrimSpace(in.scope)
+	if scope == "" {
+		scope = in.qid
+	}
+	return scenarioIdentityForPath(in.run, in.arm, scope, in.condition, path)
 }
 
 // cardNamespace is the card index's own namespace for one arm.

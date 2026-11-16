@@ -1018,6 +1018,45 @@ func QuestionSessionID(sourceSessionID string) string {
 	return "eval-q-" + hex.EncodeToString(sum[:6])
 }
 
+// PublishAndAwaitMemory publishes the projection of one conversation and
+// waits for its memory to be indexed.
+//
+// It is the preparation's half of the arm: the preparation publishes it, the
+// queries read what it produced.
+func (s *Sandbox) PublishAndAwaitMemory(ctx context.Context, userID int64, sessionID string,
+	arm *CardArm) (published bool, due bool, waited int64, err error) {
+	if err = s.verify(ctx); err != nil {
+		return false, false, 0, err
+	}
+	if s.db == nil {
+		return false, false, 0, fmt.Errorf("sandbox database unavailable")
+	}
+	// The target is the conversation's last message.
+	var last struct {
+		ID uint
+	}
+	if err = s.db.WithContext(ctx).Model(&model.Message{}).
+		Where("session_id = ?", sessionID).Order("id DESC").Take(&last).Error; err != nil {
+		return false, false, 0, err
+	}
+	if last.ID == 0 {
+		return false, false, 0, fmt.Errorf("the conversation %s has no message", sessionID)
+	}
+	if err = PublishSessionCardProjection(ctx, s.db, userID, sessionID, last.ID, 0); err != nil {
+		return false, false, 0, err
+	}
+	published = true
+	if err = MakeProjectionDue(ctx, s.db, userID, sessionID); err != nil {
+		return published, false, 0, err
+	}
+	due = true
+	started := time.Now()
+	if _, code, waitErr := WaitForArmMemory(ctx, s.db, userID, sessionID, arm.MemoryKind(), arm.Wait()); waitErr != nil {
+		return published, due, time.Since(started).Milliseconds(), fmt.Errorf("%w (%s)", waitErr, code)
+	}
+	return published, due, time.Since(started).Milliseconds(), nil
+}
+
 // DriveSessionCard publishes the projection, waits for the card and opens the
 // conversation the question is asked in.
 //

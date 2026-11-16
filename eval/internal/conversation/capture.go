@@ -35,6 +35,10 @@ func Capture(ctx context.Context, db *gorm.DB, userID int64, sessionID string) (
 //
 // The order is the order of the names: the attempt's own conversation comes
 // first, and the rest are the ones the retrieval has to choose between.
+//
+// The memory rows of those conversations are read with them: the archive
+// carries the memories the preparation projected, so that a query restores
+// them instead of projecting them again.
 func CaptureMany(ctx context.Context, db *gorm.DB, userID int64, sessionIDs []string) (Snapshot, error) {
 	var result Snapshot
 	if db == nil || userID <= 0 || len(sessionIDs) == 0 {
@@ -47,6 +51,22 @@ func CaptureMany(ctx context.Context, db *gorm.DB, userID int64, sessionIDs []st
 				return fmt.Errorf("conversation %s: %w", sessionID, err)
 			}
 			result.Sessions = append(result.Sessions, session)
+		}
+		var memories []model.EpisodeMemory
+		if err := tx.Where("user_id = ? AND session_id IN ?", userID, sessionIDs).
+			Order("session_id ASC, version DESC").Find(&memories).Error; err != nil {
+			return err
+		}
+		// One conversation has one current memory. The rows are ordered by
+		// version, so the first row of a conversation is the one that was
+		// current when the archive was taken.
+		seen := map[string]struct{}{}
+		for _, memory := range memories {
+			if _, exists := seen[memory.SessionID]; exists {
+				continue
+			}
+			seen[memory.SessionID] = struct{}{}
+			result.Memories = append(result.Memories, memory)
 		}
 		return result.Validate()
 	})

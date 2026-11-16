@@ -36,6 +36,8 @@ func run(args []string, out io.Writer) error {
 	seedMemory := flags.String("seed-memory", "", "file holding the profile memories the learner confirmed earlier (JSON array)")
 	runID := flags.String("run-id", "", "evaluation run identifier")
 	qid := flags.String("qid", "synthetic-offline", "scenario identifier for the scoring record")
+	scope := flags.String("scope", "", "the preparation this attempt belongs to; questions that share a scope share one preparation and one archive")
+	questionSession := flags.String("question-session", "", "the conversation the question is asked in; two questions of one preparation need two of them")
 	arm := flags.String("arm", "current", "configuration identifier")
 	rep := flags.Int("rep", 0, "repeat number: 0, 1 or 2")
 	condition := flags.String("condition", "main", "main, control or distractor")
@@ -217,13 +219,13 @@ func run(args []string, out io.Writer) error {
 		id, name, err := deriveScenarioIdentity(explicit, identityInput{
 			phase: *phase, run: *runID, arm: *arm, qid: *qid, condition: *condition,
 			rep: *rep, knowledgeSeed: *knowledgeSeed, userID: *userID, userName: *userName,
-			sessionCardMode: *sessionCardMode,
+			sessionCardMode: *sessionCardMode, scope: *scope,
 		})
 		if err != nil {
 			return err
 		}
 		*userID, *userName = id, name
-		environment, err = realEnvironment(flags, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel, userID, userName, sessionID, *mode, *sessionCardMode, indexName, keyPrefix, *memoryReadMode, *episodeRecallMode)
+		environment, err = realEnvironment(flags, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel, userID, userName, sessionID, *mode, *sessionCardMode, indexName, keyPrefix, *memoryReadMode, *episodeRecallMode, *questionSession)
 		if err != nil {
 			return err
 		}
@@ -401,7 +403,7 @@ func run(args []string, out io.Writer) error {
 // realEnvironment collects the paid-run wiring. The index password is read
 // from the process environment so that it never reaches a command line, an
 // output file, or an error message.
-func realEnvironment(flags *flag.FlagSet, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel *string, userID *int64, userName, sessionID *string, mode, sessionCardMode, cardIndexName, cardKeyPrefix, memoryReadMode, episodeRecallMode string) (conversation.RealEnvironment, error) {
+func realEnvironment(flags *flag.FlagSet, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel *string, userID *int64, userName, sessionID *string, mode, sessionCardMode, cardIndexName, cardKeyPrefix, memoryReadMode, episodeRecallMode, questionSession string) (conversation.RealEnvironment, error) {
 	var environment conversation.RealEnvironment
 	if *proxy == "" || *redis == "" || *storage == "" || *chatModel == "" || *embeddingModel == "" || *rerankModel == "" || *userID <= 0 || *userName == "" || *sessionID == "" {
 		return environment, fmt.Errorf("the real mode needs the proxy, index, storage, models and evaluation identity")
@@ -439,6 +441,7 @@ func realEnvironment(flags *flag.FlagSet, proxy, redis, redisPassword, storage, 
 		SessionCardMode:           sessionCardMode,
 		MemoryReadMode:            memoryReadMode,
 		EpisodeRecallMode:         episodeRecallMode,
+		QuestionSession:           questionSession,
 		SessionCardIndexName:      cardIndexName,
 		SessionCardIndexKeyPrefix: cardKeyPrefix,
 	}
