@@ -79,7 +79,14 @@ type ModelCall struct {
 	// the block's own citations, so they say which conversation the memory
 	// was written from.
 	InjectedMessageIDs []uint `json:"injected_message_ids,omitempty"`
-	Error              string `json:"error,omitempty"`
+	// InjectedSegmentSeqs are the summary segment numbers the injected block
+	// cited.
+	//
+	// A card written from the compressed state cites the segment it read
+	// rather than the messages under it, and the segment belongs to one
+	// conversation - which is what says where the card came from.
+	InjectedSegmentSeqs []int  `json:"injected_segment_seqs,omitempty"`
+	Error               string `json:"error,omitempty"`
 }
 type ModelLedger struct {
 	mu    sync.Mutex
@@ -416,6 +423,7 @@ func (m *ledgerModel) start(method string, input []*schema.Message) (int, error)
 	m.ledger.calls[id-1].ShownMemoryKind = memory.Kind
 	m.ledger.calls[id-1].InjectedText = memory.Text
 	m.ledger.calls[id-1].InjectedMessageIDs = memory.MessageIDs
+	m.ledger.calls[id-1].InjectedSegmentSeqs = memory.SegmentSeqs
 	m.ledger.mu.Unlock()
 	m.ledger.mu.Lock()
 	if len(m.ledger.pendingTools) > 0 {

@@ -323,6 +323,11 @@ type CardArmEvidence struct {
 	// the messages rather than out of the arm's own bookkeeping.
 	InjectedMessageIDs []uint   `json:"injected_message_ids,omitempty"`
 	InjectedSessions   []string `json:"injected_sessions,omitempty"`
+	// InjectedSegmentSeqs are the summary segment numbers the injected block
+	// cited. A card written from the compressed state cites the segment it
+	// read rather than the messages under it, and the segment is what says
+	// which conversation the card came from.
+	InjectedSegmentSeqs []int `json:"injected_segment_seqs,omitempty"`
 	// InjectedDeclaredSessions are the conversations the block named itself.
 	// A card names the conversation it was written from; an Episode block
 	// does not, and its source has to be looked up from the rows. The field
@@ -1047,6 +1052,7 @@ func recordCardArmEvidence(evidence *CardArmEvidence, sandbox *Sandbox, userID i
 	evidence.ShownMemoryKind = shown.Kind
 	evidence.InjectedText = shown.Text
 	evidence.InjectedMessageIDs = shown.MessageIDs
+	evidence.InjectedSegmentSeqs = shown.SegmentSeqs
 	// The declared sessions are always a list, even an empty one: "the block
 	// named no conversation" is a fact about the block, and a null on the
 	// record would read as "the harness did not look".
@@ -1074,6 +1080,23 @@ func recordCardArmEvidence(evidence *CardArmEvidence, sandbox *Sandbox, userID i
 	// another is then visible as the disagreement it is.
 	if len(evidence.InjectedMessageIDs) > 0 {
 		sessions, err := SessionsForMessageIDs(ctx, sandbox.db, userID, evidence.InjectedMessageIDs)
+		if err != nil {
+			return err
+		}
+		evidence.InjectedSessions = sessions
+		if len(sessions) > 0 {
+			if WithinSessions(sessions, evidence.SourceSessions) {
+				evidence.InjectedSourceCheck = InjectedSourceWithin
+			} else {
+				evidence.InjectedSourceCheck = InjectedSourceOutside
+			}
+		}
+	} else if len(shown.SegmentSeqs) > 0 {
+		// A card written from the compressed state cites the SEGMENT it read
+		// rather than the messages under it. The segment belongs to one
+		// conversation, and that is read out of the database - so the check
+		// stays independent, the way it is for the message ids.
+		sessions, err := SessionsForSegmentSeqs(ctx, sandbox.db, userID, shown.SegmentSeqs)
 		if err != nil {
 			return err
 		}

@@ -265,10 +265,11 @@ func AnswerShownMemory(calls []ModelCall) ShownMemory {
 			continue
 		}
 		shown = ShownMemory{
-			Kind:       call.ShownMemoryKind,
-			Sessions:   call.CardSessions,
-			MessageIDs: call.InjectedMessageIDs,
-			Text:       call.InjectedText,
+			Kind:        call.ShownMemoryKind,
+			Sessions:    call.CardSessions,
+			MessageIDs:  call.InjectedMessageIDs,
+			SegmentSeqs: call.InjectedSegmentSeqs,
+			Text:        call.InjectedText,
 		}
 	}
 	return shown
@@ -296,6 +297,12 @@ type ShownMemory struct {
 	Sessions []string `json:"sessions,omitempty"`
 	// MessageIDs are the message ids the Episode block cited.
 	MessageIDs []uint `json:"message_ids,omitempty"`
+	// SegmentSeqs are the summary segment numbers the card block cited.
+	//
+	// A card written from the compressed state cites the segment it read
+	// rather than the messages under it, and the segment belongs to one
+	// conversation - which is what says where the card came from.
+	SegmentSeqs []int `json:"segment_seqs,omitempty"`
 	// Text is the injected block itself, truncated.
 	Text string `json:"text,omitempty"`
 }
@@ -340,13 +347,57 @@ func ReadShownMemory(prompt []*schema.Message) ShownMemory {
 				// the messages it was written from. Both are kept: the name is
 				// the card's own claim and the ids are what the harness can
 				// check against the database.
-				Sessions:   sessions,
-				MessageIDs: episodeBlockMessageIDs(text),
-				Text:       truncateMemoryText(extractMemoryBlock(text)),
+				//
+				// A card written from the compressed state cites the SEGMENT
+				// it read instead of the messages under it, and those segment
+				// numbers are read here too - otherwise such a card would look
+				// like one that came from nowhere.
+				Sessions:    sessions,
+				MessageIDs:  episodeBlockMessageIDs(text),
+				SegmentSeqs: cardBlockSegmentSeqs(text),
+				Text:        truncateMemoryText(extractMemoryBlock(text)),
 			}
 		}
 	}
 	return ShownMemory{Kind: "none"}
+}
+
+// cardBlockSegmentSeqs reads the segment numbers a card block cited.
+//
+// The card's own syntax is "[segments=1,2]" - deliberately not the Episode's,
+// because the two blocks are read by two different parsers and a card that
+// failed to parse would look exactly like a card that cited nothing.
+func cardBlockSegmentSeqs(text string) []int {
+	seen := map[int]struct{}{}
+	var seqs []int
+	for _, match := range regexp.MustCompile(`segments=([0-9,]+)`).FindAllStringSubmatch(text, -1) {
+		if len(match) != 2 {
+			continue
+		}
+		for _, field := range strings.Split(match[1], ",") {
+			field = strings.TrimSpace(field)
+			if field == "" {
+				continue
+			}
+			value := 0
+			for _, digit := range field {
+				if digit < '0' || digit > '9' {
+					value = 0
+					break
+				}
+				value = value*10 + int(digit-'0')
+			}
+			if value == 0 {
+				continue
+			}
+			if _, exists := seen[value]; exists {
+				continue
+			}
+			seen[value] = struct{}{}
+			seqs = append(seqs, value)
+		}
+	}
+	return seqs
 }
 
 // memoryBlockLimit is how much of the injected block the evidence keeps.

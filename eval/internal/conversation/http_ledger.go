@@ -66,6 +66,7 @@ func modelHTTPHandler(ledger *ModelLedger, roles RolePrompts, backend http.Handl
 		ledger.calls[id-1].ShownMemoryKind = memory.Kind
 		ledger.calls[id-1].InjectedText = memory.Text
 		ledger.calls[id-1].InjectedMessageIDs = memory.MessageIDs
+		ledger.calls[id-1].InjectedSegmentSeqs = memory.SegmentSeqs
 		// The tool table is in the same body. The two arms do not carry the
 		// same table, so the attempt has to say which one it was given.
 		if names := ToolNamesFromBody(raw); len(names) > 0 {

@@ -185,6 +185,45 @@ func summaryTruncated(summary string) bool {
 	return len(summary) >= toolRecordLimit
 }
 
+// SessionsForSegmentSeqs reads the conversations the given summary segments are
+// in.
+//
+// A card written from the compressed state cites the SEGMENT it read, not the
+// messages under it - and those segments belong to one conversation, which the
+// segment row says. So the block's own citations are still enough to say
+// where the memory came from, without the harness trusting the block's own
+// claim about which conversation that was.
+//
+// The conversations are the ones this learner owns: a segment in somebody
+// else's conversation is not a source this learner was granted.
+func SessionsForSegmentSeqs(ctx context.Context, db *gorm.DB, userID int64, seqs []int) ([]string, error) {
+	if db == nil || userID <= 0 || len(seqs) == 0 {
+		return nil, nil
+	}
+	var rows []model.SessionSummarySegment
+	if err := db.WithContext(ctx).
+		Where("user_id = ? AND seq IN ?", userID, seqs).
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	candidates := map[string]struct{}{}
+	for _, row := range rows {
+		if strings.TrimSpace(row.SessionID) == "" {
+			continue
+		}
+		candidates[row.SessionID] = struct{}{}
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(candidates))
+	for candidate := range candidates {
+		out = append(out, candidate)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 // SessionsForMessageIDs reads the conversations the given messages are in.
 //
 // The injected block cites the messages it was written from, and the messages
