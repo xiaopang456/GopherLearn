@@ -363,10 +363,11 @@ func PublishSessionCardProjection(ctx context.Context, db *gorm.DB, userID int64
 // else: the projection, the card and the indexing are all the product's own
 // work, run by the product's own worker.
 //
-// Only a pending job is moved. A job that is already running has a live
-// lease, and a job that has run out of attempts will not run again; moving
-// either of them would leave the arm waiting for a timeout instead of being
-// told what happened.
+// A job that is already running or already finished is left alone. The arm
+// publishes with a zero window, so the product's worker can pick the job up
+// before this call arrives, and a job that is already on its way is not a
+// failure: it is a job that does not need moving. Only a job that cannot run
+// at all is reported, because that is a fact the attempt has to carry.
 func MakeProjectionDue(ctx context.Context, db *gorm.DB, userID int64, sessionID string) error {
 	if db == nil || userID <= 0 || strings.TrimSpace(sessionID) == "" {
 		return fmt.Errorf("invalid projection identity")
@@ -382,17 +383,22 @@ func MakeProjectionDue(ctx context.Context, db *gorm.DB, userID int64, sessionID
 		return nil
 	}
 	var job model.EpisodeProjectionJob
-	err := db.WithContext(ctx).Where("user_id = ? AND session_id = ?", userID, sessionID).Take(&job).Error
+	err := db.WithContext(ctx).Where("user_id = ? AND session_id = ?", userID, sessionID).Order("updated_at DESC").Take(&job).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return fmt.Errorf("the projection job was never published")
 		}
 		return err
 	}
-	if job.Status == model.EpisodeProjectionPending {
+	switch job.Status {
+	case model.EpisodeProjectionPending:
 		return fmt.Errorf("the projection job is pending but could not be moved")
+	case model.EpisodeProjectionProcessing, model.EpisodeProjectionCompleted:
+		// The worker already has the job, or already had it. Nothing to move.
+		return nil
+	default:
+		return fmt.Errorf("the projection job is %s and cannot be moved: %s", job.Status, job.ErrorCode)
 	}
-	return fmt.Errorf("the projection job is %s and cannot be moved: %s", job.Status, job.ErrorCode)
 }
 
 // WaitForSessionCard waits until the session has a card that is indexed.
