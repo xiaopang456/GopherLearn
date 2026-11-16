@@ -238,6 +238,14 @@ type WarmupReport struct {
 	// published, the kind of document it published, and how long it waited
 	// for the memories to be indexed.
 	Projection *ArmProjection `json:"projection,omitempty"`
+	// LayeredSummary is what the preparation wrote for the layered summary:
+	// the summary segments and the whiteboard of every conversation.
+	//
+	// It is here because the card path reads THAT state, and a report that
+	// said the card path was measured without saying whether the compressed
+	// state existed would be describing a card that was written from the raw
+	// messages alone.
+	LayeredSummary []LayeredSummaryRecord `json:"layered_summary,omitempty"`
 }
 
 func PrepareOfflineProduct(ctx context.Context, repository string, histories []History, input AttemptInput) (Snapshot, []ModelCall, error) {
@@ -248,12 +256,14 @@ func PrepareOfflineProductReport(ctx context.Context, repository string, histori
 	report.Snapshot, report.Calls, report.SeededMemories, resultErr = prepareOfflineProduct(ctx, repository, histories, input, func(prepared []PreparedTurn) {
 		report.Turns = prepared
 		SummarizeTurns(prepared, &report)
+	}, func(layered []LayeredSummaryRecord) {
+		report.LayeredSummary = layered
 	})
 	var usageErr error
 	report.UsageByRole, usageErr = SummarizeCalls(report.Calls)
 	return report, errors.Join(resultErr, usageErr)
 }
-func prepareOfflineProduct(ctx context.Context, repository string, histories []History, input AttemptInput, observe func([]PreparedTurn)) (snapshot Snapshot, calls []ModelCall, memories SeedMemoryReport, resultErr error) {
+func prepareOfflineProduct(ctx context.Context, repository string, histories []History, input AttemptInput, observe func([]PreparedTurn), observeLayered func([]LayeredSummaryRecord)) (snapshot Snapshot, calls []ModelCall, memories SeedMemoryReport, resultErr error) {
 	if err := ctx.Err(); err != nil {
 		return snapshot, nil, memories, err
 	}
@@ -323,6 +333,29 @@ func prepareOfflineProduct(ctx context.Context, repository string, histories []H
 	sessionIDs := make([]string, 0, len(histories))
 	for _, history := range histories {
 		sessionIDs = append(sessionIDs, history.SessionID)
+	}
+	// The layered summary is written here, with the product's own producer,
+	// for the same reason the real path writes it: the card path reads the
+	// summary segments and the whiteboard, and a preparation that stopped at
+	// the rolling summary would produce a card written from the raw messages
+	// alone.
+	layered, layeredErr := WriteLayeredSummaries(ctx, s, 7, sessionIDs, chat,
+		LayeredSummarySettings(settings.Config))
+	if observeLayered != nil {
+		observeLayered(layered)
+	}
+	if layeredErr != nil {
+		return snapshot, ledger.Calls(), memories, layeredErr
+	}
+	if err := (guardedStore{sandbox: s}).with(ctx, func(tx *gorm.DB) error {
+		for _, record := range layered {
+			if record.Segments == 0 {
+				return fmt.Errorf("the conversation %s got no summary segment", record.SessionID)
+			}
+		}
+		return nil
+	}); err != nil {
+		return snapshot, ledger.Calls(), memories, err
 	}
 	snapshot, err = s.CaptureMany(ctx, 7, sessionIDs)
 	return snapshot, ledger.Calls(), memories, err

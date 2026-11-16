@@ -365,6 +365,34 @@ func TestTheCardArmWritesACardAndAsksInAnotherConversation(t *testing.T) {
 	if evidence.Preparation == nil || evidence.Preparation.Published == 0 {
 		t.Fatalf("the attempt carries no preparation record: %+v", evidence.Preparation)
 	}
+	// The card was written FROM the conversation's own compressed state: the
+	// summary segments and the whiteboard.
+	//
+	// This is the assertion that a card written from the raw messages alone
+	// would fail. Such a card is a different measurement - the compressed
+	// state was not there - and a run that only checked that a card was
+	// indexed would call it a measurement of the card path.
+	if evidence.CardInput == nil {
+		t.Fatal("the attempt says nothing about what the card was written from")
+	}
+	if evidence.CardInput.Segments == 0 {
+		t.Fatalf("the card was written with no summary segment: %+v", evidence.CardInput)
+	}
+	if evidence.CardInput.SegmentPoints == 0 {
+		t.Fatalf("the summary segments carry no point: %+v", evidence.CardInput)
+	}
+	if !evidence.CardInput.Whiteboard {
+		t.Fatalf("the card was written with no whiteboard: %+v", evidence.CardInput)
+	}
+	if evidence.CardInput.SummaryWatermark == 0 {
+		t.Fatalf("the compressed state the card read reaches nothing: %+v", evidence.CardInput)
+	}
+	// The raw tail is what the compressed state did NOT cover. It may be
+	// empty - a segment that covers the whole conversation leaves nothing
+	// raw to show - and then the card read the compressed state alone.
+	if evidence.CardInput.RawMessages < 0 {
+		t.Fatalf("the card was shown a negative number of raw messages: %+v", evidence.CardInput)
+	}
 	// The card, the memory row and the target watermark are about the same
 	// conversation: the one the question is about. Three fields about three
 	// different conversations would read as a measurement of nothing.

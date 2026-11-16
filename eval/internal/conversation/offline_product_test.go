@@ -37,8 +37,22 @@ func TestCompleteOfflineProductIntegration(t *testing.T) {
 	if len(warmup.Turns) != 42 || warmup.DegradedTurns != 0 {
 		t.Fatalf("warmup turns=%d degraded=%d", len(warmup.Turns), warmup.DegradedTurns)
 	}
-	if len(primaryOf(snapshot).Messages) != 84 || snapshot.Sessions[0].Summary == nil || len(calls) != 12 {
+	// The preparation makes the rolling summary's calls and ONE layered
+	// summary call: the card path reads the summary segments and the
+	// whiteboard, so the segments have to exist before the card is written.
+	// The call count is the evidence that the preparation really wrote them.
+	if len(primaryOf(snapshot).Messages) != 84 || snapshot.Sessions[0].Summary == nil || len(calls) != 13 {
 		t.Fatalf("messages=%d summary=%+v calls=%d", len(primaryOf(snapshot).Messages), snapshot.Sessions[0].Summary, len(calls))
+	}
+	// The layered summary's own record says what it wrote, and it has to say
+	// that the segments and the board exist: a preparation that wrote neither
+	// would leave the card written from the raw messages alone.
+	if len(warmup.LayeredSummary) != 1 {
+		t.Fatalf("the preparation wrote no layered summary: %+v", warmup.LayeredSummary)
+	}
+	written := warmup.LayeredSummary[0]
+	if written.Segments == 0 || written.Whiteboard == false || written.Points == 0 {
+		t.Fatalf("the layered summary wrote nothing: %+v", written)
 	}
 	for _, c := range calls {
 		if c.Role != "summary" || c.Finished.IsZero() {
@@ -72,12 +86,33 @@ func TestCompleteOfflineProductIntegration(t *testing.T) {
 		}
 		foundSummary := false
 		foundRecent := false
+		foundSegment := false
+		foundBoard := false
 		for _, m := range result.ContextMessages {
 			foundSummary = foundSummary || strings.Contains(m.Content, "synthetic offline summary")
 			foundRecent = foundRecent || m.Content == turns[41].User
+			foundSegment = foundSegment || strings.Contains(m.Content, "synthetic offline segment")
+			foundBoard = foundBoard || strings.Contains(m.Content, "Current state")
 		}
-		if !foundSummary || !foundRecent {
-			t.Fatalf("missing summary/recent context: %+v", result.ContextMessages)
+		// The window carries the layered state: the board and the segments. It
+		// used to carry the rolling summary instead, and the assertion looked
+		// for that text. The difference is the point of the change: the
+		// preparation now writes the segments and the board, so the window
+		// reads THEM - and a window that fell back to the rolling summary
+		// would be evidence that the compressed state was not there.
+		if !foundRecent {
+			t.Fatalf("missing the recent context: %+v", result.ContextMessages)
+		}
+		if !foundSegment {
+			t.Fatalf("the window carries no summary segment: %+v", result.ContextMessages)
+		}
+		if !foundBoard {
+			t.Fatalf("the window carries no board: %+v", result.ContextMessages)
+		}
+		// The rolling summary is not what the window reads any more, and its
+		// absence is the point: the compressed state is there instead.
+		if foundSummary {
+			t.Fatalf("the window still carries the rolling summary: %+v", result.ContextMessages)
 		}
 		answers := 0
 		summaries := 0

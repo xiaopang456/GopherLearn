@@ -225,6 +225,17 @@ func (e RealEnvironment) Validate() error {
 		if !strings.HasPrefix(e.SessionCardIndexName, "gopherai_session_card_") {
 			return fmt.Errorf("the session card index name is outside the declared namespace")
 		}
+		// The card is written from the conversation's own compressed state:
+		// the summary segments and the whiteboard. A mode that writes neither
+		// cannot produce a card that has any, so the card would be a
+		// different measurement wearing the card path's name.
+		//
+		// The refusal is here and not later because a run that asked for this
+		// has to fail before it spends anything.
+		if strings.TrimSpace(e.SummarySegmentMode) == "off" {
+			return fmt.Errorf("the session card arm needs a summary segment mode that writes: " +
+				"the card reads the segments and the whiteboard, and the off mode writes neither")
+		}
 	}
 	return nil
 }
@@ -476,6 +487,29 @@ func PrepareRealProductReport(ctx context.Context, repository string, histories 
 	for _, history := range histories {
 		sessionIDs = append(sessionIDs, history.SessionID)
 	}
+	// The card path reads the conversation's own compressed state: the summary
+	// segments and the whiteboard. The rolling summary above is a DIFFERENT
+	// document, and a preparation that stopped there would produce a card
+	// whose evidence was the raw messages alone - the segments empty and the
+	// board absent - while claiming to measure the card path.
+	//
+	// So the layered summary is written here, with the product's own
+	// producer, before the card is projected. What it wrote is recorded in
+	// the report, so a reader can see whether the card's input really held
+	// the compressed state.
+	layered, err := WriteLayeredSummaries(ctx, s, env.UserID, sessionIDs, chat,
+		LayeredSummarySettings(settings.Config))
+	report.LayeredSummary = layered
+	// The layered summary's calls belong to this preparation. They are the
+	// calls the ledger saw since the rolling summary was written, and a
+	// preparation whose ledger does not carry them is a preparation whose
+	// cost nobody can see.
+	if calls := ledger.Calls(); len(calls) > len(report.Calls) {
+		report.Calls = append(report.Calls, calls[len(report.Calls):]...)
+	}
+	if err != nil {
+		return report, err
+	}
 	// The preparation publishes the projection and waits for the memories to
 	// be indexed, so that the archive carries a memory for every conversation
 	// and the queries can reuse it.
@@ -579,6 +613,21 @@ func projectArmMemories(ctx context.Context, repository, storage string, env Rea
 			out.Error = waitErr.Error()
 			return out, ledger.Calls(), waitErr
 		}
+		// What the card was written FROM is read now, while the compressed
+		// state is still there. The query restores the archive and cannot
+		// see it, so the record that travels with the archive is the only
+		// place this fact can live.
+		if arm.Mode == CardArmModeOn && target > 0 {
+			input, inputErr := ReadCardInput(ctx, s, env.UserID, sessionID, target)
+			if inputErr != nil {
+				out.Error = inputErr.Error()
+				return out, ledger.Calls(), inputErr
+			}
+			if out.CardInput == nil {
+				out.CardInput = map[string]*CardInputEvidence{}
+			}
+			out.CardInput[sessionID] = &input
+		}
 	}
 	// The memory row is written by the projector and the index entry by the
 	// indexer, and they are two steps. The row can say "indexed" before the
@@ -644,6 +693,12 @@ func armEvidenceFromSnapshot(snapshot Snapshot, arm *CardArm) *CardArmEvidence {
 		evidence.PreparationPublished = &published
 		evidence.PreparationDue = &due
 		evidence.PublishedTargetMessageID = projection.Targets[primary.Session.ID]
+		// What the card was written FROM is the preparation's record: the
+		// query restores the archive and cannot see the compressed state the
+		// preparation wrote, so the archive carries the fact.
+		if input, ok := projection.CardInput[primary.Session.ID]; ok && input != nil {
+			evidence.CardInput = input
+		}
 	}
 	// Left as nil when the archive carries no preparation record: the
 	// preparation said nothing, and "said nothing" is not "said no". An

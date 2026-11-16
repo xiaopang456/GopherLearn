@@ -186,6 +186,14 @@ type ArmProjection struct {
 	IndexReadable bool `json:"index_readable"`
 	// Error says why the preparation could not project, when it could not.
 	Error string `json:"error,omitempty"`
+	// CardInput says what the card was written FROM, per conversation.
+	//
+	// The card path reads the conversation's own compressed state: the
+	// summary segments and the whiteboard. A card written from the raw
+	// messages alone is a different measurement, and the record that says
+	// so is the one that travels with the archive - the query restores the
+	// archive and cannot see the compressed state the preparation wrote.
+	CardInput map[string]*CardInputEvidence `json:"card_input,omitempty"`
 }
 
 // CardRow is the card the arm found, as the database holds it.
@@ -271,6 +279,17 @@ type CardArmEvidence struct {
 	// ("episode" or "session_card"). A reader that does not know which
 	// document answered the question has not said what it measured.
 	MemoryKind string `json:"memory_kind,omitempty"`
+	// CardInput says what the card was written FROM.
+	//
+	// The card path reads the conversation's own compressed state: the
+	// summary segments and the whiteboard. A card written from the raw
+	// messages alone is a different measurement - the compressed state was
+	// not there - and a report that could not tell the two apart would
+	// claim the card path was measured when it was not.
+	//
+	// The numbers are zero when the arm does not use the card path, and
+	// that is the honest answer for it.
+	CardInput *CardInputEvidence `json:"card_input,omitempty"`
 	// MemoryReadMode, EpisodeRecallMode and SessionCardMode are the switches
 	// the product actually ran with. They are exported so that a reader can
 	// tell the two arms apart by what they ran, not by what they are called.
@@ -1348,6 +1367,18 @@ func DriveArm(ctx context.Context, sandbox *Sandbox, snapshot Snapshot, arm *Car
 			// describe different conversations.
 			evidence.PublishedTargetMessageID = target
 		}
+	}
+	// What the card was written FROM. The card path reads the conversation's
+	// own compressed state, and a card written from the raw messages alone
+	// is a different measurement. The record says which one this was.
+	if arm.Mode == CardArmModeOn {
+		input, inputErr := ReadCardInput(ctx, sandbox, primaryOf(snapshot).Session.UserID,
+			evidence.SourceSessionID, evidence.PublishedTargetMessageID)
+		if inputErr != nil {
+			evidence.Error = inputErr.Error()
+			return evidence, inputErr
+		}
+		evidence.CardInput = &input
 	}
 	// The question is asked in a conversation of its own, derived from the
 	// attempt's own conversation so that two attempts of the same run cannot
