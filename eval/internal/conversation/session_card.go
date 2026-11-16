@@ -1112,10 +1112,13 @@ func DriveArm(ctx context.Context, sandbox *Sandbox, snapshot Snapshot, arm *Car
 			evidence.Error = err.Error()
 			return evidence, err
 		}
+		evidence.Published = true
+		evidence.PublishedTargetMessageID = target
 		if err := sandbox.MakeProjectionDue(ctx, conversation.Session.UserID, conversation.Session.ID); err != nil {
 			evidence.Error = err.Error()
 			return evidence, err
 		}
+		evidence.Due = true
 		started := time.Now()
 		memory, code, err := sandbox.WaitForArmMemory(ctx, conversation.Session.UserID, conversation.Session.ID, arm.MemoryKind(), arm.Wait())
 		if err != nil {
@@ -1125,7 +1128,16 @@ func DriveArm(ctx context.Context, sandbox *Sandbox, snapshot Snapshot, arm *Car
 		}
 		evidence.Ready = true
 		evidence.WaitMilliseconds += time.Since(started).Milliseconds()
-		evidence.Memories = append(evidence.Memories, MemoryRowOf(memory))
+		row := MemoryRowOf(memory)
+		evidence.Memories = append(evidence.Memories, row)
+		// The row of the conversation the question is about is the card the
+		// arm will read. It is recorded here rather than left empty: an
+		// attempt whose evidence says "no card" while a card was indexed is
+		// an attempt that cannot be read.
+		if conversation.Session.ID == evidence.SourceSessionID {
+			evidence.Card = row
+			evidence.Memory = row
+		}
 	}
 	// The question is asked in a conversation of its own, derived from the
 	// attempt's own conversation so that two attempts of the same run cannot

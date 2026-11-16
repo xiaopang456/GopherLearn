@@ -455,6 +455,10 @@ func (m *offlineChat) cardDocument(input []*schema.Message) (string, error) {
 			Role    string `json:"role"`
 			Content string `json:"content"`
 		} `json:"messages"`
+		Segments []struct {
+			Seq    int      `json:"seq"`
+			Points []string `json:"points"`
+		} `json:"segments"`
 	}
 	if err := json.Unmarshal([]byte(payload), &request); err != nil {
 		return "", fmt.Errorf("decode the session card payload: %w", err)
@@ -484,6 +488,29 @@ func (m *offlineChat) cardDocument(input []*schema.Message) (string, error) {
 		}
 		entry.Status = model.SessionCardStatusAssistantProposed
 		document.AssistantProducts = append(document.AssistantProducts, entry)
+	}
+	// The conversation was compressed before the card was written, so the raw
+	// messages are gone and what the fake was shown is the summary. A real
+	// model writes the card from what it was shown, and so does the fake: the
+	// card cites the segments it read, and the words it puts there are the
+	// conversation's own words.
+	//
+	// Without this the card would carry nothing of the conversation, and a card
+	// that says nothing about what was said is a card the retrieval cannot
+	// find: the arm would measure a card path that found no card.
+	if len(document.Arrangements) == 0 && len(document.AssistantProducts) == 0 {
+		for _, segment := range request.Segments {
+			for _, point := range segment.Points {
+				text := strings.TrimSpace(point)
+				if text == "" {
+					continue
+				}
+				document.Arrangements = append(document.Arrangements, model.SessionCardEntry{
+					Text: offlineCardText(text), Status: model.SessionCardStatusStated,
+					SegmentSeqs: []int{segment.Seq},
+				})
+			}
+		}
 	}
 	encoded, err := json.Marshal(document)
 	if err != nil {
@@ -551,16 +578,16 @@ func (m *offlineChat) segmentDocument(input []*schema.Message) string {
 	if len(input) > 1 && input[1] != nil {
 		payload = input[1].Content
 	}
-	learner, product := segmentPayloadMessageIDs(payload)
+	learner, product, learnerText, productText := segmentPayloadMessages(payload)
 	points := []map[string]any{}
 	if learner > 0 {
 		points = append(points, map[string]any{
-			"text": syntheticSegmentLearnerText, "evidence_message_ids": []uint{learner}, "source": "user",
+			"text": summaryPointText(learnerText, syntheticSegmentLearnerText), "evidence_message_ids": []uint{learner}, "source": "user",
 		})
 	}
 	if m.assistantContent && product > 0 {
 		points = append(points, map[string]any{
-			"text": syntheticSegmentProductText, "evidence_message_ids": []uint{product}, "source": "assistant",
+			"text": summaryPointText(productText, syntheticSegmentProductText), "evidence_message_ids": []uint{product}, "source": "assistant",
 		})
 	}
 	document := map[string]any{
@@ -589,27 +616,54 @@ func (m *offlineChat) segmentDocument(input []*schema.Message) string {
 	return string(encoded)
 }
 
-// segmentPayloadMessageIDs reads the id of the batch's first learner message
-// and of its first assistant message out of the payload the writer was given.
+// segmentPayloadMessages reads the batch's first learner message and of its
+// first assistant message out of the payload the writer was given.
 //
-// The payload names every message with its id and its role, so the fake model
-// cites messages the batch really contained.
-func segmentPayloadMessageIDs(payload string) (learner, product uint) {
-	for _, match := range segmentPayloadMessage.FindAllStringSubmatch(payload, -1) {
-		id, err := strconv.ParseUint(match[1], 10, 64)
+// The payload names every message with its id and its role and shows its
+// text, so the fake model cites messages the batch really contained and
+// writes down the subject the batch really talked about.
+//
+// The text matters as much as the ids. A summary that kept no words of its own
+// would leave every card written from it empty of the conversation, and a card
+// nobody can find is a card the arm cannot measure: the retrieval would look
+// for what the learner said and find nothing, and the attempt would say the
+// card path found nothing while the card was sitting in the index.
+func segmentPayloadMessages(payload string) (learner, product uint, learnerText, productText string) {
+	for _, match := range segmentPayloadMessage.FindAllStringSubmatchIndex(payload, -1) {
+		id, err := strconv.ParseUint(payload[match[2]:match[3]], 10, 64)
 		if err != nil {
 			continue
 		}
-		switch match[2] {
+		role := payload[match[4]:match[5]]
+		// The text is what follows the marker on the same line.
+		rest := payload[match[1]:]
+		if end := strings.IndexByte(rest, '\n'); end >= 0 {
+			rest = rest[:end]
+		}
+		switch role {
 		case "user":
 			if learner == 0 {
-				learner = uint(id)
+				learner, learnerText = uint(id), rest
 			}
 		case "assistant":
 			if product == 0 {
-				product = uint(id)
+				product, productText = uint(id), rest
 			}
 		}
 	}
-	return learner, product
+	return learner, product, learnerText, productText
+}
+
+// summaryPointText is what one summary point says.
+//
+// The message's own words are kept, because a summary is a compression of what
+// was said and not a replacement for it: the words the learner used are the
+// words a later question will use. The fixed text is the fallback for a
+// payload that carries no readable text.
+func summaryPointText(text, fallback string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return fallback
+	}
+	return offlineCardText(trimmed)
 }

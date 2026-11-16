@@ -237,7 +237,7 @@ func TestTheCardArmWritesACardAndAsksInAnotherConversation(t *testing.T) {
 		t.Fatalf("the attempt could not read the prompt the model was sent: %+v", evidence)
 	}
 	if !evidence.ShownCard {
-		t.Fatalf("the answer was given no card: %+v", evidence)
+		t.Fatalf("the answer was given no card: %+v card=%+v", evidence, evidence.Card)
 	}
 	if !containsString(evidence.ShownCardSessions, evidence.SourceSessionID) {
 		t.Fatalf("the card block named other conversations: %+v", evidence.ShownCardSessions)

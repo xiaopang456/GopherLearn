@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"GopherAI/model"
 	"github.com/cloudwego/eino/schema"
 )
 
@@ -109,6 +110,62 @@ func AnswerToolTable(calls []ModelCall) []string {
 	return table
 }
 
+// ToolUsageEntry says what happened to one tool.
+//
+// The three states are kept apart because they are three different findings:
+// a tool the product never registered cannot be called at all, a tool the
+// product registered but did not offer in this request cannot be called in
+// this request, and a tool that was offered and not called is a fact about
+// the answer, not about the wiring.
+type ToolUsageEntry struct {
+	// Name is the tool.
+	Name string `json:"name"`
+	// Offered says the request carried the tool's schema.
+	Offered bool `json:"offered"`
+	// Called says the answer actually called it.
+	Called bool `json:"called"`
+	// Calls is how many times it was called.
+	Calls int `json:"calls"`
+}
+
+// ToolUsage reads what happened to every tool of the request.
+//
+// The harness can see the tools a request carried and the tools an answer
+// called. It CANNOT see the product's registry, so "the product never
+// registered it" and "the product registered it but did not offer it here"
+// are one state here: the tool was not offered in this request. Telling the
+// two apart needs the registry to be exposed, and that is a product-side
+// change rather than a harness one.
+func ToolUsage(offered []string, steps []model.AgentStep) []ToolUsageEntry {
+	calls := map[string]int{}
+	for _, step := range steps {
+		if step.Type != model.AgentStepTool {
+			continue
+		}
+		calls[step.ToolName]++
+	}
+	seen := map[string]struct{}{}
+	var out []ToolUsageEntry
+	for _, name := range offered {
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, ToolUsageEntry{Name: name, Offered: true, Called: calls[name] > 0, Calls: calls[name]})
+	}
+	// A tool the answer called that the harness did not see offered is worth
+	// saying: it means the harness's view of the request was incomplete.
+	for name, count := range calls {
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, ToolUsageEntry{Name: name, Offered: false, Called: true, Calls: count})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
 // The memory block the product puts into the window.
 //
 // The card block names the conversation it was written from, and the Episode
@@ -131,6 +188,8 @@ type ShownMemory struct {
 	Sessions []string `json:"sessions,omitempty"`
 	// MessageIDs are the message ids the Episode block cited.
 	MessageIDs []uint `json:"message_ids,omitempty"`
+	// Text is the injected block itself, truncated.
+	Text string `json:"text,omitempty"`
 }
 
 // ReadShownMemory reads the cross-session memory out of the prompt the model
@@ -141,6 +200,10 @@ type ShownMemory struct {
 // read this from. A prompt with no memory block is a prompt that carried no
 // memory - which is a fact worth having, because an arm that was shown no
 // memory measured nothing.
+//
+// The text of the block is kept as well, truncated: what the answer was given
+// is the difference between "the memory was there" and "the memory was
+// there and said this".
 func ReadShownMemory(prompt []*schema.Message) ShownMemory {
 	var joined strings.Builder
 	for _, message := range prompt {
@@ -153,13 +216,52 @@ func ReadShownMemory(prompt []*schema.Message) ShownMemory {
 	text := joined.String()
 	switch {
 	case episodeBlockHeader.MatchString(text):
-		return ShownMemory{Kind: "episode", MessageIDs: episodeBlockMessageIDs(text)}
+		return ShownMemory{
+			Kind:       "episode",
+			MessageIDs: episodeBlockMessageIDs(text),
+			Text:       truncateMemoryText(extractMemoryBlock(text)),
+		}
 	case cardBlockHeader.MatchString(text):
 		_, sessions := ReadShownCards(prompt)
-		return ShownMemory{Kind: "card", Sessions: sessions}
+		return ShownMemory{
+			Kind:     "card",
+			Sessions: sessions,
+			Text:     truncateMemoryText(extractMemoryBlock(text)),
+		}
 	default:
 		return ShownMemory{Kind: "none"}
 	}
+}
+
+// memoryBlockLimit is how much of the injected block the evidence keeps.
+const memoryBlockLimit = 1200
+
+func truncateMemoryText(text string) string {
+	runes := []rune(text)
+	if len(runes) <= memoryBlockLimit {
+		return text
+	}
+	return string(runes[:memoryBlockLimit]) + "…"
+}
+
+// extractMemoryBlock returns the part of the prompt that carries the
+// cross-session memory.
+func extractMemoryBlock(text string) string {
+	markers := []string{
+		"Relevant cross-session episodes",
+		"Session cards",
+		"session card",
+	}
+	start := -1
+	for _, marker := range markers {
+		if at := strings.Index(text, marker); at >= 0 && (start < 0 || at < start) {
+			start = at
+		}
+	}
+	if start < 0 {
+		return ""
+	}
+	return text[start:]
 }
 
 // episodeBlockMessageIDs reads the message ids an Episode block cited.
