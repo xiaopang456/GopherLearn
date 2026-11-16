@@ -148,6 +148,46 @@ func (a *CardArm) Wait() time.Duration {
 	return a.WaitTimeout
 }
 
+// ArmProjection is what one preparation projected.
+//
+// It is the record of the memory version the questions are asked against: the
+// conversations whose projection was published, how far each one was asked to
+// reach, how long the preparation waited, and what the shared index held when
+// the archive was written.
+//
+// It travels with the archive. A query that reuses the archive has to be able
+// to say what the preparation did, and the index gate compares the index with
+// what the preparation recorded - not with a number the query counts itself.
+type ArmProjection struct {
+	// Mode is the arm: "disabled" is the old Episode, "enabled" the card.
+	Mode string `json:"mode"`
+	// MemoryKind is the kind of document the arm projected.
+	MemoryKind string `json:"memory_kind"`
+	// Sessions are the conversations that were projected.
+	Sessions []string `json:"sessions,omitempty"`
+	// Targets names the message each conversation's projection was asked to
+	// reach.
+	//
+	// It is how far each memory covers, and the target of the conversation
+	// the question is about is the one the attempt reports beside that
+	// conversation's card and memory row.
+	Targets map[string]uint `json:"targets,omitempty"`
+	// Published counts the conversations whose projection was published, and
+	// Due the ones whose job was moved into the present.
+	Published int `json:"published"`
+	Due       int `json:"due"`
+	// WaitMilliseconds is how long the preparation waited for the memories.
+	WaitMilliseconds int64 `json:"wait_ms"`
+	// IndexEntries is how many entries the shared index held for this learner
+	// when the archive was written. It is read from the index, not counted
+	// from the archive, so a disagreement between the two is visible.
+	IndexEntries int `json:"index_entries"`
+	// IndexReadable says the index could be read at all.
+	IndexReadable bool `json:"index_readable"`
+	// Error says why the preparation could not project, when it could not.
+	Error string `json:"error,omitempty"`
+}
+
 // CardRow is the card the arm found, as the database holds it.
 type CardRow struct {
 	ID                  string `json:"id"`
@@ -174,14 +214,35 @@ type CardArmEvidence struct {
 	// a different conversation on purpose: a question asked in the
 	// conversation the memory came from would find the raw messages anyway.
 	QuestionSessionID string `json:"question_session_id"`
-	// Published says the arm published the projection job itself, and
-	// PublishedTargetMessageID is the message the projection was asked to
-	// reach. Due says the arm moved that job into the present, so that the
+	// PreparationPublished says the preparation published the projection, and
+	// PreparationDue says it moved that job into the present, so that the
 	// product's own worker picks it up instead of waiting out the quiet
 	// window.
-	Published                bool `json:"published"`
+	//
+	// These two describe the preparation, and they are not the same fact as
+	// Republished. Keeping them apart is the point: an attempt that reuses an
+	// archive has to be able to say that the preparation published AND that
+	// this query published nothing. One boolean for both would say "published"
+	// about a query that published nothing at all.
+	PreparationPublished bool `json:"preparation_published"`
+	PreparationDue       bool `json:"preparation_due"`
+	// Republished says this query published the projection again.
+	//
+	// A query that reuses an archive must not: the memory version is fixed
+	// before the question is asked, and a query that projected again would
+	// answer against a memory the preparation did not produce.
+	Republished bool `json:"republished"`
+	// Preparation is what the preparation projected, as the archive recorded
+	// it: the conversations it published, how far each one was asked to reach,
+	// how long it waited, and what the index held when the archive was
+	// written. It travels with the archive so that a query can say what it
+	// was given without guessing.
+	Preparation *ArmProjection `json:"preparation,omitempty"`
+	// PublishedTargetMessageID is the message the projection was asked to
+	// reach. It belongs to the conversation the question is about, like Card
+	// and Memory: three fields about three things, and they have to be about
+	// the same thing.
 	PublishedTargetMessageID uint `json:"published_target_message_id,omitempty"`
-	Due                      bool `json:"due"`
 	// SourceSessions are the conversations the attempt carries. They are all
 	// of them, not only the one the question is about: the retrieval chooses
 	// between them, and an attempt that says which ones were there is an
@@ -1140,13 +1201,18 @@ func QuestionSessionID(sourceSessionID string) string {
 //
 // It is the preparation's half of the arm: the preparation publishes it, the
 // queries read what it produced.
+//
+// The target it returns is the message the projection was asked to reach. The
+// preparation records it, because the target is what says how far a memory
+// covers, and a reader that has the card but not the target cannot tell
+// whether the card reaches the conversation the question is about.
 func (s *Sandbox) PublishAndAwaitMemory(ctx context.Context, userID int64, sessionID string,
-	arm *CardArm) (published bool, due bool, waited int64, err error) {
+	arm *CardArm) (published bool, due bool, target uint, waited int64, err error) {
 	if err = s.verify(ctx); err != nil {
-		return false, false, 0, err
+		return false, false, 0, 0, err
 	}
 	if s.db == nil {
-		return false, false, 0, fmt.Errorf("sandbox database unavailable")
+		return false, false, 0, 0, fmt.Errorf("sandbox database unavailable")
 	}
 	// The target is the conversation's last message.
 	var last struct {
@@ -1154,24 +1220,25 @@ func (s *Sandbox) PublishAndAwaitMemory(ctx context.Context, userID int64, sessi
 	}
 	if err = s.db.WithContext(ctx).Model(&model.Message{}).
 		Where("session_id = ?", sessionID).Order("id DESC").Take(&last).Error; err != nil {
-		return false, false, 0, err
+		return false, false, 0, 0, err
 	}
 	if last.ID == 0 {
-		return false, false, 0, fmt.Errorf("the conversation %s has no message", sessionID)
+		return false, false, 0, 0, fmt.Errorf("the conversation %s has no message", sessionID)
 	}
 	if err = PublishSessionCardProjection(ctx, s.db, userID, sessionID, last.ID, 0); err != nil {
-		return false, false, 0, err
+		return false, false, 0, 0, err
 	}
 	published = true
+	target = last.ID
 	if err = MakeProjectionDue(ctx, s.db, userID, sessionID); err != nil {
-		return published, false, 0, err
+		return published, false, target, 0, err
 	}
 	due = true
 	started := time.Now()
 	if _, code, waitErr := WaitForArmMemory(ctx, s.db, userID, sessionID, arm.MemoryKind(), arm.Wait()); waitErr != nil {
-		return published, due, time.Since(started).Milliseconds(), fmt.Errorf("%w (%s)", waitErr, code)
+		return published, due, target, time.Since(started).Milliseconds(), fmt.Errorf("%w (%s)", waitErr, code)
 	}
-	return published, due, time.Since(started).Milliseconds(), nil
+	return published, due, target, time.Since(started).Milliseconds(), nil
 }
 
 // DriveSessionCard publishes the projection, waits for the card and opens the
@@ -1212,6 +1279,13 @@ func DriveArm(ctx context.Context, sandbox *Sandbox, snapshot Snapshot, arm *Car
 		MemoryKind:        arm.MemoryKind(),
 	}
 	evidence.SourceSessions = snapshot.SessionIDs()
+	// The projection record, so that the offline attempt carries the same
+	// shape of preparation record as the real one: which conversations were
+	// projected, how far each one was asked to reach, and how long the arm
+	// waited for them.
+	projection := &ArmProjection{Mode: arm.Mode, MemoryKind: arm.MemoryKind(),
+		Sessions: evidence.SourceSessions, Targets: map[string]uint{}}
+	evidence.Preparation = projection
 	for _, conversation := range snapshot.Sessions {
 		var target uint
 		for _, message := range conversation.Messages {
@@ -1229,12 +1303,18 @@ func DriveArm(ctx context.Context, sandbox *Sandbox, snapshot Snapshot, arm *Car
 			evidence.Error = err.Error()
 			return evidence, err
 		}
-		evidence.Published = true
+		// The projection is published before the question is asked, so this
+		// is the preparation's fact, not the query's. The query publishes
+		// nothing here: the card is written once and read once.
+		evidence.PreparationPublished = true
+		projection.Published++
+		projection.Targets[conversation.Session.ID] = target
 		if err := sandbox.MakeProjectionDue(ctx, conversation.Session.UserID, conversation.Session.ID); err != nil {
 			evidence.Error = err.Error()
 			return evidence, err
 		}
-		evidence.Due = true
+		evidence.PreparationDue = true
+		projection.Due++
 		started := time.Now()
 		memory, code, err := sandbox.WaitForArmMemory(ctx, conversation.Session.UserID, conversation.Session.ID, arm.MemoryKind(), arm.Wait())
 		if err != nil {
@@ -1243,7 +1323,9 @@ func DriveArm(ctx context.Context, sandbox *Sandbox, snapshot Snapshot, arm *Car
 			return evidence, err
 		}
 		evidence.Ready = true
-		evidence.WaitMilliseconds += time.Since(started).Milliseconds()
+		waited := time.Since(started).Milliseconds()
+		evidence.WaitMilliseconds += waited
+		projection.WaitMilliseconds += waited
 		row := MemoryRowOf(memory)
 		evidence.Memories = append(evidence.Memories, row)
 		// The row of the conversation the question is about is the card the

@@ -46,6 +46,16 @@ type Snapshot struct {
 	// memories. The two are different facts - the index is a projection of
 	// the memories, and a projection that is behind is not a broken archive.
 	IndexEntries int `json:"index_entries,omitempty"`
+	// Projection is what the preparation projected, as it recorded it.
+	//
+	// It travels with the archive for the same reason the memories do: a
+	// query that reuses the archive has to be able to say what it was given.
+	// The record says which conversations were projected, how far each one was
+	// asked to reach, and what the index held when the archive was written -
+	// and the last of those is what the query's own gate compares the index
+	// with. A query that counted the index itself could not tell a reused
+	// archive from a fresh one.
+	Projection *ArmProjection `json:"projection,omitempty"`
 }
 
 // Primary is the attempt's own conversation.
@@ -137,6 +147,21 @@ func (s Snapshot) Validate() error {
 		}
 		if !memory.ContentKind.Valid() {
 			return fmt.Errorf("memory %s has an unknown content kind", memory.ID)
+		}
+	}
+	// The projection record belongs to this archive. A record that named
+	// conversations the archive does not carry would say the memory version is
+	// something other than what the queries will be asked against.
+	if projection := s.Projection; projection != nil {
+		for _, sessionID := range projection.Sessions {
+			if _, exists := seenSessions[sessionID]; !exists {
+				return fmt.Errorf("the projection names a conversation the attempt does not carry")
+			}
+		}
+		for sessionID := range projection.Targets {
+			if _, exists := seenSessions[sessionID]; !exists {
+				return fmt.Errorf("the projection's target names a conversation the attempt does not carry")
+			}
 		}
 	}
 	return nil

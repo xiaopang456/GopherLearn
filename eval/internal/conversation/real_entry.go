@@ -504,6 +504,15 @@ func PrepareRealProductReport(ctx context.Context, repository string, histories 
 		return report, err
 	}
 	report.Snapshot.IndexEntries = projection.IndexEntries
+	// The preparation's own record travels with the archive.
+	//
+	// A query that reuses the archive has to be able to say what it was
+	// given: which conversations were projected, how far each one was asked to
+	// reach, and what the index held when the archive was written. Without
+	// the record, the query's own bookkeeping would have to say all of it -
+	// and a query that counts the index itself cannot tell a reused archive
+	// from a fresh one.
+	report.Snapshot.Projection = projection
 	report.UsageByRole, err = SummarizeCalls(report.Calls)
 	return report, errors.Join(err, nil)
 }
@@ -517,7 +526,8 @@ func PrepareRealProductReport(ctx context.Context, repository string, histories 
 // reuse, and the queries must not depend on a process that is still running.
 func projectArmMemories(ctx context.Context, repository, storage string, env RealEnvironment,
 	s *Sandbox, sessionIDs []string, arm *CardArm) (*ArmProjection, []ModelCall, error) {
-	out := &ArmProjection{Mode: arm.Mode, MemoryKind: arm.MemoryKind(), Sessions: sessionIDs}
+	out := &ArmProjection{Mode: arm.Mode, MemoryKind: arm.MemoryKind(), Sessions: sessionIDs,
+		Targets: map[string]uint{}}
 	if err := arm.Validate(); err != nil {
 		return out, nil, err
 	}
@@ -554,12 +564,15 @@ func projectArmMemories(ctx context.Context, repository, storage string, env Rea
 	}
 	defer runtime.stop()
 	for _, sessionID := range sessionIDs {
-		published, due, waited, waitErr := s.PublishAndAwaitMemory(ctx, env.UserID, sessionID, arm)
+		published, due, target, waited, waitErr := s.PublishAndAwaitMemory(ctx, env.UserID, sessionID, arm)
 		if published {
 			out.Published++
 		}
 		if due {
 			out.Due++
+		}
+		if target > 0 {
+			out.Targets[sessionID] = target
 		}
 		out.WaitMilliseconds += waited
 		if waitErr != nil {
@@ -591,6 +604,49 @@ func projectArmMemories(ctx context.Context, repository, storage string, env Rea
 	return out, ledger.Calls(), nil
 }
 
+// armEvidenceFromSnapshot builds the evidence of an attempt out of the
+// archive.
+//
+// The archive is the record of what the preparation produced, so the evidence
+// is read out of it and not out of the query's own bookkeeping:
+//
+//   - the preparation's own record: which conversations were projected, how far
+//     each one was asked to reach, and what the index held when the archive
+//     was written;
+//   - the card and the memory row of the conversation the question is about -
+//     the one of the arm's own kind, so a card arm never reports an Episode
+//     and an Episode arm never reports a card;
+//   - the target watermark of THAT conversation, so the three are about the
+//     same thing.
+//
+// The query publishes nothing: it restores the archive and asks against the
+// memory version the preparation fixed. So the evidence says that the
+// preparation published and that this query published nothing again - two
+// different facts, kept in two different fields.
+func armEvidenceFromSnapshot(snapshot Snapshot, arm *CardArm) *CardArmEvidence {
+	primary, _ := snapshot.Primary()
+	evidence := &CardArmEvidence{
+		Mode: arm.Mode, MemoryKind: arm.MemoryKind(),
+		MemoryReadMode:    strings.TrimSpace(arm.MemoryReadMode),
+		EpisodeRecallMode: strings.TrimSpace(arm.EpisodeRecallMode),
+		SourceSessions:    snapshot.SessionIDs(),
+		Memories:          memoryRowsOf(snapshot),
+		Ready:             len(snapshot.Memories) > 0,
+	}
+	if projection := snapshot.Projection; projection != nil {
+		evidence.Preparation = projection
+		evidence.PreparationPublished = projection.Published > 0
+		evidence.PreparationDue = projection.Due > 0
+		evidence.PublishedTargetMessageID = projection.Targets[primary.Session.ID]
+	}
+	evidence.Republished = false
+	if row := memoryRowOfSession(snapshot, primary.Session.ID, arm.MemoryKind()); row != nil {
+		evidence.Card = row
+		evidence.Memory = row
+	}
+	return evidence
+}
+
 // memoryRowsOf reads the memory rows the archive carries into the evidence
 // the attempt keeps.
 func memoryRowsOf(snapshot Snapshot) []*CardRow {
@@ -601,28 +657,23 @@ func memoryRowsOf(snapshot Snapshot) []*CardRow {
 	return out
 }
 
-// ArmProjection is what the preparation projected.
-type ArmProjection struct {
-	// Mode is the arm: "disabled" is the old Episode, "enabled" the card.
-	Mode string `json:"mode"`
-	// MemoryKind is the kind of document the arm projected.
-	MemoryKind string `json:"memory_kind"`
-	// Sessions are the conversations that were projected.
-	Sessions []string `json:"sessions,omitempty"`
-	// Published counts the conversations whose projection was published, and
-	// Due the ones whose job was moved into the present.
-	Published int `json:"published"`
-	Due       int `json:"due"`
-	// WaitMilliseconds is how long the preparation waited for the memories.
-	WaitMilliseconds int64 `json:"wait_ms"`
-	// IndexEntries is how many entries the shared index held for this learner
-	// when the archive was written. It is read from the index, not counted
-	// from the archive, so a disagreement between the two is visible.
-	IndexEntries int `json:"index_entries"`
-	// IndexReadable says the index could be read at all.
-	IndexReadable bool `json:"index_readable"`
-	// Error says why the preparation could not project, when it could not.
-	Error string `json:"error,omitempty"`
+// memoryRowOfSession reads the memory row of one conversation into the record
+// the attempt keeps.
+//
+// The row is the one of the named kind: an arm that measures the card path
+// must not report an Episode as its card, and the other way round. The
+// conversations of an attempt are several, and only one of them is the
+// conversation the question is about, so the row is looked up by that
+// conversation and not by position.
+func memoryRowOfSession(snapshot Snapshot, sessionID, contentKind string) *CardRow {
+	for index := range snapshot.Memories {
+		memory := snapshot.Memories[index]
+		if memory.SessionID != sessionID || string(memory.ContentKind) != contentKind {
+			continue
+		}
+		return MemoryRowOf(&memory)
+	}
+	return nil
 }
 
 // RunRealProduct restores one prepared conversation into a fresh evaluation
@@ -760,14 +811,7 @@ func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, env
 	// messages anyway, and the test conversations must not become candidates
 	// for the retrieval.
 	arm := CardArmForEnvironment(env)
-	armEvidence := &CardArmEvidence{
-		Mode: arm.Mode, MemoryKind: arm.MemoryKind(),
-		MemoryReadMode:    strings.TrimSpace(arm.MemoryReadMode),
-		EpisodeRecallMode: strings.TrimSpace(arm.EpisodeRecallMode),
-		SourceSessions:    snapshot.SessionIDs(),
-		Memories:          memoryRowsOf(snapshot),
-		Ready:             len(snapshot.Memories) > 0,
-	}
+	armEvidence := armEvidenceFromSnapshot(snapshot, arm)
 	result.SessionCard = armEvidence
 	questionSession := strings.TrimSpace(env.QuestionSession)
 	if questionSession == "" {

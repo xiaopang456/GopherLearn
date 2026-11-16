@@ -167,6 +167,104 @@ func TestApplyCardArmPutsTheSwitchIntoTheProductConfiguration(t *testing.T) {
 	}
 }
 
+// The evidence of a reused archive is read out of the archive.
+//
+// The card, the memory row and the target watermark have to be about the SAME
+// conversation - the one the question is about - and the attempt has to be
+// able to say that the preparation published while this query published
+// nothing again. Both are the facts a reader of the artifact needs, and
+// neither can be guessed from the query's own bookkeeping.
+func TestTheEvidenceComesOutOfTheArchive(t *testing.T) {
+	snapshot := Snapshot{
+		Sessions: []SessionSnapshot{
+			{Session: model.Session{ID: "source-1", UserID: 7, UserName: "learner", Mode: model.SessionModeAgent},
+				Messages: []model.Message{
+					{ID: 1, SessionID: "source-1", UserName: "learner", IsUser: true, Content: "第一句"},
+					{ID: 2, SessionID: "source-1", UserName: "learner", IsUser: false, Content: "第二句"},
+				}},
+			{Session: model.Session{ID: "source-2", UserID: 7, UserName: "learner", Mode: model.SessionModeAgent},
+				Messages: []model.Message{
+					{ID: 3, SessionID: "source-2", UserName: "learner", IsUser: true, Content: "第三句"},
+					{ID: 4, SessionID: "source-2", UserName: "learner", IsUser: false, Content: "第四句"},
+				}},
+		},
+		Memories: []model.EpisodeMemory{
+			{ID: "card-1", UserID: 7, SessionID: "source-1", ContentKind: model.EpisodeContentSessionCard,
+				Title: "第一张卡", SourceLastMessageID: 2},
+			{ID: "episode-1", UserID: 7, SessionID: "source-1", ContentKind: model.EpisodeContentEpisode,
+				Title: "第一条 Episode", SourceLastMessageID: 2},
+			{ID: "card-2", UserID: 7, SessionID: "source-2", ContentKind: model.EpisodeContentSessionCard,
+				Title: "第二张卡", SourceLastMessageID: 4},
+		},
+		Projection: &ArmProjection{Mode: CardArmModeOn, MemoryKind: string(model.EpisodeContentSessionCard),
+			Sessions: []string{"source-1", "source-2"}, Targets: map[string]uint{"source-1": 2, "source-2": 4},
+			Published: 2, Due: 2, IndexEntries: 3, IndexReadable: true},
+	}
+	if err := snapshot.Validate(); err != nil {
+		t.Fatalf("the archive is not valid: %v", err)
+	}
+	cardArm := &CardArm{Mode: CardArmModeOn, IndexName: "idx", KeyPrefix: "p:"}
+	evidence := armEvidenceFromSnapshot(snapshot, cardArm)
+	if evidence.Preparation == nil || evidence.Preparation.Published != 2 {
+		t.Fatalf("the preparation record is missing: %+v", evidence.Preparation)
+	}
+	if !evidence.PreparationPublished || !evidence.PreparationDue {
+		t.Fatalf("the preparation's facts are missing: %+v", evidence)
+	}
+	if evidence.Republished {
+		t.Fatal("the query says it published the projection again")
+	}
+	if evidence.Card == nil || evidence.Card.SessionID != "source-1" {
+		t.Fatalf("the card is not the source conversation's: %+v", evidence.Card)
+	}
+	if evidence.Card.ID != "card-1" || evidence.Card.ContentKind != string(model.EpisodeContentSessionCard) {
+		t.Fatalf("the card is not the card row: %+v", evidence.Card)
+	}
+	if evidence.Memory == nil || evidence.Memory.ID != evidence.Card.ID {
+		t.Fatalf("the memory row is not the card row: %+v", evidence.Memory)
+	}
+	if evidence.PublishedTargetMessageID != 2 {
+		t.Fatalf("the target watermark is %d, want the source conversation's 2", evidence.PublishedTargetMessageID)
+	}
+	if len(evidence.Memories) != 3 {
+		t.Fatalf("the evidence carries %d memory rows, want 3", len(evidence.Memories))
+	}
+	// The old arm reads Episodes. The card row of the same conversation is
+	// there too, and reporting it would be reporting the other path's
+	// document.
+	episodeArm := &CardArm{Mode: CardArmModeOff}
+	episodeEvidence := armEvidenceFromSnapshot(snapshot, episodeArm)
+	if episodeEvidence.Card == nil || episodeEvidence.Card.ID != "episode-1" {
+		t.Fatalf("the old arm reported the wrong row: %+v", episodeEvidence.Card)
+	}
+	if episodeEvidence.Card.ContentKind != string(model.EpisodeContentEpisode) {
+		t.Fatalf("the old arm reported a card: %+v", episodeEvidence.Card)
+	}
+}
+
+// An archive that carries a projection record about somebody else's
+// conversation is refused.
+//
+// The record says which memory version the questions are asked against. A
+// record about a conversation the archive does not carry would say the memory
+// version is something else, and the query would not know.
+func TestAnArchiveWithAForeignProjectionIsRefused(t *testing.T) {
+	snapshot := Snapshot{
+		Sessions: []SessionSnapshot{
+			{Session: model.Session{ID: "source-1", UserID: 7, UserName: "learner", Mode: model.SessionModeAgent},
+				Messages: []model.Message{
+					{ID: 1, SessionID: "source-1", UserName: "learner", IsUser: true, Content: "第一句"},
+					{ID: 2, SessionID: "source-1", UserName: "learner", IsUser: false, Content: "第二句"},
+				}},
+		},
+		Projection: &ArmProjection{Mode: CardArmModeOn, Sessions: []string{"somebody-elses"},
+			Targets: map[string]uint{"somebody-elses": 9}},
+	}
+	if err := snapshot.Validate(); err == nil {
+		t.Fatal("the archive with a foreign projection was accepted")
+	}
+}
+
 // The whole card arm, end to end, on a real MySQL and a real Redis.
 //
 // The arm has to write a card, wait for it to be indexed and ask its question
@@ -208,8 +306,27 @@ func TestTheCardArmWritesACardAndAsksInAnotherConversation(t *testing.T) {
 		t.Fatal("the attempt recorded no card evidence")
 	}
 	evidence := result.SessionCard
-	if !evidence.Published {
+	if !evidence.PreparationPublished {
 		t.Fatalf("the projection was not published: %+v", evidence)
+	}
+	if evidence.Republished {
+		t.Fatal("the query published the projection again")
+	}
+	if evidence.Preparation == nil || evidence.Preparation.Published == 0 {
+		t.Fatalf("the attempt carries no preparation record: %+v", evidence.Preparation)
+	}
+	// The card, the memory row and the target watermark are about the same
+	// conversation: the one the question is about. Three fields about three
+	// different conversations would read as a measurement of nothing.
+	if evidence.Card == nil || evidence.Memory == nil {
+		t.Fatalf("the attempt carries no card row: %+v", evidence)
+	}
+	if evidence.Card.SessionID != evidence.SourceSessionID || evidence.Memory.SessionID != evidence.SourceSessionID {
+		t.Fatalf("the card and the memory row are not the source conversation's: %+v", evidence)
+	}
+	if evidence.PublishedTargetMessageID == 0 ||
+		evidence.PublishedTargetMessageID != evidence.Preparation.Targets[evidence.SourceSessionID] {
+		t.Fatalf("the target watermark is not the source conversation's: %+v", evidence)
 	}
 	if !evidence.Ready || evidence.Card == nil {
 		t.Fatalf("no card was indexed: %+v", evidence)
