@@ -40,6 +40,18 @@ type ConfigurationCheck struct {
 	// ChatModel is the model name the run would use. The check never calls a
 	// model; the name is here because the product's own loader takes one.
 	ChatModel string
+	// SessionCardMode is the cross-session memory path the run asks for:
+	// "disabled" is the old Episode, "enabled" is the session card.
+	//
+	// The check reports what the product will do with it, so that a run that
+	// asked for one path and booted with the other is caught before the
+	// first paid call rather than in the results.
+	SessionCardMode string
+	// SessionCardIndexName and SessionCardIndexKeyPrefix are the namespace
+	// the card arm writes into. They are checked as well: two arms that
+	// wrote into one index would read each other's rows.
+	SessionCardIndexName      string
+	SessionCardIndexKeyPrefix string
 }
 
 // ConfigurationReport is what the check found.
@@ -64,6 +76,16 @@ type ConfigurationReport struct {
 	// own answer is kept beside the segment it produced - which is what
 	// makes the per-batch evidence exist.
 	SummarySegmentDebugDump bool `json:"summary_segment_debug_dump"`
+	// SessionCardMode is the cross-session memory path the product will run.
+	SessionCardMode string `json:"session_card_mode"`
+	// SessionCardIndexName and SessionCardIndexPrefix are the namespace
+	// the card arm will write into.
+	//
+	// The prefix is reported under a name that does not say "key": the
+	// report is printed where the run's output is, and a field named after a
+	// secret is a place a secret could hide.
+	SessionCardIndexName   string `json:"session_card_index_name,omitempty"`
+	SessionCardIndexPrefix string `json:"session_card_index_prefix,omitempty"`
 	// Budgets are the budgets the window will really render with.
 	Budgets EffectiveBudgets `json:"effective_budgets"`
 	// Expected is what the run needs the configuration to say.
@@ -102,6 +124,13 @@ type ExpectedConfiguration struct {
 	SummaryAssistantContent string `json:"summary_assistant_content"`
 	// SummarySegmentDebugDump is the debug-dump switch the run needs.
 	SummarySegmentDebugDump bool `json:"summary_segment_debug_dump"`
+	// SessionCardMode is the cross-session memory path the run needs. It is
+	// empty when the run does not say, and then it is not compared: a run
+	// that measures the old path must not fail over a field it never set.
+	SessionCardMode string `json:"session_card_mode,omitempty"`
+	// SessionCardIndexName is the namespace the run needs the card arm to
+	// write into.
+	SessionCardIndexName string `json:"session_card_index_name,omitempty"`
 }
 
 // CheckProductConfiguration loads the configuration of a checkout and reports
@@ -153,10 +182,24 @@ func CheckProductConfiguration(check ConfigurationCheck) (ConfigurationReport, e
 	if err != nil {
 		return report, err
 	}
+	// The card arm is applied the way the run applies it, so that the report
+	// says what the product will do rather than what the file holds.
+	arm := &CardArm{Mode: strings.TrimSpace(check.SessionCardMode), IndexName: check.SessionCardIndexName, KeyPrefix: check.SessionCardIndexKeyPrefix}
+	if arm.Mode != "" {
+		if err = ApplyCardArm(settings, arm); err != nil {
+			return report, err
+		}
+		if err = settings.Validate(); err != nil {
+			return report, err
+		}
+	}
 	agent := settings.Config.AgentConfig
 	report.SummarySegmentMode = strings.TrimSpace(agent.SummarySegmentMode)
 	report.SummaryAssistantContent = strings.TrimSpace(agent.SummaryAssistantContent)
 	report.SummarySegmentDebugDump = agent.SummarySegmentDebugDump
+	report.SessionCardMode = strings.TrimSpace(agent.SessionCardMode)
+	report.SessionCardIndexName = strings.TrimSpace(agent.SessionCardIndexName)
+	report.SessionCardIndexPrefix = strings.TrimSpace(agent.SessionCardIndexKeyPrefix)
 	report.Budgets = EffectiveBudgets{
 		WhiteboardTokens:       agent.ContextMaxWhiteboardTokens,
 		ResidentSegmentTokens:  agent.EffectiveResidentSegmentTokens(),
@@ -175,7 +218,19 @@ func CheckProductConfiguration(check ConfigurationCheck) (ConfigurationReport, e
 // is refused by any one of them being different, because each of them is
 // the difference between a measurement and a different measurement.
 func (r ConfigurationReport) MatchesExpected(expected ExpectedConfiguration) bool {
-	return r.SummarySegmentMode == expected.SummarySegmentMode &&
-		r.SummaryAssistantContent == expected.SummaryAssistantContent &&
-		r.SummarySegmentDebugDump == expected.SummarySegmentDebugDump
+	if r.SummarySegmentMode != expected.SummarySegmentMode ||
+		r.SummaryAssistantContent != expected.SummaryAssistantContent ||
+		r.SummarySegmentDebugDump != expected.SummarySegmentDebugDump {
+		return false
+	}
+	// The card fields are compared only when the run named them. A run that
+	// measures the old path does not set them, and a run that never named a
+	// namespace must not fail over one.
+	if expected.SessionCardMode != "" && r.SessionCardMode != expected.SessionCardMode {
+		return false
+	}
+	if expected.SessionCardIndexName != "" && r.SessionCardIndexName != expected.SessionCardIndexName {
+		return false
+	}
+	return true
 }

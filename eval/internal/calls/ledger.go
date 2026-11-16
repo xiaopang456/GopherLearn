@@ -214,6 +214,9 @@ func ReadRuns(r io.Reader) ([]Run, error) {
 			if id := rawString(entry["runId"]); id != "" {
 				run.RunID = id
 			}
+			if at := rawTime(entry["preparedAt"]); !at.IsZero() {
+				run.PreparedAt = at
+			}
 			if at := rawTime(entry["answeredAt"]); !at.IsZero() {
 				run.AnsweredAt = at
 			} else if at := rawTime(entry["at"]); !at.IsZero() {

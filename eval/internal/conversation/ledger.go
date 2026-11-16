@@ -163,6 +163,12 @@ func LoadRolePrompts(repository string, mode memoryrecall.ReadMode) (RolePrompts
 		{"agent/runner.go", "citationRepairSystemPrompt", "answer"},
 		{"agent/runner.go", "memoryRepairSystemPrompt", "answer"},
 		{"episode/generator.go", "episodeSystemPrompt", "background"},
+		// The session card is written by the same background worker, in the
+		// same place an Episode is, so it carries the same role. A table that
+		// held only the Episode prompt refused the card's request as
+		// unclassified, and the card was never written: the arm then measured
+		// a window without a card and called it a result.
+		{"episode/card_generator.go", "cardSystemPrompt", "background"},
 		{"episode/support_verifier.go", "SupportSystemPrompt", "background"},
 		{"memory/extractor.go", "extractorPrompt", "background"},
 		{"memory/dream.go", "dreamPrompt", "background"},

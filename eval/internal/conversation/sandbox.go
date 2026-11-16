@@ -200,6 +200,52 @@ func (s *Sandbox) Restore(ctx context.Context, snapshot Snapshot) error {
 	})
 }
 
+// PublishSessionCardProjection publishes the projection job of one session.
+//
+// The write goes through the guarded store, because a job row in a database
+// that is not this sandbox's would make the product project a conversation
+// somewhere else.
+func (s *Sandbox) PublishSessionCardProjection(ctx context.Context, userID int64, sessionID string, target uint) error {
+	if err := s.verify(ctx); err != nil {
+		return err
+	}
+	return guardedStore{s}.with(ctx, func(tx *gorm.DB) error {
+		return PublishSessionCardProjection(ctx, tx, userID, sessionID, target, 0)
+	})
+}
+
+// MakeProjectionDue moves the published projection job into the present.
+func (s *Sandbox) MakeProjectionDue(ctx context.Context, userID int64, sessionID string) error {
+	if err := s.verify(ctx); err != nil {
+		return err
+	}
+	return guardedStore{s}.with(ctx, func(tx *gorm.DB) error {
+		return MakeProjectionDue(ctx, tx, userID, sessionID)
+	})
+}
+
+// WaitForSessionCard waits until the session has a card that is indexed.
+func (s *Sandbox) WaitForSessionCard(ctx context.Context, userID int64, sessionID string,
+	timeout time.Duration) (*model.EpisodeMemory, string, error) {
+	if err := s.verify(ctx); err != nil {
+		return nil, "", err
+	}
+	if s.db == nil {
+		return nil, "", fmt.Errorf("sandbox database unavailable")
+	}
+	return WaitForSessionCard(ctx, s.db, userID, sessionID, timeout)
+}
+
+// CreateQuestionSession opens the conversation the question is asked in.
+func (s *Sandbox) CreateQuestionSession(ctx context.Context, userID int64, userName, sessionID string) error {
+	if err := s.verify(ctx); err != nil {
+		return err
+	}
+	return guardedStore{s}.with(ctx, func(tx *gorm.DB) error {
+		return CreateQuestionSession(ctx, tx, userID, userName, sessionID)
+	})
+}
+
 // Capture and ObserveJobs enforce the same instance checks as Restore.
 func (s *Sandbox) Capture(ctx context.Context, userID int64, sessionID string) (Snapshot, error) {
 	var snapshot Snapshot

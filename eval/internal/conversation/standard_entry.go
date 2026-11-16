@@ -268,6 +268,15 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 	if err != nil {
 		return result, err
 	}
+	// The arm's switch goes into the product's own configuration before the
+	// configuration is written out, so the product boots with the path the
+	// attempt says it measures.
+	if err = ApplyCardArm(settings, input.SessionCard); err != nil {
+		return result, err
+	}
+	if err = settings.Validate(); err != nil {
+		return result, err
+	}
 	result.Provenance, err = collectProvenance(ctx, repository, settings, snapshot)
 	if err != nil {
 		return result, err
@@ -388,6 +397,14 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 	if loaded.Config.EpisodeQuietWindowSeconds != 86400 || loaded.Entry.Migrate || !loaded.Config.RagRerankEnabled || loaded.Config.RagRerankEndpoint != wire.URL+"/v1/rerank" {
 		return result, fmt.Errorf("unexpected standard entry settings")
 	}
+	if loaded.Config.AgentConfig.SessionCardMode != settings.Config.AgentConfig.SessionCardMode {
+		return result, fmt.Errorf("the session card switch did not survive the configuration round trip")
+	}
+	if input.SessionCard.Enabled() &&
+		(loaded.Config.AgentConfig.SessionCardIndexName != input.SessionCard.IndexName ||
+			loaded.Config.AgentConfig.SessionCardIndexKeyPrefix != input.SessionCard.KeyPrefix) {
+		return result, fmt.Errorf("the session card namespace did not survive the configuration round trip")
+	}
 	result.Audit.Started = time.Now().UTC()
 	product := startStandardProduct(path)
 	defer func() { resultErr = errors.Join(resultErr, product.stop()) }()
@@ -411,11 +428,39 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 			return result, err
 		}
 	}
-	asked, requestErr := askProductQuestions(ctx, client, base, token, snapshot.Session.ID, questions, "offline-final-question")
+	// The preparation phase. Everything the arm has to have ready before the
+	// question is asked happens here: the card is written, indexed and waited
+	// for, and the question session is opened.
+	//
+	// The card arm asks its question in another conversation of the same
+	// learner. A question asked in the conversation the memory came from
+	// would find the raw messages anyway, and the arm would have measured
+	// the conversation instead of the memory.
+	questionSession := snapshot.Session.ID
+	if input.SessionCard.Enabled() {
+		evidence, cardErr := DriveSessionCard(ctx, s, snapshot, input.SessionCard)
+		result.SessionCard = evidence
+		if cardErr != nil {
+			return result, cardErr
+		}
+		questionSession = evidence.QuestionSessionID
+	}
+	// The preparation phase ends here. From this point on the source data and
+	// the memory version are fixed, and nothing may be generated before the
+	// answer: a task that ran in between would have changed the answer's own
+	// ground.
+	result.Audit.Prepared = time.Now().UTC()
+	if err = journal.PrepareBarrier(ctx); err != nil {
+		return result, err
+	}
+	asked, requestErr := askProductQuestions(ctx, client, base, token, questionSession, questions, "offline-final-question")
 	result.Answer = asked[0].Answer
 	result.Response = asked[0].Response
 	result.Questions = asked
 	if err := s.readAgentSteps(ctx, snapshot.Session.UserID, asked); err != nil {
+		resultErr = errors.Join(resultErr, err)
+	}
+	if err := recordCardArmEvidence(result.SessionCard, s, snapshot.Session.UserID, asked); err != nil {
 		resultErr = errors.Join(resultErr, err)
 	}
 	result.Audit.Answered = time.Now().UTC()
@@ -429,8 +474,8 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 	wire.Close()
 	var stoppedErr error
 	_, result.StoppedCounts, stoppedErr = s.ObserveJobs(collect)
-	result.Events, result.Audit.ExecutedBeforeAnswer, resultErr = journal.Finish(collect)
-	result.Calls = BindRuns(AttributeCalls(ledger.Calls(), result.Audit.Answered), snapshot.Session.ID, asked)
+	result.Events, result.Audit.ExecutedInQueryPhase, resultErr = journal.Finish(collect)
+	result.Calls = BindRuns(AttributeCallPhases(ledger.Calls(), result.Audit.Prepared, result.Audit.Answered), snapshot.Session.ID, asked)
 	var usageErr error
 	result.UsageByRole, usageErr = SummarizeCalls(result.Calls)
 	result.ContextMessages = stub.answerInput()

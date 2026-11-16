@@ -19,8 +19,11 @@ import (
 	"time"
 )
 
-// The two sides of a run's cost.
+// The three sides of a run's cost.
 const (
+	// PhasePrepare is the work that prepared the memory the answer was asked
+	// against: the summary, the projection and the indexing.
+	PhasePrepare = "prepare"
 	// PhaseAnswer is the work that produced the answer.
 	PhaseAnswer = "answer"
 	// PhaseAfterAnswer is the work that started after the answer came back.
@@ -38,6 +41,11 @@ type Run struct {
 	// AnsweredAt is when the answer came back. A zero value means the run
 	// never answered; such a run has no "after the answer" side.
 	AnsweredAt time.Time
+	// PreparedAt is when the preparation phase closed: the source data and
+	// the memory version were fixed then, and the question was asked against
+	// them. A zero value means the run did not name a preparation boundary,
+	// and every call before the answer is counted as answer work.
+	PreparedAt time.Time
 	// ReportedModelCalls is what the run reported about itself. It is a
 	// cross-check for an attribution, never a substitute for one.
 	ReportedModelCalls *int
@@ -117,7 +125,13 @@ func (t *Totals) add(call Call) {
 
 // RunCost is one run's cost, split by phase.
 type RunCost struct {
-	Run         Run
+	Run Run
+	// Prepare is the work that prepared the memory the answer was asked
+	// against: the summary, the projection and the indexing. It is separate
+	// from the answer's own cost because a card that is written before the
+	// question is part of what the question was asked against, and folding it
+	// into the answer would hide what the memory cost.
+	Prepare     Totals
 	Answer      Totals
 	AfterAnswer Totals
 	// ClaimedPhaseMismatch counts calls whose ledger phase disagreed with the
@@ -184,15 +198,21 @@ func Attribute(runs []Run, calls []Call) (Attribution, error) {
 			continue
 		}
 		phase := PhaseAnswer
-		if !cost.Run.AnsweredAt.IsZero() && call.At.After(cost.Run.AnsweredAt) {
+		switch {
+		case !cost.Run.AnsweredAt.IsZero() && call.At.After(cost.Run.AnsweredAt):
 			phase = PhaseAfterAnswer
+		case !cost.Run.PreparedAt.IsZero() && !call.At.After(cost.Run.PreparedAt):
+			phase = PhasePrepare
 		}
 		if call.Phase != "" && call.Phase != phase {
 			cost.ClaimedPhaseMismatch++
 		}
-		if phase == PhaseAfterAnswer {
+		switch phase {
+		case PhaseAfterAnswer:
 			cost.AfterAnswer.add(call)
-		} else {
+		case PhasePrepare:
+			cost.Prepare.add(call)
+		default:
 			cost.Answer.add(call)
 		}
 	}

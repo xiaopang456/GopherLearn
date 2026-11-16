@@ -62,7 +62,7 @@ func TestCompleteOfflineProductIntegration(t *testing.T) {
 			t.Fatal("repeated initial state drift")
 		}
 		provenance = result.Provenance
-		if result.BeforeCounts["episode"].Pending != 1 || result.AfterCounts["episode"].Processing != 0 || result.Audit.ExecutedBeforeAnswer {
+		if result.BeforeCounts["episode"].Pending != 1 || result.AfterCounts["episode"].Processing != 0 || result.Audit.ExecutedInQueryPhase {
 			t.Fatalf("unexpected background: %+v", result)
 		}
 		for _, job := range result.Audit.Before {

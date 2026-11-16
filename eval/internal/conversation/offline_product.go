@@ -67,6 +67,10 @@ type ProductResult struct {
 	// not a seed.
 	SeededMemories   SeedMemoryReport       `json:"seeded_memories"`
 	SeededMemoryRows []model.LongTermMemory `json:"seeded_memory_rows,omitempty"`
+	// SessionCard is what the card arm observed: the card that was written,
+	// whether it was indexed before the question was asked, the conversation
+	// the question was asked in and what the answer looked at.
+	SessionCard *CardArmEvidence `json:"session_card,omitempty"`
 }
 
 // QuestionResult is one question of an attempt and what came back.
@@ -113,6 +117,9 @@ type AttemptInput struct {
 	// without one. The wait is what turns "the segment was written" into
 	// "the segment was in the window when the model was asked".
 	WaitForSummarySegment bool
+	// SessionCard says which arm this attempt measures. It is nil for the
+	// old attempt, and it names the card path when the attempt measures it.
+	SessionCard *CardArm
 }
 
 // Question is one question of an attempt.
@@ -345,6 +352,21 @@ func (m *offlineChat) Generate(ctx context.Context, input []*schema.Message, _ .
 		m.mu.Unlock()
 		return schema.AssistantMessage(m.segmentDocument(input), nil), nil
 	}
+	if len(input) > 0 && strings.HasPrefix(input[0].Content, cardWriterPromptPrefix) {
+		// The card is read as a tool call, because that is how the product
+		// reads it: the arguments are the card document, and the program
+		// checks every id in it against the evidence it showed the model. A
+		// fake that answered with prose would leave the product with nothing
+		// to store, and the arm would measure a window without a card.
+		arguments, err := m.cardDocument(input)
+		if err != nil {
+			return nil, err
+		}
+		return schema.AssistantMessage("", []schema.ToolCall{{
+			ID: "offline-card", Type: "function",
+			Function: schema.FunctionCall{Name: cardToolNameOffline, Arguments: arguments},
+		}}), nil
+	}
 	if len(input) > 0 && strings.HasPrefix(input[0].Content, "You compress an older portion") {
 		return schema.AssistantMessage(`{"schema_version":2,"current_goal":"synthetic offline summary"}`, nil), nil
 	}
@@ -383,6 +405,92 @@ func (m *offlineChat) answerInputs() [][]*schema.Message {
 		out = append(out, append([]*schema.Message(nil), answer...))
 	}
 	return out
+}
+
+// cardWriterPromptPrefix is how the session card's writer prompt starts.
+//
+// The prompt is the product's own, and the fake model answers the call it
+// recognizes. A call the fake model does not recognize is refused, and a
+// refused card call is a projection that produced nothing: the window then
+// carries no card at all, and an attempt that only checked that the
+// projection ran would call that a success.
+const cardWriterPromptPrefix = "You write one card for one finished chat session"
+
+// cardToolNameOffline is the tool the product asks the card to be written
+// into. It is the product's name, and the product refuses a card that came
+// back under another one.
+const cardToolNameOffline = "publish_session_card"
+
+// cardDocument is what the fake model answers when the product asks for a
+// card.
+//
+// The card cites the messages it was shown, because the program refuses a
+// citation it never showed the model: a card that cites nothing is a claim
+// with nothing behind it, and the whole card is refused rather than the one
+// entry.
+func (m *offlineChat) cardDocument(input []*schema.Message) (string, error) {
+	payload := ""
+	if len(input) > 1 && input[1] != nil {
+		payload = input[1].Content
+	}
+	var request struct {
+		SessionTitle string `json:"session_title"`
+		Messages     []struct {
+			ID      uint   `json:"id"`
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(payload), &request); err != nil {
+		return "", fmt.Errorf("decode the session card payload: %w", err)
+	}
+	title := strings.TrimSpace(request.SessionTitle)
+	if title == "" {
+		title = "synthetic offline session"
+	}
+	document := model.SessionCardDocument{
+		Version:  model.SessionCardContentVersion,
+		Title:    title,
+		Synopsis: fmt.Sprintf("synthetic offline card for %d messages", len(request.Messages)),
+		Topics:   []model.EpisodeTopic{{Key: "synthetic-offline", Label: "synthetic offline"}},
+	}
+	for _, message := range request.Messages {
+		if message.ID == 0 {
+			continue
+		}
+		entry := model.SessionCardEntry{
+			Text:       offlineCardText(message.Content),
+			MessageIDs: []uint{message.ID},
+		}
+		if message.Role == "user" {
+			entry.Status = model.SessionCardStatusStated
+			document.Arrangements = append(document.Arrangements, entry)
+			continue
+		}
+		entry.Status = model.SessionCardStatusAssistantProposed
+		document.AssistantProducts = append(document.AssistantProducts, entry)
+	}
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		return "", fmt.Errorf("encode the offline session card: %w", err)
+	}
+	return string(encoded), nil
+}
+
+// offlineCardText is the line a card entry carries.
+//
+// It is short on purpose: the entry is a pointer back to the message, and
+// the whole wording is one read-back away.
+func offlineCardText(content string) string {
+	text := strings.TrimSpace(content)
+	runes := []rune(text)
+	if len(runes) > 120 {
+		return string(runes[:120]) + "…"
+	}
+	if text == "" {
+		return "synthetic offline line"
+	}
+	return text
 }
 
 // segmentWriterPromptPrefix is how the layered summary's writer prompt starts.

@@ -40,6 +40,9 @@ func run(args []string, out io.Writer) error {
 	rep := flags.Int("rep", 0, "repeat number: 0, 1 or 2")
 	condition := flags.String("condition", "main", "main, control or distractor")
 	mode := flags.String("mode", "off", "the arm to measure: off, shadow or on")
+	sessionCardMode := flags.String("session-card-mode", "disabled", "the cross-session memory path: disabled (Episode) or enabled (session card)")
+	cardIndexName := flags.String("card-index-name", "", "the card index's own namespace; the default is derived from the arm")
+	cardKeyPrefix := flags.String("card-key-prefix", "", "the card index's key prefix; the default is derived from the arm")
 	stopFile := flags.String("stop-file", "", "private stop-file path, watched during execution")
 	timeout := flags.Duration("timeout", 0, "attempt deadline; the default depends on the environment")
 	proxy := flags.String("proxy", "", "counting proxy base URL (real mode)")
@@ -67,6 +70,9 @@ func run(args []string, out io.Writer) error {
 	}
 	if *rep < 0 || *rep > 2 || *qid == "" || *arm == "" || (*condition != "main" && *condition != "control" && *condition != "distractor") {
 		return fmt.Errorf("invalid attempt identity")
+	}
+	if !conversation.SessionCardModeKnown(*sessionCardMode) {
+		return fmt.Errorf("the session card mode must be disabled or enabled")
 	}
 	guarded := map[string]string{"output": *output}
 	if *phase != "index" {
@@ -163,6 +169,20 @@ func run(args []string, out io.Writer) error {
 		attempt.Memories = memories
 	}
 	real := *env == "real"
+	// The card index's namespace is derived from the arm, so that two arms of
+	// the same run cannot be pointed at one index by accident. The two arms of
+	// the comparison - the old Episode and the new card - are kept apart by
+	// this namespace and by the evaluation identity, which carries the arm and
+	// the path.
+	derivedName, derivedPrefix := cardNamespace(*arm)
+	indexName, keyPrefix := derivedName, derivedPrefix
+	if strings.TrimSpace(*cardIndexName) != "" {
+		indexName = strings.TrimSpace(*cardIndexName)
+	}
+	if strings.TrimSpace(*cardKeyPrefix) != "" {
+		keyPrefix = strings.TrimSpace(*cardKeyPrefix)
+	}
+	attempt.SessionCard = &conversation.CardArm{Mode: *sessionCardMode, IndexName: indexName, KeyPrefix: keyPrefix}
 	var environment conversation.RealEnvironment
 	var seed *conversation.KnowledgeSeed
 	if real {
@@ -171,12 +191,13 @@ func run(args []string, out io.Writer) error {
 		id, name, err := deriveScenarioIdentity(explicit, identityInput{
 			phase: *phase, run: *runID, arm: *arm, qid: *qid, condition: *condition,
 			rep: *rep, knowledgeSeed: *knowledgeSeed, userID: *userID, userName: *userName,
+			sessionCardMode: *sessionCardMode,
 		})
 		if err != nil {
 			return err
 		}
 		*userID, *userName = id, name
-		environment, err = realEnvironment(flags, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel, userID, userName, sessionID, *mode)
+		environment, err = realEnvironment(flags, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel, userID, userName, sessionID, *mode, *sessionCardMode, indexName, keyPrefix)
 		if err != nil {
 			return err
 		}
@@ -263,6 +284,12 @@ func run(args []string, out io.Writer) error {
 			}
 			record["qid"], record["arm"], record["rep"], record["condition"] = attemptQID(*qid, index, len(result.Questions)), *arm, *rep, *condition
 			record["question"], record["answer"] = asked.Question, asked.Answer
+			// The preparation boundary is written beside the answer, because
+			// the cost attribution reads it: the calls that prepared the
+			// memory are the memory's cost and not the answer's.
+			if !result.Audit.Prepared.IsZero() {
+				record["preparedAt"] = result.Audit.Prepared.UTC().Format(time.RFC3339Nano)
+			}
 			// The question index of a record is the round of the conversation the
 			// question was asked at, when the attempt says which round that is.
 			// The turn says where in the conversation the answer has to come
@@ -292,6 +319,11 @@ func run(args []string, out io.Writer) error {
 		err = errors.Join(err, cause)
 	}
 	manifest := map[string]any{"scope": conversation.ProductScope, "env": *env, "phase": *phase, "paid_model_calls": paidCalls, "quality_and_cost_verified": false, "success": err == nil}
+	manifest["session_card_mode"] = *sessionCardMode
+	if *sessionCardMode == conversation.CardArmModeOn {
+		manifest["card_index_name"] = indexName
+		manifest["card_index_prefix"] = keyPrefix
+	}
 	if real {
 		manifest["proxy"] = environment.ProxyBaseURL
 		manifest["evaluation_index"] = environment.RedisAddress
@@ -338,7 +370,7 @@ func run(args []string, out io.Writer) error {
 // realEnvironment collects the paid-run wiring. The index password is read
 // from the process environment so that it never reaches a command line, an
 // output file, or an error message.
-func realEnvironment(flags *flag.FlagSet, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel *string, userID *int64, userName, sessionID *string, mode string) (conversation.RealEnvironment, error) {
+func realEnvironment(flags *flag.FlagSet, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel *string, userID *int64, userName, sessionID *string, mode, sessionCardMode, cardIndexName, cardKeyPrefix string) (conversation.RealEnvironment, error) {
 	var environment conversation.RealEnvironment
 	if *proxy == "" || *redis == "" || *storage == "" || *chatModel == "" || *embeddingModel == "" || *rerankModel == "" || *userID <= 0 || *userName == "" || *sessionID == "" {
 		return environment, fmt.Errorf("the real mode needs the proxy, index, storage, models and evaluation identity")
@@ -369,6 +401,13 @@ func realEnvironment(flags *flag.FlagSet, proxy, redis, redisPassword, storage, 
 		// label does not match the mode it booted with cannot be compared
 		// with anything.
 		SummarySegmentMode: mode,
+		// The cross-session memory path is read the same way, and the card
+		// index's namespace travels with it: the shared evaluation index
+		// holds the cards of every run, and one arm's cards must not be
+		// visible to another arm's searches.
+		SessionCardMode:           sessionCardMode,
+		SessionCardIndexName:      cardIndexName,
+		SessionCardIndexKeyPrefix: cardKeyPrefix,
 	}
 	return environment, environment.Validate()
 }

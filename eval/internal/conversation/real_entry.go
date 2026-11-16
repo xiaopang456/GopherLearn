@@ -73,10 +73,49 @@ type RealEnvironment struct {
 	// it once, at startup, and the run has to be able to say which arm it
 	// was.
 	SummarySegmentMode string
+	// SessionCardMode selects the cross-session memory path: "disabled" is
+	// the old Episode, "enabled" is the session card.
+	//
+	// The two paths are the two arms of the comparison, and they are kept
+	// apart by two levers that both have to be used: the card index has its
+	// own namespace per arm, and the evaluation identity carries the arm.
+	// The shared evaluation index is the reason the namespace matters: two
+	// arms that wrote into one index would read each other's rows.
+	SessionCardMode string
+	// SessionCardIndexName and SessionCardIndexKeyPrefix are that namespace.
+	SessionCardIndexName      string
+	SessionCardIndexKeyPrefix string
 }
 
 // SummarySegmentModes are the arms a paid run may measure.
 var SummarySegmentModes = []string{"off", "shadow", "on"}
+
+// SessionCardModes are the cross-session memory paths a paid run may measure.
+var SessionCardModes = []string{CardArmModeOff, CardArmModeOn}
+
+// SessionCardModeKnown reports whether the mode is one the product
+// understands.
+func SessionCardModeKnown(mode string) bool {
+	for _, candidate := range SessionCardModes {
+		if candidate == mode {
+			return true
+		}
+	}
+	return false
+}
+
+// CardArmForEnvironment reads the card arm out of the paid run's wiring.
+//
+// The arm is a property of the configuration the run boots with, exactly like
+// the summary segment mode: the product reads it once, at startup, and a run
+// whose label does not match the mode it booted with cannot be compared with
+// anything.
+func CardArmForEnvironment(env RealEnvironment) *CardArm {
+	if env.SessionCardMode != CardArmModeOn {
+		return &CardArm{Mode: CardArmModeOff}
+	}
+	return &CardArm{Mode: CardArmModeOn, IndexName: env.SessionCardIndexName, KeyPrefix: env.SessionCardIndexKeyPrefix}
+}
 
 // SummarySegmentModeKnown reports whether the mode is one the product
 // understands.
@@ -108,6 +147,17 @@ func (e RealEnvironment) Validate() error {
 	}
 	if !SummarySegmentModeKnown(e.SummarySegmentMode) {
 		return fmt.Errorf("the summary segment mode must be off, shadow or on")
+	}
+	if !SessionCardModeKnown(e.SessionCardMode) {
+		return fmt.Errorf("the session card mode must be disabled or enabled")
+	}
+	if e.SessionCardMode == CardArmModeOn {
+		if strings.TrimSpace(e.SessionCardIndexName) == "" || strings.TrimSpace(e.SessionCardIndexKeyPrefix) == "" {
+			return fmt.Errorf("the session card arm needs its own index namespace")
+		}
+		if !strings.HasPrefix(e.SessionCardIndexName, "gopherai_session_card_") {
+			return fmt.Errorf("the session card index name is outside the declared namespace")
+		}
 	}
 	return nil
 }
@@ -229,6 +279,13 @@ func realSettings(repository, storage string, env RealEnvironment) (*entry.Setti
 	// configuration is validated: a run that asked for a mode the product
 	// does not know has to fail before it spends anything.
 	settings.Config.AgentConfig.SummarySegmentMode = env.SummarySegmentMode
+	// The card path is the other arm of the comparison, and it is read at
+	// startup for the same reason.
+	settings.Config.AgentConfig.SessionCardMode = env.SessionCardMode
+	if env.SessionCardMode == CardArmModeOn {
+		settings.Config.AgentConfig.SessionCardIndexName = env.SessionCardIndexName
+		settings.Config.AgentConfig.SessionCardIndexKeyPrefix = env.SessionCardIndexKeyPrefix
+	}
 	return settings, settings.Validate()
 }
 
@@ -503,11 +560,32 @@ func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, env
 	if err != nil {
 		return result, err
 	}
-	asked, requestErr := askProductQuestions(ctx, client, base, token, snapshot.Session.ID, questions, "evaluation-final-question")
+	// The preparation phase. The card arm writes its card here, waits for it
+	// to be indexed and opens the conversation the question is asked in.
+	cardArm := CardArmForEnvironment(env)
+	questionSession := snapshot.Session.ID
+	if cardArm.Enabled() {
+		cardEvidence, cardErr := DriveSessionCard(ctx, s, snapshot, cardArm)
+		result.SessionCard = cardEvidence
+		if cardErr != nil {
+			return result, cardErr
+		}
+		questionSession = cardEvidence.QuestionSessionID
+	}
+	// The preparation phase ends here: the source data and the memory version
+	// are fixed, and nothing may be generated from here to the answer.
+	result.Audit.Prepared = time.Now().UTC()
+	if err = journal.PrepareBarrier(ctx); err != nil {
+		return result, err
+	}
+	asked, requestErr := askProductQuestions(ctx, client, base, token, questionSession, questions, "evaluation-final-question")
 	result.Answer = asked[0].Answer
 	result.Response = asked[0].Response
 	result.Questions = asked
 	if err := s.readAgentSteps(ctx, env.UserID, asked); err != nil {
+		resultErr = errors.Join(resultErr, err)
+	}
+	if err := recordCardArmEvidence(result.SessionCard, s, env.UserID, asked); err != nil {
 		resultErr = errors.Join(resultErr, err)
 	}
 	result.Audit.Answered = time.Now().UTC()
@@ -521,7 +599,7 @@ func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, env
 	wire.Close()
 	var stoppedErr error
 	_, result.StoppedCounts, stoppedErr = s.ObserveJobs(collect)
-	result.Events, result.Audit.ExecutedBeforeAnswer, resultErr = journal.Finish(collect)
+	result.Events, result.Audit.ExecutedInQueryPhase, resultErr = journal.Finish(collect)
 	// The product has stopped and the background window has closed, so this is
 	// the state the next repeat of this scenario would inherit. It reads on its
 	// own deadline: a journal window that ran out must not erase the evidence,
@@ -533,7 +611,7 @@ func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, env
 		after.Error = indexErr.Error()
 	}
 	result.MemoryIndexEvidence.AfterAnswer = after
-	result.Calls = BindRuns(AttributeCalls(ledger.Calls(), result.Audit.Answered), snapshot.Session.ID, asked)
+	result.Calls = BindRuns(AttributeCallPhases(ledger.Calls(), result.Audit.Prepared, result.Audit.Answered), snapshot.Session.ID, asked)
 	var usageErr error
 	result.UsageByRole, usageErr = SummarizeCalls(result.Calls)
 	for _, c := range result.Calls {
