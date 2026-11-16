@@ -245,7 +245,19 @@ type WarmupReport struct {
 	// said the card path was measured without saying whether the compressed
 	// state existed would be describing a card that was written from the raw
 	// messages alone.
+	//
+	// A conversation whose entry carries an Error got no segment and no
+	// board, and its card was written from the raw messages. The count of
+	// those is here so that a reader does not have to count them.
 	LayeredSummary []LayeredSummaryRecord `json:"layered_summary,omitempty"`
+	// LayeredSummaryFailures is how many conversations got no layered
+	// summary.
+	//
+	// It is a number of its own and not something to count out of the list,
+	// because the number is the finding: a card arm where a quarter of the
+	// cards were written from raw messages is a different measurement from
+	// one where they all were, and the reader has to be able to see it.
+	LayeredSummaryFailures int `json:"layered_summary_failures"`
 }
 
 func PrepareOfflineProduct(ctx context.Context, repository string, histories []History, input AttemptInput) (Snapshot, []ModelCall, error) {
@@ -258,6 +270,7 @@ func PrepareOfflineProductReport(ctx context.Context, repository string, histori
 		SummarizeTurns(prepared, &report)
 	}, func(layered []LayeredSummaryRecord) {
 		report.LayeredSummary = layered
+		report.LayeredSummaryFailures = countLayeredSummaryFailures(layered)
 	})
 	var usageErr error
 	report.UsageByRole, usageErr = SummarizeCalls(report.Calls)
@@ -349,7 +362,7 @@ func prepareOfflineProduct(ctx context.Context, repository string, histories []H
 	}
 	if err := (guardedStore{sandbox: s}).with(ctx, func(tx *gorm.DB) error {
 		for _, record := range layered {
-			if record.Segments == 0 {
+			if record.Segments == 0 && record.Error == "" {
 				return fmt.Errorf("the conversation %s got no summary segment", record.SessionID)
 			}
 		}

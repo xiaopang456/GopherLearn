@@ -500,6 +500,7 @@ func PrepareRealProductReport(ctx context.Context, repository string, histories 
 	layered, err := WriteLayeredSummaries(ctx, s, env.UserID, sessionIDs, chat,
 		LayeredSummarySettings(settings.Config))
 	report.LayeredSummary = layered
+	report.LayeredSummaryFailures = countLayeredSummaryFailures(layered)
 	// The layered summary's calls belong to this preparation. They are the
 	// calls the ledger saw since the rolling summary was written, and a
 	// preparation whose ledger does not carry them is a preparation whose

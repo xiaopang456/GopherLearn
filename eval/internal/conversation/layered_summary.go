@@ -55,6 +55,14 @@ type LayeredSummaryRecord struct {
 	// Points is how many summary points the written segments carry. A
 	// segment with no points is a segment that says nothing.
 	Points int `json:"points"`
+	// Error says why this conversation got no layered summary.
+	//
+	// The preparation goes on when one conversation fails: the other thirty-
+	// one were summarized well, and throwing them away would measure an
+	// empty set instead of a degraded one. The conversation this belongs to
+	// has no segment and no board, so its card is written from the raw
+	// messages - and this field is where that shows.
+	Error string `json:"error,omitempty"`
 }
 
 // WriteLayeredSummaries summarizes every conversation of the preparation with
@@ -73,17 +81,8 @@ type LayeredSummaryRecord struct {
 //	WriteLayeredSummaries(ctx, s, userID, sessionIDs, chat, settings)
 func WriteLayeredSummaries(ctx context.Context, s *Sandbox, userID int64, sessionIDs []string,
 	chat modelcomponent.ToolCallingChatModel, settings SegmentSettings) ([]LayeredSummaryRecord, error) {
-	if s == nil || s.db == nil {
-		return nil, fmt.Errorf("the evaluation database is unavailable")
-	}
-	if userID <= 0 || len(sessionIDs) == 0 {
-		return nil, fmt.Errorf("the layered summary needs an identity and a conversation")
-	}
 	if chat == nil {
 		return nil, fmt.Errorf("the layered summary needs a model")
-	}
-	if err := settings.Validate(); err != nil {
-		return nil, err
 	}
 	generator, err := agent.NewModelSegmentGenerator(chat, settings.MaxInputTokens, settings.MaxOutputTokens)
 	if err != nil {
@@ -91,16 +90,79 @@ func WriteLayeredSummaries(ctx context.Context, s *Sandbox, userID int64, sessio
 	}
 	generator.UseAssistantContent(settings.AssistantContent)
 	generator.UseSegmentBudget(settings.SegmentTokens)
+	return WriteLayeredSummariesWithGenerator(ctx, s, userID, sessionIDs, generator, settings)
+}
 
+// WriteLayeredSummariesWithGenerator summarizes the conversations with a
+// generator the caller supplies.
+//
+// The seam exists so that the failure path can be exercised: a generator that
+// refuses one batch is what the real model does when it writes a document the
+// decoder does not know, and a preparation that stops at the first refusal
+// would throw away the conversations that were summarized well.
+func WriteLayeredSummariesWithGenerator(ctx context.Context, s *Sandbox, userID int64, sessionIDs []string,
+	generator agent.SegmentGenerator, settings SegmentSettings) ([]LayeredSummaryRecord, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("the evaluation database is unavailable")
+	}
+	if userID <= 0 || len(sessionIDs) == 0 {
+		return nil, fmt.Errorf("the layered summary needs an identity and a conversation")
+	}
+	if generator == nil {
+		return nil, fmt.Errorf("the layered summary needs a generator")
+	}
+	if err := settings.Validate(); err != nil {
+		return nil, err
+	}
 	records := make([]LayeredSummaryRecord, 0, len(sessionIDs))
+	written := 0
 	for _, sessionID := range sessionIDs {
 		record, err := writeOneLayeredSummary(ctx, s, userID, sessionID, generator, settings)
 		if err != nil {
-			return records, err
+			// One conversation's failure does not void the other thirty-one.
+			//
+			// The product refuses a summary it cannot store - a document with
+			// a field the decoder does not know, or a summary that does not
+			// fit the budget it is read under - and both refusals are
+			// deliberate. A preparation that stopped at the first refusal
+			// would throw away the conversations that were summarized well,
+			// and the arm would measure an empty set instead of a degraded
+			// one.
+			//
+			// So the failure is recorded and the preparation goes on. The
+			// conversation it belongs to has no layered summary, and its
+			// card is written from the raw messages - which is a
+			// DIFFERENT card, and the record says so.
+			record.Error = err.Error()
+			records = append(records, record)
+			continue
 		}
+		written++
 		records = append(records, record)
 	}
+	if written == 0 {
+		// Tolerance must not become blindness. A preparation where NO
+		// conversation got a layered summary is not measuring the card path
+		// at all, and it has to stop before it spends the rest of the run.
+		return records, fmt.Errorf("no conversation got a summary segment: the layered summary is broken, not one conversation")
+	}
 	return records, nil
+}
+
+// countLayeredSummaryFailures counts the conversations that got no layered
+// summary.
+//
+// The number is the finding: a card arm where a quarter of the cards were
+// written from the raw messages is a different measurement from one where
+// they all were, and a reader has to be able to see it without counting.
+func countLayeredSummaryFailures(records []LayeredSummaryRecord) int {
+	failures := 0
+	for _, record := range records {
+		if record.Error != "" || record.Segments == 0 {
+			failures++
+		}
+	}
+	return failures
 }
 
 // writeOneLayeredSummary summarizes one conversation and records what was
