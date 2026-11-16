@@ -224,8 +224,14 @@ type CardArmEvidence struct {
 	// archive has to be able to say that the preparation published AND that
 	// this query published nothing. One boolean for both would say "published"
 	// about a query that published nothing at all.
-	PreparationPublished bool `json:"preparation_published"`
-	PreparationDue       bool `json:"preparation_due"`
+	//
+	// They are three-valued, not two-valued. A nil pointer means the
+	// preparation left no record, so the question was never asked - and that is
+	// not the same answer as "the preparation published nothing". An archive
+	// written before the record existed decodes into a nil here, and writing a
+	// plain false would turn "nobody said" into "the answer is no".
+	PreparationPublished *bool `json:"preparation_published"`
+	PreparationDue       *bool `json:"preparation_due"`
 	// Republished says this query published the projection again.
 	//
 	// A query that reuses an archive must not: the memory version is fixed
@@ -1306,14 +1312,15 @@ func DriveArm(ctx context.Context, sandbox *Sandbox, snapshot Snapshot, arm *Car
 		// The projection is published before the question is asked, so this
 		// is the preparation's fact, not the query's. The query publishes
 		// nothing here: the card is written once and read once.
-		evidence.PreparationPublished = true
+		published, due := true, true
+		evidence.PreparationPublished = &published
 		projection.Published++
 		projection.Targets[conversation.Session.ID] = target
 		if err := sandbox.MakeProjectionDue(ctx, conversation.Session.UserID, conversation.Session.ID); err != nil {
 			evidence.Error = err.Error()
 			return evidence, err
 		}
-		evidence.PreparationDue = true
+		evidence.PreparationDue = &due
 		projection.Due++
 		started := time.Now()
 		memory, code, err := sandbox.WaitForArmMemory(ctx, conversation.Session.UserID, conversation.Session.ID, arm.MemoryKind(), arm.Wait())

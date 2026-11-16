@@ -208,8 +208,12 @@ func TestTheEvidenceComesOutOfTheArchive(t *testing.T) {
 	if evidence.Preparation == nil || evidence.Preparation.Published != 2 {
 		t.Fatalf("the preparation record is missing: %+v", evidence.Preparation)
 	}
-	if !evidence.PreparationPublished || !evidence.PreparationDue {
+	if evidence.PreparationPublished == nil || !*evidence.PreparationPublished ||
+		evidence.PreparationDue == nil || !*evidence.PreparationDue {
 		t.Fatalf("the preparation's facts are missing: %+v", evidence)
+	}
+	if evidence.SourceSessionID != "source-1" {
+		t.Fatalf("the evidence does not name the source conversation: %+v", evidence.SourceSessionID)
 	}
 	if evidence.Republished {
 		t.Fatal("the query says it published the projection again")
@@ -265,6 +269,52 @@ func TestAnArchiveWithAForeignProjectionIsRefused(t *testing.T) {
 	}
 }
 
+// An archive that carries no preparation record leaves the preparation's
+// facts unknown.
+//
+// The archive format keeps reading older versions, and an archive written
+// before the record existed decodes into exactly this state. "The
+// preparation said nothing" is not "the preparation published nothing", so
+// the field has to be able to say the difference: a plain false would turn
+// an unanswered question into an answered one.
+func TestAnArchiveWithoutAPreparationRecordSaysNothingRatherThanNo(t *testing.T) {
+	snapshot := Snapshot{
+		Sessions: []SessionSnapshot{
+			{Session: model.Session{ID: "source-1", UserID: 7, UserName: "learner", Mode: model.SessionModeAgent},
+				Messages: []model.Message{
+					{ID: 1, SessionID: "source-1", UserName: "learner", IsUser: true, Content: "第一句"},
+					{ID: 2, SessionID: "source-1", UserName: "learner", IsUser: false, Content: "第二句"},
+				}},
+		},
+		Memories: []model.EpisodeMemory{
+			{ID: "card-1", UserID: 7, SessionID: "source-1", ContentKind: model.EpisodeContentSessionCard,
+				Title: "第一张卡", SourceLastMessageID: 1},
+		},
+	}
+	if err := snapshot.Validate(); err != nil {
+		t.Fatalf("the archive is not valid: %v", err)
+	}
+	arm := &CardArm{Mode: CardArmModeOn, IndexName: "idx", KeyPrefix: "p:"}
+	evidence := armEvidenceFromSnapshot(snapshot, arm)
+	if evidence.Preparation != nil {
+		t.Fatalf("the evidence invented a preparation record: %+v", evidence.Preparation)
+	}
+	if evidence.PreparationPublished != nil || evidence.PreparationDue != nil {
+		t.Fatalf("the preparation's facts are answered although nobody recorded them: %+v", evidence)
+	}
+	// The query still published nothing, and that one is a fact of the query
+	// itself - so it stays a plain boolean.
+	if evidence.Republished {
+		t.Fatal("the query says it published the projection again")
+	}
+	// The memory rows are still there, and the reader can still see which
+	// conversation they belong to.
+	if evidence.SourceSessionID != "source-1" || evidence.Card == nil ||
+		evidence.Card.SessionID != "source-1" {
+		t.Fatalf("the row is not the source conversation's: %+v", evidence)
+	}
+}
+
 // The whole card arm, end to end, on a real MySQL and a real Redis.
 //
 // The arm has to write a card, wait for it to be indexed and ask its question
@@ -306,7 +356,7 @@ func TestTheCardArmWritesACardAndAsksInAnotherConversation(t *testing.T) {
 		t.Fatal("the attempt recorded no card evidence")
 	}
 	evidence := result.SessionCard
-	if !evidence.PreparationPublished {
+	if evidence.PreparationPublished == nil || !*evidence.PreparationPublished {
 		t.Fatalf("the projection was not published: %+v", evidence)
 	}
 	if evidence.Republished {

@@ -627,6 +627,11 @@ func armEvidenceFromSnapshot(snapshot Snapshot, arm *CardArm) *CardArmEvidence {
 	primary, _ := snapshot.Primary()
 	evidence := &CardArmEvidence{
 		Mode: arm.Mode, MemoryKind: arm.MemoryKind(),
+		// The conversation the question is about. The card, the memory row and
+		// the target watermark all belong to it, so the evidence has to name
+		// it: without this field a reader could only guess which conversation
+		// the three of them are about, by reading the row's session id back.
+		SourceSessionID:   primary.Session.ID,
 		MemoryReadMode:    strings.TrimSpace(arm.MemoryReadMode),
 		EpisodeRecallMode: strings.TrimSpace(arm.EpisodeRecallMode),
 		SourceSessions:    snapshot.SessionIDs(),
@@ -635,10 +640,16 @@ func armEvidenceFromSnapshot(snapshot Snapshot, arm *CardArm) *CardArmEvidence {
 	}
 	if projection := snapshot.Projection; projection != nil {
 		evidence.Preparation = projection
-		evidence.PreparationPublished = projection.Published > 0
-		evidence.PreparationDue = projection.Due > 0
+		published, due := projection.Published > 0, projection.Due > 0
+		evidence.PreparationPublished = &published
+		evidence.PreparationDue = &due
 		evidence.PublishedTargetMessageID = projection.Targets[primary.Session.ID]
 	}
+	// Left as nil when the archive carries no preparation record: the
+	// preparation said nothing, and "said nothing" is not "said no". An
+	// archive written before the record existed decodes into exactly this
+	// state, and writing a plain false would make an unanswered question look
+	// answered.
 	evidence.Republished = false
 	if row := memoryRowOfSession(snapshot, primary.Session.ID, arm.MemoryKind()); row != nil {
 		evidence.Card = row
