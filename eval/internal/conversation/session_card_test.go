@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"GopherAI/model"
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
 )
 
 // The arm has to say which path it measures and where it writes, or it
@@ -72,10 +74,11 @@ func TestTheArmCountsWhatTheAnswerLookedAt(t *testing.T) {
 			ArgumentsSummary: `{"message_ids":[12,13]}`, ResultSummary: "ok"},
 		{Type: model.AgentStepTool, ToolName: "something_else", ArgumentsSummary: `{"segments":[9]}`},
 	}
-	tools, browsed, hits, readback := ReadCardArmSteps(steps)
-	if len(tools) != 4 {
-		t.Fatalf("tools=%+v", tools)
+	evidence := ReadCardArmSteps(steps)
+	if len(evidence.Tools) != 4 {
+		t.Fatalf("tools=%+v", evidence.Tools)
 	}
+	browsed, hits, readback := evidence.Browsed, evidence.Hits, evidence.ReadBack
 	if len(browsed) != 2 || browsed[0] != 2 || browsed[1] != 3 {
 		t.Fatalf("browsed=%+v", browsed)
 	}
@@ -85,9 +88,47 @@ func TestTheArmCountsWhatTheAnswerLookedAt(t *testing.T) {
 	if len(readback) != 2 || readback[0] != 12 || readback[1] != 13 {
 		t.Fatalf("readback=%+v", readback)
 	}
-	sources := ReadCardArmRecall(steps)
-	if len(sources) != 1 || sources[0] != "card-1" {
+}
+
+// The recall of the OLD arm comes from the provenance the product wrote on the
+// assistant message, not from the prompt. The old path fills the Episode
+// ancestors of the message; the card path does not, because a card has no
+// Episode ancestors.
+func TestTheOldArmReadsItsRecallFromTheMessageProvenance(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = db.AutoMigrate(&model.Session{}, &model.Message{}); err != nil {
+		t.Fatal(err)
+	}
+	session := model.Session{ID: "eval-q-1", UserID: 7, UserName: "l4_test", Mode: model.SessionModeAgent}
+	if err = db.Create(&session).Error; err != nil {
+		t.Fatal(err)
+	}
+	message := model.Message{ID: 5, SessionID: "eval-q-1", UserName: "l4_test", IsUser: false,
+		Content: "the answer", EpisodeSources: model.EpisodeSourceRefs{{EpisodeID: "episode-1", Version: 1}}}
+	if err = db.Create(&message).Error; err != nil {
+		t.Fatal(err)
+	}
+	sources, err := ReadMessageEpisodeSources(context.Background(), db, 7, "eval-q-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sources) != 1 || sources[0] != "episode-1" {
 		t.Fatalf("recall=%+v", sources)
+	}
+	// A session of another learner has no sources to read.
+	other := model.Session{ID: "eval-q-2", UserID: 8, UserName: "l4_other", Mode: model.SessionModeAgent}
+	if err = db.Create(&other).Error; err != nil {
+		t.Fatal(err)
+	}
+	sources, err = ReadMessageEpisodeSources(context.Background(), db, 7, "eval-q-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sources) != 0 {
+		t.Fatalf("foreign session accepted: %+v", sources)
 	}
 }
 
@@ -142,7 +183,7 @@ func TestTheCardArmWritesACardAndAsksInAnotherConversation(t *testing.T) {
 	for i := range turns {
 		turns[i] = testTurn(i)
 	}
-	warmup, err := PrepareOfflineProductReport(ctx, repository, turns, AttemptInput{})
+	warmup, err := PrepareOfflineProductReport(ctx, repository, SingleHistory("synthetic-evaluation", turns), AttemptInput{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +213,7 @@ func TestTheCardArmWritesACardAndAsksInAnotherConversation(t *testing.T) {
 	if evidence.SourceSessionID == evidence.QuestionSessionID {
 		t.Fatal("the question was asked in the conversation the memory came from")
 	}
-	if evidence.QuestionSessionID != QuestionSessionID(warmup.Snapshot.Session.ID) {
+	if evidence.QuestionSessionID != QuestionSessionID(warmup.Snapshot.Sessions[0].Session.ID) {
 		t.Fatalf("the question session %q is not the derived one", evidence.QuestionSessionID)
 	}
 	if evidence.SourceMessages == 0 || evidence.SourceCharacters == 0 {

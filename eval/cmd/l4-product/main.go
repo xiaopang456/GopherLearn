@@ -43,6 +43,8 @@ func run(args []string, out io.Writer) error {
 	sessionCardMode := flags.String("session-card-mode", "disabled", "the cross-session memory path: disabled (Episode) or enabled (session card)")
 	cardIndexName := flags.String("card-index-name", "", "the card index's own namespace; the default is derived from the arm")
 	cardKeyPrefix := flags.String("card-key-prefix", "", "the card index's key prefix; the default is derived from the arm")
+	memoryReadMode := flags.String("memory-read-mode", "legacy_v2", "the product's read path; both arms use the same one")
+	episodeRecallMode := flags.String("episode-recall-mode", "", "the product's Episode recall switch: disabled, shadow_only or inject_enabled; the default follows the arm")
 	stopFile := flags.String("stop-file", "", "private stop-file path, watched during execution")
 	timeout := flags.Duration("timeout", 0, "attempt deadline; the default depends on the environment")
 	proxy := flags.String("proxy", "", "counting proxy base URL (real mode)")
@@ -74,6 +76,21 @@ func run(args []string, out io.Writer) error {
 	if !conversation.SessionCardModeKnown(*sessionCardMode) {
 		return fmt.Errorf("the session card mode must be disabled or enabled")
 	}
+	if !conversation.MemoryReadModeKnown(*memoryReadMode) {
+		return fmt.Errorf("the memory read mode %q is not one the product knows", *memoryReadMode)
+	}
+	// The Episode recall switch follows the arm when the run does not say:
+	// the old arm injects the Episode, and the card arm replaces it.
+	if *episodeRecallMode == "" {
+		if *sessionCardMode == conversation.CardArmModeOn {
+			*episodeRecallMode = "disabled"
+		} else {
+			*episodeRecallMode = "inject_enabled"
+		}
+	}
+	if !conversation.EpisodeRecallModeKnown(*episodeRecallMode) {
+		return fmt.Errorf("the episode recall mode %q is not one the product knows", *episodeRecallMode)
+	}
 	guarded := map[string]string{"output": *output}
 	if *phase != "index" {
 		guarded["input"] = *input
@@ -97,7 +114,7 @@ func run(args []string, out io.Writer) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	var turns []conversation.Turn
+	var histories []conversation.History
 	var snapshot conversation.Snapshot
 	var err error
 	var attempt conversation.AttemptInput
@@ -123,15 +140,21 @@ func run(args []string, out io.Writer) error {
 		}
 		decoder := json.NewDecoder(io.LimitReader(file, 8<<20))
 		decoder.DisallowUnknownFields()
-		if err = decoder.Decode(&turns); err != nil {
+		// The input is either one conversation (a flat turn array) or a set
+		// of them (an object naming the conversations). A comparison of two
+		// cross-session memory paths needs several conversations in the
+		// database, because the retrieval has to choose between them.
+		var raw json.RawMessage
+		if err = decoder.Decode(&raw); err != nil {
 			return err
 		}
 		var extra any
 		if err = decoder.Decode(&extra); err != io.EOF {
 			return fmt.Errorf("turn file contains trailing data")
 		}
-		if len(turns) < 1 || len(turns) > 256 {
-			return fmt.Errorf("turn count must be 1 through 256")
+		histories, err = readHistories(raw)
+		if err != nil {
+			return err
 		}
 	} else if *phase == "answer" {
 		if *questionFile != "" {
@@ -182,7 +205,10 @@ func run(args []string, out io.Writer) error {
 	if strings.TrimSpace(*cardKeyPrefix) != "" {
 		keyPrefix = strings.TrimSpace(*cardKeyPrefix)
 	}
-	attempt.SessionCard = &conversation.CardArm{Mode: *sessionCardMode, IndexName: indexName, KeyPrefix: keyPrefix}
+	attempt.SessionCard = &conversation.CardArm{
+		Mode: *sessionCardMode, IndexName: indexName, KeyPrefix: keyPrefix,
+		MemoryReadMode: *memoryReadMode, EpisodeRecallMode: *episodeRecallMode,
+	}
 	var environment conversation.RealEnvironment
 	var seed *conversation.KnowledgeSeed
 	if real {
@@ -197,7 +223,7 @@ func run(args []string, out io.Writer) error {
 			return err
 		}
 		*userID, *userName = id, name
-		environment, err = realEnvironment(flags, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel, userID, userName, sessionID, *mode, *sessionCardMode, indexName, keyPrefix)
+		environment, err = realEnvironment(flags, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel, userID, userName, sessionID, *mode, *sessionCardMode, indexName, keyPrefix, *memoryReadMode, *episodeRecallMode)
 		if err != nil {
 			return err
 		}
@@ -238,9 +264,9 @@ func run(args []string, out io.Writer) error {
 	} else if *phase == "prepare" {
 		var warmup conversation.WarmupReport
 		if real {
-			warmup, err = conversation.PrepareRealProductReport(ctx, *repository, turns, environment, attempt)
+			warmup, err = conversation.PrepareRealProductReport(ctx, *repository, histories, environment, attempt)
 		} else {
-			warmup, err = conversation.PrepareOfflineProductReport(ctx, *repository, turns, attempt)
+			warmup, err = conversation.PrepareOfflineProductReport(ctx, *repository, histories, attempt)
 		}
 		snapshot = warmup.Snapshot
 		paidCalls = len(warmup.Calls)
@@ -320,6 +346,11 @@ func run(args []string, out io.Writer) error {
 	}
 	manifest := map[string]any{"scope": conversation.ProductScope, "env": *env, "phase": *phase, "paid_model_calls": paidCalls, "quality_and_cost_verified": false, "success": err == nil}
 	manifest["session_card_mode"] = *sessionCardMode
+	// The switches the product ran with are written into the manifest, so
+	// that a reader can tell the two arms apart by what they ran rather than
+	// by what they are called.
+	manifest["memory_read_mode"] = *memoryReadMode
+	manifest["episode_recall_mode"] = *episodeRecallMode
 	if *sessionCardMode == conversation.CardArmModeOn {
 		manifest["card_index_name"] = indexName
 		manifest["card_index_prefix"] = keyPrefix
@@ -370,7 +401,7 @@ func run(args []string, out io.Writer) error {
 // realEnvironment collects the paid-run wiring. The index password is read
 // from the process environment so that it never reaches a command line, an
 // output file, or an error message.
-func realEnvironment(flags *flag.FlagSet, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel *string, userID *int64, userName, sessionID *string, mode, sessionCardMode, cardIndexName, cardKeyPrefix string) (conversation.RealEnvironment, error) {
+func realEnvironment(flags *flag.FlagSet, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel *string, userID *int64, userName, sessionID *string, mode, sessionCardMode, cardIndexName, cardKeyPrefix, memoryReadMode, episodeRecallMode string) (conversation.RealEnvironment, error) {
 	var environment conversation.RealEnvironment
 	if *proxy == "" || *redis == "" || *storage == "" || *chatModel == "" || *embeddingModel == "" || *rerankModel == "" || *userID <= 0 || *userName == "" || *sessionID == "" {
 		return environment, fmt.Errorf("the real mode needs the proxy, index, storage, models and evaluation identity")
@@ -406,6 +437,8 @@ func realEnvironment(flags *flag.FlagSet, proxy, redis, redisPassword, storage, 
 		// holds the cards of every run, and one arm's cards must not be
 		// visible to another arm's searches.
 		SessionCardMode:           sessionCardMode,
+		MemoryReadMode:            memoryReadMode,
+		EpisodeRecallMode:         episodeRecallMode,
 		SessionCardIndexName:      cardIndexName,
 		SessionCardIndexKeyPrefix: cardKeyPrefix,
 	}

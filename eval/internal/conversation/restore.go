@@ -11,6 +11,11 @@ import (
 // restoreIntoEmpty is deliberately unexported: a future isolated-instance
 // manager must establish database provenance before it is reachable from a
 // command. Empty tables alone do not prove that a database is safe to write.
+//
+// It restores every conversation of the attempt, and it writes only the three
+// conversation tables. The memory rows are written by the product's own
+// projection, in the answer phase, on purpose: a projection that the harness
+// faked would not be a measurement.
 func restoreIntoEmpty(ctx context.Context, db *gorm.DB, snapshot Snapshot) error {
 	if db == nil {
 		return fmt.Errorf("database is nil")
@@ -18,6 +23,7 @@ func restoreIntoEmpty(ctx context.Context, db *gorm.DB, snapshot Snapshot) error
 	if err := snapshot.Validate(); err != nil {
 		return err
 	}
+	primary, _ := snapshot.Primary()
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// The sandbox is seeded with exactly one evaluation user. A matching
 		// session username alone does not establish ownership.
@@ -25,7 +31,7 @@ func restoreIntoEmpty(ctx context.Context, db *gorm.DB, snapshot Snapshot) error
 		if err := tx.Model(&model.User{}).Count(&users).Error; err != nil {
 			return err
 		}
-		if err := tx.Model(&model.User{}).Where("id = ? AND username = ?", snapshot.Session.UserID, snapshot.Session.UserName).Count(&owned).Error; err != nil {
+		if err := tx.Model(&model.User{}).Where("id = ? AND username = ?", primary.Session.UserID, primary.Session.UserName).Count(&owned).Error; err != nil {
 			return err
 		}
 		if users != 1 || owned != 1 {
@@ -40,19 +46,21 @@ func restoreIntoEmpty(ctx context.Context, db *gorm.DB, snapshot Snapshot) error
 				return fmt.Errorf("target contains existing conversation data")
 			}
 		}
-		session := snapshot.Session
-		if err := tx.Create(&session).Error; err != nil {
-			return err
-		}
-		// Preserve message IDs; summary watermarks and evidence refer to them.
-		messages := append([]model.Message(nil), snapshot.Messages...)
-		if err := tx.Create(&messages).Error; err != nil {
-			return err
-		}
-		if snapshot.Summary != nil {
-			summary := *snapshot.Summary
-			if err := tx.Omit("Session").Create(&summary).Error; err != nil {
+		for _, conversation := range snapshot.Sessions {
+			session := conversation.Session
+			if err := tx.Create(&session).Error; err != nil {
 				return err
+			}
+			// Preserve message IDs; summary watermarks and evidence refer to them.
+			messages := append([]model.Message(nil), conversation.Messages...)
+			if err := tx.Create(&messages).Error; err != nil {
+				return err
+			}
+			if conversation.Summary != nil {
+				summary := *conversation.Summary
+				if err := tx.Omit("Session").Create(&summary).Error; err != nil {
+					return err
+				}
 			}
 		}
 		return nil

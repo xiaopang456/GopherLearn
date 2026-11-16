@@ -31,7 +31,7 @@ func TestOfflineProductAsksFollowUpsInOneSession(t *testing.T) {
 	for i := range turns {
 		turns[i] = testTurn(i)
 	}
-	warmup, err := PrepareOfflineProductReport(ctx, repository, turns, AttemptInput{})
+	warmup, err := PrepareOfflineProductReport(ctx, repository, SingleHistory("synthetic-evaluation", turns), AttemptInput{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestOfflineProductSeedsTheProfileMemoryBeforeTheQuestion(t *testing.T) {
 		Confirmed: true,
 		SavedAt:   "2026-01-14",
 	}}
-	warmup, err := PrepareOfflineProductReport(ctx, repository, turns, AttemptInput{Memories: memories})
+	warmup, err := PrepareOfflineProductReport(ctx, repository, SingleHistory("synthetic-evaluation", turns), AttemptInput{Memories: memories})
 	if err != nil {
 		t.Fatal(err)
 	}

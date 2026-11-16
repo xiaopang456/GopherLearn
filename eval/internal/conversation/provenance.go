@@ -55,7 +55,8 @@ func collectProvenance(ctx context.Context, repository string, s *entry.Settings
 		return out, fmt.Errorf("read checkout state")
 	}
 	out.Dirty = len(status) > 0
-	payload, err := json.Marshal(snapshotPayload{snapshot, snapshot.Session.CreationRequestKey, snapshot.Session.CreationInputHash})
+	primary := primaryOf(snapshot)
+	payload, err := json.Marshal(snapshotPayload{Snapshot: snapshot, CreationRequestKey: primary.Session.CreationRequestKey, CreationInputHash: primary.Session.CreationInputHash})
 	if err != nil {
 		return out, err
 	}

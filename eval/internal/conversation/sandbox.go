@@ -227,13 +227,23 @@ func (s *Sandbox) MakeProjectionDue(ctx context.Context, userID int64, sessionID
 // WaitForSessionCard waits until the session has a card that is indexed.
 func (s *Sandbox) WaitForSessionCard(ctx context.Context, userID int64, sessionID string,
 	timeout time.Duration) (*model.EpisodeMemory, string, error) {
+	return s.WaitForArmMemory(ctx, userID, sessionID, string(model.EpisodeContentSessionCard), timeout)
+}
+
+// WaitForArmMemory waits until the session has a memory of the named kind
+// that is indexed.
+//
+// Both arms wait through this one, and the kind is part of the wait: the two
+// arms write different documents into the same table.
+func (s *Sandbox) WaitForArmMemory(ctx context.Context, userID int64, sessionID, contentKind string,
+	timeout time.Duration) (*model.EpisodeMemory, string, error) {
 	if err := s.verify(ctx); err != nil {
 		return nil, "", err
 	}
 	if s.db == nil {
 		return nil, "", fmt.Errorf("sandbox database unavailable")
 	}
-	return WaitForSessionCard(ctx, s.db, userID, sessionID, timeout)
+	return WaitForArmMemory(ctx, s.db, userID, sessionID, contentKind, timeout)
 }
 
 // CreateQuestionSession opens the conversation the question is asked in.
@@ -244,6 +254,29 @@ func (s *Sandbox) CreateQuestionSession(ctx context.Context, userID int64, userN
 	return guardedStore{s}.with(ctx, func(tx *gorm.DB) error {
 		return CreateQuestionSession(ctx, tx, userID, userName, sessionID)
 	})
+}
+
+// CaptureMany reads the named conversations of one learner.
+func (s *Sandbox) CaptureMany(ctx context.Context, userID int64, sessionIDs []string) (Snapshot, error) {
+	var snapshot Snapshot
+	if err := s.verify(ctx); err != nil {
+		return snapshot, err
+	}
+	if s.db == nil {
+		return snapshot, fmt.Errorf("sandbox database unavailable")
+	}
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := s.checkMarker(tx); err != nil {
+			return err
+		}
+		var err error
+		snapshot, err = CaptureMany(ctx, tx, userID, sessionIDs)
+		return err
+	})
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return snapshot, nil
 }
 
 // Capture and ObserveJobs enforce the same instance checks as Restore.

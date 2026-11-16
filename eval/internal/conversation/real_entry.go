@@ -85,6 +85,55 @@ type RealEnvironment struct {
 	// SessionCardIndexName and SessionCardIndexKeyPrefix are that namespace.
 	SessionCardIndexName      string
 	SessionCardIndexKeyPrefix string
+	// MemoryReadMode is the product's read path. It is written into the
+	// product's configuration rather than left to the product's default, and
+	// it is exported with the attempt: an arm that does not say which read
+	// path it ran has not said what it measured.
+	MemoryReadMode string
+	// EpisodeRecallMode is the product's Episode recall switch. The old arm
+	// needs "inject_enabled" or nothing is injected; the card arm needs
+	// "disabled", because the card path replaces the Episode path.
+	EpisodeRecallMode string
+}
+
+// The read path and the recall switch a run may ask for.
+//
+// The list is the product's own: a run that asks for a mode the product does
+// not know must fail before it spends anything.
+var (
+	// MemoryReadModes are the product's read paths.
+	MemoryReadModes = []string{
+		"legacy_v2", "episode_v3", "episode_v3_lexical", "episode_v3_semantic",
+		"model_planned_v1", "agent_memory_tool_v1", "agent_memory_tool_v2",
+		"agent_memory_tool_v3", "agent_memory_tool_v4", "agent_memory_user_confirmed_v1",
+		"episode_assertion_governed_v1_1", "agent_memory_explicit_actions_v1",
+		"agent_memory_explicit_sources_v1", "agent_memory_source_priority_v1",
+		"agent_memory_source_priority_v2", "agent_memory_source_priority_v3",
+	}
+	// EpisodeRecallModes are the product's Episode recall switches.
+	EpisodeRecallModes = []string{"disabled", "shadow_only", "inject_enabled"}
+)
+
+// MemoryReadModeKnown reports whether the read path is one the product
+// understands.
+func MemoryReadModeKnown(mode string) bool {
+	for _, candidate := range MemoryReadModes {
+		if candidate == mode {
+			return true
+		}
+	}
+	return false
+}
+
+// EpisodeRecallModeKnown reports whether the recall switch is one the product
+// understands.
+func EpisodeRecallModeKnown(mode string) bool {
+	for _, candidate := range EpisodeRecallModes {
+		if candidate == mode {
+			return true
+		}
+	}
+	return false
 }
 
 // SummarySegmentModes are the arms a paid run may measure.
@@ -111,10 +160,17 @@ func SessionCardModeKnown(mode string) bool {
 // whose label does not match the mode it booted with cannot be compared with
 // anything.
 func CardArmForEnvironment(env RealEnvironment) *CardArm {
-	if env.SessionCardMode != CardArmModeOn {
-		return &CardArm{Mode: CardArmModeOff}
+	arm := &CardArm{
+		Mode:              CardArmModeOff,
+		MemoryReadMode:    strings.TrimSpace(env.MemoryReadMode),
+		EpisodeRecallMode: strings.TrimSpace(env.EpisodeRecallMode),
 	}
-	return &CardArm{Mode: CardArmModeOn, IndexName: env.SessionCardIndexName, KeyPrefix: env.SessionCardIndexKeyPrefix}
+	if env.SessionCardMode == CardArmModeOn {
+		arm.Mode = CardArmModeOn
+		arm.IndexName = env.SessionCardIndexName
+		arm.KeyPrefix = env.SessionCardIndexKeyPrefix
+	}
+	return arm
 }
 
 // SummarySegmentModeKnown reports whether the mode is one the product
@@ -150,6 +206,12 @@ func (e RealEnvironment) Validate() error {
 	}
 	if !SessionCardModeKnown(e.SessionCardMode) {
 		return fmt.Errorf("the session card mode must be disabled or enabled")
+	}
+	if mode := strings.TrimSpace(e.MemoryReadMode); mode != "" && !MemoryReadModeKnown(mode) {
+		return fmt.Errorf("the memory read mode %q is not one the product knows", mode)
+	}
+	if mode := strings.TrimSpace(e.EpisodeRecallMode); mode != "" && !EpisodeRecallModeKnown(mode) {
+		return fmt.Errorf("the episode recall mode %q is not one the product knows", mode)
 	}
 	if e.SessionCardMode == CardArmModeOn {
 		if strings.TrimSpace(e.SessionCardIndexName) == "" || strings.TrimSpace(e.SessionCardIndexKeyPrefix) == "" {
@@ -286,18 +348,34 @@ func realSettings(repository, storage string, env RealEnvironment) (*entry.Setti
 		settings.Config.AgentConfig.SessionCardIndexName = env.SessionCardIndexName
 		settings.Config.AgentConfig.SessionCardIndexKeyPrefix = env.SessionCardIndexKeyPrefix
 	}
+	// The read path and the recall switch are written into the product's own
+	// configuration rather than left to its defaults, for the same reason the
+	// arm is: a run that does not say which path it ran has not said what it
+	// measured. The old arm needs the Episode recall switch on, or nothing is
+	// injected into the answer at all.
+	if mode := strings.TrimSpace(env.MemoryReadMode); mode != "" {
+		settings.Config.AgentConfig.MemoryReadMode = mode
+	}
+	if mode := strings.TrimSpace(env.EpisodeRecallMode); mode != "" {
+		settings.Config.AgentConfig.EpisodeRecallMode = mode
+	}
 	return settings, settings.Validate()
 }
 
-// PrepareRealProductReport warms one conversation with the product's rolling
-// summarizer. The summary model is the provider model, reached through the
-// counting proxy, so the summaries a run restores are the summaries the
-// product would have produced.
-func PrepareRealProductReport(ctx context.Context, repository string, turns []Turn, env RealEnvironment, input AttemptInput) (report WarmupReport, resultErr error) {
+// PrepareRealProductReport warms the attempt's conversations with the
+// product's rolling summarizer. The summary model is the provider model,
+// reached through the counting proxy, so the summaries a run restores are the
+// summaries the product would have produced.
+//
+// The attempt may carry more than one conversation: a comparison of two
+// cross-session memory paths needs the retrieval to have several
+// conversations to choose between, and an attempt whose database holds only
+// the conversation the question is about measures nothing about retrieval.
+func PrepareRealProductReport(ctx context.Context, repository string, histories []History, env RealEnvironment, input AttemptInput) (report WarmupReport, resultErr error) {
 	if err := env.Validate(); err != nil {
 		return report, err
 	}
-	if len(turns) == 0 {
+	if len(histories) == 0 {
 		return report, fmt.Errorf("turns are required")
 	}
 	if err := ctx.Err(); err != nil {
@@ -365,7 +443,14 @@ func PrepareRealProductReport(ctx context.Context, repository string, turns []Tu
 		return report, err
 	}
 	if err = (guardedStore{s}).with(ctx, func(tx *gorm.DB) error {
-		return tx.Create(&model.Session{ID: env.SessionID, UserID: env.UserID, UserName: env.UserName, Mode: model.SessionModeAgent, Title: "Evaluation conversation"}).Error
+		for _, history := range histories {
+			session := model.Session{ID: history.SessionID, UserID: env.UserID, UserName: env.UserName,
+				Mode: model.SessionModeAgent, Title: "Evaluation conversation"}
+			if err := tx.Create(&session).Error; err != nil {
+				return err
+			}
+		}
+		return nil
 	}); err != nil {
 		return report, err
 	}
@@ -374,7 +459,7 @@ func PrepareRealProductReport(ctx context.Context, repository string, turns []Tu
 	if err != nil {
 		return report, err
 	}
-	prepared, err := s.Prepare(ctx, env.UserID, env.SessionID, env.UserName, turns, generator, policy)
+	prepared, err := s.PrepareMany(ctx, env.UserID, env.UserName, histories, generator, policy)
 	SummarizeTurns(prepared, &report)
 	report.FailureCooldownSeconds = int(policy.FailureCooldown / time.Second)
 	report.Turns = prepared
@@ -382,7 +467,11 @@ func PrepareRealProductReport(ctx context.Context, repository string, turns []Tu
 	if err != nil {
 		return report, err
 	}
-	report.Snapshot, err = s.Capture(ctx, env.UserID, env.SessionID)
+	sessionIDs := make([]string, 0, len(histories))
+	for _, history := range histories {
+		sessionIDs = append(sessionIDs, history.SessionID)
+	}
+	report.Snapshot, err = s.CaptureMany(ctx, env.UserID, sessionIDs)
 	if err != nil {
 		return report, err
 	}
@@ -435,8 +524,14 @@ func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, env
 	if err := snapshot.Validate(); err != nil {
 		return result, err
 	}
-	if snapshot.Session.UserID != env.UserID || snapshot.Session.UserName != env.UserName || snapshot.Session.ID != env.SessionID {
+	// The archive has to belong to this attempt: the same learner, and the
+	// attempt's own conversation among the ones it carries.
+	primary, _ := snapshot.Primary()
+	if primary.Session.UserID != env.UserID || primary.Session.UserName != env.UserName {
 		return result, fmt.Errorf("the snapshot belongs to another evaluation identity")
+	}
+	if !snapshotHoldsSession(snapshot, env.SessionID) {
+		return result, fmt.Errorf("the snapshot does not carry the attempt's conversation")
 	}
 	dir, err := os.MkdirTemp("", "gl-real-entry-")
 	if err != nil {
@@ -560,18 +655,30 @@ func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, env
 	if err != nil {
 		return result, err
 	}
-	// The preparation phase. The card arm writes its card here, waits for it
-	// to be indexed and opens the conversation the question is asked in.
-	cardArm := CardArmForEnvironment(env)
-	questionSession := snapshot.Session.ID
-	if cardArm.Enabled() {
-		cardEvidence, cardErr := DriveSessionCard(ctx, s, snapshot, cardArm)
-		result.SessionCard = cardEvidence
-		if cardErr != nil {
-			return result, cardErr
-		}
-		questionSession = cardEvidence.QuestionSessionID
+	// The preparation phase. BOTH arms publish the projection, wait for the
+	// memory to be indexed and open a second conversation to ask the question
+	// in.
+	//
+	// The old arm is not the exception. An old arm that did not project would
+	// be asked a question in a conversation that holds no Episode at all, and
+	// its answer would say more about the wiring than about the memory: that
+	// is the one comparison that cannot be read as a comparison of the two
+	// memory formats.
+	//
+	// EVERY conversation of the attempt is projected, not only the one the
+	// question is about: the retrieval has to choose between them, and a
+	// database that holds only the target conversation would measure nothing
+	// about the choosing.
+	arm := CardArmForEnvironment(env)
+	armEvidence, armErr := DriveArm(ctx, s, snapshot, arm)
+	result.SessionCard = armEvidence
+	if armErr != nil {
+		// A projection that failed is a failure of the attempt, not an answer
+		// that found nothing. The error code says which, and the attempt
+		// must not go on to produce an answer that would be read as one.
+		return result, armErr
 	}
+	questionSession := armEvidence.QuestionSessionID
 	// The preparation phase ends here: the source data and the memory version
 	// are fixed, and nothing may be generated from here to the answer.
 	result.Audit.Prepared = time.Now().UTC()
@@ -583,9 +690,6 @@ func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, env
 	result.Response = asked[0].Response
 	result.Questions = asked
 	if err := s.readAgentSteps(ctx, env.UserID, asked); err != nil {
-		resultErr = errors.Join(resultErr, err)
-	}
-	if err := recordCardArmEvidence(result.SessionCard, s, env.UserID, asked); err != nil {
 		resultErr = errors.Join(resultErr, err)
 	}
 	result.Audit.Answered = time.Now().UTC()
@@ -611,7 +715,20 @@ func runRealEntry(ctx context.Context, repository string, snapshot Snapshot, env
 		after.Error = indexErr.Error()
 	}
 	result.MemoryIndexEvidence.AfterAnswer = after
-	result.Calls = BindRuns(AttributeCallPhases(ledger.Calls(), result.Audit.Prepared, result.Audit.Answered), snapshot.Session.ID, asked)
+	result.Calls = BindRuns(AttributeCallPhases(ledger.Calls(), result.Audit.Prepared, result.Audit.Answered), primary.Session.ID, asked)
+	// The request body is the record of what the model was shown, and the
+	// ledger keeps the cards it carried with each call. So the card evidence
+	// is read out of the recorded calls rather than out of the arm's own
+	// bookkeeping.
+	if err := recordCardArmEvidence(result.SessionCard, s, env.UserID, questionSession, ObserveCardCalls(result.Calls), asked); err != nil {
+		resultErr = errors.Join(resultErr, err)
+	}
+	// The tool table is the same record: the two arms are offered different
+	// tools, and an attempt that does not say which table it was given has
+	// not said what it measured.
+	if result.SessionCard != nil {
+		result.SessionCard.ToolTable = AnswerToolTable(result.Calls)
+	}
 	var usageErr error
 	result.UsageByRole, usageErr = SummarizeCalls(result.Calls)
 	for _, c := range result.Calls {

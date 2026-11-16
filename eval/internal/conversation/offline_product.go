@@ -236,12 +236,12 @@ type WarmupReport struct {
 	SeededMemories SeedMemoryReport `json:"seeded_memories"`
 }
 
-func PrepareOfflineProduct(ctx context.Context, repository string, turns []Turn, input AttemptInput) (Snapshot, []ModelCall, error) {
-	report, err := PrepareOfflineProductReport(ctx, repository, turns, input)
+func PrepareOfflineProduct(ctx context.Context, repository string, histories []History, input AttemptInput) (Snapshot, []ModelCall, error) {
+	report, err := PrepareOfflineProductReport(ctx, repository, histories, input)
 	return report.Snapshot, report.Calls, err
 }
-func PrepareOfflineProductReport(ctx context.Context, repository string, turns []Turn, input AttemptInput) (report WarmupReport, resultErr error) {
-	report.Snapshot, report.Calls, report.SeededMemories, resultErr = prepareOfflineProduct(ctx, repository, turns, input, func(prepared []PreparedTurn) {
+func PrepareOfflineProductReport(ctx context.Context, repository string, histories []History, input AttemptInput) (report WarmupReport, resultErr error) {
+	report.Snapshot, report.Calls, report.SeededMemories, resultErr = prepareOfflineProduct(ctx, repository, histories, input, func(prepared []PreparedTurn) {
 		report.Turns = prepared
 		SummarizeTurns(prepared, &report)
 	})
@@ -249,7 +249,7 @@ func PrepareOfflineProductReport(ctx context.Context, repository string, turns [
 	report.UsageByRole, usageErr = SummarizeCalls(report.Calls)
 	return report, errors.Join(resultErr, usageErr)
 }
-func prepareOfflineProduct(ctx context.Context, repository string, turns []Turn, input AttemptInput, observe func([]PreparedTurn)) (snapshot Snapshot, calls []ModelCall, memories SeedMemoryReport, resultErr error) {
+func prepareOfflineProduct(ctx context.Context, repository string, histories []History, input AttemptInput, observe func([]PreparedTurn)) (snapshot Snapshot, calls []ModelCall, memories SeedMemoryReport, resultErr error) {
 	if err := ctx.Err(); err != nil {
 		return snapshot, nil, memories, err
 	}
@@ -281,7 +281,14 @@ func prepareOfflineProduct(ctx context.Context, repository string, turns []Turn,
 		return snapshot, nil, memories, err
 	}
 	if err = (guardedStore{s}).with(ctx, func(tx *gorm.DB) error {
-		return tx.Create(&model.Session{ID: "synthetic-evaluation", UserID: 7, UserName: "synthetic-learner", Mode: model.SessionModeAgent, Title: "Synthetic evaluation"}).Error
+		for _, history := range histories {
+			session := model.Session{ID: history.SessionID, UserID: 7, UserName: "synthetic-learner",
+				Mode: model.SessionModeAgent, Title: "Synthetic evaluation"}
+			if err := tx.Create(&session).Error; err != nil {
+				return err
+			}
+		}
+		return nil
 	}); err != nil {
 		return snapshot, nil, memories, err
 	}
@@ -304,12 +311,16 @@ func prepareOfflineProduct(ctx context.Context, repository string, turns []Turn,
 	if err != nil {
 		return snapshot, nil, memories, err
 	}
-	prepared, err := s.Prepare(ctx, 7, "synthetic-evaluation", "synthetic-learner", turns, generator, policy)
+	prepared, err := s.PrepareMany(ctx, 7, "synthetic-learner", histories, generator, policy)
 	observe(prepared)
 	if err != nil {
 		return snapshot, ledger.Calls(), memories, err
 	}
-	snapshot, err = s.Capture(ctx, 7, "synthetic-evaluation")
+	sessionIDs := make([]string, 0, len(histories))
+	for _, history := range histories {
+		sessionIDs = append(sessionIDs, history.SessionID)
+	}
+	snapshot, err = s.CaptureMany(ctx, 7, sessionIDs)
 	return snapshot, ledger.Calls(), memories, err
 }
 

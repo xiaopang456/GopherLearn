@@ -18,19 +18,35 @@ func Capture(ctx context.Context, db *gorm.DB, userID int64, sessionID string) (
 		return result, fmt.Errorf("invalid capture identity")
 	}
 	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("id = ? AND user_id = ?", sessionID, userID).First(&result.Session).Error; err != nil {
+		session, err := captureSession(ctx, tx, userID, sessionID)
+		if err != nil {
 			return err
 		}
-		if err := tx.Where("session_id = ?", sessionID).Order("id ASC").Find(&result.Messages).Error; err != nil {
-			return err
-		}
-		var summary model.SessionSummary
-		err := tx.Where("session_id = ? AND user_id = ?", sessionID, userID).First(&summary).Error
-		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
-		}
-		if err == nil {
-			result.Summary = &summary
+		result.Sessions = []SessionSnapshot{session}
+		return result.Validate()
+	})
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return result, nil
+}
+
+// CaptureMany reads the named conversations of one learner.
+//
+// The order is the order of the names: the attempt's own conversation comes
+// first, and the rest are the ones the retrieval has to choose between.
+func CaptureMany(ctx context.Context, db *gorm.DB, userID int64, sessionIDs []string) (Snapshot, error) {
+	var result Snapshot
+	if db == nil || userID <= 0 || len(sessionIDs) == 0 {
+		return result, fmt.Errorf("invalid capture identity")
+	}
+	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, sessionID := range sessionIDs {
+			session, err := captureSession(ctx, tx, userID, sessionID)
+			if err != nil {
+				return fmt.Errorf("conversation %s: %w", sessionID, err)
+			}
+			result.Sessions = append(result.Sessions, session)
 		}
 		return result.Validate()
 	})
@@ -38,4 +54,24 @@ func Capture(ctx context.Context, db *gorm.DB, userID int64, sessionID string) (
 		return Snapshot{}, err
 	}
 	return result, nil
+}
+
+// captureSession reads one conversation of one learner.
+func captureSession(ctx context.Context, tx *gorm.DB, userID int64, sessionID string) (SessionSnapshot, error) {
+	var session SessionSnapshot
+	if err := tx.Where("id = ? AND user_id = ?", sessionID, userID).First(&session.Session).Error; err != nil {
+		return session, err
+	}
+	if err := tx.Where("session_id = ?", sessionID).Order("id ASC").Find(&session.Messages).Error; err != nil {
+		return session, err
+	}
+	var summary model.SessionSummary
+	err := tx.Where("session_id = ? AND user_id = ?", sessionID, userID).First(&summary).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return session, err
+	}
+	if err == nil {
+		session.Summary = &summary
+	}
+	return session, nil
 }

@@ -50,6 +50,18 @@ func modelHTTPHandler(ledger *ModelLedger, roles RolePrompts, backend http.Handl
 		ledger.calls[id-1].RequestedMaxTokens = request.MaxTokens
 		ledger.calls[id-1].RequestedMaxCompletionTokens = request.MaxCompletionTokens
 		ledger.calls[id-1].InputSHA256 = digest(raw)
+		// The request body is the record of what the model was shown, and
+		// the product does not persist the cards it showed. The names of the
+		// conversations those cards were about are read out of the body
+		// here, so a paid run can say what the answer was given.
+		if shown, sessions := ReadShownCards(request.Messages); shown {
+			ledger.calls[id-1].CardSessions = sessions
+		}
+		// The tool table is in the same body. The two arms do not carry the
+		// same table, so the attempt has to say which one it was given.
+		if names := ToolNamesFromBody(raw); len(names) > 0 {
+			ledger.calls[id-1].ToolTable = names
+		}
 		ledger.mu.Unlock()
 		observed := &usageWriter{ResponseWriter: w, ledger: ledger, id: id}
 		defer func() {

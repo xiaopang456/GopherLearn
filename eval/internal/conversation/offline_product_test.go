@@ -23,7 +23,7 @@ func TestCompleteOfflineProductIntegration(t *testing.T) {
 	for i := range turns {
 		turns[i] = testTurn(i)
 	}
-	warmup, err := PrepareOfflineProductReport(ctx, repository, turns, AttemptInput{})
+	warmup, err := PrepareOfflineProductReport(ctx, repository, SingleHistory("synthetic-evaluation", turns), AttemptInput{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,8 +37,8 @@ func TestCompleteOfflineProductIntegration(t *testing.T) {
 	if len(warmup.Turns) != 42 || warmup.DegradedTurns != 0 {
 		t.Fatalf("warmup turns=%d degraded=%d", len(warmup.Turns), warmup.DegradedTurns)
 	}
-	if len(snapshot.Messages) != 84 || snapshot.Summary == nil || len(calls) != 12 {
-		t.Fatalf("messages=%d summary=%+v calls=%d", len(snapshot.Messages), snapshot.Summary, len(calls))
+	if len(primaryOf(snapshot).Messages) != 84 || snapshot.Sessions[0].Summary == nil || len(calls) != 12 {
+		t.Fatalf("messages=%d summary=%+v calls=%d", len(primaryOf(snapshot).Messages), snapshot.Sessions[0].Summary, len(calls))
 	}
 	for _, c := range calls {
 		if c.Role != "summary" || c.Finished.IsZero() {

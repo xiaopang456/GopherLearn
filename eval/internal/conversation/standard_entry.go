@@ -229,6 +229,7 @@ func (s *Sandbox) readAgentSteps(ctx context.Context, userID int64, questions []
 }
 
 func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, input AttemptInput) (result ProductResult, resultErr error) {
+	primary := primaryOf(snapshot)
 	result.Scope = ProductScope
 	result.Environment = "fake"
 	result.Entry = "gopherlearn-integrated:hybrid.Run"
@@ -297,13 +298,13 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 	if err != nil {
 		return result, err
 	}
-	if err = s.SeedProduct(ctx, model.User{ID: snapshot.Session.UserID, Username: snapshot.Session.UserName, Password: hash}, nil, settings.Config.StorageDir); err != nil {
+	if err = s.SeedProduct(ctx, model.User{ID: primary.Session.UserID, Username: primary.Session.UserName, Password: hash}, nil, settings.Config.StorageDir); err != nil {
 		return result, err
 	}
 	// The seeded profile memories are written into the database the answer is
 	// asked in, because that database is a fresh one and the restored
 	// conversation does not carry the learner's profile with it.
-	result.SeededMemories, result.SeededMemoryRows, err = seedAttemptMemories(ctx, s, snapshot.Session.UserID, input.Memories)
+	result.SeededMemories, result.SeededMemoryRows, err = seedAttemptMemories(ctx, s, primary.Session.UserID, input.Memories)
 	if err != nil {
 		return result, err
 	}
@@ -411,7 +412,7 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 	client := &http.Client{Timeout: time.Minute, Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	defer client.CloseIdleConnections()
 	base := "http://" + settings.Address()
-	token, err := loginStandardProduct(ctx, product, client, base, snapshot.Session.UserName, password)
+	token, err := loginStandardProduct(ctx, product, client, base, primary.Session.UserName, password)
 	if err != nil {
 		return result, err
 	}
@@ -424,7 +425,7 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 		// question before the segment was written would measure a window
 		// without one, and the segment that was written afterwards would
 		// never be read by the answer the run is about.
-		if err = s.WaitForSummarySegment(ctx, snapshot.Session.ID, 90*time.Second); err != nil {
+		if err = s.WaitForSummarySegment(ctx, primary.Session.ID, 90*time.Second); err != nil {
 			return result, err
 		}
 	}
@@ -436,7 +437,7 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 	// learner. A question asked in the conversation the memory came from
 	// would find the raw messages anyway, and the arm would have measured
 	// the conversation instead of the memory.
-	questionSession := snapshot.Session.ID
+	questionSession := primary.Session.ID
 	if input.SessionCard.Enabled() {
 		evidence, cardErr := DriveSessionCard(ctx, s, snapshot, input.SessionCard)
 		result.SessionCard = evidence
@@ -457,11 +458,17 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 	result.Answer = asked[0].Answer
 	result.Response = asked[0].Response
 	result.Questions = asked
-	if err := s.readAgentSteps(ctx, snapshot.Session.UserID, asked); err != nil {
+	if err := s.readAgentSteps(ctx, primary.Session.UserID, asked); err != nil {
 		resultErr = errors.Join(resultErr, err)
 	}
-	if err := recordCardArmEvidence(result.SessionCard, s, snapshot.Session.UserID, asked); err != nil {
-		resultErr = errors.Join(resultErr, err)
+	// The context of every question is kept with that question, so that a
+	// reader can see what the later question was answered against.
+	inputs := stub.answerInputs()
+	result.ContextMessages = stub.answerInput()
+	for index := range result.Questions {
+		if index < len(inputs) {
+			result.Questions[index].ContextMessages = inputs[index]
+		}
 	}
 	result.Audit.Answered = time.Now().UTC()
 	result.QuestionMilliseconds = asked[len(asked)-1].FinishedAt.Sub(asked[0].StartedAt).Milliseconds()
@@ -475,18 +482,16 @@ func runOfflineEntry(ctx context.Context, repository string, snapshot Snapshot, 
 	var stoppedErr error
 	_, result.StoppedCounts, stoppedErr = s.ObserveJobs(collect)
 	result.Events, result.Audit.ExecutedInQueryPhase, resultErr = journal.Finish(collect)
-	result.Calls = BindRuns(AttributeCallPhases(ledger.Calls(), result.Audit.Prepared, result.Audit.Answered), snapshot.Session.ID, asked)
+	result.Calls = BindRuns(AttributeCallPhases(ledger.Calls(), result.Audit.Prepared, result.Audit.Answered), primary.Session.ID, asked)
+	// The prompt the model was sent is the record of what it was shown, and
+	// the ledger keeps the cards each request carried. So the card evidence
+	// is read out of the recorded calls rather than out of the arm's own
+	// bookkeeping.
+	if err := recordCardArmEvidence(result.SessionCard, s, primary.Session.UserID, questionSession, ObserveCardCalls(result.Calls), asked); err != nil {
+		resultErr = errors.Join(resultErr, err)
+	}
 	var usageErr error
 	result.UsageByRole, usageErr = SummarizeCalls(result.Calls)
-	result.ContextMessages = stub.answerInput()
-	// The context of every question is kept with that question, so that a
-	// reader can see what the later question was answered against.
-	inputs := stub.answerInputs()
-	for index := range result.Questions {
-		if index < len(inputs) {
-			result.Questions[index].ContextMessages = inputs[index]
-		}
-	}
 	for _, c := range result.Calls {
 		result.Audit.Calls = append(result.Audit.Calls, BackgroundCall{Role: c.Role, Started: c.Started})
 	}

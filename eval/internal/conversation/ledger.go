@@ -50,11 +50,28 @@ type ModelCall struct {
 	TelemetryError               string              `json:"telemetry_error,omitempty"`
 	RequestedMaxTokens           *int                `json:"requested_max_tokens"`
 	RequestedMaxCompletionTokens *int                `json:"requested_max_completion_tokens"`
-	Error                        string              `json:"error,omitempty"`
+	// CardSessions names the source conversations of the session cards the
+	// request carried.
+	//
+	// The request body is the record of what the model was shown, and the
+	// product does not persist the cards it showed. The names are read out of
+	// that body, so an attempt can say what the answer was given without
+	// asking the product to remember it.
+	CardSessions []string `json:"card_sessions,omitempty"`
+	// ToolTable names the tools the request offered the model.
+	//
+	// The two arms do not carry the same table, and a comparison that does
+	// not say so would be comparing something the reader cannot see.
+	ToolTable []string `json:"tool_table,omitempty"`
+	Error     string   `json:"error,omitempty"`
 }
 type ModelLedger struct {
 	mu    sync.Mutex
 	calls []ModelCall
+	// pendingTools is the tool table the model was bound to, read out of the
+	// binding rather than out of the request. It is kept between the binding
+	// and the call, because the product binds the tools once and then calls.
+	pendingTools []string
 }
 
 func digest(b []byte) string { v := sha256.Sum256(b); return hex.EncodeToString(v[:]) }
@@ -104,6 +121,8 @@ func (l *ModelLedger) Calls() []ModelCall {
 		for j, raw := range l.calls[i].RawUsageSamples {
 			out[i].RawUsageSamples[j] = append(json.RawMessage(nil), raw...)
 		}
+		out[i].CardSessions = append([]string(nil), out[i].CardSessions...)
+		out[i].ToolTable = append([]string(nil), out[i].ToolTable...)
 		if out[i].Usage != nil {
 			u := *out[i].Usage
 			out[i].Usage = &u
@@ -345,6 +364,14 @@ func (m *ledgerModel) WithTools(tools []*schema.ToolInfo) (modelcomponent.ToolCa
 	if err != nil {
 		return nil, err
 	}
+	// The tool table is what the model is offered, and it is bound before the
+	// call. Recording it here says what the answer could have done, which is
+	// not the same question as what it did - and the two arms differ in it.
+	if names := ToolNamesFromInfos(tools); len(names) > 0 {
+		m.ledger.mu.Lock()
+		m.ledger.pendingTools = names
+		m.ledger.mu.Unlock()
+	}
 	return &ledgerModel{bound, m.ledger, m.roles}, nil
 }
 func (m *ledgerModel) start(method string, input []*schema.Message) (int, error) {
@@ -357,6 +384,20 @@ func (m *ledgerModel) start(method string, input []*schema.Message) (int, error)
 		}
 	}
 	id := m.ledger.begin(role, method, input, prompt)
+	// The prompt is the record of what the model was shown, and the cards it
+	// carried are read out of it here. The names are kept with the call, so
+	// an attempt does not have to hold the whole prompt to say what the
+	// answer was given.
+	if shown, sessions := ReadShownCards(input); shown {
+		m.ledger.mu.Lock()
+		m.ledger.calls[id-1].CardSessions = sessions
+		m.ledger.mu.Unlock()
+	}
+	m.ledger.mu.Lock()
+	if len(m.ledger.pendingTools) > 0 {
+		m.ledger.calls[id-1].ToolTable = append([]string(nil), m.ledger.pendingTools...)
+	}
+	m.ledger.mu.Unlock()
 	if role == "unknown" {
 		err := fmt.Errorf("unclassified model call refused")
 		m.ledger.finish(id, err)

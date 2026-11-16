@@ -1,13 +1,13 @@
 package conversation
 
 import (
-	rediscommon "GopherAI/common/redis"
 	"context"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 
+	rediscommon "GopherAI/common/redis"
 	redis "github.com/redis/go-redis/v9"
 )
 
@@ -38,7 +38,7 @@ func (l redisKeyLister) ListKeys(ctx context.Context, pattern string) ([]string,
 	}
 }
 
-// MemoryIndexState is one reading of the two derived memory indexes for one
+// MemoryIndexState is one reading of the derived memory indexes for one
 // evaluation user.
 //
 // The foreign counts matter as much as the user's own: the indexes are shared
@@ -50,11 +50,17 @@ type MemoryIndexState struct {
 	UserID                int64   `json:"user_id"`
 	EpisodeEntries        int     `json:"episode_entries"`
 	MemoryEntries         int     `json:"memory_entries"`
+	CardEntries           int     `json:"card_entries"`
 	ForeignEpisodeEntries int     `json:"foreign_episode_entries"`
 	ForeignMemoryEntries  int     `json:"foreign_memory_entries"`
+	ForeignCardEntries    int     `json:"foreign_card_entries"`
 	ForeignUserIDs        []int64 `json:"foreign_user_ids"`
 	UnattributedEntries   int     `json:"unattributed_entries"`
-	Error                 string  `json:"error,omitempty"`
+	// CardPrefix is the namespace the card arm's rows live in, when the run
+	// asked for one. It is reported so that a reader can see which partition
+	// was counted.
+	CardPrefix string `json:"card_prefix,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 
 // MemoryIndexEvidence brackets one answer attempt with the two readings the
@@ -91,27 +97,39 @@ func (s *MemoryIndexState) count(prefix string, keys []string, userID int64) {
 		case !attributed:
 			s.UnattributedEntries++
 		case owner == userID:
-			if prefix == rediscommon.EpisodeKeyPrefix {
+			switch prefix {
+			case rediscommon.EpisodeKeyPrefix:
 				s.EpisodeEntries++
-			} else {
+			case rediscommon.MemoryKeyPrefix:
 				s.MemoryEntries++
+			default:
+				s.CardEntries++
 			}
 		default:
-			if prefix == rediscommon.EpisodeKeyPrefix {
+			switch prefix {
+			case rediscommon.EpisodeKeyPrefix:
 				s.ForeignEpisodeEntries++
-			} else {
+			case rediscommon.MemoryKeyPrefix:
 				s.ForeignMemoryEntries++
+			default:
+				s.ForeignCardEntries++
 			}
 			s.ForeignUserIDs = append(s.ForeignUserIDs, owner)
 		}
 	}
 }
 
-// readMemoryIndexState lists both derived index families and attributes every
+// readMemoryIndexState lists the derived index families and attributes every
 // key to a user. It never deletes or mutates anything: the report is evidence,
 // not a cleanup step.
-func readMemoryIndexState(ctx context.Context, lister indexKeyLister, userID int64) (MemoryIndexState, error) {
-	state := MemoryIndexState{UserID: userID, ForeignUserIDs: []int64{}}
+//
+// The card arm's namespace is counted as well. It has its own key prefix, and
+// a gate that did not look at it would not see the rows a repeat of the same
+// scenario left behind: the evaluation identity does not carry the repeat
+// number, so a second repeat of the same item would find the first one's
+// cards already in the index.
+func readMemoryIndexState(ctx context.Context, lister indexKeyLister, userID int64, cardPrefix string) (MemoryIndexState, error) {
+	state := MemoryIndexState{UserID: userID, ForeignUserIDs: []int64{}, CardPrefix: cardPrefix}
 	if userID <= 0 {
 		return state, fmt.Errorf("memory index reading requires an evaluation user")
 	}
@@ -125,6 +143,13 @@ func readMemoryIndexState(ctx context.Context, lister indexKeyLister, userID int
 	}
 	state.count(rediscommon.EpisodeKeyPrefix, episodes, userID)
 	state.count(rediscommon.MemoryKeyPrefix, memories, userID)
+	if cardPrefix != "" {
+		cards, err := lister.ListKeys(ctx, cardPrefix+"*")
+		if err != nil {
+			return state, err
+		}
+		state.count(cardPrefix, cards, userID)
+	}
 	sort.Slice(state.ForeignUserIDs, func(i, j int) bool { return state.ForeignUserIDs[i] < state.ForeignUserIDs[j] })
 	state.ForeignUserIDs = uniqueUserIDs(state.ForeignUserIDs)
 	state.Scanned = true
@@ -146,20 +171,21 @@ func uniqueUserIDs(ids []int64) []int64 {
 func observeMemoryIndexes(ctx context.Context, env RealEnvironment) (MemoryIndexState, error) {
 	client := redis.NewClient(&redis.Options{Addr: env.RedisAddress, Password: env.RedisPassword, Protocol: 2})
 	defer client.Close()
-	return readMemoryIndexState(ctx, redisKeyLister{client: client}, env.UserID)
+	return readMemoryIndexState(ctx, redisKeyLister{client: client}, env.UserID, env.cardIndexPrefix())
 }
 
 // Reject stale derived views instead of deleting data or letting one repeat
 // alter the initial memory state of the next repeat. Only the evaluation user's
 // own entries decide this gate: other scenarios legitimately leave entries in
 // the same shared index.
-func checkEmptyUserIndexes(ctx context.Context, lister indexKeyLister, userID int64) (MemoryIndexState, error) {
-	state, err := readMemoryIndexState(ctx, lister, userID)
+func checkEmptyUserIndexes(ctx context.Context, lister indexKeyLister, userID int64, cardPrefix string) (MemoryIndexState, error) {
+	state, err := readMemoryIndexState(ctx, lister, userID, cardPrefix)
 	if err != nil {
 		return state, err
 	}
-	if state.EpisodeEntries != 0 || state.MemoryEntries != 0 {
-		return state, fmt.Errorf("evaluation user has nonempty derived memory indexes: episodes=%d memories=%d", state.EpisodeEntries, state.MemoryEntries)
+	if state.EpisodeEntries != 0 || state.MemoryEntries != 0 || state.CardEntries != 0 {
+		return state, fmt.Errorf("evaluation user has nonempty derived memory indexes: episodes=%d memories=%d cards=%d",
+			state.EpisodeEntries, state.MemoryEntries, state.CardEntries)
 	}
 	return state, nil
 }
@@ -167,5 +193,15 @@ func checkEmptyUserIndexes(ctx context.Context, lister indexKeyLister, userID in
 func requireEmptyUserIndexes(ctx context.Context, env RealEnvironment) (MemoryIndexState, error) {
 	client := redis.NewClient(&redis.Options{Addr: env.RedisAddress, Password: env.RedisPassword, Protocol: 2})
 	defer client.Close()
-	return checkEmptyUserIndexes(ctx, redisKeyLister{client: client}, env.UserID)
+	return checkEmptyUserIndexes(ctx, redisKeyLister{client: client}, env.UserID, env.cardIndexPrefix())
+}
+
+// cardIndexPrefix is the key prefix of the card arm's own rows, when the run
+// asked for the card path. The old arm has none: its rows live in the
+// product's Episode namespace.
+func (e RealEnvironment) cardIndexPrefix() string {
+	if strings.TrimSpace(e.SessionCardMode) != CardArmModeOn {
+		return ""
+	}
+	return strings.TrimSpace(e.SessionCardIndexKeyPrefix)
 }
