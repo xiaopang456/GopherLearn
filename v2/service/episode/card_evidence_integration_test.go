@@ -78,6 +78,9 @@ func TestCardEvidenceCarriesTheTailTheSummaryHasNotCovered(t *testing.T) {
 		StartMessageID: messages[0].ID, EndMessageID: messages[2].ID,
 		StartAt: messages[0].CreatedAt, EndAt: messages[2].CreatedAt,
 		Topic: "题量", Content: segmentContent, TokenEstimate: 100,
+		// The board changes column is a JSON list, and an empty string is not
+		// one: a strict server refuses the row outright.
+		WhiteboardChanges: "[]",
 	}
 	if err := db.Create(&segment).Error; err != nil {
 		t.Fatal(err)
@@ -135,12 +138,14 @@ func TestCardEvidenceStopsTheWatermarkAtAnUnreadableSegment(t *testing.T) {
 		StartMessageID: messages[0].ID, EndMessageID: messages[0].ID,
 		StartAt: messages[0].CreatedAt, EndAt: messages[0].CreatedAt,
 		Topic: "第一段", Content: goodContent, TokenEstimate: 100,
+		WhiteboardChanges: "[]",
 	}
 	broken := model.SessionSummarySegment{
 		UserID: user.ID, SessionID: session.ID, Seq: 2,
 		StartMessageID: messages[1].ID, EndMessageID: messages[2].ID,
 		StartAt: messages[1].CreatedAt, EndAt: messages[2].CreatedAt,
 		Topic: "读不出来的一段", Content: "{not json", TokenEstimate: 100,
+		WhiteboardChanges: "[]",
 	}
 	if err := db.Create(&good).Error; err != nil {
 		t.Fatal(err)

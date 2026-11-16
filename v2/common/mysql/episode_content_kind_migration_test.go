@@ -3,7 +3,9 @@ package mysql
 import (
 	"GopherAI/internal/testdb"
 	"GopherAI/model"
+	"fmt"
 	"testing"
+	"time"
 
 	mysqldriver "gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -137,26 +139,44 @@ func TestEnsureEpisodeContentKindUniquenessSwapsTheIndexInOrder(t *testing.T) {
 	}
 	// The whole point of the swap: one session may now hold both an Episode
 	// and a card, and neither overwrites the other.
-	user := model.User{Username: "migration-card-owner", Password: "secret"}
+	// The names are unique per run: the test database is shared by every
+	// package that wants it, and a second run must not walk into the rows
+	// the first one left behind.
+	runID := fmt.Sprintf("%x", time.Now().UnixNano())
+	user := model.User{Username: "mig-owner-" + runID, Password: "secret"}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
+	// The rows belong to a session: the table carries the session as a
+	// foreign key, so a row without one is refused by the server rather
+	// than by the code.
+	sessionID := "mig-sess-" + runID
+	session := model.Session{ID: sessionID, UserID: user.ID,
+		UserName: user.Username, Mode: model.SessionModeAgent, Title: "迁移测试"}
+	if err := db.Create(&session).Error; err != nil {
+		t.Fatal(err)
+	}
+	// The last message time is not decoration: the column is not nullable and
+	// the model's own validation rejects a zero one. A row written without it
+	// is a row the database refuses on a strict server, so the fixture
+	// carries the same time the product's writer would.
+	stamp := time.Now().UTC().Truncate(time.Second)
 	episode := model.EpisodeMemory{
-		ID: "migration-episode-row", UserID: user.ID, SessionID: "migration-session",
+		ID: "mig-ep-" + runID, UserID: user.ID, SessionID: sessionID,
 		ContentKind: model.EpisodeContentEpisode, Title: "一个 Episode",
 		Document:   model.EpisodeDocument{Synopsis: "一段概述", Topics: []model.EpisodeTopic{}},
 		SearchText: "一段概述", TopicKeys: model.StringList{}, SourceEpisodes: model.EpisodeSourceRefs{},
-		SourceLastMessageID: 1, Version: 1, Status: model.EpisodeStatusActive,
+		SourceLastMessageID: 1, LastMessageAt: stamp, Version: 1, Status: model.EpisodeStatusActive,
 		IndexStatus: model.EpisodeIndexIndexed,
 	}
 	card := model.EpisodeMemory{
-		ID: "migration-card-row", UserID: user.ID, SessionID: "migration-session",
+		ID: "mig-card-" + runID, UserID: user.ID, SessionID: sessionID,
 		ContentKind: model.EpisodeContentSessionCard, Title: "一张卡片",
 		Card: model.SessionCardDocument{
 			Version: model.SessionCardContentVersion, Title: "一张卡片", Synopsis: "一段简述",
 		},
 		SearchText: "一张卡片", TopicKeys: model.StringList{}, SourceEpisodes: model.EpisodeSourceRefs{},
-		SourceLastMessageID: 1, Version: 1, Status: model.EpisodeStatusActive,
+		SourceLastMessageID: 1, LastMessageAt: stamp, Version: 1, Status: model.EpisodeStatusActive,
 		IndexStatus: model.EpisodeIndexIndexed,
 	}
 	if err := db.Create(&episode).Error; err != nil {
