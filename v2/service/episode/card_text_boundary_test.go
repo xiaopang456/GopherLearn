@@ -193,6 +193,52 @@ func TestACardWithNoLegalSynopsisAndNoEntriesIsRefused(t *testing.T) {
 	}
 }
 
+// The fallback that supplies a synopsis does not copy an unbalanced
+// quotation.
+//
+// An entry's text is the model's own words and is not checked for balance, so
+// copying it into the synopsis would bring back the very defect the fallback
+// exists to avoid: a description that ends in the middle of a quotation reads
+// as a typo.
+func TestTheSynopsisFallbackSkipsAnEntryWithAnUnclosedQuotation(t *testing.T) {
+	document := &model.SessionCardDocument{
+		Version:  model.SessionCardContentVersion,
+		Title:    "题量",
+		Synopsis: `"` + strings.Repeat("长", 1300) + `"`,
+		Arrangements: []model.SessionCardEntry{
+			{Text: `他说"这个方案不错`, Status: model.SessionCardStatusStated, MessageIDs: []uint{1}},
+			{Text: "每轮9道题", Status: model.SessionCardStatusStated, MessageIDs: []uint{2}},
+		},
+	}
+	fitted, fit := fitCardSynopsis(document.Synopsis, document, model.SessionCardSynopsisMaxRunes)
+	if strings.TrimSpace(fitted) == "" {
+		t.Fatalf("the synopsis is empty: %+v", fit)
+	}
+	if !cardSynopsisIsBalanced(fitted) {
+		t.Fatalf("the fallback left something open: %q", fitted)
+	}
+	if fitted != "每轮9道题" {
+		t.Fatalf("the fallback is %q, want the first entry that is whole", fitted)
+	}
+}
+
+// When every entry carries an unbalanced quotation, the card has no synopsis
+// to give - and saying so is better than storing a broken one.
+func TestTheSynopsisFallbackRefusesWhenEveryEntryIsUnbalanced(t *testing.T) {
+	document := &model.SessionCardDocument{
+		Version:  model.SessionCardContentVersion,
+		Title:    "题量",
+		Synopsis: `"` + strings.Repeat("长", 1300) + `"`,
+		Arrangements: []model.SessionCardEntry{
+			{Text: `他说"这个方案不错`, Status: model.SessionCardStatusStated, MessageIDs: []uint{1}},
+		},
+	}
+	fitted, fit := fitCardSynopsis(document.Synopsis, document, model.SessionCardSynopsisMaxRunes)
+	if strings.TrimSpace(fitted) != "" {
+		t.Fatalf("the synopsis is %q, want none: %+v", fitted, fit)
+	}
+}
+
 // The cut that cannot be made is reported as such, and not as a cut at the
 // limit.
 func TestTheSynopsisCutSaysWhenThereWasNoLegalCut(t *testing.T) {

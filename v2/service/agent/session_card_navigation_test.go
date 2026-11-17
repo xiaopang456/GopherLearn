@@ -52,7 +52,7 @@ func aBigCard() model.EpisodeMemory {
 // The card does not fit the window as a whole, and it is shown anyway.
 func TestACardThatDoesNotFitIsShownAsAWayIn(t *testing.T) {
 	card := aBigCard()
-	whole := renderSessionCard(card)
+	whole, _ := renderSessionCard(card)
 	if rag.EstimateTokens(whole) <= 1000 {
 		t.Fatalf("the fixture is %d tokens, which fits; the test proves nothing", rag.EstimateTokens(whole))
 	}

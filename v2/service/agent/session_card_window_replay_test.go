@@ -103,6 +103,7 @@ func TestTheRecordedCardsReachTheWindow(t *testing.T) {
 		evidence := episode.CardEvidence{
 			UserID: 7, Session: model.Session{ID: "session-card", UserID: 7, Title: "练习"},
 			TargetMessageID: lastID(messages),
+			TargetMessageAt: time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC),
 			Messages:        messages,
 		}
 		document, err := episode.ReceiveCardDocument(recorded.Arguments, evidence)
@@ -179,7 +180,7 @@ func lastID(messages []model.Message) uint {
 // received and stored, and the window showed none of them.
 func TestTheDisplayOfACardThatDoesNotFitIsAWayIn(t *testing.T) {
 	card := aBigCard()
-	whole := renderSessionCard(card)
+	whole, _ := renderSessionCard(card)
 	if rag.EstimateTokens(whole) <= theWindowBudget {
 		t.Fatalf("the fixture is %d tokens, which fits; the test proves nothing", rag.EstimateTokens(whole))
 	}

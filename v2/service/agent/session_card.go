@@ -88,18 +88,19 @@ func renderSessionCardsWithinBudget(cards []model.EpisodeMemory, budget int,
 		if len(blocks) == 3 {
 			break
 		}
-		block := renderSessionCard(card)
+		block, visible := renderSessionCard(card)
 		if block == "" {
 			continue
 		}
 		cost := rag.EstimateTokens(block) + 1
 		if used+cost > budget {
 			// The whole card does not fit. The navigation display does.
-			navigation, navigationCost := renderSessionCardNavigation(card, budget-used)
+			navigation, navigationCost, navigationVisible := renderSessionCardNavigation(card, budget-used)
 			if navigation == "" || used+navigationCost > budget {
 				continue
 			}
 			block = navigation
+			visible = navigationVisible
 			cost = navigationCost
 		}
 		blocks = append(blocks, block)
@@ -121,8 +122,13 @@ func renderSessionCardsWithinBudget(cards []model.EpisodeMemory, budget int,
 		// Only the citations this block really shows are readable. A card
 		// entry that the budget cut is an entry the model never saw, and an
 		// id it never saw is not one it may ask for.
-		cited := card.Card.CitedMessageIDs()
-		for _, messageID := range visibleCardMessageIDs(block, cited) {
+		//
+		// The ids are the ones of the entries that were RENDERED - not the
+		// ones a text scan finds in the rendered block. The difference
+		// matters: the block carries the model's own words, and a model that
+		// writes "[message_ids=99]" into an entry would otherwise have the
+		// reader authorised for a message nobody showed it.
+		for _, messageID := range visible {
 			if _, duplicate := seen[messageID]; duplicate || messageID == 0 {
 				continue
 			}
@@ -158,41 +164,65 @@ func renderSessionCardsWithinBudget(cards []model.EpisodeMemory, budget int,
 // An entry's text is never shortened. A cut sentence can lose the negation or
 // the condition that made it true, and a half-sentence in a window is worse
 // than one entry less.
-func renderSessionCardNavigation(card model.EpisodeMemory, budget int) (string, int) {
+func renderSessionCardNavigation(card model.EpisodeMemory, budget int) (string, int, []uint) {
 	if strings.TrimSpace(card.ID) == "" || strings.TrimSpace(card.Title) == "" {
-		return "", 0
+		return "", 0, nil
 	}
 	if card.ContentKind.Normalized() != model.EpisodeContentSessionCard {
-		return "", 0
+		return "", 0, nil
 	}
 	var out strings.Builder
 	fmt.Fprintf(&out, "- time: %s\n  source_session: %s\n  title: %s",
 		card.LastMessageAt.UTC().Format(time.RFC3339), cardField(card.SessionID), cardField(card.Title))
 	used := rag.EstimateTokens(out.String()) + 1
-	// The synopsis is the card's own overview of the session. It is kept when
-	// it fits; when it does not, the entries below carry the session instead,
-	// and the reader is not worse off than with a cut sentence.
-	if synopsis := strings.TrimSpace(card.Card.Synopsis); synopsis != "" {
-		candidate := out.String() + "\n  synopsis: " + cardField(synopsis)
-		cost := rag.EstimateTokens(candidate) + 1
-		if used+cost <= budget {
-			out.WriteString("\n  synopsis: " + cardField(synopsis))
-			used = cost
-		}
-	}
-	shown := 0
-	leftOut := 0
-	// The marker is reserved before the entries are added, because the
+	// The marker is reserved before anything else is added, because the
 	// navigation display is only reached when the whole card did not fit -
 	// and the whole card carries the same header, the same synopsis and the
 	// same entries. So something is always left out, and the display has to
 	// say so. A marker that did not fit would leave the reader thinking the
 	// card was complete.
-	marker := func(count int) string {
-		return fmt.Sprintf("\n  (%d more entries are not shown; browse this session's summary, "+
-			"search its words or read its messages back)", count)
+	//
+	// The marker names the entries AND the synopsis, because either of them
+	// can be what did not fit: a card whose entries all fit and whose
+	// synopsis did not would otherwise look complete, and the reader would
+	// take the entries for the whole session.
+	marker := func(entries int, synopsis bool) string {
+		switch {
+		case entries > 0 && synopsis:
+			return fmt.Sprintf("\n  (%d more entries and the synopsis are not shown; browse this "+
+				"session's summary, search its words or read its messages back)", entries)
+		case entries > 0:
+			return fmt.Sprintf("\n  (%d more entries are not shown; browse this session's summary, "+
+				"search its words or read its messages back)", entries)
+		case synopsis:
+			return "\n  (the synopsis is not shown; browse this session's summary, " +
+				"search its words or read its messages back)"
+		default:
+			return ""
+		}
 	}
-	reserved := rag.EstimateTokens(marker(0)) + 1
+	reserved := rag.EstimateTokens(marker(1, true)) + 1
+	// The synopsis is the card's own overview of the session. It is kept when
+	// it fits; when it does not, the entries below carry the session instead,
+	// and the display says that the synopsis is missing.
+	//
+	// The cost of the block WITH the synopsis is compared with the budget, not
+	// added to what the header already cost: the candidate already contains
+	// the header, so charging for it twice would throw away a synopsis that
+	// fits.
+	synopsisShown := false
+	if synopsis := strings.TrimSpace(card.Card.Synopsis); synopsis != "" {
+		candidate := out.String() + "\n  synopsis: " + cardField(synopsis)
+		cost := rag.EstimateTokens(candidate) + 1
+		if cost <= budget {
+			out.WriteString("\n  synopsis: " + cardField(synopsis))
+			used = cost
+			synopsisShown = true
+		}
+	}
+	shown := 0
+	leftOut := 0
+	var visible []uint
 	write := func(label string, entries []model.SessionCardEntry) {
 		for _, entry := range entries {
 			line := fmt.Sprintf("\n  %s: %s", label, cardField(entry.Text))
@@ -213,35 +243,42 @@ func renderSessionCardNavigation(card model.EpisodeMemory, budget int) (string, 
 			out.WriteString(line)
 			used += cost
 			shown++
+			visible = append(visible, entry.MessageIDs...)
 		}
 	}
 	write("arrangement", card.Card.Arrangements)
 	write("assistant_product", card.Card.AssistantProducts)
 	write("open_item", card.Card.OpenItems)
-	if leftOut > 0 {
-		out.WriteString(marker(leftOut))
+	if leftOut > 0 || !synopsisShown {
+		out.WriteString(marker(leftOut, !synopsisShown))
 		used += reserved
 	}
 	if shown == 0 {
 		// A navigation display that carries no entry and no synopsis says
 		// nothing the reader can use. The card is left out.
-		return "", 0
+		return "", 0, nil
 	}
-	return out.String(), used
+	return out.String(), used, visible
 }
 
 // renderSessionCard renders one card.
+//
+// It also returns the message ids the block really shows - the ones of the
+// entries that were rendered. They are computed from the entries, not by
+// scanning the rendered text: the block carries the model's own words, and a
+// model that writes "[message_ids=99]" into an entry would otherwise have the
+// reader authorised for a message nobody showed it.
 //
 // The source session is on the card because the next step - browsing that
 // session's summary, or searching its words - needs it. It is an opaque
 // handle and it authorises nothing on its own: the tools check it against the
 // cards this run was actually shown.
-func renderSessionCard(card model.EpisodeMemory) string {
+func renderSessionCard(card model.EpisodeMemory) (string, []uint) {
 	if strings.TrimSpace(card.ID) == "" || strings.TrimSpace(card.Title) == "" {
-		return ""
+		return "", nil
 	}
 	if card.ContentKind.Normalized() != model.EpisodeContentSessionCard {
-		return ""
+		return "", nil
 	}
 	var out strings.Builder
 	fmt.Fprintf(&out, "- time: %s\n  source_session: %s\n  title: %s",
@@ -249,6 +286,7 @@ func renderSessionCard(card model.EpisodeMemory) string {
 	if synopsis := strings.TrimSpace(card.Card.Synopsis); synopsis != "" {
 		fmt.Fprintf(&out, "\n  synopsis: %s", cardField(synopsis))
 	}
+	var visible []uint
 	write := func(label string, entries []model.SessionCardEntry) {
 		for _, entry := range entries {
 			fmt.Fprintf(&out, "\n  %s: %s", label, cardField(entry.Text))
@@ -261,12 +299,13 @@ func renderSessionCard(card model.EpisodeMemory) string {
 			if len(entry.SegmentSeqs) > 0 {
 				fmt.Fprintf(&out, " %s%s]", cardSegmentKey, joinIntIDs(entry.SegmentSeqs))
 			}
+			visible = append(visible, entry.MessageIDs...)
 		}
 	}
 	write("arrangement", card.Card.Arrangements)
 	write("assistant_product", card.Card.AssistantProducts)
 	write("open_item", card.Card.OpenItems)
-	return out.String()
+	return out.String(), visible
 }
 
 func cardField(value string) string { return strings.Join(strings.Fields(value), " ") }
@@ -277,70 +316,4 @@ func joinIntIDs(ids []int) string {
 		values = append(values, strconv.Itoa(id))
 	}
 	return strings.Join(values, ",")
-}
-
-// visibleCardMessageIDs keeps only the citations the rendered block shows.
-func visibleCardMessageIDs(rendered string, cited []uint) []uint {
-	visible := make(map[uint]struct{}, len(cited))
-	for at := 0; at < len(rendered); {
-		offset := strings.Index(rendered[at:], cardMessageKey)
-		if offset < 0 {
-			break
-		}
-		cursor := at + offset + len(cardMessageKey)
-		end := strings.Index(rendered[cursor:], "]")
-		if end < 0 {
-			break
-		}
-		for _, token := range strings.Split(rendered[cursor:cursor+end], ",") {
-			value, err := strconv.Atoi(strings.TrimSpace(token))
-			if err == nil && value > 0 {
-				visible[uint(value)] = struct{}{}
-			}
-		}
-		at = cursor + end + 1
-	}
-	if len(visible) == 0 {
-		return nil
-	}
-	ids := make([]uint, 0, len(visible))
-	for _, id := range cited {
-		if _, ok := visible[id]; ok {
-			ids = append(ids, id)
-		}
-	}
-	return ids
-}
-
-// visibleCardSegmentSeqs keeps only the segment numbers the block shows.
-func visibleCardSegmentSeqs(rendered string, cited []int) []int {
-	visible := make(map[int]struct{}, len(cited))
-	for at := 0; at < len(rendered); {
-		offset := strings.Index(rendered[at:], cardSegmentKey)
-		if offset < 0 {
-			break
-		}
-		cursor := at + offset + len(cardSegmentKey)
-		end := strings.Index(rendered[cursor:], "]")
-		if end < 0 {
-			break
-		}
-		for _, token := range strings.Split(rendered[cursor:cursor+end], ",") {
-			value, err := strconv.Atoi(strings.TrimSpace(token))
-			if err == nil && value > 0 {
-				visible[value] = struct{}{}
-			}
-		}
-		at = cursor + end + 1
-	}
-	if len(visible) == 0 {
-		return nil
-	}
-	seqs := make([]int, 0, len(visible))
-	for _, seq := range cited {
-		if _, ok := visible[seq]; ok {
-			seqs = append(seqs, seq)
-		}
-	}
-	return seqs
 }

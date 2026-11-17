@@ -169,6 +169,20 @@ func (g *ModelCardGenerator) Generate(ctx context.Context, evidence CardEvidence
 	if err != nil {
 		return model.SessionCardDocument{}, fmt.Errorf("generate session card: %w", err)
 	}
+	return receiveCardResponse(response, evidence)
+}
+
+// receiveCardResponse is where a card the model wrote becomes a card the
+// server can store.
+//
+// It is the ONE place that happens: the generator calls it, and the exported
+// seam calls it. Two places that each answer "is this card storable?" is how
+// the write side and the read side drift apart - and the read side is what
+// decides whether the card reaches the window at all.
+func receiveCardResponse(response *schema.Message, evidence CardEvidence) (model.SessionCardDocument, error) {
+	if err := evidence.Validate(); err != nil {
+		return model.SessionCardDocument{}, err
+	}
 	document, err := decodeCardToolResponse(response)
 	if err != nil {
 		return model.SessionCardDocument{}, err
@@ -180,6 +194,26 @@ func (g *ModelCardGenerator) Generate(ctx context.Context, evidence CardEvidence
 	}
 	recordCardLimits(report)
 	return document, nil
+}
+
+// ReceiveCardDocument takes the card the model wrote and returns the one the
+// server can store.
+//
+// It is the receive half of the card writer, and it is exported because it is
+// the seam the write path and the read path meet at: the write side asks "is
+// this card storable?", and the read side asks "what does the stored card
+// look like in the window?". Both need the same answer, and answering it in
+// two places is how the two drift apart.
+//
+// The evidence is the session's own: the messages the card may cite and the
+// summary segments it may point at. A card that cites something it was never
+// shown is refused, and the refusal is a whole-card failure.
+func ReceiveCardDocument(arguments string, evidence CardEvidence) (model.SessionCardDocument, error) {
+	response := schema.AssistantMessage("", []schema.ToolCall{{
+		ID: "card-call", Type: "function",
+		Function: schema.FunctionCall{Name: cardToolName, Arguments: arguments},
+	}})
+	return receiveCardResponse(response, evidence)
 }
 
 // buildCardPayload assembles what the model sees.
@@ -591,7 +625,7 @@ func fitCardSynopsis(synopsis string, document *model.SessionCardDocument, limit
 	synopsis = strings.TrimSpace(synopsis)
 	filled := false
 	if synopsis == "" {
-		synopsis = firstCardEntryText(document)
+		synopsis = firstBalancedEntryText(document)
 		filled = synopsis != ""
 	}
 	kept, fit := cutCardSynopsis(synopsis, limit)
@@ -599,7 +633,7 @@ func fitCardSynopsis(synopsis string, document *model.SessionCardDocument, limit
 		// The text could not be cut without leaving something open. The
 		// fallback is a complete entry, and if there is no entry either then
 		// the card has nothing to describe and the caller refuses it.
-		fallback := firstCardEntryText(document)
+		fallback := firstBalancedEntryText(document)
 		if fallback == "" {
 			return "", cardTextFit{Cut: true, Reason: "unclosed"}
 		}
@@ -616,24 +650,59 @@ func fitCardSynopsis(synopsis string, document *model.SessionCardDocument, limit
 	return kept, fit
 }
 
-// firstCardEntryText is the first entry's text, which is a complete text the
-// server already stores.
+// firstBalancedEntryText is the first entry's text that leaves nothing open.
 //
-// It is the fallback for a description that cannot be cut legally: the
-// entries are the model's own words about the session, so the synopsis says
-// what the model said and nothing more.
-func firstCardEntryText(document *model.SessionCardDocument) string {
+// The entry's text is the model's own words, and a model can write an
+// unbalanced quotation in one. Copying such a text into the synopsis would
+// bring back the very defect the fallback exists to avoid: a description that
+// ends in the middle of a quotation reads as a typo.
+//
+// So the fallback only takes an entry whose text is whole, and a card whose
+// entries are all unbalanced has no synopsis to give - which is a fact the
+// caller has to hear.
+func firstBalancedEntryText(document *model.SessionCardDocument) string {
 	if document == nil {
 		return ""
 	}
 	for _, group := range document.EntryGroups() {
 		for _, entry := range group {
-			if text := strings.TrimSpace(entry.Text); text != "" {
-				return text
+			text := strings.TrimSpace(entry.Text)
+			if text == "" {
+				continue
 			}
+			if !cardTextIsBalanced(text) {
+				continue
+			}
+			return text
 		}
 	}
 	return ""
+}
+
+// cardTextIsBalanced says whether the text leaves no quotation or bracket
+// open.
+//
+// It is the promise the description makes: a reader must not have to guess
+// where the quotation ends.
+func cardTextIsBalanced(value string) bool {
+	depth := 0
+	for _, char := range value {
+		switch char {
+		case '"':
+			if depth > 0 {
+				depth--
+			} else {
+				depth++
+			}
+		case '“', '‘', '（', '(', '「', '《', '[', '【':
+			depth++
+		case '”', '’', '）', ')', '」', '》', ']', '】':
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
+	return depth == 0
 }
 
 // firstSentence is the text up to the first sentence end, trimmed.
@@ -987,33 +1056,6 @@ func recordCardLimits(report cardWriteReport) {
 	if report.Synopsis.Filled {
 		observability.Memory.SessionCardFilled("synopsis")
 	}
-}
-
-// ReceiveCardDocument takes the card the model wrote and returns the one the
-// server can store.
-//
-// It is the receive half of the card writer, and it is exported because it is
-// the seam the write path and the read path meet at: the write side asks "is
-// this card storable?", and the read side asks "what does the stored card
-// look like in the window?". Both need the same answer, and answering it in
-// two places is how the two drift apart.
-//
-// The evidence is the session's own: the messages the card may cite and the
-// summary segments it may point at. A card that cites something it was never
-// shown is refused, and the refusal is a whole-card failure.
-func ReceiveCardDocument(arguments string, evidence CardEvidence) (model.SessionCardDocument, error) {
-	response := schema.AssistantMessage("", []schema.ToolCall{{
-		ID: "card-call", Type: "function",
-		Function: schema.FunctionCall{Name: cardToolName, Arguments: arguments},
-	}})
-	document, err := decodeCardToolResponse(response)
-	if err != nil {
-		return model.SessionCardDocument{}, err
-	}
-	if _, err := validateGeneratedCard(&document, evidence); err != nil {
-		return model.SessionCardDocument{}, err
-	}
-	return document, nil
 }
 
 // CardPromptDigest is the SHA-256 of the card system prompt.

@@ -214,7 +214,7 @@ func TestACardThatCitesNoRawMessageStillOpensItsConversation(t *testing.T) {
 // kind must not be rendered as a card.
 func TestSessionCardRefusesAnEpisodeRow(t *testing.T) {
 	row := model.EpisodeMemory{ID: "episode-1", Title: "一个 Episode", ContentKind: model.EpisodeContentEpisode}
-	if renderSessionCard(row) != "" {
+	if block, _ := renderSessionCard(row); block != "" {
 		t.Fatal("an Episode row was rendered as a card")
 	}
 }
