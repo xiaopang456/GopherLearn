@@ -526,6 +526,14 @@ type cardTextFit struct {
 // instead of dying for a field the reader rarely sees. A card that says
 // nothing at all - no title, no synopsis, no entries - is refused, because
 // there is nothing in it to remember.
+//
+// A title that the cut empties gets the same treatment. A title made of one
+// unbroken run of letters has no place inside it where a cut would not leave
+// half a word, so the cut retreats to the beginning and leaves nothing - and
+// a card with no title is refused, which loses the whole session over a
+// label. So the fallback is used instead: the synopsis' first sentence, and
+// after that the card's own subject, which says what kind of document this is
+// and claims nothing about the session.
 func fitCardTitle(title, synopsis string, limit int) (string, cardTextFit) {
 	title = strings.TrimSpace(title)
 	filled := false
@@ -533,11 +541,37 @@ func fitCardTitle(title, synopsis string, limit int) (string, cardTextFit) {
 		title = firstSentence(synopsis)
 		filled = title != ""
 	}
-	title, fit := cutCardText(title, limit, "boundary")
-	fit.Filled = filled
-	fit.Kept = utf8.RuneCountInString(title)
-	return title, fit
+	cut, fit := cutCardText(title, limit, "boundary")
+	if strings.TrimSpace(cut) != "" {
+		fit.Filled = filled
+		fit.Kept = utf8.RuneCountInString(cut)
+		return cut, fit
+	}
+	// The cut took everything. A different title is used instead of leaving
+	// the card without one.
+	for _, candidate := range []string{firstSentence(synopsis), cardSubjectFallback} {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		shortened, candidateFit := cutCardText(candidate, limit, "boundary")
+		if strings.TrimSpace(shortened) == "" {
+			continue
+		}
+		candidateFit.Filled = true
+		candidateFit.Kept = utf8.RuneCountInString(shortened)
+		return shortened, candidateFit
+	}
+	return "", fit
 }
+
+// cardSubjectFallback is the last title a card gets.
+//
+// It names what the document is and claims nothing about the session. It is
+// used only when the model wrote a title that cannot be cut into anything
+// readable AND the synopsis has no sentence to offer - a card whose title was
+// one unbroken run of letters and whose synopsis was empty.
+const cardSubjectFallback = "Session card"
 
 // fitCardSynopsis brings the synopsis down to what fits, and fills in a
 // missing one.
@@ -545,25 +579,61 @@ func fitCardTitle(title, synopsis string, limit int) (string, cardTextFit) {
 // A missing synopsis is taken from the first entry: the entries are the
 // model's own words about the session, so the synopsis says what the model
 // said and nothing more. A card with no synopsis and no entries is refused.
+//
+// A synopsis that cannot be cut legally is treated the same way as a missing
+// one. There is a text that has no sentence end inside the limit and no
+// place where nothing is left open - a long quotation, for example, whose
+// closing quote is past the limit. Cutting it by the character count would
+// leave the quotation open, and a description that ends in the middle of a
+// quotation reads as a typo. So the fallback is used instead: the first
+// entry, which is a complete text the server already stores.
 func fitCardSynopsis(synopsis string, document *model.SessionCardDocument, limit int) (string, cardTextFit) {
 	synopsis = strings.TrimSpace(synopsis)
 	filled := false
 	if synopsis == "" {
-		for _, group := range document.EntryGroups() {
-			for _, entry := range group {
-				synopsis = strings.TrimSpace(entry.Text)
-				break
-			}
-			if synopsis != "" {
-				break
-			}
-		}
+		synopsis = firstCardEntryText(document)
 		filled = synopsis != ""
 	}
-	synopsis, fit := cutCardSynopsis(synopsis, limit)
+	kept, fit := cutCardSynopsis(synopsis, limit)
+	if fit.Cut && fit.Reason == "unclosed" {
+		// The text could not be cut without leaving something open. The
+		// fallback is a complete entry, and if there is no entry either then
+		// the card has nothing to describe and the caller refuses it.
+		fallback := firstCardEntryText(document)
+		if fallback == "" {
+			return "", cardTextFit{Cut: true, Reason: "unclosed"}
+		}
+		fallback, fallbackFit := cutCardSynopsis(fallback, limit)
+		if fallbackFit.Cut && fallbackFit.Reason == "unclosed" {
+			return "", cardTextFit{Cut: true, Reason: "unclosed"}
+		}
+		fallbackFit.Filled = true
+		fallbackFit.Kept = utf8.RuneCountInString(fallback)
+		return fallback, fallbackFit
+	}
 	fit.Filled = filled
-	fit.Kept = utf8.RuneCountInString(synopsis)
-	return synopsis, fit
+	fit.Kept = utf8.RuneCountInString(kept)
+	return kept, fit
+}
+
+// firstCardEntryText is the first entry's text, which is a complete text the
+// server already stores.
+//
+// It is the fallback for a description that cannot be cut legally: the
+// entries are the model's own words about the session, so the synopsis says
+// what the model said and nothing more.
+func firstCardEntryText(document *model.SessionCardDocument) string {
+	if document == nil {
+		return ""
+	}
+	for _, group := range document.EntryGroups() {
+		for _, entry := range group {
+			if text := strings.TrimSpace(entry.Text); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
 }
 
 // firstSentence is the text up to the first sentence end, trimmed.
@@ -752,7 +822,17 @@ func cutCardSynopsis(value string, limit int) (string, cardTextFit) {
 		boundary = candidate
 	}
 	if boundary <= 0 {
-		boundary = limit
+		// Nothing inside the limit can be kept without leaving something
+		// open: the whole stretch is inside a quotation or a bracket that is
+		// closed past the limit.
+		//
+		// There is no legal cut here, and cutting by the character count
+		// would leave the quotation open - a description that ends in the
+		// middle of a quotation reads as a typo. So the text is not cut at
+		// all, and the caller falls back to a text that is already whole.
+		return "", cardTextFit{
+			Cut: true, Reason: "unclosed", LeftOut: len(runes), Kept: 0,
+		}
 	}
 	kept := strings.TrimSpace(string(runes[:boundary]))
 	return kept, cardTextFit{
@@ -907,6 +987,33 @@ func recordCardLimits(report cardWriteReport) {
 	if report.Synopsis.Filled {
 		observability.Memory.SessionCardFilled("synopsis")
 	}
+}
+
+// ReceiveCardDocument takes the card the model wrote and returns the one the
+// server can store.
+//
+// It is the receive half of the card writer, and it is exported because it is
+// the seam the write path and the read path meet at: the write side asks "is
+// this card storable?", and the read side asks "what does the stored card
+// look like in the window?". Both need the same answer, and answering it in
+// two places is how the two drift apart.
+//
+// The evidence is the session's own: the messages the card may cite and the
+// summary segments it may point at. A card that cites something it was never
+// shown is refused, and the refusal is a whole-card failure.
+func ReceiveCardDocument(arguments string, evidence CardEvidence) (model.SessionCardDocument, error) {
+	response := schema.AssistantMessage("", []schema.ToolCall{{
+		ID: "card-call", Type: "function",
+		Function: schema.FunctionCall{Name: cardToolName, Arguments: arguments},
+	}})
+	document, err := decodeCardToolResponse(response)
+	if err != nil {
+		return model.SessionCardDocument{}, err
+	}
+	if _, err := validateGeneratedCard(&document, evidence); err != nil {
+		return model.SessionCardDocument{}, err
+	}
+	return document, nil
 }
 
 // CardPromptDigest is the SHA-256 of the card system prompt.
