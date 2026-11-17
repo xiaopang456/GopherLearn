@@ -112,7 +112,7 @@ If the learner changed something after accepting it, write the current value wit
 Cite every entry. message_ids are raw message ids from the input; segment_seqs are summary segment numbers from the input. An entry must cite at least one of them, and every id you cite must be one you were shown.
 The card describes that session only. Never write a rule for the future, and never claim that something still holds when the learner changed it.
 Write in the language the learner writes in. Other sessions search this text with the learner's own words.
-The server keeps what fits and stores the rest of the card with it: at most 12 arrangements, at most 12 assistant_products, at most 12 open_items and at most 12 topics are kept; an entry's text is at most 400 characters, the synopsis at most 1200 and the title at most 160. The entries beyond those counts are left out, and an entry that breaks a rule is left out on its own. So write at most 12 entries in each list, keep each entry short, and write one entry per fact instead of one per sentence.`
+The server keeps what fits and stores the rest of the card with it: at most 12 arrangements, at most 12 assistant_products, at most 12 open_items and at most 12 topics are kept; an entry's text is at most 400 characters, the synopsis at most 1200, the title at most 160, and a topic key or label at most 160 characters. The entries beyond those counts are left out, and an entry that breaks a rule is left out on its own. So write at most 12 entries in each list, keep each entry short, and write one entry per fact instead of one per sentence.`
 
 // cardPayload is what the model is shown.
 type cardPayload struct {
@@ -277,7 +277,8 @@ func sessionCardTool() *schema.ToolInfo {
 		"title":    {Type: schema.String, Required: true, Desc: fmt.Sprintf("A short subject for the session, at most %d characters.", model.SessionCardTitleMaxRunes)},
 		"synopsis": {Type: schema.String, Required: true, Desc: fmt.Sprintf("Two or three sentences, at most %d characters.", model.SessionCardSynopsisMaxRunes)},
 		"topics": {Type: schema.Array, Desc: fmt.Sprintf("At most %d topics.", model.SessionCardTopicLimit), ElemInfo: &schema.ParameterInfo{Type: schema.Object, SubParams: map[string]*schema.ParameterInfo{
-			"key": {Type: schema.String, Required: true}, "label": {Type: schema.String, Required: true},
+			"key":   {Type: schema.String, Required: true, Desc: fmt.Sprintf("A short subject key, at most %d characters.", model.EpisodeTitleMaxRunes)},
+			"label": {Type: schema.String, Required: true, Desc: fmt.Sprintf("A short subject label, at most %d characters.", model.EpisodeTitleMaxRunes)},
 		}}},
 		"arrangements":       {Type: schema.Array, Desc: fmt.Sprintf("At most %d entries.", model.SessionCardEntryLimit), ElemInfo: entry},
 		"assistant_products": {Type: schema.Array, Desc: fmt.Sprintf("At most %d entries.", model.SessionCardEntryLimit), ElemInfo: entry},
@@ -322,6 +323,13 @@ func applyCardSchemaLimits(target *einojsonschema.Schema) {
 	}
 	if property, ok := target.Properties.Get("topics"); ok && property != nil {
 		property.MaxItems = &topicLimit
+		if property.Items != nil && property.Items.Properties != nil {
+			for _, name := range []string{"key", "label"} {
+				if text, found := property.Items.Properties.Get(name); found && text != nil {
+					text.MaxLength = &titleLimit
+				}
+			}
+		}
 	}
 	if property, ok := target.Properties.Get("synopsis"); ok && property != nil {
 		property.MaxLength = &synopsisLimit
@@ -372,6 +380,14 @@ type cardWriteReport struct {
 	OmittedTopics int
 	// DroppedTopics are the topics the server could not store at all.
 	DroppedTopics int
+	// TitleTruncated says the title was cut down to fit.
+	TitleTruncated bool
+	// SynopsisTruncated says the synopsis was cut down to fit.
+	SynopsisTruncated bool
+	// TitleRunes is how many runes the title lost.
+	TitleRunes int
+	// SynopsisRunes is how many runes the synopsis lost.
+	SynopsisRunes int
 }
 
 // validateGeneratedCard checks the card the model wrote and keeps what fits.
@@ -404,47 +420,51 @@ func validateGeneratedCard(document *model.SessionCardDocument, evidence CardEvi
 	}
 	knownMessages := evidence.KnownMessageIDs()
 	knownSegments := evidence.KnownSegmentSeqs()
-	keep := func(entries []model.SessionCardEntry) ([]model.SessionCardEntry, bool) {
+	// The references are checked first, and on every entry the model wrote.
+	//
+	// The order matters, because the two failures are not the same failure. A
+	// card that cites a message it was never shown is making things up about
+	// where its content came from, and the whole card is refused: nothing
+	// else it says can be trusted either. That must not depend on the entry
+	// carrying the forged citation being storable for some other reason. An
+	// entry that is both too long and forged would otherwise be dropped as
+	// "too long" and take the forgery with it, and the card would be
+	// accepted for a reason that has nothing to do with the forgery.
+	for _, group := range document.EntryGroups() {
+		for _, entry := range group {
+			for _, id := range entry.MessageIDs {
+				if _, exists := knownMessages[id]; !exists {
+					return report, ErrCardSourceBoundary
+				}
+				if id > evidence.TargetMessageID {
+					return report, ErrCardSourceBoundary
+				}
+			}
+			for _, seq := range entry.SegmentSeqs {
+				if _, exists := knownSegments[seq]; !exists {
+					return report, ErrCardSourceBoundary
+				}
+			}
+		}
+	}
+	// Everything else is a "drop the entry" case: the entry is one line the
+	// server cannot store, and dropping that line keeps the rest of the card.
+	keep := func(entries []model.SessionCardEntry) []model.SessionCardEntry {
 		kept := make([]model.SessionCardEntry, 0, len(entries))
 		for _, entry := range entries {
 			if !entry.Status.Valid() || !cardEntryStorable(entry) {
 				report.DroppedEntries++
 				continue
 			}
-			for _, id := range entry.MessageIDs {
-				if _, exists := knownMessages[id]; !exists {
-					return nil, false
-				}
-				if id > evidence.TargetMessageID {
-					return nil, false
-				}
-			}
-			for _, seq := range entry.SegmentSeqs {
-				if _, exists := knownSegments[seq]; !exists {
-					return nil, false
-				}
-			}
 			kept = append(kept, entry)
 		}
-		return kept, true
+		return kept
 	}
-	// A refusal is not a "drop the entry" case, so the three groups are
-	// checked one at a time rather than through a loop over a copy of the
-	// slice headers.
-	arrangements, ok := keep(document.Arrangements)
-	if !ok {
-		return report, ErrCardSourceBoundary
-	}
-	products, ok := keep(document.AssistantProducts)
-	if !ok {
-		return report, ErrCardSourceBoundary
-	}
-	openItems, ok := keep(document.OpenItems)
-	if !ok {
-		return report, ErrCardSourceBoundary
-	}
-	// The counts: the first entries of each list are kept whole, and the rest
-	// are left out and counted.
+	arrangements := keep(document.Arrangements)
+	products := keep(document.AssistantProducts)
+	openItems := keep(document.OpenItems)
+	// The counts: the entries that fit are kept whole, and the rest are left
+	// out and counted.
 	var omitted int
 	arrangements, omitted = trimCardEntries(arrangements)
 	report.OmittedEntries += omitted
@@ -461,10 +481,83 @@ func validateGeneratedCard(document *model.SessionCardDocument, evidence CardEvi
 	report.KeptTopics = len(topics)
 	report.OmittedTopics = omittedTopics
 	report.DroppedTopics = droppedTopics
+	// The title and the synopsis are cut down to what fits rather than
+	// refused, and the cut is recorded.
+	//
+	// They are the card's own description of the session, and the entries -
+	// the facts, each with its citation - are already stored whole above. A
+	// model that writes a long description loses the tail of that description
+	// and keeps the facts; a card that is refused for a long description loses
+	// the whole session, and a session that happened is worth a card. The
+	// same rule the Episode path applies to a row's title applies here.
+	document.Title, report.TitleTruncated, report.TitleRunes = truncateCardText(document.Title, model.SessionCardTitleMaxRunes)
+	document.Synopsis, report.SynopsisTruncated, report.SynopsisRunes = truncateCardSynopsis(document.Synopsis, model.SessionCardSynopsisMaxRunes)
 	if err := document.Validate(); err != nil {
 		return report, fmt.Errorf("%w: %v", ErrCardToolProtocol, err)
 	}
 	return report, nil
+}
+
+// truncateCardText cuts a piece of the card's own text down to what fits.
+//
+// The cut is at a rune boundary and the number of runes that were taken off
+// is returned, so a reader who sees a short description can tell that it was
+// cut and by how much.
+//
+// This is used for the title, which is a label: a shorter label says less
+// about the session, but it does not say anything false about it.
+func truncateCardText(value string, limit int) (string, bool, int) {
+	value = strings.TrimSpace(value)
+	length := utf8.RuneCountInString(value)
+	if length <= limit {
+		return value, false, 0
+	}
+	runes := []rune(value)
+	return strings.TrimSpace(string(runes[:limit])), true, length - limit
+}
+
+// truncateCardSynopsis cuts the synopsis down to what fits, at a sentence
+// boundary.
+//
+// The synopsis is prose, and prose that is cut in the middle can leave a
+// negation or a condition hanging: "学员明确说不再每轮做14题" cut after "学员
+// 明确说" says the opposite of what the learner said. So the cut lands at the
+// end of a sentence and the trailing sentences are left out whole, the same
+// way the entries beyond the count limit are left out whole.
+//
+// The trailing sentences are the model's own description of the session, not
+// the learner's words, and the entries - the facts, each with its citation -
+// are stored whole either way. A card that lost its last sentence still knows
+// what happened; a card refused for a long sentence knows nothing at all.
+//
+// When there is no sentence end inside the limit, the cut is at a rune
+// boundary. That is the last resort and it is recorded like the others.
+func truncateCardSynopsis(value string, limit int) (string, bool, int) {
+	value = strings.TrimSpace(value)
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value, false, 0
+	}
+	// The last sentence end inside the limit is where the cut goes: the
+	// sentences before it are whole, and the ones after it are left out
+	// whole.
+	cut := -1
+	for index := limit - 1; index >= 0; index-- {
+		switch runes[index] {
+		case '。', '！', '？', '.', '!', '?':
+			cut = index + 1
+		}
+		if cut >= 0 {
+			break
+		}
+	}
+	if cut < 0 {
+		// There is no sentence end inside the limit. The cut is at a rune
+		// boundary, which is the last resort, and it is recorded like the
+		// others.
+		cut = limit
+	}
+	return strings.TrimSpace(string(runes[:cut])), true, len(runes) - cut
 }
 
 // cardEntryStorable says whether one entry can be stored as it is.
@@ -503,7 +596,20 @@ func cardEntryStorable(entry model.SessionCardEntry) bool {
 	return true
 }
 
-// trimCardEntries keeps the first entries of a list and leaves the rest out.
+// trimCardEntries keeps the entries that fit and leaves the rest out.
+//
+// Which entries are kept is not simply the first ones. A later change is the
+// state the learner ended with: a card that keeps the value from before the
+// change and leaves out the value after it states something that is no longer
+// true, and the entries are written in the order the model wrote them, so the
+// change tends to be at the end of the list. So the entries that record a
+// later change are kept first, and the rest of the room is filled in the
+// order the model wrote them.
+//
+// The kept entries keep the order the model wrote them in. The rule decides
+// which entries survive, not what order the card reads in: a card whose
+// entries are in the order the session happened in is a card a reader can
+// follow.
 //
 // The entries that are left out are whole entries: they are not shortened and
 // not rewritten, because a line that was cut can say something the learner
@@ -512,7 +618,35 @@ func trimCardEntries(entries []model.SessionCardEntry) ([]model.SessionCardEntry
 	if len(entries) <= model.SessionCardEntryLimit {
 		return entries, 0
 	}
-	return entries[:model.SessionCardEntryLimit], len(entries) - model.SessionCardEntryLimit
+	kept := make([]bool, len(entries))
+	count := 0
+	for index, entry := range entries {
+		if count == model.SessionCardEntryLimit {
+			break
+		}
+		if entry.Status.Normalized() != model.SessionCardStatusLaterChanged {
+			continue
+		}
+		kept[index] = true
+		count++
+	}
+	for index := range entries {
+		if count == model.SessionCardEntryLimit {
+			break
+		}
+		if kept[index] {
+			continue
+		}
+		kept[index] = true
+		count++
+	}
+	result := make([]model.SessionCardEntry, 0, count)
+	for index, entry := range entries {
+		if kept[index] {
+			result = append(result, entry)
+		}
+	}
+	return result, len(entries) - count
 }
 
 // trimCardTopics keeps the topics that fit and leaves the rest out.
@@ -544,16 +678,28 @@ func trimCardTopics(topics []model.EpisodeTopic) (kept []model.EpisodeTopic, omi
 // would read a trimmed card as a complete one.
 func recordCardLimits(report cardWriteReport) {
 	if report.OmittedEntries > 0 {
-		observability.Memory.SessionCardLimited("omitted_entries", report.KeptEntries, report.OmittedEntries)
+		observability.Memory.SessionCardLimited("omitted_entries", report.OmittedEntries)
 	}
 	if report.OmittedTopics > 0 {
-		observability.Memory.SessionCardLimited("omitted_topics", report.KeptTopics, report.OmittedTopics)
+		observability.Memory.SessionCardLimited("omitted_topics", report.OmittedTopics)
 	}
 	if report.DroppedEntries > 0 {
-		observability.Memory.SessionCardLimited("dropped_entries", report.KeptEntries, report.DroppedEntries)
+		observability.Memory.SessionCardLimited("dropped_entries", report.DroppedEntries)
 	}
 	if report.DroppedTopics > 0 {
-		observability.Memory.SessionCardLimited("dropped_topics", report.KeptTopics, report.DroppedTopics)
+		observability.Memory.SessionCardLimited("dropped_topics", report.DroppedTopics)
+	}
+	if report.KeptEntries > 0 {
+		observability.Memory.SessionCardKept("entries", report.KeptEntries)
+	}
+	if report.KeptTopics > 0 {
+		observability.Memory.SessionCardKept("topics", report.KeptTopics)
+	}
+	if report.TitleTruncated {
+		observability.Memory.SessionCardTruncated("title", report.TitleRunes)
+	}
+	if report.SynopsisTruncated {
+		observability.Memory.SessionCardTruncated("synopsis", report.SynopsisRunes)
 	}
 }
 

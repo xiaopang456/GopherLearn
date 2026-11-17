@@ -105,12 +105,42 @@ func (r *MemoryRecorder) Projection(status, errorCode string, duration, lag time
 // The kind says which limit was reached: the count limits (omitted) or the
 // per-entry rules (dropped). A dropped entry is one the server could not store
 // at all; an omitted one is one that fitted but did not fit together with the
-// others.
-func (r *MemoryRecorder) SessionCardLimited(kind string, kept, dropped int) {
+// others. The two are counted apart, because they are two different facts
+// about the card and a reader who cannot tell them apart cannot tell a card
+// that was trimmed from one that was cleaned.
+func (r *MemoryRecorder) SessionCardLimited(kind string, leftOut int) {
 	kind = boundedLabel(kind, "omitted_entries", "omitted_topics", "dropped_entries", "dropped_topics")
 	r.add("session_card_limited_total{kind="+kind+"}", 1)
-	r.addTotal("session_card_omitted_items_total", int64(dropped))
-	r.logf("memory_metric name=session_card_limited kind=%s kept=%d dropped=%d", kind, kept, dropped)
+	switch kind {
+	case "omitted_entries", "omitted_topics":
+		r.addTotal("session_card_omitted_items_total", int64(leftOut))
+	default:
+		r.addTotal("session_card_dropped_items_total", int64(leftOut))
+	}
+	r.logf("memory_metric name=session_card_limited kind=%s left_out=%d", kind, leftOut)
+}
+
+// SessionCardKept records what a session card kept.
+//
+// The kept count is what the left-out count is counted against, so it is a
+// number of its own and not a field of the left-out line.
+func (r *MemoryRecorder) SessionCardKept(domain string, kept int) {
+	domain = boundedLabel(domain, "entries", "topics")
+	r.addTotal("session_card_kept_"+domain+"_total", int64(kept))
+	r.logf("memory_metric name=session_card_kept domain=%s kept=%d", domain, kept)
+}
+
+// SessionCardTruncated records a piece of the card's own text that was cut
+// down to fit.
+//
+// The cut is a fact about the card: a reader who sees a description that ends
+// mid-thought should be able to find out that it was cut, and how much was
+// taken off.
+func (r *MemoryRecorder) SessionCardTruncated(field string, runes int) {
+	field = boundedLabel(field, "title", "synopsis")
+	r.add("session_card_truncated_total{field="+field+"}", 1)
+	r.addTotal("session_card_truncated_runes_total", int64(runes))
+	r.logf("memory_metric name=session_card_truncated field=%s runes=%d", field, runes)
 }
 
 func (r *MemoryRecorder) Index(status string, duration, lag time.Duration) {
