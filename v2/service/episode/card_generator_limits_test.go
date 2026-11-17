@@ -295,10 +295,11 @@ func TestATitleAndASynopsisThatAreTooLongAreCutAndRecorded(t *testing.T) {
 		t.Fatalf("the entries changed: %+v", document.Arrangements)
 	}
 	// The cut is recorded, so a reader who sees a short description can tell
-	// that it was cut.
+	// that it was cut - and where the cut landed, because a cut at the end of
+	// a sentence and a cut in the middle of one are different facts.
 	snapshot := observability.Memory.Snapshot()
-	if snapshot.Counters["session_card_truncated_total{field=title}"] < 1 ||
-		snapshot.Counters["session_card_truncated_total{field=synopsis}"] < 1 {
+	if snapshot.Counters["session_card_truncated_total{field=title,reason=boundary}"] < 1 ||
+		snapshot.Counters["session_card_truncated_total{field=synopsis,reason=sentence}"] < 1 {
 		t.Fatalf("the cut was not recorded: %+v", snapshot.Counters)
 	}
 }
@@ -389,7 +390,7 @@ func TestTheCardLimitsAreRecorded(t *testing.T) {
 	if counters != 1 {
 		t.Fatalf("the omitted entries were counted %d times, want 1", counters)
 	}
-	omitted := after.Totals["session_card_omitted_items_total"] - before.Totals["session_card_omitted_items_total"]
+	omitted := after.Totals["session_card_omitted_entries_total"] - before.Totals["session_card_omitted_entries_total"]
 	if omitted != 3 {
 		t.Fatalf("the omitted items were counted %d times, want 3", omitted)
 	}
@@ -429,11 +430,11 @@ func TestADroppedEntryIsCountedApartFromAnOmittedOne(t *testing.T) {
 		t.Fatalf("generate the card: %v", err)
 	}
 	after := observability.Memory.Snapshot()
-	dropped := after.Totals["session_card_dropped_items_total"] - before.Totals["session_card_dropped_items_total"]
+	dropped := after.Totals["session_card_dropped_entries_total"] - before.Totals["session_card_dropped_entries_total"]
 	if dropped != 1 {
 		t.Fatalf("the dropped items were counted %d times, want 1", dropped)
 	}
-	omitted := after.Totals["session_card_omitted_items_total"] - before.Totals["session_card_omitted_items_total"]
+	omitted := after.Totals["session_card_omitted_entries_total"] - before.Totals["session_card_omitted_entries_total"]
 	if omitted != 0 {
 		t.Fatalf("a dropped entry was counted as an omitted one: %d", omitted)
 	}
@@ -614,4 +615,94 @@ func cardHasText(document model.SessionCardDocument, text string) bool {
 		}
 	}
 	return false
+}
+
+// TestTheSynopsisIsNotCutInsideAQuotationOrAVersionNumber covers the two
+// places a naive cut lands in the middle of something.
+//
+// A cut inside a quotation leaves the closing quote out, and a cut inside a
+// version number leaves "Go 1." - the first reads as a typo and the second
+// states a version the learner never mentioned.
+func TestTheSynopsisIsNotCutInsideAQuotationOrAVersionNumber(t *testing.T) {
+	cases := []struct {
+		name     string
+		synopsis string
+		limit    int
+		want     string
+	}{
+		{name: "a quotation is not cut open", synopsis: `学员说"每天9题。"后来改成了14题。`, limit: 9, want: "学员说"},
+		{name: "a version number is not cut in half", synopsis: "用了 Go 1.22 版本继续。", limit: 9, want: "用了 Go"},
+		{name: "a bracket is not left open", synopsis: "（见附录）说明了范围。", limit: 5, want: "（见附录）"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, fit := cutCardSynopsis(tc.synopsis, tc.limit)
+			if got != tc.want {
+				t.Fatalf("the synopsis was cut to %q, want %q", got, tc.want)
+			}
+			if !fit.Cut {
+				t.Fatalf("the cut was not recorded: %+v", fit)
+			}
+			if fit.Reason != "boundary" {
+				t.Fatalf("the cut was recorded as %q, want boundary", fit.Reason)
+			}
+		})
+	}
+}
+
+// TestTheTitleIsNotCutInsideAVersionNumber keeps the label a label.
+//
+// The title is cut at a rune boundary, but not in the middle of a word: a
+// title that reads "Use Go 1." is a version the learner never mentioned.
+func TestTheTitleIsNotCutInsideAVersionNumber(t *testing.T) {
+	got, fit := cutCardText("Use Go 1.22 now", 8, "boundary")
+	if got != "Use Go" {
+		t.Fatalf("the title was cut to %q, want %q", got, "Use Go")
+	}
+	if !fit.Cut || fit.Reason != "boundary" {
+		t.Fatalf("the cut was not recorded: %+v", fit)
+	}
+}
+
+// TestAMissingTitleAndSynopsisAreFilledFromWhatTheCardHas covers the card
+// the model described badly.
+//
+// A card with no title and no synopsis still holds the entries, and the
+// entries are what a later reader looks at. The server writes a description
+// out of what is already in the card and says that it did, so a reader can
+// tell a card the model described from one the server described.
+func TestAMissingTitleAndSynopsisAreFilledFromWhatTheCardHas(t *testing.T) {
+	arguments := `{
+		"version":1,
+		"title":"",
+		"synopsis":"",
+		"topics":[{"key":"ti","label":"题量"}],
+		"arrangements":[{"text":"每轮9道题","status":"stated","message_ids":[1]}],
+		"assistant_products":[],
+		"open_items":[]}`
+	before := observability.Memory.Snapshot()
+	chat := &cardChat{responses: []*schema.Message{cardToolResponse(arguments)}}
+	generator, err := NewModelCardGenerator(chat, 4096, 1200)
+	if err != nil {
+		t.Fatalf("build the generator: %v", err)
+	}
+	document, err := generator.Generate(context.Background(), cardEvidenceForLimits())
+	if err != nil {
+		t.Fatalf("a card without a description was refused: %v", err)
+	}
+	if document.Synopsis != "每轮9道题" {
+		t.Fatalf("the synopsis is %q, want the first entry", document.Synopsis)
+	}
+	if document.Title != "每轮9道题" {
+		t.Fatalf("the title is %q, want the first sentence of the synopsis", document.Title)
+	}
+	after := observability.Memory.Snapshot()
+	if after.Counters["session_card_filled_total{field=title}"]-
+		before.Counters["session_card_filled_total{field=title}"] != 1 {
+		t.Fatalf("the filled title was not counted: %+v", after.Counters)
+	}
+	if after.Counters["session_card_filled_total{field=synopsis}"]-
+		before.Counters["session_card_filled_total{field=synopsis}"] != 1 {
+		t.Fatalf("the filled synopsis was not counted: %+v", after.Counters)
+	}
 }

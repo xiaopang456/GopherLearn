@@ -380,14 +380,10 @@ type cardWriteReport struct {
 	OmittedTopics int
 	// DroppedTopics are the topics the server could not store at all.
 	DroppedTopics int
-	// TitleTruncated says the title was cut down to fit.
-	TitleTruncated bool
-	// SynopsisTruncated says the synopsis was cut down to fit.
-	SynopsisTruncated bool
-	// TitleRunes is how many runes the title lost.
-	TitleRunes int
-	// SynopsisRunes is how many runes the synopsis lost.
-	SynopsisRunes int
+	// Title is what the server did to the title to make it fit.
+	Title cardTextFit
+	// Synopsis is what the server did to the synopsis to make it fit.
+	Synopsis cardTextFit
 }
 
 // validateGeneratedCard checks the card the model wrote and keeps what fits.
@@ -481,8 +477,8 @@ func validateGeneratedCard(document *model.SessionCardDocument, evidence CardEvi
 	report.KeptTopics = len(topics)
 	report.OmittedTopics = omittedTopics
 	report.DroppedTopics = droppedTopics
-	// The title and the synopsis are cut down to what fits rather than
-	// refused, and the cut is recorded.
+	// The title and the synopsis are brought down to what fits rather than
+	// refused, and what the server did to them is recorded.
 	//
 	// They are the card's own description of the session, and the entries -
 	// the facts, each with its citation - are already stored whole above. A
@@ -490,34 +486,216 @@ func validateGeneratedCard(document *model.SessionCardDocument, evidence CardEvi
 	// and keeps the facts; a card that is refused for a long description loses
 	// the whole session, and a session that happened is worth a card. The
 	// same rule the Episode path applies to a row's title applies here.
-	document.Title, report.TitleTruncated, report.TitleRunes = truncateCardText(document.Title, model.SessionCardTitleMaxRunes)
-	document.Synopsis, report.SynopsisTruncated, report.SynopsisRunes = truncateCardSynopsis(document.Synopsis, model.SessionCardSynopsisMaxRunes)
+	// The synopsis is brought down first, because a missing synopsis can be
+	// filled in from the entries and a missing title can then be filled in
+	// from the synopsis. A card the model described badly still keeps a
+	// subject.
+	document.Synopsis, report.Synopsis = fitCardSynopsis(document.Synopsis, document, model.SessionCardSynopsisMaxRunes)
+	document.Title, report.Title = fitCardTitle(document.Title, document.Synopsis, model.SessionCardTitleMaxRunes)
 	if err := document.Validate(); err != nil {
 		return report, fmt.Errorf("%w: %v", ErrCardToolProtocol, err)
 	}
 	return report, nil
 }
 
-// truncateCardText cuts a piece of the card's own text down to what fits.
+// cardTextFit is what the server did to one piece of the card's own text to
+// make it fit.
+//
+// The reasons are kept apart because they are different facts about the card:
+// a cut at a sentence end is a whole description with its tail left out, and a
+// cut at a plain boundary is a description that stops in the middle of a
+// thought.
+type cardTextFit struct {
+	// Cut says the text was too long and was cut.
+	Cut bool
+	// Reason says where the cut landed: "sentence" or "boundary".
+	Reason string
+	// Filled says the text was missing and was filled in from elsewhere.
+	Filled bool
+	// LeftOut is how many runes were taken off.
+	LeftOut int
+	// Kept is how many runes the text has now.
+	Kept int
+}
+
+// fitCardTitle brings the title down to what fits, and fills in a missing
+// one.
+//
+// A title the model did not write is taken from the synopsis' first sentence,
+// which is the fallback the row's own title uses: the card keeps a subject
+// instead of dying for a field the reader rarely sees. A card that says
+// nothing at all - no title, no synopsis, no entries - is refused, because
+// there is nothing in it to remember.
+func fitCardTitle(title, synopsis string, limit int) (string, cardTextFit) {
+	title = strings.TrimSpace(title)
+	filled := false
+	if title == "" {
+		title = firstSentence(synopsis)
+		filled = title != ""
+	}
+	title, fit := cutCardText(title, limit, "boundary")
+	fit.Filled = filled
+	fit.Kept = utf8.RuneCountInString(title)
+	return title, fit
+}
+
+// fitCardSynopsis brings the synopsis down to what fits, and fills in a
+// missing one.
+//
+// A missing synopsis is taken from the first entry: the entries are the
+// model's own words about the session, so the synopsis says what the model
+// said and nothing more. A card with no synopsis and no entries is refused.
+func fitCardSynopsis(synopsis string, document *model.SessionCardDocument, limit int) (string, cardTextFit) {
+	synopsis = strings.TrimSpace(synopsis)
+	filled := false
+	if synopsis == "" {
+		for _, group := range document.EntryGroups() {
+			for _, entry := range group {
+				synopsis = strings.TrimSpace(entry.Text)
+				break
+			}
+			if synopsis != "" {
+				break
+			}
+		}
+		filled = synopsis != ""
+	}
+	synopsis, fit := cutCardSynopsis(synopsis, limit)
+	fit.Filled = filled
+	fit.Kept = utf8.RuneCountInString(synopsis)
+	return synopsis, fit
+}
+
+// firstSentence is the text up to the first sentence end, trimmed.
+func firstSentence(value string) string {
+	value = strings.TrimSpace(value)
+	runes := []rune(value)
+	if len(runes) == 0 {
+		return ""
+	}
+	ends := cardSentenceEnds(runes)
+	if len(ends) > 0 {
+		return strings.TrimSpace(string(runes[:ends[0]]))
+	}
+	return value
+}
+
+// cardOpenDepth returns, for each rune, how many quotations and brackets are
+// open after it.
+//
+// The count is a stack depth, so a bracket inside a quotation closes before
+// the quotation does. A plain double quote is a toggle, because the same
+// character opens and closes it.
+func cardOpenDepth(runes []rune) []int {
+	depth := make([]int, len(runes))
+	open := 0
+	for index, char := range runes {
+		switch char {
+		case '"':
+			if open > 0 {
+				open--
+			} else {
+				open++
+			}
+		case '“', '‘', '（', '(', '「', '《', '[', '【':
+			open++
+		case '”', '’', '）', ')', '」', '》', ']', '】':
+			if open > 0 {
+				open--
+			}
+		}
+		depth[index] = open
+	}
+	return depth
+}
+
+// cardSentenceEnds returns where the sentences in the text end.
+//
+// Each returned index is just after the last rune of the sentence.
+//
+// A sentence end is only a sentence end outside a quoted span and outside a
+// bracket, and an ASCII dot only ends a sentence when what follows it starts
+// another one. Without those two rules a cut lands inside a quotation - the
+// closing quote left out - inside a bracket, or inside a version number
+// ("Go 1.22" cut to "Go 1."), and the card reads as a typo.
+func cardSentenceEnds(runes []rune) []int {
+	depth := cardOpenDepth(runes)
+	var ends []int
+	for index, char := range runes {
+		if depth[index] > 0 {
+			continue
+		}
+		switch char {
+		case '。', '！', '？':
+			ends = append(ends, index+1)
+		case '.':
+			// A dot ends a sentence only when the next character starts
+			// another one. "1.22" and "e.g." are not sentence ends.
+			if index+1 >= len(runes) || runes[index+1] == ' ' || runes[index+1] == '\n' {
+				ends = append(ends, index+1)
+			}
+		}
+	}
+	return ends
+}
+
+// cardWordChar says whether a rune belongs to an unbroken word.
+//
+// Only ASCII counts: in Chinese text there are no spaces, so a run of Chinese
+// characters is many words and a boundary inside it is as good as any.
+func cardWordChar(char rune) bool {
+	switch {
+	case char >= 'a' && char <= 'z', char >= 'A' && char <= 'Z', char >= '0' && char <= '9':
+		return true
+	case char == '.', char == '-', char == '_':
+		return true
+	}
+	return false
+}
+
+// cardCutIsClean says whether the cut between runes[boundary-1] and
+// runes[boundary] leaves a word in half.
+//
+// A word is a run of ASCII letters, digits, dots, dashes and underscores, so
+// "1.22" and "e.g." are one word. Cutting inside one leaves "Go 1." or
+// "Go 1.2", and both read as a typo - and "Go 1." reads as a version the
+// learner never mentioned.
+func cardCutIsClean(runes []rune, boundary int) bool {
+	if boundary <= 0 || boundary >= len(runes) {
+		return true
+	}
+	return !(cardWordChar(runes[boundary-1]) && cardWordChar(runes[boundary]))
+}
+
+// cutCardText cuts a piece of the card's own text down to what fits.
 //
 // The cut is at a rune boundary and the number of runes that were taken off
 // is returned, so a reader who sees a short description can tell that it was
 // cut and by how much.
 //
+// The cut does not land inside a word, so a version number or an abbreviation
+// is left out whole rather than half written.
+//
 // This is used for the title, which is a label: a shorter label says less
 // about the session, but it does not say anything false about it.
-func truncateCardText(value string, limit int) (string, bool, int) {
+func cutCardText(value string, limit int, reason string) (string, cardTextFit) {
 	value = strings.TrimSpace(value)
 	length := utf8.RuneCountInString(value)
 	if length <= limit {
-		return value, false, 0
+		return value, cardTextFit{Kept: length}
 	}
 	runes := []rune(value)
-	return strings.TrimSpace(string(runes[:limit])), true, length - limit
+	boundary := limit
+	for boundary > 0 && !cardCutIsClean(runes, boundary) {
+		boundary--
+	}
+	kept := strings.TrimSpace(string(runes[:boundary]))
+	return kept, cardTextFit{
+		Cut: true, Reason: reason, LeftOut: length - utf8.RuneCountInString(kept), Kept: utf8.RuneCountInString(kept),
+	}
 }
 
-// truncateCardSynopsis cuts the synopsis down to what fits, at a sentence
-// boundary.
+// cutCardSynopsis cuts the synopsis down to what fits, at a sentence end.
 //
 // The synopsis is prose, and prose that is cut in the middle can leave a
 // negation or a condition hanging: "学员明确说不再每轮做14题" cut after "学员
@@ -530,34 +708,56 @@ func truncateCardText(value string, limit int) (string, bool, int) {
 // are stored whole either way. A card that lost its last sentence still knows
 // what happened; a card refused for a long sentence knows nothing at all.
 //
-// When there is no sentence end inside the limit, the cut is at a rune
-// boundary. That is the last resort and it is recorded like the others.
-func truncateCardSynopsis(value string, limit int) (string, bool, int) {
+// When there is no sentence end inside the limit, the cut goes back to the
+// last place where nothing is left open, so the text that is kept does not
+// end in the middle of a quotation or a bracket. Failing that the cut is at
+// a rune boundary, which is the last resort. The reason says which of the
+// two it was, because a description that stops in the middle of a thought is
+// a different fact from one that lost its last sentence.
+func cutCardSynopsis(value string, limit int) (string, cardTextFit) {
 	value = strings.TrimSpace(value)
 	runes := []rune(value)
 	if len(runes) <= limit {
-		return value, false, 0
+		return value, cardTextFit{Kept: len(runes)}
 	}
-	// The last sentence end inside the limit is where the cut goes: the
-	// sentences before it are whole, and the ones after it are left out
-	// whole.
+	// The last sentence end inside the limit, outside every quotation and
+	// bracket, is where the cut goes.
 	cut := -1
-	for index := limit - 1; index >= 0; index-- {
-		switch runes[index] {
-		case '。', '！', '？', '.', '!', '?':
-			cut = index + 1
-		}
-		if cut >= 0 {
+	for _, end := range cardSentenceEnds(runes) {
+		if end > limit {
 			break
 		}
+		cut = end
 	}
-	if cut < 0 {
-		// There is no sentence end inside the limit. The cut is at a rune
-		// boundary, which is the last resort, and it is recorded like the
-		// others.
-		cut = limit
+	if cut >= 0 {
+		kept := strings.TrimSpace(string(runes[:cut]))
+		return kept, cardTextFit{
+			Cut: true, Reason: "sentence", LeftOut: len(runes) - utf8.RuneCountInString(kept), Kept: utf8.RuneCountInString(kept),
+		}
 	}
-	return strings.TrimSpace(string(runes[:cut])), true, len(runes) - cut
+	// There is no sentence end inside the limit. The cut goes back to the
+	// last place where nothing is left open, so the text that is kept does
+	// not end in the middle of a quotation or a bracket, and it does not
+	// land inside a word.
+	depth := cardOpenDepth(runes)
+	boundary := 0
+	for index := 0; index < limit && index < len(runes); index++ {
+		if depth[index] != 0 {
+			continue
+		}
+		candidate := index + 1
+		if !cardCutIsClean(runes, candidate) {
+			continue
+		}
+		boundary = candidate
+	}
+	if boundary <= 0 {
+		boundary = limit
+	}
+	kept := strings.TrimSpace(string(runes[:boundary]))
+	return kept, cardTextFit{
+		Cut: true, Reason: "boundary", LeftOut: len(runes) - utf8.RuneCountInString(kept), Kept: utf8.RuneCountInString(kept),
+	}
 }
 
 // cardEntryStorable says whether one entry can be stored as it is.
@@ -695,11 +895,17 @@ func recordCardLimits(report cardWriteReport) {
 	if report.KeptTopics > 0 {
 		observability.Memory.SessionCardKept("topics", report.KeptTopics)
 	}
-	if report.TitleTruncated {
-		observability.Memory.SessionCardTruncated("title", report.TitleRunes)
+	if report.Title.Cut {
+		observability.Memory.SessionCardTruncated("title", report.Title.LeftOut, report.Title.Reason)
 	}
-	if report.SynopsisTruncated {
-		observability.Memory.SessionCardTruncated("synopsis", report.SynopsisRunes)
+	if report.Synopsis.Cut {
+		observability.Memory.SessionCardTruncated("synopsis", report.Synopsis.LeftOut, report.Synopsis.Reason)
+	}
+	if report.Title.Filled {
+		observability.Memory.SessionCardFilled("title")
+	}
+	if report.Synopsis.Filled {
+		observability.Memory.SessionCardFilled("synopsis")
 	}
 }
 

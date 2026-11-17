@@ -108,14 +108,22 @@ func (r *MemoryRecorder) Projection(status, errorCode string, duration, lag time
 // others. The two are counted apart, because they are two different facts
 // about the card and a reader who cannot tell them apart cannot tell a card
 // that was trimmed from one that was cleaned.
+//
+// The totals are kept apart per domain as well: entries and topics have
+// their own limits and their own kept counters, so a reader who compares
+// what was kept with what was left out has to compare like with like.
 func (r *MemoryRecorder) SessionCardLimited(kind string, leftOut int) {
 	kind = boundedLabel(kind, "omitted_entries", "omitted_topics", "dropped_entries", "dropped_topics")
 	r.add("session_card_limited_total{kind="+kind+"}", 1)
 	switch kind {
-	case "omitted_entries", "omitted_topics":
-		r.addTotal("session_card_omitted_items_total", int64(leftOut))
+	case "omitted_entries":
+		r.addTotal("session_card_omitted_entries_total", int64(leftOut))
+	case "omitted_topics":
+		r.addTotal("session_card_omitted_topics_total", int64(leftOut))
+	case "dropped_entries":
+		r.addTotal("session_card_dropped_entries_total", int64(leftOut))
 	default:
-		r.addTotal("session_card_dropped_items_total", int64(leftOut))
+		r.addTotal("session_card_dropped_topics_total", int64(leftOut))
 	}
 	r.logf("memory_metric name=session_card_limited kind=%s left_out=%d", kind, leftOut)
 }
@@ -136,11 +144,30 @@ func (r *MemoryRecorder) SessionCardKept(domain string, kept int) {
 // The cut is a fact about the card: a reader who sees a description that ends
 // mid-thought should be able to find out that it was cut, and how much was
 // taken off.
-func (r *MemoryRecorder) SessionCardTruncated(field string, runes int) {
+//
+// The reason says where the cut landed. A cut at a sentence end is a whole
+// description with its tail left out; a cut at a plain boundary is a
+// description that stops in the middle of a thought. The two are different
+// facts about the card, so they are counted apart.
+func (r *MemoryRecorder) SessionCardTruncated(field string, runes int, reason string) {
 	field = boundedLabel(field, "title", "synopsis")
-	r.add("session_card_truncated_total{field="+field+"}", 1)
+	reason = boundedLabel(reason, "sentence", "boundary")
+	r.add("session_card_truncated_total{field="+field+",reason="+reason+"}", 1)
 	r.addTotal("session_card_truncated_runes_total", int64(runes))
-	r.logf("memory_metric name=session_card_truncated field=%s runes=%d", field, runes)
+	r.logf("memory_metric name=session_card_truncated field=%s reason=%s runes=%d", field, reason, runes)
+}
+
+// SessionCardFilled records a piece of the card's own text that the server
+// wrote because the model did not.
+//
+// A missing title or synopsis is not a reason to throw a session away: the
+// card still holds the entries, and the entries are what a later reader looks
+// at. The filled count says how often that happened, so a card whose
+// description came from somewhere other than the model is visible as one.
+func (r *MemoryRecorder) SessionCardFilled(field string) {
+	field = boundedLabel(field, "title", "synopsis")
+	r.add("session_card_filled_total{field="+field+"}", 1)
+	r.logf("memory_metric name=session_card_filled field=%s", field)
 }
 
 func (r *MemoryRecorder) Index(status string, duration, lag time.Duration) {
