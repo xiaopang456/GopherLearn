@@ -86,11 +86,31 @@ func (r *MemoryRecorder) modeLabel() string {
 
 func (r *MemoryRecorder) Projection(status, errorCode string, duration, lag time.Duration) {
 	status = boundedLabel(status, "completed", "failed")
-	errorCode = boundedLabel(errorCode, "none", "projection_timeout", "projection_cancelled", "sensitive_content", "source_boundary", "invalid_model_output", "source_not_found", "projection_failed")
+	errorCode = boundedLabel(errorCode, "none", "projection_timeout", "projection_cancelled", "sensitive_content", "source_boundary", "invalid_model_output", "source_not_found", "projection_failed",
+		"card_source_boundary", "card_output_truncated", "card_tool_protocol", "card_empty", "card_input_too_large", "card_source_not_found")
 	r.add("episode_projection_jobs_total{status="+status+",error_code="+errorCode+"}", 1)
 	r.addTotal("episode_projection_duration_ms", duration.Milliseconds())
 	r.addTotal("episode_projection_lag_seconds", int64(nonNegative(lag).Seconds()))
 	r.logf("memory_metric name=episode_projection status=%s error_code=%s duration_ms=%d lag_seconds=%d", status, errorCode, duration.Milliseconds(), int64(nonNegative(lag).Seconds()))
+}
+
+// SessionCardLimited records what a session card had to leave out.
+//
+// The card writer keeps whole entries up to the server's limits, so a card that
+// came back over a limit is shorter than the model wrote it. The numbers are
+// recorded because a reader who does not know them reads a trimmed card as a
+// complete one - and "this session had nineteen arrangements" and "this card
+// holds twelve of them" are different facts about the same conversation.
+//
+// The kind says which limit was reached: the count limits (omitted) or the
+// per-entry rules (dropped). A dropped entry is one the server could not store
+// at all; an omitted one is one that fitted but did not fit together with the
+// others.
+func (r *MemoryRecorder) SessionCardLimited(kind string, kept, dropped int) {
+	kind = boundedLabel(kind, "omitted_entries", "omitted_topics", "dropped_entries", "dropped_topics")
+	r.add("session_card_limited_total{kind="+kind+"}", 1)
+	r.addTotal("session_card_omitted_items_total", int64(dropped))
+	r.logf("memory_metric name=session_card_limited kind=%s kept=%d dropped=%d", kind, kept, dropped)
 }
 
 func (r *MemoryRecorder) Index(status string, duration, lag time.Duration) {
