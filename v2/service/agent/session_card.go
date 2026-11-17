@@ -175,17 +175,17 @@ func renderSessionCardNavigation(card model.EpisodeMemory, budget int) (string, 
 	fmt.Fprintf(&out, "- time: %s\n  source_session: %s\n  title: %s",
 		card.LastMessageAt.UTC().Format(time.RFC3339), cardField(card.SessionID), cardField(card.Title))
 	used := rag.EstimateTokens(out.String()) + 1
-	// The marker is reserved before anything else is added, because the
+	// The marker names the entries AND the synopsis, because either of them
+	// can be what did not fit: a card whose entries all fit and whose
+	// synopsis did not would otherwise look complete, and the reader would
+	// take the entries for the whole session.
+	//
+	// The room for it is reserved before anything else is added, because the
 	// navigation display is only reached when the whole card did not fit -
 	// and the whole card carries the same header, the same synopsis and the
 	// same entries. So something is always left out, and the display has to
 	// say so. A marker that did not fit would leave the reader thinking the
 	// card was complete.
-	//
-	// The marker names the entries AND the synopsis, because either of them
-	// can be what did not fit: a card whose entries all fit and whose
-	// synopsis did not would otherwise look complete, and the reader would
-	// take the entries for the whole session.
 	marker := func(entries int, synopsis bool) string {
 		switch {
 		case entries > 0 && synopsis:
@@ -201,64 +201,107 @@ func renderSessionCardNavigation(card model.EpisodeMemory, budget int) (string, 
 			return ""
 		}
 	}
-	reserved := rag.EstimateTokens(marker(1, true)) + 1
-	// The synopsis is the card's own overview of the session. It is kept when
-	// it fits; when it does not, the entries below carry the session instead,
-	// and the display says that the synopsis is missing.
+	reservedEntries := rag.EstimateTokens(marker(1, false)) + 1
+	reservedBoth := rag.EstimateTokens(marker(1, true)) + 1
+	entries := cardEntriesInOrder(card)
+	// The SYNOPSIS is the card's own overview of the session. It is kept when
+	// it fits - but only when it also leaves room for a fact and for the
+	// marker.
 	//
-	// The cost of the block WITH the synopsis is compared with the budget, not
-	// added to what the header already cost: the candidate already contains
-	// the header, so charging for it twice would throw away a synopsis that
-	// fits.
+	// That order matters. The overview is worth less than the facts: a
+	// display that carries the overview and no entry tells the reader what
+	// the session was about and nothing else, while a display that carries
+	// one entry and no overview tells them one thing that happened and says
+	// the overview is missing. The facts are what the card is for.
 	synopsisShown := false
-	if synopsis := strings.TrimSpace(card.Card.Synopsis); synopsis != "" {
+	if synopsis := strings.TrimSpace(card.Card.Synopsis); synopsis != "" && len(entries) > 0 {
 		candidate := out.String() + "\n  synopsis: " + cardField(synopsis)
 		cost := rag.EstimateTokens(candidate) + 1
-		if cost <= budget {
+		// The room has to hold the marker AND at least the first entry.
+		if cost+reservedBoth+entryLineCost(entries[0]) <= budget {
 			out.WriteString("\n  synopsis: " + cardField(synopsis))
 			used = cost
 			synopsisShown = true
 		}
 	}
+	reserved := reservedBoth
+	if synopsisShown {
+		reserved = reservedEntries
+	}
 	shown := 0
 	leftOut := 0
 	var visible []uint
-	write := func(label string, entries []model.SessionCardEntry) {
-		for _, entry := range entries {
-			line := fmt.Sprintf("\n  %s: %s", label, cardField(entry.Text))
-			if status := entry.Status.Normalized(); status != "" {
-				line += fmt.Sprintf(" (status=%s)", status)
-			}
-			if len(entry.MessageIDs) > 0 {
-				line += fmt.Sprintf(" %s%s]", cardMessageKey, joinUintIDs(entry.MessageIDs))
-			}
-			if len(entry.SegmentSeqs) > 0 {
-				line += fmt.Sprintf(" %s%s]", cardSegmentKey, joinIntIDs(entry.SegmentSeqs))
-			}
-			cost := rag.EstimateTokens(line) + 1
-			if used+cost+reserved > budget {
-				leftOut++
-				continue
-			}
-			out.WriteString(line)
-			used += cost
-			shown++
-			visible = append(visible, entry.MessageIDs...)
+	for _, entry := range entries {
+		label := entry.label
+		line := fmt.Sprintf("\n  %s: %s", label, cardField(entry.entry.Text))
+		if status := entry.entry.Status.Normalized(); status != "" {
+			line += fmt.Sprintf(" (status=%s)", status)
 		}
+		if len(entry.entry.MessageIDs) > 0 {
+			line += fmt.Sprintf(" %s%s]", cardMessageKey, joinUintIDs(entry.entry.MessageIDs))
+		}
+		if len(entry.entry.SegmentSeqs) > 0 {
+			line += fmt.Sprintf(" %s%s]", cardSegmentKey, joinIntIDs(entry.entry.SegmentSeqs))
+		}
+		cost := rag.EstimateTokens(line) + 1
+		if used+cost+reserved > budget {
+			leftOut++
+			continue
+		}
+		out.WriteString(line)
+		used += cost
+		shown++
+		visible = append(visible, entry.entry.MessageIDs...)
 	}
-	write("arrangement", card.Card.Arrangements)
-	write("assistant_product", card.Card.AssistantProducts)
-	write("open_item", card.Card.OpenItems)
 	if leftOut > 0 || !synopsisShown {
 		out.WriteString(marker(leftOut, !synopsisShown))
 		used += reserved
 	}
-	if shown == 0 {
+	if shown == 0 && !synopsisShown {
 		// A navigation display that carries no entry and no synopsis says
 		// nothing the reader can use. The card is left out.
 		return "", 0, nil
 	}
 	return out.String(), used, visible
+}
+
+// cardEntryInOrder is one entry of a card, with the label it is rendered under.
+type cardEntryInOrder struct {
+	label string
+	entry model.SessionCardEntry
+}
+
+// cardEntriesInOrder is the card's entries, in the order they are rendered.
+func cardEntriesInOrder(card model.EpisodeMemory) []cardEntryInOrder {
+	var out []cardEntryInOrder
+	for _, group := range []struct {
+		label   string
+		entries []model.SessionCardEntry
+	}{
+		{"arrangement", card.Card.Arrangements},
+		{"assistant_product", card.Card.AssistantProducts},
+		{"open_item", card.Card.OpenItems},
+	} {
+		for _, entry := range group.entries {
+			out = append(out, cardEntryInOrder{label: group.label, entry: entry})
+		}
+	}
+	return out
+}
+
+// entryLineCost is what one entry costs in the block.
+func entryLineCost(entry cardEntryInOrder) int {
+	line := fmt.Sprintf("\n  %s: %s", entry.label, cardField(entry.entry.Text))
+	if status := entry.entry.Status.Normalized(); status != "" {
+		line += fmt.Sprintf(" (status=%s)", status)
+	}
+	if len(entry.entry.MessageIDs) > 0 {
+		line += fmt.Sprintf(" %s%s]", cardMessageKey, joinUintIDs(entry.entry.MessageIDs))
+	}
+	if len(entry.entry.SegmentSeqs) > 0 {
+		line += fmt.Sprintf(" %s%s]", cardSegmentKey, joinIntIDs(entry.entry.SegmentSeqs))
+	}
+	return rag.EstimateTokens(line) + 1
 }
 
 // renderSessionCard renders one card.
