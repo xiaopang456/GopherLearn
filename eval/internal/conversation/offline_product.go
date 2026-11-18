@@ -425,7 +425,7 @@ func (m *offlineChat) Generate(ctx context.Context, input []*schema.Message, _ .
 		}
 		return schema.AssistantMessage("", []schema.ToolCall{{
 			ID: "offline-card", Type: "function",
-			Function: schema.FunctionCall{Name: cardToolNameOffline, Arguments: arguments},
+			Function: schema.FunctionCall{Name: cardToolName, Arguments: arguments},
 		}}), nil
 	}
 	if len(input) > 0 && strings.HasPrefix(input[0].Content, "You compress an older portion") {
@@ -477,10 +477,13 @@ func (m *offlineChat) answerInputs() [][]*schema.Message {
 // projection ran would call that a success.
 const cardWriterPromptPrefix = "You write one card for one finished chat session"
 
-// cardToolNameOffline is the tool the product asks the card to be written
+// cardToolName is the tool the product asks the card to be written
 // into. It is the product's name, and the product refuses a card that came
 // back under another one.
-const cardToolNameOffline = "publish_session_card"
+//
+// The same name is the harness's marker for the card generation: the call
+// that binds this tool is the one whose raw exchange is kept.
+const cardToolName = "publish_session_card"
 
 // cardDocument is what the fake model answers when the product asks for a
 // card.

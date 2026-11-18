@@ -273,6 +273,18 @@ func run(args []string, out io.Writer) error {
 		}
 		snapshot = warmup.Snapshot
 		paidCalls = len(warmup.Calls)
+		// The card generations' own bodies are written FIRST, before every
+		// other output of the phase.
+		//
+		// They are the one thing a reader cannot reconstruct: the ledger
+		// holds hashes, and a hash says that two bodies differ, not what
+		// either of them said. When the server refuses a card, the question
+		// is what the model actually wrote - and that is in this file.
+		//
+		// Writing it first is the point. A later export that fails must not
+		// take the evidence with it: the refused card's own words stay on
+		// disk, and the failure is read next to them.
+		err = errors.Join(err, write("card-exchanges.json", cardExchangesOf(warmup)))
 		err = errors.Join(err, write("model-calls.json", warmup.Calls), write("warmup.json", warmup))
 		if err == nil {
 			err = conversation.WriteSnapshot(filepath.Join(*output, "snapshot.json"), snapshot)
@@ -374,7 +386,7 @@ func run(args []string, out io.Writer) error {
 		manifest["input_sha256"] = inputDigest
 	}
 	outputs := map[string]string{}
-	for _, name := range []string{"snapshot.json", "model-calls.json", "warmup.json", "result.json", "record.jsonl", "index-report.json"} {
+	for _, name := range []string{"snapshot.json", "model-calls.json", "warmup.json", "result.json", "record.jsonl", "index-report.json", "card-exchanges.json"} {
 		hash, hashErr := fileDigest(filepath.Join(*output, name))
 		if hashErr == nil {
 			outputs[name] = hash
@@ -451,6 +463,24 @@ func realEnvironment(flags *flag.FlagSet, proxy, redis, redisPassword, storage, 
 		MemoryWaitTimeout: memoryWait,
 	}
 	return environment, environment.Validate()
+}
+
+// cardExchangesOf reads the card generations' own bodies out of the
+// preparation's record.
+//
+// They live on the projection, because that is where the preparation's
+// evidence lives: the projection carries the conversations that were
+// projected, the ones that were refused, and the raw exchange of every
+// card that was written.
+//
+// An empty list is written rather than nothing: the file's presence says
+// that the phase looked for the bodies and found none, which is a
+// different fact from a phase that never looked.
+func cardExchangesOf(report conversation.WarmupReport) []conversation.CardExchange {
+	if report.Projection == nil || report.Projection.CardExchanges == nil {
+		return []conversation.CardExchange{}
+	}
+	return report.Projection.CardExchanges
 }
 
 // attemptQID names one attempt of one scenario.

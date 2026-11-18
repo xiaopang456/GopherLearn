@@ -22,6 +22,32 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
+// CardExchange is one card generation's raw request and response.
+//
+// The bodies are the model's own words and the card it wrote. They carry no
+// credential: the handler that reads them never reads a header, and the key
+// the harness uses is a placeholder.
+type CardExchange struct {
+	// SessionID is the conversation the card was written for, when the
+	// caller knew it.
+	SessionID string `json:"session_id,omitempty"`
+	// TargetMessageID is how far the card was asked to reach.
+	//
+	// It is the one number in the request that names a conversation: the
+	// payload carries the id the card may cite to, and that id belongs to
+	// exactly one conversation. So a refused card can be pointed at the
+	// conversation it was written for.
+	TargetMessageID uint `json:"target_message_id,omitempty"`
+	// Request is the body the model was sent.
+	Request string `json:"request"`
+	// Response is the body the model answered.
+	Response string `json:"response"`
+	// HTTPStatus is the status the answer carried.
+	HTTPStatus int `json:"http_status,omitempty"`
+	// At is when the exchange happened.
+	At time.Time `json:"at"`
+}
+
 // ModelCall deliberately retains unknown usage as nil, never an invented zero.
 // UsageSamples are provider snapshots; Usage is the last reported snapshot.
 // Monetary cost needs a separately approved price table and is not inferred here.
@@ -91,6 +117,20 @@ type ModelCall struct {
 type ModelLedger struct {
 	mu    sync.Mutex
 	calls []ModelCall
+	// cardExchanges are the card generation's raw request and response
+	// bodies.
+	//
+	// They are kept because the card's own failure is the one failure a
+	// reader cannot reconstruct: the ledger holds hashes, and a hash says
+	// that two bodies differ, not what either of them said. When the server
+	// refuses a card, the question is what the model actually wrote - and
+	// that is in the response body.
+	//
+	// They live in the harness and not in the sandbox: the sandbox holds the
+	// database, and the evidence outlives it. The attempt writes them to its
+	// own private directory before it seals its outputs, so that a failed
+	// export cannot take them away.
+	cardExchanges []CardExchange
 	// pendingTools is the tool table the model was bound to, read out of the
 	// binding rather than out of the request. It is kept between the binding
 	// and the call, because the product binds the tools once and then calls.
@@ -126,6 +166,26 @@ func (l *ModelLedger) finish(id int, err error) {
 		c.Error = err.Error()
 	}
 }
+
+// CardExchanges returns the card generations' raw bodies.
+//
+// They are copied out, because the ledger keeps writing to them while the
+// preparation is still running.
+func (l *ModelLedger) CardExchanges() []CardExchange {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]CardExchange, len(l.cardExchanges))
+	copy(out, l.cardExchanges)
+	return out
+}
+
+// CaptureCardExchange records one card generation's raw bodies.
+func (l *ModelLedger) CaptureCardExchange(exchange CardExchange) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.cardExchanges = append(l.cardExchanges, exchange)
+}
+
 func (l *ModelLedger) Calls() []ModelCall {
 	l.mu.Lock()
 	defer l.mu.Unlock()

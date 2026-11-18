@@ -592,14 +592,25 @@ func PrepareRealProductReport(ctx context.Context, repository string, histories 
 		return report, err
 	}
 	projection, projectionCalls, err := projectArmMemories(ctx, repository, env.StorageDir, env, s, sessionIDs, arm)
-	if err != nil {
-		return report, err
-	}
+	// The projection's record is kept even when the projection as a whole
+	// failed: it carries the failures, and the failures are the evidence.
 	report.Projection = projection
-	// The projection's calls belong to this preparation: they are the
-	// generation of the memory, and a preparation whose ledger does not carry
-	// them is a preparation whose cost nobody can see.
+	// The projection's calls belong to this preparation even when the
+	// projection failed: they are the generation of the memory, and a
+	// preparation whose ledger does not carry them is a preparation whose
+	// cost nobody can see.
+	//
+	// They are added BEFORE the failure is returned, because the failing
+	// exit is the one that has to keep the evidence.
 	report.Calls = append(report.Calls, projectionCalls...)
+	// The usage by role is the preparation's own diagnostic. It is computed
+	// on the failing exit too: a reader who cannot see what the preparation
+	// cost cannot judge what it produced.
+	usageByRole, usageErr := SummarizeCalls(report.Calls)
+	report.UsageByRole = usageByRole
+	if err != nil {
+		return report, errors.Join(err, usageErr)
+	}
 	report.Snapshot, err = s.CaptureMany(ctx, env.UserID, sessionIDs)
 	if err != nil {
 		return report, err
@@ -614,19 +625,24 @@ func PrepareRealProductReport(ctx context.Context, repository string, histories 
 	// and a query that counts the index itself cannot tell a reused archive
 	// from a fresh one.
 	report.Snapshot.Projection = projection
-	report.UsageByRole, err = SummarizeCalls(report.Calls)
-	return report, errors.Join(err, nil)
+	return report, usageErr
 }
 
 // projectArmMemories publishes the projection of every conversation of the
 // attempt and waits for the memory to be indexed.
 //
-// It boots the product, because the worker that writes the memory and the
-// indexer that indexes it are the product's own. The product is stopped
-// again before the archive is written: the archive is what the queries
-// reuse, and the queries must not depend on a process that is still running.
+// It boots the product, because the worker that writes the memory is the
+// product's own worker, and the indexer that indexes it are the product's own.
+// The product is stopped again before the archive is written: the archive is
+// what the queries reuse, and the queries must not depend on a process that is
+// still running.
+//
+// ONE conversation's refused card does not stop the preparation. The other
+// conversations were written, indexed and are worth keeping, and the refusal
+// is recorded - with the job's own code, so that the reader knows which
+// stage refused it.
 func projectArmMemories(ctx context.Context, repository, storage string, env RealEnvironment,
-	s *Sandbox, sessionIDs []string, arm *CardArm) (*ArmProjection, []ModelCall, error) {
+	s *Sandbox, sessionIDs []string, arm *CardArm) (projection *ArmProjection, calls []ModelCall, resultErr error) {
 	out := &ArmProjection{Mode: arm.Mode, MemoryKind: arm.MemoryKind(), Sessions: sessionIDs,
 		Targets: map[string]uint{}}
 	if err := arm.Validate(); err != nil {
@@ -655,8 +671,17 @@ func projectArmMemories(ctx context.Context, repository, storage string, env Rea
 	defer os.RemoveAll(dir)
 	ledger := &ModelLedger{}
 	defer func() {
+		// The card generations' own bodies are attached on EVERY exit,
+		// including the failing one.
+		//
+		// They are the evidence of a refused card: they say what the model
+		// actually wrote, which is the one thing the ledger's hashes cannot
+		// say. A failure that threw them away would leave nothing to read,
+		// and the reader would be left with a refusal and no words.
+		out.CardExchanges = ledger.CardExchanges()
+		out.NameCardExchangeSessions()
 		if !ledger.Complete() {
-			err = errors.Join(err, fmt.Errorf("preparation model telemetry incomplete"))
+			resultErr = errors.Join(resultErr, fmt.Errorf("preparation model telemetry incomplete"))
 		}
 	}()
 	runtime, err := bootProduct(ctx, repository, storage, env, s, dir, ledger, password)
@@ -665,7 +690,7 @@ func projectArmMemories(ctx context.Context, repository, storage string, env Rea
 	}
 	defer runtime.stop()
 	for _, sessionID := range sessionIDs {
-		published, due, target, waited, waitErr := s.PublishAndAwaitMemory(ctx, env.UserID, sessionID, arm)
+		published, due, target, waited, code, waitErr := s.PublishAndAwaitMemory(ctx, env.UserID, sessionID, arm)
 		if published {
 			out.Published++
 		}
@@ -677,8 +702,22 @@ func projectArmMemories(ctx context.Context, repository, storage string, env Rea
 		}
 		out.WaitMilliseconds += waited
 		if waitErr != nil {
-			out.Error = waitErr.Error()
-			return out, ledger.Calls(), waitErr
+			// ONE conversation's card was refused. The other conversations
+			// were written, indexed and are worth keeping, so the
+			// preparation goes on.
+			//
+			// Stopping here would throw the whole run away over one card -
+			// and the card the server refused is the SERVER's judgement, not
+			// a failure of the run. What has to survive is the FACT that it
+			// happened, with the job's own code, so the preparation
+			// continues and the failure is recorded.
+			out.Failures = append(out.Failures, ArmFailure{
+				SessionID:       sessionID,
+				ErrorCode:       code,
+				Error:           waitErr.Error(),
+				TargetMessageID: target,
+			})
+			continue
 		}
 		// What the card was written FROM is read now, while the compressed
 		// state is still there. The query restores the archive and cannot
@@ -695,6 +734,16 @@ func projectArmMemories(ctx context.Context, repository, storage string, env Rea
 			}
 			out.CardInput[sessionID] = &input
 		}
+	}
+	// EVERY conversation was refused. That is not a degraded card path - it
+	// is no card path at all, and the preparation has to stop.
+	//
+	// Tolerance must not become blindness: a preparation that went on with
+	// no memory at all would archive an empty window and call it a
+	// measurement.
+	if len(out.Failures) > 0 && len(out.Failures) == len(sessionIDs) {
+		out.Error = "every conversation's memory was refused"
+		return out, ledger.Calls(), fmt.Errorf("%s", out.Error)
 	}
 	// The memory row is written by the projector and the index entry by the
 	// indexer, and they are two steps. The row can say "indexed" before the
@@ -715,7 +764,15 @@ func projectArmMemories(ctx context.Context, repository, storage string, env Rea
 		// recorded, not with the number of memories: the two are different
 		// facts, and a query that refuses to run because the preparation
 		// under-indexed would hide the very thing it is meant to show.
-		out.Error = fmt.Sprintf("the shared index holds %d entr(ies) and the preparation produced %d", out.IndexEntries, len(sessionIDs))
+		if len(out.Failures) > 0 {
+			// The difference between the index and the conversations is now
+			// explained by the failures rather than left for the reader to
+			// work out.
+			out.Error = fmt.Sprintf("the shared index holds %d entr(ies) and the preparation produced %d: %d conversation(s) were refused",
+				out.IndexEntries, len(sessionIDs), len(out.Failures))
+		} else {
+			out.Error = fmt.Sprintf("the shared index holds %d entr(ies) and the preparation produced %d", out.IndexEntries, len(sessionIDs))
+		}
 	}
 	return out, ledger.Calls(), nil
 }
@@ -760,6 +817,13 @@ func armEvidenceFromSnapshot(snapshot Snapshot, arm *CardArm) *CardArmEvidence {
 		evidence.PreparationPublished = &published
 		evidence.PreparationDue = &due
 		evidence.PublishedTargetMessageID = projection.Targets[primary.Session.ID]
+		// The conversations the preparation could not write are named here.
+		//
+		// The query has to be able to see them, because a query that
+		// quietly dropped the conversations it could not prepare would
+		// report a smaller comparison than the one that was actually run -
+		// and the items of those conversations would disappear with them.
+		evidence.Failures = projection.Failures
 		// What the card was written FROM is the preparation's record: the
 		// query restores the archive and cannot see the compressed state the
 		// preparation wrote, so the archive carries the fact.

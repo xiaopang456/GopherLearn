@@ -186,6 +186,27 @@ type ArmProjection struct {
 	IndexReadable bool `json:"index_readable"`
 	// Error says why the preparation could not project, when it could not.
 	Error string `json:"error,omitempty"`
+	// Failures are the conversations whose memory was not written.
+	//
+	// A card the server refuses is ONE conversation's failure, not the whole
+	// preparation's: the other thirty-one were written, indexed and are worth
+	// keeping. So the failure is recorded here and the preparation goes on.
+	//
+	// The record has to travel with the archive, because the query restores
+	// the archive and cannot see the failure otherwise - and a query that
+	// quietly dropped the conversations it could not prepare would report a
+	// smaller comparison than the one that was actually run.
+	Failures []ArmFailure `json:"failures,omitempty"`
+	// CardExchanges are the card generations' own raw request and response
+	// bodies.
+	//
+	// They are kept out of the JSON on purpose. The archive is the query's
+	// input and the report is read by other tools, and these bodies are
+	// the private evidence of a refused card: they say what the model
+	// actually wrote, which is the one thing a hash cannot say. They are
+	// written to the run's private directory instead, before the sandbox
+	// is cleaned up.
+	CardExchanges []CardExchange `json:"-"`
 	// CardInput says what the card was written FROM, per conversation.
 	//
 	// The card path reads the conversation's own compressed state: the
@@ -194,6 +215,45 @@ type ArmProjection struct {
 	// so is the one that travels with the archive - the query restores the
 	// archive and cannot see the compressed state the preparation wrote.
 	CardInput map[string]*CardInputEvidence `json:"card_input,omitempty"`
+}
+
+// ArmFailure is one conversation whose memory was not written.
+type ArmFailure struct {
+	// SessionID is the conversation that failed.
+	SessionID string `json:"session_id"`
+	// ErrorCode is the memory job's own error code, when it wrote one. It is
+	// the code that says WHICH stage refused the card.
+	ErrorCode string `json:"error_code,omitempty"`
+	// Error is the failure's own text.
+	Error string `json:"error"`
+	// TargetMessageID is how far the refused card was asked to reach.
+	TargetMessageID uint `json:"target_message_id,omitempty"`
+}
+
+// NameCardExchangeSessions ties every card exchange to the conversation it
+// was written for.
+//
+// The exchange's own body does not name the conversation: the payload
+// carries the message id the card may cite to, and that id belongs to
+// exactly one conversation. The projection knows both, so the name is put
+// on here - and a refused card can then be pointed at the conversation it
+// was refused for, instead of being a body with no owner.
+func (p *ArmProjection) NameCardExchangeSessions() {
+	if p == nil {
+		return
+	}
+	for index := range p.CardExchanges {
+		exchange := &p.CardExchanges[index]
+		if exchange.SessionID != "" || exchange.TargetMessageID == 0 {
+			continue
+		}
+		for sessionID, target := range p.Targets {
+			if target == exchange.TargetMessageID {
+				exchange.SessionID = sessionID
+				break
+			}
+		}
+	}
 }
 
 // CardRow is the card the arm found, as the database holds it.
@@ -279,6 +339,13 @@ type CardArmEvidence struct {
 	// ("episode" or "session_card"). A reader that does not know which
 	// document answered the question has not said what it measured.
 	MemoryKind string `json:"memory_kind,omitempty"`
+	// Failures are the conversations whose memory the preparation could not
+	// write.
+	//
+	// They are named here so that a query can tell the reader which
+	// conversations have no memory - rather than the reader noticing a
+	// smaller number of conversations and wondering why.
+	Failures []ArmFailure `json:"failures,omitempty"`
 	// CardInput says what the card was written FROM.
 	//
 	// The card path reads the conversation's own compressed state: the
@@ -549,6 +616,15 @@ func MakeProjectionDue(ctx context.Context, db *gorm.DB, userID int64, sessionID
 		return fmt.Errorf("the projection job is pending but could not be moved")
 	case model.EpisodeProjectionProcessing, model.EpisodeProjectionCompleted:
 		// The worker already has the job, or already had it. Nothing to move.
+		return nil
+	case model.EpisodeProjectionFailed:
+		// The job is finished and it failed. There is nothing to move, and
+		// the failure is not the arm's to fix: the card was refused, and
+		// the refusal is the server's judgement about one card.
+		//
+		// The wait is what reports it, with the job's own code. Refusing
+		// here would throw the whole preparation away over one card - and
+		// the conversations that were prepared well would go with it.
 		return nil
 	default:
 		return fmt.Errorf("the projection job is %s and cannot be moved: %s", job.Status, job.ErrorCode)
@@ -1255,12 +1331,12 @@ func QuestionSessionID(sourceSessionID string) string {
 // covers, and a reader that has the card but not the target cannot tell
 // whether the card reaches the conversation the question is about.
 func (s *Sandbox) PublishAndAwaitMemory(ctx context.Context, userID int64, sessionID string,
-	arm *CardArm) (published bool, due bool, target uint, waited int64, err error) {
+	arm *CardArm) (published bool, due bool, target uint, waited int64, code string, err error) {
 	if err = s.verify(ctx); err != nil {
-		return false, false, 0, 0, err
+		return false, false, 0, 0, "", err
 	}
 	if s.db == nil {
-		return false, false, 0, 0, fmt.Errorf("sandbox database unavailable")
+		return false, false, 0, 0, "", fmt.Errorf("sandbox database unavailable")
 	}
 	// The target is the conversation's last message.
 	var last struct {
@@ -1268,25 +1344,30 @@ func (s *Sandbox) PublishAndAwaitMemory(ctx context.Context, userID int64, sessi
 	}
 	if err = s.db.WithContext(ctx).Model(&model.Message{}).
 		Where("session_id = ?", sessionID).Order("id DESC").Take(&last).Error; err != nil {
-		return false, false, 0, 0, err
+		return false, false, 0, 0, "", err
 	}
 	if last.ID == 0 {
-		return false, false, 0, 0, fmt.Errorf("the conversation %s has no message", sessionID)
+		return false, false, 0, 0, "", fmt.Errorf("the conversation %s has no message", sessionID)
 	}
 	if err = PublishSessionCardProjection(ctx, s.db, userID, sessionID, last.ID, 0); err != nil {
-		return false, false, 0, 0, err
+		return false, false, 0, 0, "", err
 	}
 	published = true
 	target = last.ID
 	if err = MakeProjectionDue(ctx, s.db, userID, sessionID); err != nil {
-		return published, false, target, 0, err
+		return published, false, target, 0, "", err
 	}
 	due = true
 	started := time.Now()
 	if _, code, waitErr := WaitForArmMemory(ctx, s.db, userID, sessionID, arm.MemoryKind(), arm.Wait()); waitErr != nil {
-		return published, due, target, time.Since(started).Milliseconds(), fmt.Errorf("%w (%s)", waitErr, code)
+		// The code is the memory job's own, and it says WHICH stage
+		// refused the card. It is returned beside the error so the
+		// preparation can record it: a failure without its code is a
+		// failure the reader has to guess at.
+		return published, due, target, time.Since(started).Milliseconds(), code,
+			fmt.Errorf("%w (%s)", waitErr, code)
 	}
-	return published, due, target, time.Since(started).Milliseconds(), nil
+	return published, due, target, time.Since(started).Milliseconds(), "", nil
 }
 
 // DriveSessionCard publishes the projection, waits for the card and opens the
@@ -1367,9 +1448,27 @@ func DriveArm(ctx context.Context, sandbox *Sandbox, snapshot Snapshot, arm *Car
 		started := time.Now()
 		memory, code, err := sandbox.WaitForArmMemory(ctx, conversation.Session.UserID, conversation.Session.ID, arm.MemoryKind(), arm.Wait())
 		if err != nil {
-			evidence.JobErrorCode = code
-			evidence.Error = err.Error()
-			return evidence, err
+			// ONE conversation's card was refused. The others were written
+			// and are worth keeping, so the attempt goes on and the
+			// refusal is recorded.
+			//
+			// The refusal is the server's judgement about one card; it is
+			// not a failure of the attempt, and a failure of the attempt
+			// would throw away the conversations that were prepared well.
+			if evidence.JobErrorCode == "" {
+				// The attempt-level field keeps the FIRST refusal's code: it
+				// is the summary, and the list below is the record. The last
+				// one would be an accident of the order.
+				evidence.JobErrorCode = code
+			}
+			evidence.Failures = append(evidence.Failures, ArmFailure{
+				SessionID:       conversation.Session.ID,
+				ErrorCode:       code,
+				Error:           err.Error(),
+				TargetMessageID: target,
+			})
+			projection.Failures = append(projection.Failures, evidence.Failures[len(evidence.Failures)-1])
+			continue
 		}
 		evidence.Ready = true
 		waited := time.Since(started).Milliseconds()
@@ -1390,6 +1489,16 @@ func DriveArm(ctx context.Context, sandbox *Sandbox, snapshot Snapshot, arm *Car
 			// describe different conversations.
 			evidence.PublishedTargetMessageID = target
 		}
+	}
+	// EVERY conversation was refused. That is not a degraded card path - it
+	// is no card path at all, and the attempt has to stop.
+	//
+	// Tolerance must not become blindness: a preparation that kept going
+	// with no memory at all would measure a window with nothing in it and
+	// call it a measurement.
+	if len(evidence.Failures) > 0 && len(evidence.Failures) == len(snapshot.Sessions) {
+		evidence.Error = "every conversation's memory was refused"
+		return evidence, fmt.Errorf("%s", evidence.Error)
 	}
 	// What the card was written FROM. The card path reads the conversation's
 	// own compressed state, and a card written from the raw messages alone

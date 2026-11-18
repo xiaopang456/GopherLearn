@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/cloudwego/eino/schema"
 )
@@ -45,6 +46,15 @@ func modelHTTPHandler(ledger *ModelLedger, roles RolePrompts, backend http.Handl
 			}
 		}
 		id := ledger.begin(role, "http:"+r.URL.Path, json.RawMessage(raw), prompt)
+		// The card generation is the one call whose raw answer a reader
+		// cannot reconstruct: the ledger holds hashes, and a hash says that
+		// two bodies differ, not what either of them said. When the server
+		// refuses a card, the question is what the model actually wrote.
+		//
+		// The request is recognised by the TOOL it binds - the card writer
+		// is the only call that asks for publish_session_card - so the
+		// capture does not depend on the prompt's wording.
+		isCardGeneration := role == "background" && bytes.Contains(raw, []byte(cardToolName))
 		ledger.mu.Lock()
 		ledger.calls[id-1].Model = request.Model
 		ledger.calls[id-1].RequestedMaxTokens = request.MaxTokens
@@ -73,7 +83,8 @@ func modelHTTPHandler(ledger *ModelLedger, roles RolePrompts, backend http.Handl
 			ledger.calls[id-1].ToolTable = names
 		}
 		ledger.mu.Unlock()
-		observed := &usageWriter{ResponseWriter: w, ledger: ledger, id: id}
+		observed := &usageWriter{ResponseWriter: w, ledger: ledger, id: id,
+			requestBody: string(raw), isCardGeneration: isCardGeneration}
 		defer func() {
 			if recover() != nil {
 				observed.badTelemetry("model handler panicked")
@@ -111,6 +122,18 @@ type usageWriter struct {
 	event     []byte
 	oversized bool
 	writeErr  error
+	// requestBody is the body the model was sent, kept for the card
+	// generation's capture.
+	requestBody string
+	// isCardGeneration says this call is the card writer's.
+	isCardGeneration bool
+	// cardBody is the body the model answered, kept for the card
+	// generation's capture.
+	//
+	// It is kept apart from pending because a streamed answer is consumed
+	// line by line: pending holds what is left of it, and the card's own
+	// answer is what the reader needs whole.
+	cardBody []byte
 }
 
 func (w *usageWriter) WriteHeader(status int) {
@@ -129,6 +152,12 @@ func (w *usageWriter) Write(p []byte) (int, error) {
 		w.WriteHeader(200)
 	}
 	if !w.oversized {
+		if w.isCardGeneration {
+			// The card's own answer is kept whole: it is the one answer a
+			// reader cannot reconstruct, and the body says what the model
+			// wrote.
+			w.cardBody = append(w.cardBody, p...)
+		}
 		w.pending = append(w.pending, p...)
 		if len(w.pending) > 8<<20 {
 			w.badTelemetry("model usage frame exceeds limit")
@@ -246,6 +275,24 @@ func (w *usageWriter) end() {
 	if w.status >= 400 && w.writeErr == nil {
 		w.writeErr = fmt.Errorf("model HTTP status %d", w.status)
 	}
+	// The card generation's own exchange is kept whole.
+	//
+	// It is the one exchange a reader cannot reconstruct: the ledger holds
+	// hashes, and a hash says that two bodies differ, not what either of
+	// them said. When the server refuses a card, the question is what the
+	// model actually wrote - and that is in this body.
+	//
+	// The bodies carry no credential: the handler that reads them never
+	// reads a header, and the key the harness uses is a placeholder.
+	if w.isCardGeneration && !w.oversized {
+		w.ledger.CaptureCardExchange(CardExchange{
+			Request:         w.requestBody,
+			Response:        string(w.cardBody),
+			HTTPStatus:      w.status,
+			TargetMessageID: cardTargetMessageID(w.requestBody),
+			At:              time.Now().UTC(),
+		})
+	}
 	if w.oversized {
 		return
 	}
@@ -259,4 +306,42 @@ func (w *usageWriter) end() {
 	} else {
 		w.parse(w.pending)
 	}
+}
+
+// cardTargetMessageID reads the target message id out of a card
+// generation's request.
+//
+// The payload the card writer is shown names the message the card may
+// reach to, and that id belongs to exactly one conversation. The
+// conversation's own id is not in the body - the product writes the card
+// for a session it holds in its own database - so the target is what ties
+// a raw exchange to the conversation it belongs to.
+//
+// Zero means the body said nothing usable, and the exchange is then only
+// known by its own order.
+func cardTargetMessageID(body string) uint {
+	var request struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(body), &request); err != nil {
+		return 0
+	}
+	for _, message := range request.Messages {
+		if message.Role != "user" {
+			continue
+		}
+		var payload struct {
+			TargetMessageID uint `json:"target_message_id"`
+		}
+		if err := json.Unmarshal([]byte(message.Content), &payload); err != nil {
+			continue
+		}
+		if payload.TargetMessageID > 0 {
+			return payload.TargetMessageID
+		}
+	}
+	return 0
 }
