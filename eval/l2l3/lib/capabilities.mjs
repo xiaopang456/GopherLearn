@@ -19,6 +19,9 @@ export const Capability = Object.freeze({
   HistoryRead: 'history_read',
   BrowseSummarySegments: 'browse_summary_segments',
   SearchSessionHistory: 'search_session_history',
+  SearchSessionCards: 'search_session_cards',
+  SearchHistorySegments: 'search_history_segments',
+  ReadSessionWhiteboard: 'read_session_whiteboard',
   Unknown: 'unknown',
 })
 
@@ -31,6 +34,9 @@ export const KNOWN_CAPABILITIES = Object.freeze([
   Capability.HistoryRead,
   Capability.BrowseSummarySegments,
   Capability.SearchSessionHistory,
+  Capability.SearchSessionCards,
+  Capability.SearchHistorySegments,
+  Capability.ReadSessionWhiteboard,
 ])
 
 export const TOOL_CAPABILITIES = Object.freeze({
@@ -46,6 +52,12 @@ export const TOOL_CAPABILITIES = Object.freeze({
   read_history_message: Capability.HistoryRead,
   browse_summary_segments: Capability.BrowseSummarySegments,
   search_session_history: Capability.SearchSessionHistory,
+  search_session_cards: Capability.SearchSessionCards,
+  find_session_cards: Capability.SearchSessionCards,
+  search_history_segments: Capability.SearchHistorySegments,
+  find_history_segments: Capability.SearchHistorySegments,
+  read_session_whiteboard: Capability.ReadSessionWhiteboard,
+  show_session_whiteboard: Capability.ReadSessionWhiteboard,
 })
 
 /**
