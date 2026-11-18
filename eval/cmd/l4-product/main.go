@@ -84,8 +84,12 @@ func run(args []string, out io.Writer) error {
 	}
 	// The Episode recall switch follows the arm when the run does not say:
 	// the old arm injects the Episode, and the card arm replaces it.
+	//
+	// Both cards replace it. The thin card is not a second memory beside the
+	// Episode - it IS the cross-session memory, and running both would let
+	// two answers to the same question about the same conversation through.
 	if *episodeRecallMode == "" {
-		if *sessionCardMode == conversation.CardArmModeOn {
+		if *sessionCardMode == conversation.CardArmModeOn || *sessionCardMode == conversation.CardArmModeThin {
 			*episodeRecallMode = "disabled"
 		} else {
 			*episodeRecallMode = "inject_enabled"
@@ -200,7 +204,7 @@ func run(args []string, out io.Writer) error {
 	// the comparison - the old Episode and the new card - are kept apart by
 	// this namespace and by the evaluation identity, which carries the arm and
 	// the path.
-	derivedName, derivedPrefix := cardNamespace(*arm)
+	derivedName, derivedPrefix := cardNamespace(*arm, *sessionCardMode)
 	indexName, keyPrefix := derivedName, derivedPrefix
 	if strings.TrimSpace(*cardIndexName) != "" {
 		indexName = strings.TrimSpace(*cardIndexName)

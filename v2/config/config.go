@@ -473,7 +473,8 @@ type AgentConfig struct {
 	EpisodeMaxOutputTokens          int    `toml:"episodeMaxOutputTokens"`
 	EpisodeMaxMessages              int    `toml:"episodeMaxMessages"`
 
-	// SessionCardMode selects the session-card path: "disabled" or "enabled".
+	// SessionCardMode selects the session-card path: "disabled", "enabled" or
+	// "thin".
 	//
 	// The default is disabled, and that is the point of the switch. The
 	// production read path stays what it was, the old Episode documents stay
@@ -484,6 +485,15 @@ type AgentConfig struct {
 	// One session gets one card, written from that session's own summary, and
 	// two generation models would mean two answers to the same question about
 	// the same conversation.
+	//
+	// "thin" is the same path with a cheaper card: the card is derived by the
+	// program from what the session already compressed - its title, the topic
+	// and the names its summary segments recorded - and it costs no model call
+	// at all. What it gives up is the card's own body: the arrangements, the
+	// assistant's products and the open items are read from the source
+	// session's summary, whiteboard and own words when a question needs them.
+	// What it keeps is the card's job: finding the session a question is
+	// about.
 	SessionCardMode string `toml:"sessionCardMode"`
 	// SessionCardMaxOutputTokens is how many tokens the card writer may use.
 	//
@@ -497,6 +507,9 @@ type AgentConfig struct {
 	// real session: the model wrote 1800 tokens, the arguments stopped in the
 	// middle of the JSON, and the decoder refused the document. The failure
 	// looked like a protocol violation, and the protocol was fine.
+	//
+	// The thin card writes no tool call at all, so this number is not its
+	// budget. It is kept because the two paths share the switch.
 	SessionCardMaxOutputTokens int `toml:"sessionCardMaxOutputTokens"`
 	// SessionCardIndexName and SessionCardIndexKeyPrefix are the card
 	// index's namespace.
@@ -506,6 +519,15 @@ type AgentConfig struct {
 	// cards visible to the other's searches.
 	SessionCardIndexName      string `toml:"sessionCardIndexName"`
 	SessionCardIndexKeyPrefix string `toml:"sessionCardIndexKeyPrefix"`
+	// SessionCardThinIndexName and SessionCardThinIndexKeyPrefix are the
+	// THIN card index's namespace.
+	//
+	// They are separate from the full card's on purpose: the two indexes have
+	// different schemas - the thin card's has no vector field, because a
+	// vector needs an embedding and an embedding is a model call - and one
+	// index cannot hold both.
+	SessionCardThinIndexName      string `toml:"sessionCardThinIndexName"`
+	SessionCardThinIndexKeyPrefix string `toml:"sessionCardThinIndexKeyPrefix"`
 
 	// SummarySegmentMode decides whether the layered summary writes anything
 	// and whether the new state is read back:
@@ -782,8 +804,31 @@ func (c AgentConfig) SummaryAssistantContentEnabled() bool {
 // It is one comparison, and it is a comparison rather than a truthy check on
 // the raw string so that a configuration that was never validated cannot
 // quietly enable the path.
+//
+// "thin" is the card path too, with a card the program derives. It is a
+// separate answer because the two cards are written by different things and
+// cost different amounts.
 func (c AgentConfig) SessionCardEnabled() bool {
 	return strings.TrimSpace(c.SessionCardMode) == "enabled"
+}
+
+// SessionCardThin reports whether the card path is running with the thin
+// card.
+//
+// The thin card is derived by the program from what the session already
+// compressed, and it costs no model call. It is the same path with a
+// cheaper card, and it is off unless a deployment says "thin" explicitly.
+func (c AgentConfig) SessionCardThin() bool {
+	return strings.TrimSpace(c.SessionCardMode) == "thin"
+}
+
+// SessionCardPathEnabled reports whether either card path is running.
+//
+// It is the question the wiring asks: the tools and the read path have to
+// agree about which path is on, or a turn could be offered a tool it may not
+// use.
+func (c AgentConfig) SessionCardPathEnabled() bool {
+	return c.SessionCardEnabled() || c.SessionCardThin()
 }
 
 // EffectiveSummarySegmentMaxInputTokens is what the segment generator's
@@ -879,6 +924,10 @@ func defaultConfig() *Config {
 		SessionCardMaxOutputTokens: 4000,
 		SessionCardIndexName:       "gopherai_session_card_v1_idx",
 		SessionCardIndexKeyPrefix:  "gopherai:session_card:vec:",
+		// The thin card's namespace is its own, because its index has no
+		// vector field and one index cannot hold both schemas.
+		SessionCardThinIndexName:      "gopherai_thin_card_v1_idx",
+		SessionCardThinIndexKeyPrefix: "gopherai:thin_card:vec:",
 		// The layered summary is on: the write side, the read side and the
 		// fallback that goes with them are assembled together, so a
 		// deployment that says nothing gets the layered summary. "off" is
@@ -1216,6 +1265,12 @@ func applyAgentEnv(c *AgentConfig) error {
 	if value, ok := os.LookupEnv("AGENT_SESSION_CARD_INDEX_KEY_PREFIX"); ok {
 		c.SessionCardIndexKeyPrefix = strings.TrimSpace(value)
 	}
+	if value, ok := os.LookupEnv("AGENT_SESSION_CARD_THIN_INDEX_NAME"); ok {
+		c.SessionCardThinIndexName = strings.TrimSpace(value)
+	}
+	if value, ok := os.LookupEnv("AGENT_SESSION_CARD_THIN_INDEX_KEY_PREFIX"); ok {
+		c.SessionCardThinIndexKeyPrefix = strings.TrimSpace(value)
+	}
 	if value, ok := os.LookupEnv("AGENT_SESSION_CARD_MAX_OUTPUT_TOKENS"); ok {
 		parsed, parseErr := strconv.Atoi(strings.TrimSpace(value))
 		if parseErr != nil {
@@ -1484,11 +1539,14 @@ func (c AgentConfig) Validate() error {
 	// typo that silently became "off" would look like a deployment that
 	// opted out, and one that silently became "on" would start replacing
 	// every learner's cross-session memory.
-	if c.SessionCardMode != "disabled" && c.SessionCardMode != "enabled" {
-		return fmt.Errorf("sessionCardMode must be disabled or enabled")
+	if c.SessionCardMode != "disabled" && c.SessionCardMode != "enabled" && c.SessionCardMode != "thin" {
+		return fmt.Errorf("sessionCardMode must be disabled, enabled or thin")
 	}
 	if strings.TrimSpace(c.SessionCardIndexName) == "" || strings.TrimSpace(c.SessionCardIndexKeyPrefix) == "" {
 		return fmt.Errorf("sessionCardIndexName and sessionCardIndexKeyPrefix are required")
+	}
+	if strings.TrimSpace(c.SessionCardThinIndexName) == "" || strings.TrimSpace(c.SessionCardThinIndexKeyPrefix) == "" {
+		return fmt.Errorf("sessionCardThinIndexName and sessionCardThinIndexKeyPrefix are required")
 	}
 	if c.SessionCardMaxOutputTokens < 256 || c.SessionCardMaxOutputTokens > 32000 {
 		return fmt.Errorf("sessionCardMaxOutputTokens must be between 256 and 32000")

@@ -308,16 +308,47 @@ func agentRunnerConfig(mode memoryrecall.ReadMode, agentConf config.AgentConfig,
 	// mode rather than with the deployment's tuning knobs: a config file that
 	// could rename the model's tools without changing the mode would make the
 	// mode's identity stop describing what the model saw.
-	if mode.UsesExplicitMemoryActionNames() {
-		runnerConfig.ToolSurface = agentService.SurfaceExplicitActions
-		if mode.UsesExplicitKnowledgeSourceName() {
-			runnerConfig.ToolSurface = agentService.SurfaceExplicitSources
-		}
+	runnerConfig.ToolSurface = toolSurfaceFor(mode)
+	// The thin card's cross-session tools get a ceiling of their own.
+	//
+	// The ceiling is the point of the thin card: the question is answered from
+	// ONE earlier conversation, so the round trips are bounded - find the
+	// conversation, read its summary or its board, answer. A second card
+	// search with different words is allowed, because the first card's
+	// evidence may not be the conversation the learner meant; the segment
+	// search is allowed once, because it is the fallback and it costs an
+	// embedding; the board is read once per conversation.
+	//
+	// The ceilings are clamped to the whole-run tool budget, because
+	// RunnerConfig.Validate refuses a per-capability limit above it.
+	if agentConf.SessionCardThin() {
+		runnerConfig.PerTool.SearchSessionCards = min(2, runnerConfig.MaxToolCalls)
+		runnerConfig.PerTool.SearchHistorySegments = min(1, runnerConfig.MaxToolCalls)
+		runnerConfig.PerTool.ReadSessionWhiteboard = min(2, runnerConfig.MaxToolCalls)
 	}
 	if mode.OrdersMemoryDraftBeforeMemoryRead() {
 		runnerConfig.ForcesMemoryDraftBeforeMemoryRead = true
 	}
 	return runnerConfig
+}
+
+// toolSurfaceFor is the surface the tools of one mode are named under.
+//
+// It is a function because the surface and the ordering rule travel together
+// with the mode rather than with the deployment's tuning knobs: a config file
+// that could rename the model's tools without changing the mode would make
+// the mode's identity stop describing what the model saw.
+//
+// The tool block and the runner read it from here, so a tool registered under
+// one name is never called under another.
+func toolSurfaceFor(mode memoryrecall.ReadMode) agentService.ToolSurface {
+	if !mode.UsesExplicitMemoryActionNames() {
+		return agentService.SurfaceLegacy
+	}
+	if mode.UsesExplicitKnowledgeSourceName() {
+		return agentService.SurfaceExplicitSources
+	}
+	return agentService.SurfaceExplicitActions
 }
 
 // buildTopicMemoryReadRegistry keeps the application wiring under the same
@@ -676,6 +707,75 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	// read the same flag: the tools and the read path have to agree about
 	// which path is on, or a turn could be offered a tool it may not use.
 	sessionCardEnabled := conf.AgentConfig.SessionCardEnabled()
+	// sessionCardThin says the card path is running with the THIN card: the
+	// card the program derives, which costs no model call and carries no
+	// body.
+	//
+	// The two cards are different instruments, so they are two flags. What
+	// they share is the path they belong to: both replace the Episode path,
+	// and both are reached through the same cross-session tools.
+	sessionCardThin := conf.AgentConfig.SessionCardThin()
+	// sessionCardPathEnabled says that a card path is running, whichever
+	// card it writes. The tools that reach across sessions are registered
+	// under it: a card arm without them could find a session and not be
+	// able to read it.
+	sessionCardPathEnabled := sessionCardEnabled || sessionCardThin
+	// The thin card's own parts.
+	//
+	// They are assembled here, before the tools, because the tools are what
+	// make the card worth keeping: a card the turn cannot reach would be a
+	// card nobody ever finds, and a card nobody finds costs a write per
+	// session for nothing.
+	//
+	// thinCards is the writer that keeps a session's card current, and
+	// thinCardRetriever is the reader that finds the earlier sessions.
+	var thinCards *episodeService.ThinCardService
+	var thinCardRetriever *episodeService.ThinCardRetriever
+	var thinCardProjectionRunner episodeService.ProjectionRunner
+	if sessionCardThin {
+		thinLoader, thinLoaderErr := episodeService.NewDatabaseThinCardSourceLoader(mysql.DB)
+		if thinLoaderErr != nil {
+			return nil, fmt.Errorf("initialize thin card source loader: %v", thinLoaderErr)
+		}
+		thinProjector, thinProjectorErr := episodeService.NewThinCardProjector(thinLoader,
+			episodeService.ProgrammaticThinCardDeriver{}, episodeDAO.DefaultRepository())
+		if thinProjectorErr != nil {
+			return nil, fmt.Errorf("initialize thin card projector: %v", thinProjectorErr)
+		}
+		// The thin card's index has no vector field: a vector needs an
+		// embedding, and an embedding is a model call. The card is found by
+		// its words - the title, the topics, the names - which is what a
+		// question about an earlier session is phrased in.
+		thinIndex, thinIndexErr := episodeDAO.NewRedisThinCardIndex(redis.Rdb,
+			thinCardIndexName(conf), thinCardKeyPrefix(conf))
+		if thinIndexErr != nil {
+			return nil, fmt.Errorf("initialize thin card index: %v", thinIndexErr)
+		}
+		if thinIndexErr = thinIndex.EnsureIndex(appCtx); thinIndexErr != nil {
+			return nil, fmt.Errorf("ensure thin card index: %v", thinIndexErr)
+		}
+		thinIndexer, thinIndexerErr := episodeService.NewThinCardIndexer(thinIndex,
+			episodeDAO.CardIndexSource{Repository: episodeDAO.DefaultRepository()})
+		if thinIndexerErr != nil {
+			return nil, fmt.Errorf("initialize thin card indexer: %v", thinIndexerErr)
+		}
+		thinService, thinServiceErr := episodeService.NewThinCardService(thinProjector, thinIndexer)
+		if thinServiceErr != nil {
+			return nil, fmt.Errorf("initialize thin card service: %v", thinServiceErr)
+		}
+		thinCards = thinService
+		thinRetriever, thinRetrieverErr := episodeService.NewThinCardRetriever(thinIndex,
+			episodeDAO.ThinCardLoader{Repository: episodeDAO.DefaultRepository()}, thinCardCandidateLimit)
+		if thinRetrieverErr != nil {
+			return nil, fmt.Errorf("initialize thin card retriever: %v", thinRetrieverErr)
+		}
+		thinCardRetriever = thinRetriever
+		thinJobProjector, thinJobErr := episodeService.NewThinCardJobProjector(thinService)
+		if thinJobErr != nil {
+			return nil, fmt.Errorf("initialize thin card job projector: %v", thinJobErr)
+		}
+		thinCardProjectionRunner = thinJobProjector
+	}
 	if conf.AgentConfig.MaxToolCalls > 0 {
 		memoryDraftTools, draftErr := agentTool.NewMemoryDraftRegistry(memoryGovernance)
 		if draftErr != nil {
@@ -762,10 +862,10 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 			// path, because the tool's schema is part of its contract and the
 			// modes whose measurements were published must keep the schema
 			// they were measured with.
-			browseTools.UseSessionParameter(sessionCardEnabled)
+			browseTools.UseSessionParameter(sessionCardPathEnabled)
 			registries = append(registries, browseTools)
 		}
-		if sessionCardEnabled {
+		if sessionCardPathEnabled {
 			// The keyword search is the last step of the card's chain: the
 			// detail that neither the card nor the summary kept.
 			//
@@ -782,6 +882,57 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 			// through a search either.
 			sessionSearchTools.UseAssistantContent(conf.AgentConfig.SummaryAssistantContentEnabled())
 			registries = append(registries, sessionSearchTools)
+		}
+		if sessionCardThin {
+			// The three on-demand tools of the thin card.
+			//
+			// The card finds the conversation, the segment search finds the
+			// stretch of turns when the card did not, and the whiteboard
+			// says what that conversation finally arranged. Each one reads
+			// only what it names, and each one is registered only under the
+			// thin card path - a deployment that does not keep the cards has
+			// no cross-session door to offer.
+			cardSearchTools, cardSearchErr := agentTool.NewSearchSessionCardsRegistry(thinCardRetriever)
+			if cardSearchErr != nil {
+				return nil, fmt.Errorf("initialize agent session card search tool: %v", cardSearchErr)
+			}
+			cardSearchTools.UseToolSurface(toolSurfaceFor(memoryReadMode))
+			registries = append(registries, cardSearchTools)
+			// The segment search is the fallback of the card search, and the
+			// only one of the three that makes a model call: it embeds the
+			// question to reach the segments' own vectors. That call is
+			// counted apart from the card's cost, which is zero.
+			//
+			// It needs the segment index, and a deployment without that
+			// index has no segments to search: the tool is not registered
+			// rather than registered broken.
+			if summarySegmentIndex != nil {
+				historySegmentTools, historySegmentErr := agentTool.NewSearchHistorySegmentsRegistry(
+					summarySegmentIndex, sessionDAO.DefaultRepository(), thinCardRetriever)
+				if historySegmentErr != nil {
+					return nil, fmt.Errorf("initialize agent history segment search tool: %v", historySegmentErr)
+				}
+				// The query embedder is the segment index's own dimension:
+				// the segments were written with the shared embedder at that
+				// size, and a vector of another size is not a vector of that
+				// space.
+				queryEmbedder, embedderErr := memoryService.NewEinoQueryEmbedder(runtime.embedder,
+					redis.SummarySegmentVectorDimension)
+				if embedderErr != nil {
+					return nil, fmt.Errorf("initialize history segment query embedder: %v", embedderErr)
+				}
+				historySegmentTools.UseSemanticChannel(summarySegmentIndex, queryEmbedder)
+				historySegmentTools.UseToolSurface(toolSurfaceFor(memoryReadMode))
+				registries = append(registries, historySegmentTools)
+			}
+			// The whiteboard is the conversation's current state: what it had
+			// settled on when it was last talked in.
+			whiteboardTools, whiteboardErr := agentTool.NewReadSessionWhiteboardRegistry(sessionDAO.DefaultRepository())
+			if whiteboardErr != nil {
+				return nil, fmt.Errorf("initialize agent session whiteboard read tool: %v", whiteboardErr)
+			}
+			whiteboardTools.UseToolSurface(toolSurfaceFor(memoryReadMode))
+			registries = append(registries, whiteboardTools)
 		}
 		if memoryReadMode.UsesMemorySearchTool() {
 			// read_history_message stays registered but has nothing to offer
@@ -1106,6 +1257,35 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		}
 		projectionRunner = cardProjector
 		log.Printf("session card path enabled: the episode projector is not run")
+	} else if sessionCardThin {
+		// The thin card path.
+		//
+		// The card is derived by the program from what the session already
+		// compressed, so there is no model to ask and no document to write:
+		// the card is a title, a time, the topics and names the summary
+		// segments recorded, and the way back to those segments.
+		//
+		// What it saves is the whole cost of the full card: one chat call
+		// per session, and a card that repeats the summary in the window.
+		// What it gives up is the card's own body, and the body is read from
+		// the source session when a question needs it.
+		//
+		// The assembly itself lives above, next to the tools that read it:
+		// the tools are what make the card worth keeping, and a card the
+		// tools cannot reach would be a card nobody ever finds.
+		projectionRunner = thinCardProjectionRunner
+		// The card is kept current from two directions.
+		//
+		// After a segment is written, the segment's own topic, names and
+		// number become the card's clues and the card's way back to the
+		// body. After an answer ends, the title and the last talked time
+		// move.
+		//
+		// Both go through the same service, and neither of them asks a
+		// model: the card is written from what is already on disk.
+		configuredAgentService.SetThinCardSyncer(thinCards)
+		summarySegmentAssembly.UseThinCardSyncer(thinCards)
+		log.Printf("thin session card path enabled: the card is derived by the program and costs no model call")
 	} else {
 		episodeLoader, err := episodeService.NewDatabaseEvidenceLoader(mysql.DB, conf.AgentConfig.EpisodeMaxMessages)
 		if err != nil {
@@ -1223,7 +1403,7 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	if err != nil {
 		return nil, fmt.Errorf("initialize episode reconciler: %v", err)
 	}
-	if sessionCardEnabled {
+	if sessionCardPathEnabled {
 		// The reconciler repairs a missed enqueue by looking for the derived
 		// row that is behind. A card that is behind is not repaired by an
 		// Episode that is up to date, so the reconciler has to look at the
@@ -1280,6 +1460,13 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	}
 	if indexErr != nil {
 		log.Printf("episode index disabled: %v", indexErr)
+	} else if sessionCardThin {
+		// The thin card path writes the thin card index and nothing else.
+		// The Episode index is a different instrument with a vector field,
+		// and the thin card's index has no vector field at all - so the
+		// Episode index is not created, and the worker is not given an
+		// indexer that would write the thin card's row into it.
+		log.Printf("thin card path: the episode index is not written")
 	} else {
 		deletionEpisodeIndex = episodeIndex
 		if indexErr = episodeIndex.EnsureIndex(appCtx); indexErr != nil {
@@ -1454,6 +1641,34 @@ func cardOutputTokens(agent config.AgentConfig) int {
 	}
 	return agent.EpisodeMaxOutputTokens
 }
+
+// thinCardIndexName is the thin card index's name.
+//
+// It is the deployment's own, and a deployment that says nothing gets the
+// default. The thin card's index has no vector field, so it cannot share a
+// namespace with the full card's index.
+func thinCardIndexName(conf *config.Config) string {
+	if name := strings.TrimSpace(conf.AgentConfig.SessionCardThinIndexName); name != "" {
+		return name
+	}
+	return redis.ThinCardIndexName
+}
+
+// thinCardKeyPrefix is the thin card index's key prefix.
+func thinCardKeyPrefix(conf *config.Config) string {
+	if prefix := strings.TrimSpace(conf.AgentConfig.SessionCardThinIndexKeyPrefix); prefix != "" {
+		return prefix
+	}
+	return redis.ThinCardKeyPrefix
+}
+
+// thinCardCandidateLimit is how many candidate sessions a thin card search
+// returns.
+//
+// It is a handful: the card is a finding aid and the reader is a person who
+// has to recognise the session, so a list of five is already more than one
+// person can choose between.
+const thinCardCandidateLimit = 5
 
 // buildSummarySegmentPreselector builds the preselector on the budgets the
 // window will actually render with.

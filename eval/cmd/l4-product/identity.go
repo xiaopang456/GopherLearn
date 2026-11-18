@@ -128,8 +128,15 @@ func deriveScenarioIdentity(explicit map[string]bool, in identityInput) (int64, 
 // name stays inside the product's declared family, and the key prefix is the
 // one the index is created over: an index over a different prefix would hold
 // nothing.
-func cardNamespace(arm string) (name, prefix string) {
+//
+// The two cards have different families, because they are different indexes
+// with different documents: a full card and a thin card in one index would be
+// found by searches that expect the other.
+func cardNamespace(arm, mode string) (name, prefix string) {
 	digest := sha256.Sum256([]byte(strings.TrimSpace(arm)))
 	tag := hex.EncodeToString(digest[:6])
+	if strings.TrimSpace(mode) == conversation.CardArmModeThin {
+		return "gopherai_thin_card_" + tag + "_idx", "gopherai:thin_card:" + tag + ":"
+	}
 	return "gopherai_session_card_" + tag + "_idx", "gopherai:session_card:" + tag + ":"
 }

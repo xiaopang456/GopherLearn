@@ -202,6 +202,24 @@ type ToolCallLimits struct {
 	// convention the other capabilities use: a zero leaves the whole-run
 	// total as the only fuse.
 	BrowseSummarySegments int
+	// SearchSessionCards bounds search_session_cards.
+	//
+	// One call is the shape of the use: the tool returns a handful of
+	// candidates, and a second call with the same words would return the
+	// same candidates. A second call with different words is a different
+	// question and is allowed under the whole-run total.
+	SearchSessionCards int
+	// SearchHistorySegments bounds search_history_segments.
+	//
+	// It is the fallback of the card search, and it is the one that costs an
+	// embedding, so it gets one call: a hunt that did not find the
+	// conversation with the cards is not going to find it by hunting more.
+	SearchHistorySegments int
+	// ReadSessionWhiteboard bounds read_session_whiteboard.
+	//
+	// One call is one board. The board is the current state of one
+	// conversation, and reading it twice reads the same state.
+	ReadSessionWhiteboard int
 }
 
 // limitFor charges a call to the capability behind the name rather than to the
@@ -225,6 +243,12 @@ func (l ToolCallLimits) limitFor(name string) int {
 		return l.HistoryRead
 	case CapabilityBrowseSummarySegments:
 		return l.BrowseSummarySegments
+	case CapabilitySearchSessionCards:
+		return l.SearchSessionCards
+	case CapabilitySearchHistorySegments:
+		return l.SearchHistorySegments
+	case CapabilityReadSessionWhiteboard:
+		return l.ReadSessionWhiteboard
 	default:
 		return 0
 	}
@@ -382,6 +406,9 @@ func (c RunnerConfig) Validate() error {
 		"document_read": c.PerTool.DocumentRead, "propose_memory": c.PerTool.ProposeMemory,
 		"topic_memory_read": c.PerTool.TopicMemoryRead, "read_history_message": c.PerTool.HistoryRead,
 		"browse_summary_segments": c.PerTool.BrowseSummarySegments,
+		"search_session_cards":    c.PerTool.SearchSessionCards,
+		"search_history_segments": c.PerTool.SearchHistorySegments,
+		"read_session_whiteboard": c.PerTool.ReadSessionWhiteboard,
 	} {
 		if limit < 0 {
 			return fmt.Errorf("%s call limit must not be negative", name)

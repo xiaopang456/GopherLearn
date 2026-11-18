@@ -60,6 +60,29 @@ const (
 	// string inside the session's raw messages. It is the step the plan
 	// calls "the detail the card and the summary did not mention".
 	CapabilitySearchSessionHistory MemoryToolCapability = "search_session_history"
+	// CapabilitySearchSessionCards finds the earlier sessions a question
+	// could be about.
+	//
+	// It is a capability of its own because it is the step before the search
+	// tool: the search tool looks for a word inside a conversation that was
+	// already named, and this one is what finds the conversation. The card it
+	// reads carries no body, so it costs no model call to keep current.
+	CapabilitySearchSessionCards MemoryToolCapability = "search_session_cards"
+	// CapabilitySearchHistorySegments searches the learner's own summary
+	// segments across their conversations.
+	//
+	// It is a capability of its own because it reaches a different store:
+	// the segments rather than the cards. A card that was never written, or
+	// was written by an older version, does not make the stretch of turns it
+	// covers unreachable - the segments are there, and the question is about
+	// them.
+	CapabilitySearchHistorySegments MemoryToolCapability = "search_history_segments"
+	// CapabilityReadSessionWhiteboard reads one session's whiteboard.
+	//
+	// It is a capability of its own because the board is not a segment and
+	// not a message: it is the session's current effective state, and it
+	// answers "what was finally agreed" rather than "what was said".
+	CapabilityReadSessionWhiteboard MemoryToolCapability = "read_session_whiteboard"
 )
 
 // ToolSurface selects which names the model sees for the same capabilities.
@@ -122,6 +145,22 @@ const (
 	// original words. The name says what it reaches: one conversation's
 	// messages, not a learner's whole history.
 	searchSessionHistoryToolName = "search_session_history"
+	// searchSessionCardsToolName finds the earlier conversations a question
+	// could be about.
+	searchSessionCardsToolName = "search_session_cards"
+	// searchHistorySegmentsToolName searches the learner's own summary
+	// segments across their conversations.
+	searchHistorySegmentsToolName = "search_history_segments"
+	// readSessionWhiteboardToolName reads one conversation's whiteboard.
+	readSessionWhiteboardToolName = "read_session_whiteboard"
+	// The explicit surface's names for the three on-demand retrieval tools.
+	//
+	// They are named after what they find rather than after what they are:
+	// the explicit surface exists so that the model can tell the sources
+	// apart without reading their descriptions.
+	SearchSessionCardsToolName    = "find_session_cards"
+	SearchHistorySegmentsToolName = "find_history_segments"
+	ReadSessionWhiteboardToolName = "show_session_whiteboard"
 )
 
 // toolCapabilities is the mapping, written once.
@@ -142,6 +181,12 @@ var toolCapabilities = map[string]MemoryToolCapability{
 	readHistoryMessageToolName:      CapabilityHistoryRead,
 	browseSummarySegmentsToolName:   CapabilityBrowseSummarySegments,
 	searchSessionHistoryToolName:    CapabilitySearchSessionHistory,
+	searchSessionCardsToolName:      CapabilitySearchSessionCards,
+	SearchSessionCardsToolName:      CapabilitySearchSessionCards,
+	searchHistorySegmentsToolName:   CapabilitySearchHistorySegments,
+	SearchHistorySegmentsToolName:   CapabilitySearchHistorySegments,
+	readSessionWhiteboardToolName:   CapabilityReadSessionWhiteboard,
+	ReadSessionWhiteboardToolName:   CapabilityReadSessionWhiteboard,
 }
 
 // surfaceNames is the forward direction, also written once. Every capability
@@ -157,6 +202,9 @@ var surfaceNames = map[ToolSurface]map[MemoryToolCapability]string{
 		CapabilityHistoryRead:           readHistoryMessageToolName,
 		CapabilityBrowseSummarySegments: browseSummarySegmentsToolName,
 		CapabilitySearchSessionHistory:  searchSessionHistoryToolName,
+		CapabilitySearchSessionCards:    searchSessionCardsToolName,
+		CapabilitySearchHistorySegments: searchHistorySegmentsToolName,
+		CapabilityReadSessionWhiteboard: readSessionWhiteboardToolName,
 	},
 	SurfaceExplicitActions: {
 		CapabilityEpisodeSearch:         SearchPastSessionsToolName,
@@ -167,6 +215,9 @@ var surfaceNames = map[ToolSurface]map[MemoryToolCapability]string{
 		CapabilityHistoryRead:           readHistoryMessageToolName,
 		CapabilityBrowseSummarySegments: browseSummarySegmentsToolName,
 		CapabilitySearchSessionHistory:  searchSessionHistoryToolName,
+		CapabilitySearchSessionCards:    SearchSessionCardsToolName,
+		CapabilitySearchHistorySegments: SearchHistorySegmentsToolName,
+		CapabilityReadSessionWhiteboard: ReadSessionWhiteboardToolName,
 	},
 	SurfaceExplicitSources: {
 		CapabilityEpisodeSearch:         SearchPastSessionsToolName,
@@ -177,6 +228,9 @@ var surfaceNames = map[ToolSurface]map[MemoryToolCapability]string{
 		CapabilityHistoryRead:           readHistoryMessageToolName,
 		CapabilityBrowseSummarySegments: browseSummarySegmentsToolName,
 		CapabilitySearchSessionHistory:  searchSessionHistoryToolName,
+		CapabilitySearchSessionCards:    SearchSessionCardsToolName,
+		CapabilitySearchHistorySegments: SearchHistorySegmentsToolName,
+		CapabilityReadSessionWhiteboard: ReadSessionWhiteboardToolName,
 	},
 	// The same names as explicit_sources, deliberately: the priority contract
 	// varies the descriptions and the server's first-tool behaviour, not the
@@ -191,6 +245,9 @@ var surfaceNames = map[ToolSurface]map[MemoryToolCapability]string{
 		CapabilityHistoryRead:           readHistoryMessageToolName,
 		CapabilityBrowseSummarySegments: browseSummarySegmentsToolName,
 		CapabilitySearchSessionHistory:  searchSessionHistoryToolName,
+		CapabilitySearchSessionCards:    SearchSessionCardsToolName,
+		CapabilitySearchHistorySegments: SearchHistorySegmentsToolName,
+		CapabilityReadSessionWhiteboard: ReadSessionWhiteboardToolName,
 	},
 }
 

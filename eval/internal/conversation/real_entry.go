@@ -184,7 +184,7 @@ func EpisodeRecallModeKnown(mode string) bool {
 var SummarySegmentModes = []string{"off", "shadow", "on"}
 
 // SessionCardModes are the cross-session memory paths a paid run may measure.
-var SessionCardModes = []string{CardArmModeOff, CardArmModeOn}
+var SessionCardModes = []string{CardArmModeOff, CardArmModeOn, CardArmModeThin}
 
 // SessionCardModeKnown reports whether the mode is one the product
 // understands.
@@ -221,8 +221,8 @@ func CardArmForEnvironment(env RealEnvironment) *CardArm {
 	if arm.WaitTimeout <= 0 {
 		arm.WaitTimeout = realMemoryWaitDefault
 	}
-	if env.SessionCardMode == CardArmModeOn {
-		arm.Mode = CardArmModeOn
+	if env.SessionCardMode == CardArmModeOn || env.SessionCardMode == CardArmModeThin {
+		arm.Mode = env.SessionCardMode
 		arm.IndexName = env.SessionCardIndexName
 		arm.KeyPrefix = env.SessionCardIndexKeyPrefix
 	}
@@ -269,11 +269,17 @@ func (e RealEnvironment) Validate() error {
 	if mode := strings.TrimSpace(e.EpisodeRecallMode); mode != "" && !EpisodeRecallModeKnown(mode) {
 		return fmt.Errorf("the episode recall mode %q is not one the product knows", mode)
 	}
-	if e.SessionCardMode == CardArmModeOn {
+	if e.SessionCardMode == CardArmModeOn || e.SessionCardMode == CardArmModeThin {
 		if strings.TrimSpace(e.SessionCardIndexName) == "" || strings.TrimSpace(e.SessionCardIndexKeyPrefix) == "" {
 			return fmt.Errorf("the session card arm needs its own index namespace")
 		}
-		if !strings.HasPrefix(e.SessionCardIndexName, "gopherai_session_card_") {
+		// The two cards have their own namespaces, and a run that put one
+		// arm's cards in the other arm's index would measure a mix.
+		namespace := "gopherai_session_card_"
+		if e.SessionCardMode == CardArmModeThin {
+			namespace = "gopherai_thin_card_"
+		}
+		if !strings.HasPrefix(e.SessionCardIndexName, namespace) {
 			return fmt.Errorf("the session card index name is outside the declared namespace")
 		}
 		// The card is written from the conversation's own compressed state:
@@ -429,6 +435,10 @@ func realSettings(repository, storage string, env RealEnvironment) (*entry.Setti
 	if env.SessionCardMode == CardArmModeOn {
 		settings.Config.AgentConfig.SessionCardIndexName = env.SessionCardIndexName
 		settings.Config.AgentConfig.SessionCardIndexKeyPrefix = env.SessionCardIndexKeyPrefix
+	}
+	if env.SessionCardMode == CardArmModeThin {
+		settings.Config.AgentConfig.SessionCardThinIndexName = env.SessionCardIndexName
+		settings.Config.AgentConfig.SessionCardThinIndexKeyPrefix = env.SessionCardIndexKeyPrefix
 	}
 	// The read path and the recall switch are written into the product's own
 	// configuration rather than left to its defaults, for the same reason the
@@ -765,6 +775,9 @@ func projectArmMemories(ctx context.Context, repository, storage string, env Rea
 	// it, so the record that travels with the archive is the only place
 	// this fact can live.
 	followUp := func(ctx context.Context, sessionID string, target uint) error {
+		// The thin card is derived by the program from what the session
+		// already compressed, so there is no model request to read back:
+		// the input of a thin card is the session itself.
 		if arm.Mode != CardArmModeOn || target == 0 {
 			return nil
 		}

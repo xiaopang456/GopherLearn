@@ -38,6 +38,19 @@ type Snapshot struct {
 	// are here, so a restored attempt finds exactly the memories the
 	// preparation produced.
 	Memories []model.EpisodeMemory `json:"memories,omitempty"`
+	// Segments are the summary segments of the conversations.
+	//
+	// They travel with the archive for the same reason the memories do, and
+	// for one more: the thin card does not carry the body. A thin card
+	// POINTS at the segments, so an archive that restored the cards without
+	// the segments would restore a directory with no rooms behind it - the
+	// card would name a conversation whose summary could not be read.
+	Segments []model.SessionSummarySegment `json:"segments,omitempty"`
+	// Whiteboards are the conversations' boards.
+	//
+	// The board is what a conversation had settled on, and the thin card
+	// does not carry it either: it is read from the source conversation.
+	Whiteboards []model.SessionWhiteboard `json:"whiteboards,omitempty"`
 	// IndexEntries is how many entries the shared index held for this
 	// learner when the preparation wrote the archive.
 	//

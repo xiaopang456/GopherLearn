@@ -29,7 +29,21 @@ const SearchSessionHistoryName = "search_session_history"
 
 // The bounds of one search.
 const (
-	maxSearchSessionResults = 8
+	// maxSearchSessionResults is how many matching messages one call may
+	// return.
+	//
+	// It is twenty rather than eight because a keyword in a long
+	// conversation matches many messages, and the answer is often neither
+	// the first nor the last of them: it is the one in the middle, where
+	// the detail was mentioned once. A ceiling of eight cut the middle out
+	// of a hundred-message conversation - the very conversations this tool
+	// exists for - and the model had no way to ask for more.
+	//
+	// The cost is bounded and small: a match is a line of the learner's
+	// own words, and twenty of them are a few hundred tokens.
+	maxSearchSessionResults = 20
+	// maxSearchSessionSnippet bounds one match's text. A match is a line
+	// of the learner's own words, and it is shown whole or nearly so.
 	maxSearchSessionSnippet = 300
 	// searchSessionCandidateLimit bounds how much of the session the
 	// database is asked to look at.
@@ -37,7 +51,7 @@ const (
 )
 
 // searchSessionHistoryDescription is the contract the model reads.
-const searchSessionHistoryDescription = "Search one earlier conversation for a word or phrase, when a session card or its summary did not keep the detail you need. Name the session exactly as the card showed it. Returns the matching lines with their message ids; a message id can then be read back in full with read_history_message."
+const searchSessionHistoryDescription = "Search one earlier conversation for a word or phrase, when a session card or its summary did not keep the detail you need. Name the session exactly as the card showed it. Returns the matching lines with their message ids, newest first - a conversation settles its arrangements at its end, so the newest match is the one that answers \"what did we finally agree on\". A message id can then be read back in full with read_history_message."
 
 // The states a search can report.
 const (
@@ -59,14 +73,18 @@ const (
 type SearchSessionHistoryInput struct {
 	Session    string `json:"session,omitempty" jsonschema:"description=The conversation to search, exactly as a session card showed it. Leave empty for this conversation."`
 	Query      string `json:"query" jsonschema:"required,description=The word or phrase to look for in that conversation's messages."`
-	MaxResults int    `json:"max_results,omitempty" jsonschema:"description=How many matching messages to return, 1-8."`
+	MaxResults int    `json:"max_results,omitempty" jsonschema:"description=How many matching messages to return, 1-20."`
 }
 
 // SearchSessionHistoryOutput is what the call reports.
 type SearchSessionHistoryOutput struct {
 	Status string `json:"status"`
 	Reason string `json:"reason"`
-	// Matches are the messages that contain the query, oldest first.
+	// Matches are the messages that contain the query, newest first.
+	//
+	// A conversation settles its arrangements at its end, so the newest
+	// matching message is the one that answers "what did we finally
+	// agree on" and the one that is worth reading back first.
 	Matches []SearchSessionMatch `json:"matches"`
 	// ObservationTokens is what the answer has to spend on this observation.
 	ObservationTokens int `json:"observation_tokens"`

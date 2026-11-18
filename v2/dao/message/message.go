@@ -289,6 +289,20 @@ func (r *Repository) ReadOwnedMessagesBySession(ctx context.Context, userID int6
 // The keyword is matched inside the database rather than in Go, because a
 // search that read the whole session into memory first would be an unbounded
 // read of somebody's history.
+//
+// THE ORDER IS THE NEWEST FIRST, and that is the whole point of the change.
+//
+// A conversation settles its arrangements at its end: the number that was
+// finally agreed on, the thing that was decided last, the words that
+// replaced an earlier number. A search that returned the OLDEST matching
+// messages would answer a question about how the conversation began - which
+// is not what anybody asks an earlier conversation for - and would make the
+// end of a long conversation unreachable: the matches the learner needs are
+// the last ones, and a limit of five oldest matches never reaches them.
+//
+// The newest matches come first, and the ids of the ones that are not the
+// answer are still shown, so a reader that wants an earlier one can ask for
+// the message id by name.
 func (r *Repository) SearchOwnedMessagesBySession(ctx context.Context, userID int64,
 	sessionID string, keyword string, limit int) ([]model.Message, error) {
 	if r == nil || r.db == nil || userID <= 0 {
@@ -310,7 +324,7 @@ func (r *Repository) SearchOwnedMessagesBySession(ctx context.Context, userID in
 		Joins("JOIN sessions ON sessions.id = messages.session_id AND sessions.deleted_at IS NULL").
 		Where("sessions.user_id = ? AND messages.session_id = ?", userID, sessionID).
 		Where("messages.content LIKE ?", "%"+escapeLike(keyword)+"%").
-		Order("messages.id ASC").Limit(limit).
+		Order("messages.id DESC").Limit(limit).
 		Find(&messages).Error
 	return messages, err
 }

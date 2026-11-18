@@ -55,6 +55,14 @@ const (
 	CardArmModeOff = "disabled"
 	// CardArmModeOn is the new path: the cross-session memory is a card.
 	CardArmModeOn = "enabled"
+	// CardArmModeThin is the card path with the THIN card: the card the
+	// program derives from what the session already compressed.
+	//
+	// It is a third path and not a variant of the second: the thin card
+	// costs no model call, carries no body, and is read through the tools
+	// rather than injected. A run that measured it under the full card's
+	// name would report the full card's numbers.
+	CardArmModeThin = "thin"
 	// cardArmDefaultWait is how long the arm waits for the card to be
 	// indexed when the attempt does not say.
 	cardArmDefaultWait = 90 * time.Second
@@ -99,8 +107,26 @@ type CardArm struct {
 }
 
 // Enabled reports whether this attempt runs the card path.
+//
+// It is true for both cards: the full card and the thin card are the same
+// path with a different document, and the arm's memory kind is the same row
+// kind for both. What differs between them is what the card holds and what
+// writing it costs, and the arm's name is not where that difference lives.
 func (a *CardArm) Enabled() bool {
-	return a != nil && strings.TrimSpace(a.Mode) == CardArmModeOn
+	if a == nil {
+		return false
+	}
+	switch strings.TrimSpace(a.Mode) {
+	case CardArmModeOn, CardArmModeThin:
+		return true
+	default:
+		return false
+	}
+}
+
+// Thin reports whether this attempt runs the thin card.
+func (a *CardArm) Thin() bool {
+	return a != nil && strings.TrimSpace(a.Mode) == CardArmModeThin
 }
 
 // MemoryKind is the content kind this arm's memory is.
@@ -120,9 +146,10 @@ func (a *CardArm) Validate() error {
 		return nil
 	}
 	switch strings.TrimSpace(a.Mode) {
-	case CardArmModeOff, CardArmModeOn:
+	case CardArmModeOff, CardArmModeOn, CardArmModeThin:
 	default:
-		return fmt.Errorf("session card mode must be %q or %q", CardArmModeOff, CardArmModeOn)
+		return fmt.Errorf("session card mode must be %q, %q or %q",
+			CardArmModeOff, CardArmModeOn, CardArmModeThin)
 	}
 	if a.Enabled() && (strings.TrimSpace(a.IndexName) == "" || strings.TrimSpace(a.KeyPrefix) == "") {
 		return fmt.Errorf("the card arm needs its own index namespace")
@@ -1505,8 +1532,16 @@ func ApplyCardArm(settings *entry.Settings, arm *CardArm) error {
 	}
 	settings.Config.AgentConfig.SessionCardMode = strings.TrimSpace(arm.Mode)
 	if arm.Enabled() {
-		settings.Config.AgentConfig.SessionCardIndexName = strings.TrimSpace(arm.IndexName)
-		settings.Config.AgentConfig.SessionCardIndexKeyPrefix = strings.TrimSpace(arm.KeyPrefix)
+		if arm.Thin() {
+			// The thin card has its own namespace: it is a different index
+			// with a different shape, and a full card in it would be found
+			// by searches that expect a thin one.
+			settings.Config.AgentConfig.SessionCardThinIndexName = strings.TrimSpace(arm.IndexName)
+			settings.Config.AgentConfig.SessionCardThinIndexKeyPrefix = strings.TrimSpace(arm.KeyPrefix)
+		} else {
+			settings.Config.AgentConfig.SessionCardIndexName = strings.TrimSpace(arm.IndexName)
+			settings.Config.AgentConfig.SessionCardIndexKeyPrefix = strings.TrimSpace(arm.KeyPrefix)
+		}
 	}
 	// The read path and the recall switch travel with the arm, so that the
 	// configuration the product boots with is the configuration the attempt

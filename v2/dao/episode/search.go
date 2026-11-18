@@ -366,6 +366,39 @@ func (r *Repository) LoadCardCandidates(ctx context.Context, userID int64, curre
 	return r.loadCandidates(ctx, userID, currentSession, ids, model.EpisodeContentSessionCard)
 }
 
+// LoadCardOfSession loads the current session card of one session.
+//
+// It is the lookup by identity rather than by words. It exists because the
+// words are not always enough: a segment search can find a stretch of turns
+// in a conversation whose card the word search did NOT find, because the
+// question's words and the card's words are different words. The card of that
+// conversation still exists, and it is the card that says the conversation
+// may be opened.
+//
+// The current session is not excluded: the caller decides that, because the
+// caller is the one that knows which conversation the turn is about.
+func (r *Repository) LoadCardOfSession(ctx context.Context, userID int64, sessionID string) (*model.EpisodeMemory, error) {
+	if r == nil || r.db == nil {
+		return nil, fmt.Errorf("episode repository is not initialized")
+	}
+	if userID <= 0 || strings.TrimSpace(sessionID) == "" {
+		return nil, fmt.Errorf("invalid session card identity")
+	}
+	var rows []model.EpisodeMemory
+	err := activeEpisodeQuery(r.db.WithContext(ctx)).
+		Where("episode_memories.user_id = ? AND episode_memories.content_kind = ? AND episode_memories.status = ? AND episode_memories.session_id = ?",
+			userID, string(model.EpisodeContentSessionCard), model.EpisodeStatusActive, sessionID).
+		Order("episode_memories.version DESC").Limit(1).Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	card := rows[0]
+	return &card, nil
+}
+
 func (r *Repository) loadCandidates(ctx context.Context, userID int64, currentSession string, ids []string,
 	kind model.EpisodeContentKind) ([]model.EpisodeMemory, error) {
 	if len(ids) == 0 {

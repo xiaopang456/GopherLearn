@@ -77,7 +77,13 @@ func EnsureVectorIndex(ctx context.Context, client *redisCli.Client, spec Vector
 	if spec.Name == "" || spec.KeyPrefix == "" {
 		return fmt.Errorf("%s index: the index needs a name and a key prefix", spec.Label)
 	}
-	if spec.Dimension <= 0 {
+	// The dimension is the vector field's length, and it is only needed when
+	// there IS a vector field.
+	//
+	// The thin card's index has none: a vector needs an embedding, and an
+	// embedding is a model call. Requiring a dimension of an index that
+	// carries no vector would refuse an instrument that is exactly right.
+	if spec.Dimension <= 0 && specHasVectorField(spec) {
 		return fmt.Errorf("%s index: dimension is %d", spec.Label, spec.Dimension)
 	}
 	if _, err := client.FTInfo(ctx, spec.Name).Result(); err == nil {
@@ -102,6 +108,19 @@ func EnsureVectorIndex(ctx context.Context, client *redisCli.Client, spec Vector
 		return fmt.Errorf("create %s index: %w", spec.Label, err)
 	}
 	return nil
+}
+
+// specHasVectorField says whether the schema carries a vector field.
+//
+// It is the one thing that decides whether a dimension is needed: an index
+// without a vector field has no vector to be long.
+func specHasVectorField(spec VectorIndexSpec) bool {
+	for _, field := range spec.Fields {
+		if field.Type == "VECTOR" {
+			return true
+		}
+	}
+	return false
 }
 
 // vectorIndexSchemas is the schema this package creates.

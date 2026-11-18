@@ -68,6 +68,25 @@ func CaptureMany(ctx context.Context, db *gorm.DB, userID int64, sessionIDs []st
 			seen[memory.SessionID] = struct{}{}
 			result.Memories = append(result.Memories, memory)
 		}
+		// The compressed state of those conversations travels with them.
+		//
+		// The full card carries its own body, so an archive without the
+		// segments still holds a readable memory. The thin card does not: it
+		// points at the segments, and the body is read from there. An
+		// archive that restored the thin cards without the segments would
+		// restore a directory with no rooms behind it.
+		var segments []model.SessionSummarySegment
+		if err := tx.Where("user_id = ? AND session_id IN ?", userID, sessionIDs).
+			Order("session_id ASC, seq ASC").Find(&segments).Error; err != nil {
+			return err
+		}
+		result.Segments = segments
+		var whiteboards []model.SessionWhiteboard
+		if err := tx.Where("user_id = ? AND session_id IN ?", userID, sessionIDs).
+			Order("session_id ASC").Find(&whiteboards).Error; err != nil {
+			return err
+		}
+		result.Whiteboards = whiteboards
 		return result.Validate()
 	})
 	if err != nil {

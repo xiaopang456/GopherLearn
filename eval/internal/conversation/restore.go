@@ -73,6 +73,26 @@ func restoreIntoEmpty(ctx context.Context, db *gorm.DB, snapshot Snapshot) error
 				return err
 			}
 		}
+		// The compressed state comes back too.
+		//
+		// The thin card does not carry the body: it points at the summary
+		// segments and at the board, and the body is read from there. An
+		// archive that restored the cards without them would restore a
+		// directory with no rooms behind it.
+		for _, segment := range snapshot.Segments {
+			row := segment
+			row.ID = 0
+			if err := tx.Omit("Session").Create(&row).Error; err != nil {
+				return err
+			}
+		}
+		for _, whiteboard := range snapshot.Whiteboards {
+			row := whiteboard
+			row.ID = 0
+			if err := tx.Omit("Session").Create(&row).Error; err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 }

@@ -8,6 +8,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -21,12 +22,40 @@ import (
 // by one release is readable by another that knows the shape.
 const SessionCardContentVersion = 1
 
+// SessionThinCardContentVersion is the format version of a THIN card.
+//
+// A thin card is not a shorter full card: it is a different document. A full
+// card carries the session's body - what was arranged, what the assistant
+// produced, what was left open - and a thin card carries none of it. A thin
+// card is a finding aid: which session this was, what it was called, when it
+// was last talked in, what it was about, and which summary segments hold the
+// rest.
+//
+// The body is read where it already lives - the source session's summary
+// segments, its whiteboard and its own words - so the card does not repeat
+// it. Repeating it is what makes a card expensive: the same words in the
+// card and in the summary are paid for twice, and they drift apart.
+//
+// The version is on the document, so a thin card written by one release is
+// readable by another that knows the shape, and a full card written by an
+// older release stays readable as well.
+const SessionThinCardContentVersion = 2
+
 const (
 	SessionCardTitleMaxRunes     = 160
 	SessionCardSynopsisMaxRunes  = 1200
 	SessionCardEntryTextMaxRunes = 400
 	SessionCardEntryLimit        = 12
 	SessionCardTopicLimit        = 12
+	// SessionThinCardSegmentLimit bounds how many summary segments a thin
+	// card points at.
+	//
+	// It is a bound and not a rule about what a card may forget: the refs
+	// are a way back to the segments, and a card that names all of them
+	// stops being a finding aid.
+	SessionThinCardSegmentLimit = 24
+	// SessionThinCardNameLimit bounds how many names a thin card carries.
+	SessionThinCardNameLimit = 12
 )
 
 // SessionCardEntryStatus says what happened to one item on a card.
@@ -134,6 +163,34 @@ type SessionCardDocument struct {
 	AssistantProducts []SessionCardEntry `json:"assistant_products,omitempty"`
 	// OpenItems is what was still outstanding when the card was written.
 	OpenItems []SessionCardEntry `json:"open_items,omitempty"`
+
+	// LastTalkedAt is when the source session was last talked in.
+	//
+	// It is a thin card's field: "last week" and "the most recent one" are
+	// questions a card has to answer on its own, and a card that cannot say
+	// when its session happened cannot be placed in time.
+	LastTalkedAt time.Time `json:"last_talked_at,omitempty"`
+	// SegmentSeqs are the summary segments of the source session this card
+	// points at.
+	//
+	// They are the way back to the compressed body of the session. A thin
+	// card does not repeat the body; it names where the body is.
+	SegmentSeqs []int `json:"segment_seqs,omitempty"`
+	// Names are the names the source session's summary segments recorded.
+	//
+	// They are the clues that tell two sessions apart when their titles do
+	// not: the same three exercises, the same project, the same teacher.
+	Names []string `json:"names,omitempty"`
+}
+
+// IsThin reports whether this document is a thin card.
+//
+// A thin card carries no body: its synopsis is empty and it has no entries.
+// The distinction matters because the two cards are read differently - a full
+// card is rendered as the session's summary, and a thin card is rendered as a
+// pointer to the session.
+func (d SessionCardDocument) IsThin() bool {
+	return d.Version == SessionThinCardContentVersion
 }
 
 // EntryGroups returns the three lists in the order a reader meets them.
@@ -292,18 +349,43 @@ func DecodeSessionCardDocumentUnchecked(data []byte) (SessionCardDocument, error
 }
 
 // Validate checks the stored document.
+//
+// The two card shapes are checked against different rules, because they carry
+// different things. A full card has to carry a synopsis and may carry entries
+// that cite the messages and segments they came from. A thin card carries
+// neither: its body lives in the source session, and the card only has to
+// say which session it is, what it was called, when it was last talked in,
+// what it was about and where its segments are.
+//
+// The rule that a card may not claim both is the same in both shapes: a thin
+// card with a synopsis is a full card that forgot its entries, and a full
+// card with no synopsis is a thin card that forgot it was one.
 func (d *SessionCardDocument) Validate() error {
 	if d == nil {
 		return fmt.Errorf("session card document is nil")
 	}
-	if d.Version != SessionCardContentVersion {
+	switch d.Version {
+	case SessionCardContentVersion, SessionThinCardContentVersion:
+	default:
 		return fmt.Errorf("unsupported session card version %d", d.Version)
 	}
 	if strings.TrimSpace(d.Title) == "" || utf8.RuneCountInString(d.Title) > SessionCardTitleMaxRunes {
 		return fmt.Errorf("invalid session card title")
 	}
-	if strings.TrimSpace(d.Synopsis) == "" || utf8.RuneCountInString(d.Synopsis) > SessionCardSynopsisMaxRunes {
-		return fmt.Errorf("invalid session card synopsis")
+	if d.IsThin() {
+		if strings.TrimSpace(d.Synopsis) != "" {
+			return fmt.Errorf("thin session card cannot carry a synopsis")
+		}
+		if d.EntryCount() != 0 {
+			return fmt.Errorf("thin session card cannot carry entries")
+		}
+		if err := d.validateThinRefs(); err != nil {
+			return err
+		}
+	} else {
+		if strings.TrimSpace(d.Synopsis) == "" || utf8.RuneCountInString(d.Synopsis) > SessionCardSynopsisMaxRunes {
+			return fmt.Errorf("invalid session card synopsis")
+		}
 	}
 	if len(d.Topics) > SessionCardTopicLimit {
 		return fmt.Errorf("session card exceeds topic limit")
@@ -329,6 +411,42 @@ func (d *SessionCardDocument) Validate() error {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+// validateThinRefs checks the refs a thin card carries.
+//
+// The refs are the card's whole point, so they are checked as strictly as a
+// full card's citations are: a segment number that is not positive points at
+// nothing, and the same number twice points at the same place twice.
+func (d *SessionCardDocument) validateThinRefs() error {
+	if len(d.SegmentSeqs) > SessionThinCardSegmentLimit {
+		return fmt.Errorf("thin session card exceeds segment limit")
+	}
+	seenSegments := make(map[int]struct{}, len(d.SegmentSeqs))
+	for _, seq := range d.SegmentSeqs {
+		if seq <= 0 {
+			return fmt.Errorf("thin session card segment sequence must be positive")
+		}
+		if _, exists := seenSegments[seq]; exists {
+			return fmt.Errorf("duplicate thin session card segment sequence %d", seq)
+		}
+		seenSegments[seq] = struct{}{}
+	}
+	if len(d.Names) > SessionThinCardNameLimit {
+		return fmt.Errorf("thin session card exceeds name limit")
+	}
+	seenNames := make(map[string]struct{}, len(d.Names))
+	for _, name := range d.Names {
+		name = strings.TrimSpace(name)
+		if name == "" || utf8.RuneCountInString(name) > EpisodeTitleMaxRunes {
+			return fmt.Errorf("invalid thin session card name")
+		}
+		if _, exists := seenNames[name]; exists {
+			return fmt.Errorf("duplicate thin session card name %q", name)
+		}
+		seenNames[name] = struct{}{}
 	}
 	return nil
 }

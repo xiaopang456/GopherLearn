@@ -543,6 +543,47 @@ func (s *HistoryGrantSet) SetCardScope(scope CardScope) {
 	s.cardScopes[session] = scope
 }
 
+// ExtendCardScope adds one session to the set of sessions this run may reach.
+//
+// It is for a tool that FOUND a session rather than one that was shown it:
+// the card search returns candidates, and the one the model picks has to
+// become reachable for the rest of the turn.
+//
+// The scope is added only when it names a card: a session without a card
+// identity is not opened by anything, and a scope that named it would let the
+// run read a conversation no card ever described. The run's own conversation
+// is never added either - it is the present, not the past, and the rules that
+// built this set kept it out for the same reason.
+//
+// A scope that is already there is kept as it is. The first card that opened a
+// session is the one every read in that session is checked against, and a
+// later tool that found the session again must not be able to replace it.
+func (s *HistoryGrantSet) ExtendCardScope(run RunContext, scope CardScope) {
+	if s == nil {
+		return
+	}
+	session := strings.TrimSpace(scope.SessionID)
+	if session == "" || strings.TrimSpace(scope.CardID) == "" || scope.CardVersion == 0 {
+		return
+	}
+	if own := strings.TrimSpace(run.SessionID); own != "" && session == own {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sessionID != "" && session == s.sessionID {
+		return
+	}
+	if s.cardScopes == nil {
+		s.cardScopes = make(map[string]CardScope, 4)
+	}
+	if _, exists := s.cardScopes[session]; exists {
+		return
+	}
+	scope.SessionID = session
+	s.cardScopes[session] = scope
+}
+
 // CardScopeFor returns the scope that opened a session.
 //
 // It is the scope rather than the grant because a card authorises a session

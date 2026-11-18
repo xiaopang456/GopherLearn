@@ -243,9 +243,15 @@ func checkSnapshotIndexes(ctx context.Context, env RealEnvironment, snapshot Sna
 // cardIndexPrefix is the key prefix of the card arm's own rows, when the run
 // asked for the card path. The old arm has none: its rows live in the
 // product's Episode namespace.
+//
+// Both cards have their own prefix, and the thin card's prefix is the thin
+// one: the two indexes hold different documents and a search that meant one
+// must not find the other.
 func (e RealEnvironment) cardIndexPrefix() string {
-	if strings.TrimSpace(e.SessionCardMode) != CardArmModeOn {
+	switch strings.TrimSpace(e.SessionCardMode) {
+	case CardArmModeOn, CardArmModeThin:
+		return strings.TrimSpace(e.SessionCardIndexKeyPrefix)
+	default:
 		return ""
 	}
-	return strings.TrimSpace(e.SessionCardIndexKeyPrefix)
 }
