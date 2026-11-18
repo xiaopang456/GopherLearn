@@ -453,7 +453,11 @@ func realSettings(repository, storage string, env RealEnvironment) (*entry.Setti
 // cross-session memory paths needs the retrieval to have several
 // conversations to choose between, and an attempt whose database holds only
 // the conversation the question is about measures nothing about retrieval.
-func PrepareRealProductReport(ctx context.Context, repository string, histories []History, env RealEnvironment, input AttemptInput) (report WarmupReport, resultErr error) {
+//
+// evidenceDir is the run's private output directory. The card generations'
+// own raw bodies are written into it BEFORE the sandbox is closed, so that
+// the teardown of the sandbox cannot take the evidence with it.
+func PrepareRealProductReport(ctx context.Context, repository string, histories []History, env RealEnvironment, input AttemptInput, evidenceDir string) (report WarmupReport, resultErr error) {
 	if err := env.Validate(); err != nil {
 		return report, err
 	}
@@ -502,6 +506,24 @@ func PrepareRealProductReport(ctx context.Context, repository string, histories 
 		return report, err
 	}
 	defer func() { resultErr = errors.Join(resultErr, closeSandbox(s)) }()
+	// The card generations' own raw bodies are written BEFORE the sandbox is
+	// closed.
+	//
+	// The defer is registered AFTER the sandbox's own, and deferred calls run
+	// in reverse order, so this one runs first: the evidence is on disk while
+	// the database is still there, and nothing that happens afterwards - the
+	// export of the rest of the attempt, the process itself - can take it
+	// away.
+	//
+	// It runs on every exit, including the failing one: a refused card is
+	// exactly the case the bodies are kept for.
+	defer func() {
+		var bodies []CardExchange
+		if report.Projection != nil {
+			bodies = report.Projection.CardExchanges
+		}
+		resultErr = errors.Join(resultErr, WriteCardEvidence(evidenceDir, bodies))
+	}()
 	if err = s.InitProductSchema(ctx); err != nil {
 		return report, err
 	}
@@ -592,40 +614,77 @@ func PrepareRealProductReport(ctx context.Context, repository string, histories 
 		return report, err
 	}
 	projection, projectionCalls, err := projectArmMemories(ctx, repository, env.StorageDir, env, s, sessionIDs, arm)
-	// The projection's record is kept even when the projection as a whole
-	// failed: it carries the failures, and the failures are the evidence.
-	report.Projection = projection
-	// The projection's calls belong to this preparation even when the
-	// projection failed: they are the generation of the memory, and a
-	// preparation whose ledger does not carry them is a preparation whose
-	// cost nobody can see.
-	//
-	// They are added BEFORE the failure is returned, because the failing
-	// exit is the one that has to keep the evidence.
-	report.Calls = append(report.Calls, projectionCalls...)
-	// The usage by role is the preparation's own diagnostic. It is computed
-	// on the failing exit too: a reader who cannot see what the preparation
-	// cost cannot judge what it produced.
-	usageByRole, usageErr := SummarizeCalls(report.Calls)
-	report.UsageByRole = usageByRole
 	if err != nil {
+		// The archive travels with the failure.
+		//
+		// A preparation that stopped has to say which conversations it could
+		// not write. Without the projection on the failing exit the reader
+		// sees a smaller set of conversations and no reason for it - which is
+		// exactly the "quietly dropped" case the archive has to rule out.
+		//
+		// The capture is best effort: the failure that brought the
+		// preparation here may have taken the conversations with it, and a
+		// preparation without its conversations is still better than one
+		// whose conversations are silently fewer.
+		if snapshot, snapshotErr := s.CaptureMany(ctx, env.UserID, sessionIDs); snapshotErr == nil {
+			report.Snapshot = snapshot
+		}
+		usageErr := attachProjectionEvidence(&report, &report.Snapshot, projection, projectionCalls)
 		return report, errors.Join(err, usageErr)
 	}
 	report.Snapshot, err = s.CaptureMany(ctx, env.UserID, sessionIDs)
 	if err != nil {
-		return report, err
+		usageErr := attachProjectionEvidence(&report, &report.Snapshot, projection, projectionCalls)
+		return report, errors.Join(err, usageErr)
 	}
-	report.Snapshot.IndexEntries = projection.IndexEntries
-	// The preparation's own record travels with the archive.
+	// The projection's record, the calls it cost and the usage it made are
+	// kept even when the projection as a whole failed: they carry the
+	// failures, and the failures are the evidence.
 	//
-	// A query that reuses the archive has to be able to say what it was
-	// given: which conversations were projected, how far each one was asked to
-	// reach, and what the index held when the archive was written. Without
-	// the record, the query's own bookkeeping would have to say all of it -
-	// and a query that counts the index itself cannot tell a reused archive
-	// from a fresh one.
-	report.Snapshot.Projection = projection
+	// They are attached BEFORE the failure is returned, because the failing
+	// exit is the one that has to keep the evidence.
+	//
+	// The preparation's own record travels with the archive as well: a query
+	// that reuses the archive has to be able to say what it was given - which
+	// conversations were projected, how far each one was asked to reach, and
+	// what the index held when the archive was written.
+	usageErr := attachProjectionEvidence(&report, &report.Snapshot, projection, projectionCalls)
 	return report, usageErr
+}
+
+// attachProjectionEvidence keeps the projection, the calls it cost and the
+// usage it made on the preparation's own record.
+//
+// It is one function so that the failing exit and the successful exit cannot
+// drift apart: a preparation whose ledger does not carry the projection's
+// calls is a preparation whose cost nobody can see, and the failing exit is
+// exactly the one a reader has to read closely.
+func attachProjectionEvidence(report *WarmupReport, snapshot *Snapshot, projection *ArmProjection, calls []ModelCall) error {
+	if report == nil {
+		return nil
+	}
+	// The projection's record is kept even when the projection as a whole
+	// failed: it carries the failures, and the failures are the evidence.
+	report.Projection = projection
+	// The projection's calls belong to this preparation even when the
+	// projection failed: they are the generation of the memory.
+	report.Calls = append(report.Calls, calls...)
+	// The usage by role is the preparation's own diagnostic. It is computed
+	// on the failing exit too: a reader who cannot see what the preparation
+	// cost cannot judge what it produced.
+	usage, err := SummarizeCalls(report.Calls)
+	report.UsageByRole = usage
+	// The archive carries the preparation's record too.
+	//
+	// A query that reuses the archive has to be able to say which
+	// conversations the preparation could not write. Without the record on
+	// the archive the query sees a smaller attempt with no reason for it,
+	// which is the one thing the archive must never do.
+	if snapshot != nil && projection != nil {
+		snapshot.Projection = projection
+		snapshot.IndexEntries = projection.IndexEntries
+	}
+	return err
 }
 
 // projectArmMemories publishes the projection of every conversation of the
@@ -689,61 +748,36 @@ func projectArmMemories(ctx context.Context, repository, storage string, env Rea
 		return out, nil, err
 	}
 	defer runtime.stop()
-	for _, sessionID := range sessionIDs {
+	// The publishing of one conversation and the decision of what a refusal
+	// means are kept apart: the decision is the same on the real path and on
+	// the offline one, and it is the decision that has to be exercised
+	// without a product, a database and a model.
+	publish := func(ctx context.Context, sessionID string) armStep {
 		published, due, target, waited, code, waitErr := s.PublishAndAwaitMemory(ctx, env.UserID, sessionID, arm)
-		if published {
-			out.Published++
-		}
-		if due {
-			out.Due++
-		}
-		if target > 0 {
-			out.Targets[sessionID] = target
-		}
-		out.WaitMilliseconds += waited
-		if waitErr != nil {
-			// ONE conversation's card was refused. The other conversations
-			// were written, indexed and are worth keeping, so the
-			// preparation goes on.
-			//
-			// Stopping here would throw the whole run away over one card -
-			// and the card the server refused is the SERVER's judgement, not
-			// a failure of the run. What has to survive is the FACT that it
-			// happened, with the job's own code, so the preparation
-			// continues and the failure is recorded.
-			out.Failures = append(out.Failures, ArmFailure{
-				SessionID:       sessionID,
-				ErrorCode:       code,
-				Error:           waitErr.Error(),
-				TargetMessageID: target,
-			})
-			continue
-		}
-		// What the card was written FROM is read now, while the compressed
-		// state is still there. The query restores the archive and cannot
-		// see it, so the record that travels with the archive is the only
-		// place this fact can live.
-		if arm.Mode == CardArmModeOn && target > 0 {
-			input, inputErr := ReadCardInput(ctx, s, env.UserID, sessionID, target)
-			if inputErr != nil {
-				out.Error = inputErr.Error()
-				return out, ledger.Calls(), inputErr
-			}
-			if out.CardInput == nil {
-				out.CardInput = map[string]*CardInputEvidence{}
-			}
-			out.CardInput[sessionID] = &input
-		}
+		return armStep{published: published, due: due, target: target,
+			waited: waited, code: code, err: waitErr}
 	}
-	// EVERY conversation was refused. That is not a degraded card path - it
-	// is no card path at all, and the preparation has to stop.
-	//
-	// Tolerance must not become blindness: a preparation that went on with
-	// no memory at all would archive an empty window and call it a
-	// measurement.
-	if len(out.Failures) > 0 && len(out.Failures) == len(sessionIDs) {
-		out.Error = "every conversation's memory was refused"
-		return out, ledger.Calls(), fmt.Errorf("%s", out.Error)
+	// What the card was written FROM is read now, while the compressed
+	// state is still there. The query restores the archive and cannot see
+	// it, so the record that travels with the archive is the only place
+	// this fact can live.
+	followUp := func(ctx context.Context, sessionID string, target uint) error {
+		if arm.Mode != CardArmModeOn || target == 0 {
+			return nil
+		}
+		input, inputErr := ReadCardInput(ctx, s, env.UserID, sessionID, target)
+		if inputErr != nil {
+			return inputErr
+		}
+		if out.CardInput == nil {
+			out.CardInput = map[string]*CardInputEvidence{}
+		}
+		out.CardInput[sessionID] = &input
+		return nil
+	}
+	if err := driveArmProjection(ctx, out, sessionIDs, publish, followUp); err != nil {
+		out.Error = err.Error()
+		return out, ledger.Calls(), err
 	}
 	// The memory row is written by the projector and the index entry by the
 	// indexer, and they are two steps. The row can say "indexed" before the

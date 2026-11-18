@@ -4,8 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -18,6 +21,7 @@ import (
 	agentService "GopherAI/service/agent"
 	episodeService "GopherAI/service/episode"
 	"github.com/cloudwego/eino/schema"
+	"github.com/xiaopang456/GopherLearn/eval/internal/pathguard"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -228,6 +232,136 @@ type ArmFailure struct {
 	Error string `json:"error"`
 	// TargetMessageID is how far the refused card was asked to reach.
 	TargetMessageID uint `json:"target_message_id,omitempty"`
+}
+
+// CardEvidenceFileName is the name of the file the card generations' raw
+// bodies are written to.
+const CardEvidenceFileName = "card-exchanges.json"
+
+// armStep is what ONE conversation's projection produced.
+//
+// The code is the memory job's own, and it says WHICH stage refused the
+// card: a failure without its code is a failure the reader has to guess at.
+type armStep struct {
+	published bool
+	due       bool
+	target    uint
+	waited    int64
+	code      string
+	err       error
+}
+
+// armPublisher publishes one conversation's projection and waits for the
+// memory that the projection is for.
+//
+// It is a function and not a method so that the decision of what a refusal
+// means can be exercised without a product, a database and a model.
+type armPublisher func(ctx context.Context, sessionID string) armStep
+
+// armFollowUp is what the preparation does with a conversation that WAS
+// written: the real path reads what the card was written from, and that is
+// only there while the compressed state is still there.
+type armFollowUp func(ctx context.Context, sessionID string, target uint) error
+
+// driveArmProjection publishes the projection of every conversation and waits
+// for the memory of every one of them.
+//
+// ONE conversation's refused card does not stop the preparation. The other
+// conversations were written, indexed and are worth keeping, and the refusal
+// is recorded - with the job's own code, so that the reader knows which stage
+// refused it.
+//
+// EVERY conversation refused DOES stop it. Tolerance must not become
+// blindness: a preparation that went on with no memory at all would archive
+// an empty window and call it a measurement.
+//
+// The two decisions live here and not in the callers, so that the real path
+// and the offline path cannot drift apart, and so that they can be
+// exercised without a product, a database and a model.
+func driveArmProjection(ctx context.Context, projection *ArmProjection, conversations []string,
+	publish armPublisher, followUp armFollowUp) error {
+	if projection == nil {
+		return fmt.Errorf("the projection has nowhere to record itself")
+	}
+	for _, sessionID := range conversations {
+		step := publish(ctx, sessionID)
+		if step.published {
+			projection.Published++
+		}
+		if step.due {
+			projection.Due++
+		}
+		if step.target > 0 {
+			projection.Targets[sessionID] = step.target
+		}
+		projection.WaitMilliseconds += step.waited
+		if step.err != nil {
+			// ONE conversation's card was refused. The other conversations
+			// were written, indexed and are worth keeping, so the
+			// preparation goes on.
+			//
+			// Stopping here would throw the whole run away over one card -
+			// and the card the server refused is the SERVER's judgement, not
+			// a failure of the run. What has to survive is the FACT that it
+			// happened, with the job's own code, so the preparation
+			// continues and the failure is recorded.
+			projection.Failures = append(projection.Failures, ArmFailure{
+				SessionID:       sessionID,
+				ErrorCode:       step.code,
+				Error:           step.err.Error(),
+				TargetMessageID: step.target,
+			})
+			continue
+		}
+		if followUp != nil {
+			if err := followUp(ctx, sessionID, step.target); err != nil {
+				return err
+			}
+		}
+	}
+	if len(projection.Failures) > 0 && len(projection.Failures) == len(conversations) {
+		projection.Error = "every conversation's memory was refused"
+		return fmt.Errorf("%s", projection.Error)
+	}
+	return nil
+}
+
+// WriteCardEvidence writes the card generations' raw request and response
+// bodies into the run's private directory.
+//
+// It is written BEFORE the sandbox is closed, and that order is the point:
+// the sandbox holds the database, and the evidence has to be on disk before
+// that database goes away. A failure after this point - the export of the
+// rest of the attempt, the process itself - must not be able to take the
+// bodies with it.
+//
+// The file is private (0600), it is never written inside a repository, and
+// it is never overwritten: a second write would destroy the first one's
+// evidence.
+func WriteCardEvidence(dir string, exchanges []CardExchange) error {
+	if strings.TrimSpace(dir) == "" {
+		return nil
+	}
+	if err := pathguard.Check("card-exchanges", dir); err != nil {
+		return err
+	}
+	bodies := exchanges
+	if bodies == nil {
+		bodies = []CardExchange{}
+	}
+	encoded, err := json.Marshal(bodies)
+	if err != nil {
+		return err
+	}
+	file, err := os.OpenFile(filepath.Join(dir, CardEvidenceFileName), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err = file.Write(encoded); err != nil {
+		file.Close()
+		return err
+	}
+	return file.Close()
 }
 
 // NameCardExchangeSessions ties every card exchange to the conversation it

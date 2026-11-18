@@ -338,7 +338,7 @@ func TestTheCardArmWritesACardAndAsksInAnotherConversation(t *testing.T) {
 	for i := range turns {
 		turns[i] = cardTurn(i)
 	}
-	warmup, err := PrepareOfflineProductReport(ctx, repository, SingleHistory("synthetic-evaluation", turns), AttemptInput{})
+	warmup, err := PrepareOfflineProductReport(ctx, repository, SingleHistory("synthetic-evaluation", turns), AttemptInput{}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -261,10 +261,17 @@ type WarmupReport struct {
 }
 
 func PrepareOfflineProduct(ctx context.Context, repository string, histories []History, input AttemptInput) (Snapshot, []ModelCall, error) {
-	report, err := PrepareOfflineProductReport(ctx, repository, histories, input)
+	report, err := PrepareOfflineProductReport(ctx, repository, histories, input, "")
 	return report.Snapshot, report.Calls, err
 }
-func PrepareOfflineProductReport(ctx context.Context, repository string, histories []History, input AttemptInput) (report WarmupReport, resultErr error) {
+
+// PrepareOfflineProductReport prepares the attempt's conversations offline.
+//
+// evidenceDir is the run's private output directory. The offline model is
+// in-process and writes no card through HTTP, so there are no card bodies
+// to keep: the file is written empty, and its presence says that the phase
+// looked for them and found none.
+func PrepareOfflineProductReport(ctx context.Context, repository string, histories []History, input AttemptInput, evidenceDir string) (report WarmupReport, resultErr error) {
 	report.Snapshot, report.Calls, report.SeededMemories, resultErr = prepareOfflineProduct(ctx, repository, histories, input, func(prepared []PreparedTurn) {
 		report.Turns = prepared
 		SummarizeTurns(prepared, &report)
@@ -274,7 +281,8 @@ func PrepareOfflineProductReport(ctx context.Context, repository string, histori
 	})
 	var usageErr error
 	report.UsageByRole, usageErr = SummarizeCalls(report.Calls)
-	return report, errors.Join(resultErr, usageErr)
+	resultErr = errors.Join(resultErr, usageErr, WriteCardEvidence(evidenceDir, nil))
+	return report, resultErr
 }
 func prepareOfflineProduct(ctx context.Context, repository string, histories []History, input AttemptInput, observe func([]PreparedTurn), observeLayered func([]LayeredSummaryRecord)) (snapshot Snapshot, calls []ModelCall, memories SeedMemoryReport, resultErr error) {
 	if err := ctx.Err(); err != nil {

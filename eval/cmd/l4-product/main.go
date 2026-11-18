@@ -267,27 +267,32 @@ func run(args []string, out io.Writer) error {
 	} else if *phase == "prepare" {
 		var warmup conversation.WarmupReport
 		if real {
-			warmup, err = conversation.PrepareRealProductReport(ctx, *repository, histories, environment, attempt)
+			warmup, err = conversation.PrepareRealProductReport(ctx, *repository, histories, environment, attempt, *output)
 		} else {
-			warmup, err = conversation.PrepareOfflineProductReport(ctx, *repository, histories, attempt)
+			warmup, err = conversation.PrepareOfflineProductReport(ctx, *repository, histories, attempt, *output)
 		}
 		snapshot = warmup.Snapshot
 		paidCalls = len(warmup.Calls)
-		// The card generations' own bodies are written FIRST, before every
-		// other output of the phase.
+		// The card generations' own bodies were written by the preparation
+		// itself, BEFORE the sandbox was closed.
 		//
 		// They are the one thing a reader cannot reconstruct: the ledger
 		// holds hashes, and a hash says that two bodies differ, not what
 		// either of them said. When the server refuses a card, the question
-		// is what the model actually wrote - and that is in this file.
+		// is what the model actually wrote - and that is in that file.
 		//
-		// Writing it first is the point. A later export that fails must not
-		// take the evidence with it: the refused card's own words stay on
-		// disk, and the failure is read next to them.
-		err = errors.Join(err, write("card-exchanges.json", cardExchangesOf(warmup)))
+		// The preparation writes it rather than this command, because the
+		// sandbox holds the database that the bodies talk about, and the
+		// teardown of the sandbox must not be able to take them with it.
 		err = errors.Join(err, write("model-calls.json", warmup.Calls), write("warmup.json", warmup))
-		if err == nil {
-			err = conversation.WriteSnapshot(filepath.Join(*output, "snapshot.json"), snapshot)
+		// The archive is written on the failing exit too.
+		//
+		// A preparation that stopped has to say which conversations it could
+		// not write, and the archive is what says it. An archive written
+		// only when everything went well would hide the conversations that
+		// did not - which is the one thing the archive must never do.
+		if len(snapshot.Sessions) > 0 {
+			err = errors.Join(err, conversation.WriteSnapshot(filepath.Join(*output, "snapshot.json"), snapshot))
 		}
 	} else {
 		var result conversation.ProductResult
@@ -463,24 +468,6 @@ func realEnvironment(flags *flag.FlagSet, proxy, redis, redisPassword, storage, 
 		MemoryWaitTimeout: memoryWait,
 	}
 	return environment, environment.Validate()
-}
-
-// cardExchangesOf reads the card generations' own bodies out of the
-// preparation's record.
-//
-// They live on the projection, because that is where the preparation's
-// evidence lives: the projection carries the conversations that were
-// projected, the ones that were refused, and the raw exchange of every
-// card that was written.
-//
-// An empty list is written rather than nothing: the file's presence says
-// that the phase looked for the bodies and found none, which is a
-// different fact from a phase that never looked.
-func cardExchangesOf(report conversation.WarmupReport) []conversation.CardExchange {
-	if report.Projection == nil || report.Projection.CardExchanges == nil {
-		return []conversation.CardExchange{}
-	}
-	return report.Projection.CardExchanges
 }
 
 // attemptQID names one attempt of one scenario.

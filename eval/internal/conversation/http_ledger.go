@@ -12,6 +12,27 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
+// cardGenerationRequested says whether the request asked for the card tool.
+//
+// The TOOL TABLE is the authoritative answer: the card writer is the only
+// call that binds publish_session_card, and a request that offers other
+// tools is not a card generation even when its prompt mentions the name.
+//
+// A body whose table cannot be read falls back to the raw name: the request
+// that names the tool is still a card request, and a card whose raw body was
+// lost is the one loss the evidence cannot afford.
+func cardGenerationRequested(raw []byte) bool {
+	if names := ToolNamesFromBody(raw); len(names) > 0 {
+		for _, name := range names {
+			if name == cardToolName {
+				return true
+			}
+		}
+		return false
+	}
+	return bytes.Contains(raw, []byte(cardToolName))
+}
+
 // modelHTTPHandler records the actual SDK request boundary and provider usage
 // response without replacing any product collaborator. The supplied backend is
 // always a no-upstream fake handler in the offline command.
@@ -52,9 +73,9 @@ func modelHTTPHandler(ledger *ModelLedger, roles RolePrompts, backend http.Handl
 		// refuses a card, the question is what the model actually wrote.
 		//
 		// The request is recognised by the TOOL it binds - the card writer
-		// is the only call that asks for publish_session_card - so the
-		// capture does not depend on the prompt's wording.
-		isCardGeneration := role == "background" && bytes.Contains(raw, []byte(cardToolName))
+		// is the only call whose tool table names publish_session_card - so
+		// the capture does not depend on the prompt's wording.
+		isCardGeneration := role == "background" && cardGenerationRequested(raw)
 		ledger.mu.Lock()
 		ledger.calls[id-1].Model = request.Model
 		ledger.calls[id-1].RequestedMaxTokens = request.MaxTokens

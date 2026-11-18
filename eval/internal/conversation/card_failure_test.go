@@ -132,6 +132,33 @@ func TestOnlyTheCardGenerationIsCaptured(t *testing.T) {
 	}
 }
 
+// The card generation is told apart by the TOOL it binds, not by a word that
+// happens to be in its prompt.
+//
+// The card writer's own prompt says "Call publish_session_card exactly
+// once", so a body that merely MENTIONS the name is not a card generation -
+// another background call that talks about the same tool must not be
+// captured, or the evidence file would carry bodies that belong to nobody.
+func TestTheCardGenerationIsRecognisedByItsToolTable(t *testing.T) {
+	mentioned := []byte(`{"model":"synthetic","messages":[{"role":"system","content":"known"},{"role":"user","content":"please call publish_session_card"}],` +
+		`"tools":[{"type":"function","function":{"name":"search_documents"}}]}`)
+	if cardGenerationRequested(mentioned) {
+		t.Fatal("a call that only mentions the tool name is not a card generation")
+	}
+	bound := []byte(`{"model":"synthetic","messages":[{"role":"system","content":"known"}],` +
+		`"tools":[{"type":"function","function":{"name":"publish_session_card"}}]}`)
+	if !cardGenerationRequested(bound) {
+		t.Fatal("a call that binds the card tool is a card generation")
+	}
+	// A body whose table cannot be read must not cost the capture: the
+	// request that names the tool is still a card request.
+	unreadable := []byte(`{"model":"synthetic","messages":[{"role":"system","content":"known"}],` +
+		`"tools":[{"type":"function","function":{"name":"publish_session_card"}}`)
+	if !cardGenerationRequested(unreadable) {
+		t.Fatal("a body that cannot be parsed must still be captured")
+	}
+}
+
 // The exchange names the conversation it was written for.
 //
 // The body carries the message id the card may reach to, and that id belongs
