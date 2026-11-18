@@ -505,15 +505,17 @@ func PrepareRealProductReport(ctx context.Context, repository string, histories 
 	if err != nil {
 		return report, err
 	}
-	defer func() { resultErr = errors.Join(resultErr, closeSandbox(s)) }()
 	// The card generations' own raw bodies are written BEFORE the sandbox is
-	// closed.
+	// closed, and the sandbox is closed ONLY after the write succeeded.
 	//
-	// The defer is registered AFTER the sandbox's own, and deferred calls run
-	// in reverse order, so this one runs first: the evidence is on disk while
-	// the database is still there, and nothing that happens afterwards - the
-	// export of the rest of the attempt, the process itself - can take it
-	// away.
+	// The two are one call so that the order cannot drift: the evidence is on
+	// disk while the database is still there, and nothing that happens
+	// afterwards - the export of the rest of the attempt, the process itself -
+	// can take it away.
+	//
+	// When the write FAILS the sandbox is KEPT, and the failure says which
+	// container was kept and what the report still holds. A teardown that ran
+	// anyway would leave the failure with nothing to look at.
 	//
 	// It runs on every exit, including the failing one: a refused card is
 	// exactly the case the bodies are kept for.
@@ -522,7 +524,8 @@ func PrepareRealProductReport(ctx context.Context, repository string, histories 
 		if report.Projection != nil {
 			bodies = report.Projection.CardExchanges
 		}
-		resultErr = errors.Join(resultErr, WriteCardEvidence(evidenceDir, bodies))
+		resultErr = errors.Join(resultErr, writeCardEvidenceThenClose(evidenceDir, bodies, s.name(),
+			savedEvidenceOf(&report), WriteCardEvidence, func() error { return closeSandbox(s) }))
 	}()
 	if err = s.InitProductSchema(ctx); err != nil {
 		return report, err

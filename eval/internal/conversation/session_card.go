@@ -338,6 +338,10 @@ func driveArmProjection(ctx context.Context, projection *ArmProjection, conversa
 // The file is private (0600), it is never written inside a repository, and
 // it is never overwritten: a second write would destroy the first one's
 // evidence.
+//
+// A failure here is NOT a failure of the write alone: the caller keeps the
+// sandbox when this returns an error, because the sandbox holds the rows a
+// reader needs to locate the failure. See writeCardEvidenceThenClose.
 func WriteCardEvidence(dir string, exchanges []CardExchange) error {
 	if strings.TrimSpace(dir) == "" {
 		return nil
@@ -362,6 +366,80 @@ func WriteCardEvidence(dir string, exchanges []CardExchange) error {
 		return err
 	}
 	return file.Close()
+}
+
+// cardEvidenceSaved says what the run still holds when the evidence could
+// not be written.
+//
+// It is what the failure has to report: a reader who is told that the
+// evidence is missing has to be told what is NOT missing, or they will look
+// for a failure that is not there.
+type cardEvidenceSaved struct {
+	// Calls is how many model calls the preparation made.
+	Calls int
+	// Refused is how many conversations the preparation could not write.
+	Refused int
+}
+
+// savedEvidenceOf reads what the preparation still holds off its report.
+func savedEvidenceOf(report *WarmupReport) cardEvidenceSaved {
+	if report == nil {
+		return cardEvidenceSaved{}
+	}
+	saved := cardEvidenceSaved{Calls: len(report.Calls)}
+	if report.Projection != nil {
+		saved.Refused = len(report.Projection.Failures)
+	}
+	return saved
+}
+
+// writeCardEvidenceThenClose writes the card generations' raw bodies and
+// then tears the sandbox down.
+//
+// The order is the point, and it is why the two are one function: the
+// evidence has to be on disk BEFORE the database goes away, so that nothing
+// which happens afterwards - the export of the rest of the attempt, the
+// process itself - can take the evidence with the database.
+//
+// When the write FAILS the sandbox is KEPT. It holds the run's own rows, and
+// a teardown that took them away would leave the failure with nothing to
+// look at. The failure says where the file should have been, which container
+// was kept, and what the run still holds.
+//
+// The write and the close are parameters so that this decision can be
+// exercised without a product, a database and a model.
+func writeCardEvidenceThenClose(dir string, captured []CardExchange, kept string, saved cardEvidenceSaved,
+	write func(string, []CardExchange) error, close func() error) error {
+	if writeErr := write(dir, captured); writeErr != nil {
+		return cardEvidenceNotWritten(dir, kept, captured, saved, writeErr)
+	}
+	return close()
+}
+
+// cardEvidenceNotWritten says where the evidence should have been, what was
+// kept, and what the run still holds.
+//
+// The message is the only thing a reader has when the file is not there, so
+// it has to carry the three facts they cannot get anywhere else: the path,
+// the container, and the list of what IS saved.
+func cardEvidenceNotWritten(dir, kept string, captured []CardExchange, saved cardEvidenceSaved, cause error) error {
+	lost := "no card body was captured, so nothing of that kind was lost"
+	if len(captured) > 0 {
+		lost = fmt.Sprintf("%d captured %s NOT saved",
+			len(captured), plural(len(captured), "card body", "card bodies"))
+	}
+	return fmt.Errorf("the card evidence was not written to %s: %w; the sandbox %s was kept, so the run's own rows are still there; the preparation's report keeps its %d model %s and its %d refused %s; %s",
+		filepath.Join(dir, CardEvidenceFileName), cause, kept,
+		saved.Calls, plural(saved.Calls, "call", "calls"),
+		saved.Refused, plural(saved.Refused, "conversation", "conversations"), lost)
+}
+
+// plural names a thing in the number it is in.
+func plural(count int, one, many string) string {
+	if count == 1 {
+		return one
+	}
+	return many
 }
 
 // NameCardExchangeSessions ties every card exchange to the conversation it

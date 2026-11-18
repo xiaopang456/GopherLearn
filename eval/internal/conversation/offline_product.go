@@ -272,7 +272,7 @@ func PrepareOfflineProduct(ctx context.Context, repository string, histories []H
 // to keep: the file is written empty, and its presence says that the phase
 // looked for them and found none.
 func PrepareOfflineProductReport(ctx context.Context, repository string, histories []History, input AttemptInput, evidenceDir string) (report WarmupReport, resultErr error) {
-	report.Snapshot, report.Calls, report.SeededMemories, resultErr = prepareOfflineProduct(ctx, repository, histories, input, func(prepared []PreparedTurn) {
+	report.Snapshot, report.Calls, report.SeededMemories, resultErr = prepareOfflineProduct(ctx, repository, histories, input, evidenceDir, func(prepared []PreparedTurn) {
 		report.Turns = prepared
 		SummarizeTurns(prepared, &report)
 	}, func(layered []LayeredSummaryRecord) {
@@ -281,10 +281,10 @@ func PrepareOfflineProductReport(ctx context.Context, repository string, histori
 	})
 	var usageErr error
 	report.UsageByRole, usageErr = SummarizeCalls(report.Calls)
-	resultErr = errors.Join(resultErr, usageErr, WriteCardEvidence(evidenceDir, nil))
+	resultErr = errors.Join(resultErr, usageErr)
 	return report, resultErr
 }
-func prepareOfflineProduct(ctx context.Context, repository string, histories []History, input AttemptInput, observe func([]PreparedTurn), observeLayered func([]LayeredSummaryRecord)) (snapshot Snapshot, calls []ModelCall, memories SeedMemoryReport, resultErr error) {
+func prepareOfflineProduct(ctx context.Context, repository string, histories []History, input AttemptInput, evidenceDir string, observe func([]PreparedTurn), observeLayered func([]LayeredSummaryRecord)) (snapshot Snapshot, calls []ModelCall, memories SeedMemoryReport, resultErr error) {
 	if err := ctx.Err(); err != nil {
 		return snapshot, nil, memories, err
 	}
@@ -301,7 +301,19 @@ func prepareOfflineProduct(ctx context.Context, repository string, histories []H
 	if err != nil {
 		return snapshot, nil, memories, err
 	}
-	defer func() { resultErr = errors.Join(resultErr, closeSandbox(s)) }()
+	// The evidence is written BEFORE the sandbox is closed, and the sandbox is
+	// closed ONLY after the write succeeded.
+	//
+	// The offline model is in-process and writes no card through HTTP, so
+	// there are no card bodies to keep: the file is written empty, and its
+	// presence says that the phase looked for them and found none. The rule
+	// is the one the real path follows - a write that failed keeps the
+	// sandbox, because a teardown that ran anyway would take the run's own
+	// rows with it.
+	defer func() {
+		resultErr = errors.Join(resultErr, writeCardEvidenceThenClose(evidenceDir, nil, s.name(),
+			cardEvidenceSaved{Calls: len(calls)}, WriteCardEvidence, func() error { return closeSandbox(s) }))
+	}()
 	if err = s.InitProductSchema(ctx); err != nil {
 		return snapshot, nil, memories, err
 	}
