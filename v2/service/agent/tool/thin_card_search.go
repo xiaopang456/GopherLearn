@@ -46,7 +46,19 @@ const (
 )
 
 // searchSessionCardsDescription is the contract the model reads.
-const searchSessionCardsDescription = "Search your earlier conversations for the one a question is about. Use it when you do not yet know which conversation holds the answer. It returns candidates: the conversation id, its title, what it was about, when it was last talked in and the summary segments it points at. It reads no transcript. When the question says \"last time\", the candidates are ordered newest first, so the first one is the last conversation the learner had: check its summary against the question, and if the evidence does not match, go on to the next candidate. Pick one candidate and read that conversation with browse_summary_segments or read_session_whiteboard."
+//
+// It carries the routing rule, because the routing is the model's to make:
+// the server does not read the question and decide that the turn is about
+// another conversation, because the server cannot see the whole conversation
+// and the model can. A rule the server applied to the question's words would
+// refuse exactly the questions that need it - "what did we talk about last
+// week in the other chat" is a bare-looking question that is not about this
+// conversation at all.
+//
+// So the rule is stated here, where the model reads it, and the server keeps
+// the boundaries: whose history it may read, which conversation a read may
+// be taken in, which ids a read may cite, and how much of it may come back.
+const searchSessionCardsDescription = "Search your earlier conversations for the one a question is about. Prefer answering from THIS conversation: its current state, its summary segments and its recent words are already in front of you, and they are the answer to a question about this conversation. Call this tool only when the learner explicitly asks about another conversation, or when the previous turn settled which conversation is meant. If the reference is still ambiguous, ask the learner which conversation they mean instead of searching - and if the candidates you found cannot be told apart, ask them with ask_which_conversation rather than guessing. It returns candidates: the conversation id, its title, what it was about, when it was last talked in and the summary segments it points at. It reads no transcript: check each candidate's summary against the question, stop at the one whose evidence matches, and open that one with browse_summary_segments or read_session_whiteboard. A date the learner named filters the candidates to that period."
 
 // The states a search can report.
 const (
@@ -200,25 +212,19 @@ func (r *SearchSessionCardsRegistry) search(ctx context.Context, run serviceagen
 	if limit > maxSearchSessionCards {
 		limit = maxSearchSessionCards
 	}
-	// The order of the search is decided before the search runs.
+	// The search runs when the model asks for it.
 	//
-	// A question that only points - "last time", "last week" - and a
-	// conversation that already has a history of its own is answered HERE
-	// first. Going looking elsewhere before looking here is the wrong order,
-	// and the learner pays for the wrong order in a card search that returns
-	// an earlier conversation's answer to a question about this one.
+	// Whether the turn is about another conversation is the MODEL's decision,
+	// made with the whole conversation in front of it - and the tool's
+	// description says how to make it. The server does not read the
+	// question and refuse, because a rule applied to the question's words
+	// refuses the questions that need it: "what did we talk about last week
+	// in the other chat" looks like a bare pointer and is not about this
+	// conversation at all.
 	//
-	// The rule reads the LEARNER's question rather than the tool's query:
-	// the model may have put "last time" in the query while the learner
-	// wrote "the three exercises you set me last time", and the second is a
-	// question about an earlier conversation.
-	intent := episode.CrossSessionIntentOf(run.Question, run.CurrentSessionHasHistory)
-	if !intent.Cross {
-		out.Status = cardsStatusNoEvidence
-		out.Reason = cardsReasonCurrentFirst
-		out.Notes = "This question points at a conversation without naming a subject, and this conversation already has a history. Answer from it. Search again only if you can name a subject, a name or a phrase from the conversation you are looking for."
-		return out, nil
-	}
+	// What the server keeps is the boundaries: whose history this reaches,
+	// which conversations a read may be taken in, which ids it may cite, and
+	// how much of it comes back.
 	query := thinCardQuery(run.Question, strings.TrimSpace(input.Query))
 	candidates, err := r.retriever.Recall(ctx, run.UserID, run.SessionID, query)
 	if err != nil {
@@ -232,6 +238,46 @@ func (r *SearchSessionCardsRegistry) search(ctx context.Context, run serviceagen
 	}
 	wanted := strings.TrimSpace(input.Session)
 	tokens := 0
+	// A NAMED conversation is looked up BY IDENTITY.
+	//
+	// It is the case the clarification makes: the learner picked one of the
+	// conversations the model offered, and the model has to be able to open
+	// THAT one. Searching for it again with the question's words would
+	// find it only if its words happen to match, and the learner picked it
+	// precisely because the words did not tell them apart.
+	//
+	// The lookup is the card index's own, so it is owner-scoped: a
+	// conversation the learner does not own is not found, and neither is
+	// one that has no card.
+	if wanted != "" {
+		candidate, found, lookupErr := r.retriever.CardOfSession(ctx, run.UserID, wanted)
+		if lookupErr != nil {
+			if ctxErr := contextError(ctx); ctxErr != nil {
+				return nil, ctxErr
+			}
+			out.Status = cardsStatusUnavailable
+			out.Reason = cardsReasonStoreFailure
+			out.Retryable = true
+			return out, nil
+		}
+		if found {
+			// The conversation being answered is not a candidate: it is
+			// already in the window, and offering it as a candidate would
+			// send the model looking for something it has.
+			if strings.TrimSpace(candidate.SessionID) != strings.TrimSpace(run.SessionID) {
+				view := thinCardCandidateView(candidate)
+				out.Candidates = append(out.Candidates, view)
+				tokens += thinCardCandidateTokens(view)
+				r.openCandidate(run, candidate)
+			}
+		}
+		out.ObservationTokens = tokens
+		if len(out.Candidates) == 0 {
+			out.Status = cardsStatusNoEvidence
+			out.Reason = cardsReasonNoMatch
+		}
+		return out, nil
+	}
 	for _, candidate := range candidates {
 		if len(out.Candidates) >= limit {
 			out.Truncated = true
@@ -241,31 +287,10 @@ func (r *SearchSessionCardsRegistry) search(ctx context.Context, run serviceagen
 		if session == "" {
 			continue
 		}
-		if wanted != "" && session != wanted {
-			continue
-		}
 		view := thinCardCandidateView(candidate)
 		out.Candidates = append(out.Candidates, view)
 		tokens += thinCardCandidateTokens(view)
-		// The candidate becomes reachable for the rest of the turn.
-		//
-		// The card is the authority: it is the user's own card about the
-		// user's own earlier conversation, and it is what every read taken
-		// in that conversation is checked against. The run's own
-		// conversation is never added - a card about the conversation
-		// being answered is not a door to the past, and the grant set
-		// refuses it.
-		if run.GrantSet != nil {
-			run.GrantSet.ExtendCardScope(run, serviceagent.CardScope{
-				SessionID: session, CardID: candidate.CardID, CardVersion: candidate.CardVersion,
-				// The watermark is the ceiling of every read taken in that
-				// conversation through this card. A scope without one puts
-				// the ceiling at zero, and a ceiling of zero hides every
-				// segment and every message of the conversation the candidate
-				// just pointed at.
-				CardWatermark: candidate.Watermark,
-			})
-		}
+		r.openCandidate(run, candidate)
 	}
 	out.ObservationTokens = tokens
 	if len(out.Candidates) == 0 {
@@ -273,6 +298,31 @@ func (r *SearchSessionCardsRegistry) search(ctx context.Context, run serviceagen
 		out.Reason = cardsReasonNoMatch
 	}
 	return out, nil
+}
+
+// openCandidate makes a candidate reachable for the rest of the turn.
+//
+// The card is the authority: it is the user's own card about the user's own
+// earlier conversation, and it is what every read taken in that conversation
+// is checked against. The run's own conversation is never added - a card
+// about the conversation being answered is not a door to the past, and the
+// grant set refuses it.
+func (r *SearchSessionCardsRegistry) openCandidate(run serviceagent.RunContext, candidate episode.ThinCardCandidate) {
+	if run.GrantSet == nil {
+		return
+	}
+	session := strings.TrimSpace(candidate.SessionID)
+	if session == "" {
+		return
+	}
+	run.GrantSet.ExtendCardScope(run, serviceagent.CardScope{
+		SessionID: session, CardID: candidate.CardID, CardVersion: candidate.CardVersion,
+		// The watermark is the ceiling of every read taken in that
+		// conversation through this card. A scope without one puts the
+		// ceiling at zero, and a ceiling of zero hides every segment and
+		// every message of the conversation the candidate just pointed at.
+		CardWatermark: candidate.Watermark,
+	})
 }
 
 // thinCardCandidateView renders one candidate.

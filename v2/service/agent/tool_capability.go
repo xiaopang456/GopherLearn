@@ -83,6 +83,13 @@ const (
 	// not a message: it is the session's current effective state, and it
 	// answers "what was finally agreed" rather than "what was said".
 	CapabilityReadSessionWhiteboard MemoryToolCapability = "read_session_whiteboard"
+	// CapabilityAskWhichConversation asks the learner which conversation
+	// they meant.
+	//
+	// It is a capability of its own because it is the only way the turn can
+	// STOP and wait: the candidates cannot be told apart, and the learner
+	// is the only one who knows which one they mean.
+	CapabilityAskWhichConversation MemoryToolCapability = "ask_which_conversation"
 )
 
 // ToolSurface selects which names the model sees for the same capabilities.
@@ -153,6 +160,9 @@ const (
 	searchHistorySegmentsToolName = "search_history_segments"
 	// readSessionWhiteboardToolName reads one conversation's whiteboard.
 	readSessionWhiteboardToolName = "read_session_whiteboard"
+	// askWhichConversationToolName asks the learner which conversation they
+	// meant.
+	askWhichConversationToolName = "ask_which_conversation"
 	// The explicit surface's names for the three on-demand retrieval tools.
 	//
 	// They are named after what they find rather than after what they are:
@@ -161,6 +171,12 @@ const (
 	SearchSessionCardsToolName    = "find_session_cards"
 	SearchHistorySegmentsToolName = "find_history_segments"
 	ReadSessionWhiteboardToolName = "show_session_whiteboard"
+	// AskWhichConversationToolName is the explicit surface's name for the
+	// question the model asks when the candidates cannot be told apart.
+	//
+	// It is named after what the model does - it chooses, with the
+	// learner's help - rather than after what it is.
+	AskWhichConversationToolName = "choose_conversation"
 )
 
 // toolCapabilities is the mapping, written once.
@@ -187,6 +203,8 @@ var toolCapabilities = map[string]MemoryToolCapability{
 	SearchHistorySegmentsToolName:   CapabilitySearchHistorySegments,
 	readSessionWhiteboardToolName:   CapabilityReadSessionWhiteboard,
 	ReadSessionWhiteboardToolName:   CapabilityReadSessionWhiteboard,
+	askWhichConversationToolName:    CapabilityAskWhichConversation,
+	AskWhichConversationToolName:    CapabilityAskWhichConversation,
 }
 
 // surfaceNames is the forward direction, also written once. Every capability
@@ -205,6 +223,7 @@ var surfaceNames = map[ToolSurface]map[MemoryToolCapability]string{
 		CapabilitySearchSessionCards:    searchSessionCardsToolName,
 		CapabilitySearchHistorySegments: searchHistorySegmentsToolName,
 		CapabilityReadSessionWhiteboard: readSessionWhiteboardToolName,
+		CapabilityAskWhichConversation:  askWhichConversationToolName,
 	},
 	SurfaceExplicitActions: {
 		CapabilityEpisodeSearch:         SearchPastSessionsToolName,
@@ -218,6 +237,7 @@ var surfaceNames = map[ToolSurface]map[MemoryToolCapability]string{
 		CapabilitySearchSessionCards:    SearchSessionCardsToolName,
 		CapabilitySearchHistorySegments: SearchHistorySegmentsToolName,
 		CapabilityReadSessionWhiteboard: ReadSessionWhiteboardToolName,
+		CapabilityAskWhichConversation:  AskWhichConversationToolName,
 	},
 	SurfaceExplicitSources: {
 		CapabilityEpisodeSearch:         SearchPastSessionsToolName,
@@ -231,6 +251,7 @@ var surfaceNames = map[ToolSurface]map[MemoryToolCapability]string{
 		CapabilitySearchSessionCards:    SearchSessionCardsToolName,
 		CapabilitySearchHistorySegments: SearchHistorySegmentsToolName,
 		CapabilityReadSessionWhiteboard: ReadSessionWhiteboardToolName,
+		CapabilityAskWhichConversation:  AskWhichConversationToolName,
 	},
 	// The same names as explicit_sources, deliberately: the priority contract
 	// varies the descriptions and the server's first-tool behaviour, not the
@@ -248,6 +269,7 @@ var surfaceNames = map[ToolSurface]map[MemoryToolCapability]string{
 		CapabilitySearchSessionCards:    SearchSessionCardsToolName,
 		CapabilitySearchHistorySegments: SearchHistorySegmentsToolName,
 		CapabilityReadSessionWhiteboard: ReadSessionWhiteboardToolName,
+		CapabilityAskWhichConversation:  AskWhichConversationToolName,
 	},
 }
 

@@ -12,7 +12,6 @@ import (
 	summarysegmentdao "GopherAI/dao/summarysegment"
 	"GopherAI/model"
 	serviceagent "GopherAI/service/agent"
-	"GopherAI/service/episode"
 
 	"github.com/cloudwego/eino/components/tool"
 	toolutils "github.com/cloudwego/eino/components/tool/utils"
@@ -56,7 +55,11 @@ const (
 )
 
 // searchHistorySegmentsDescription is the contract the model reads.
-const searchHistorySegmentsDescription = "Search your earlier conversations' summary segments for a clue. Use it when the conversation search did not find the conversation you are looking for. A segment is a compressed record of earlier turns, not a transcript: it returns the segment with the conversation it belongs to, and the conversation is opened only when a card describes it."
+//
+// It carries the routing rule, because the routing is the model's to make:
+// the server does not read the question and decide that the turn is about
+// another conversation. What the server keeps is the boundaries.
+const searchHistorySegmentsDescription = "Search your earlier conversations' summary segments for a clue. Use it when the card search did not find the conversation you are looking for, or when the learner names something the cards do not carry. Prefer answering from THIS conversation: its current state, its summary segments and its recent words are already in front of you. Call this tool only when the learner explicitly asks about another conversation, or when the previous turn settled which conversation is meant. If the reference is still ambiguous, ask the learner which conversation they mean instead of searching. A segment is a compressed record of earlier turns, not a transcript: it returns the segment with the conversation it belongs to, and the conversation is opened only when a card describes it. A date the learner named filters the segments to that period."
 
 // The states a search can report.
 const (
@@ -74,10 +77,6 @@ const (
 	// segmentsReasonNoCard says a hit was found in a conversation no card
 	// describes, so the conversation cannot be opened.
 	segmentsReasonNoCard = "card_unavailable"
-	// segmentsReasonCurrentFirst says the question was a bare pointer and
-	// THIS conversation has the history, so the answer is here before it is
-	// anywhere else.
-	segmentsReasonCurrentFirst = "current_session_has_history"
 )
 
 // SearchHistorySegmentsInput is what the model asks for.
@@ -267,16 +266,20 @@ func (r *SearchHistorySegmentsRegistry) search(ctx context.Context, run servicea
 		limit = maxSearchHistorySegments
 	}
 	query := strings.TrimSpace(input.Query)
-	// The same order rule the card search follows: a bare pointer with a
-	// history here is answered here first, and the segment search is not the
-	// place to start.
-	intent := episode.CrossSessionIntentOf(run.Question, run.CurrentSessionHasHistory)
-	if !intent.Cross {
-		out.Status = segmentsStatusNoEvidence
-		out.Reason = segmentsReasonCurrentFirst
-		out.Notes = "This question points at a conversation without naming a subject, and this conversation already has a history. Answer from it. Search again only if you can name a subject, a name or a phrase from the conversation you are looking for."
-		return out, nil
-	}
+	// The search runs when the model asks for it.
+	//
+	// Whether the turn is about another conversation is the MODEL's decision,
+	// made with the whole conversation in front of it - and the tool's
+	// description says how to make it. The server does not read the
+	// question and refuse, because a rule applied to the question's words
+	// refuses the questions that need it: "what did we talk about last week
+	// in the other chat" looks like a bare pointer and is not about this
+	// conversation at all.
+	//
+	// What the server keeps is the boundaries: whose history this reaches,
+	// which conversations a read may be taken in, which ids it may cite, and
+	// how much of it comes back.
+	//
 	// The period the learner named filters the hits, the same way it filters
 	// the cards: a stretch of turns from outside the period is not an answer
 	// to the question, whatever its words say.

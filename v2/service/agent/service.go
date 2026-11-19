@@ -211,7 +211,12 @@ type RunResult struct {
 	KnowledgeReason rag.KnowledgeReason `json:"knowledgeReason"`
 	ContextBudget   BudgetBreakdown     `json:"contextBudget"`
 	MemoryDraft     *MemoryDraftCard    `json:"memoryDraft,omitempty"`
-	Replayed        bool                `json:"replayed,omitempty"`
+	// Clarification is the question the model asked because it could not
+	// tell which conversation the learner meant.
+	//
+	// It is nil for a turn that answered, and set for a turn that asked.
+	Clarification *ClarificationCard `json:"clarification,omitempty"`
+	Replayed      bool               `json:"replayed,omitempty"`
 	// UsedTopicKeys names the topics whose personal state actually reached the
 	// model, so the user can see what their confirmation did. It carries keys
 	// and never note text: the answer already shows whatever it used.
@@ -463,6 +468,7 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 		AnswerBasis: runnerResult.AnswerBasis, KnowledgeStatus: runnerResult.KnowledgeStatus, KnowledgeReason: runnerResult.KnowledgeReason,
 		ContextBudget: runnerResult.ContextBudget,
 		MemoryDraft:   cloneMemoryDraftCard(runnerResult.MemoryDraft),
+		Clarification: ClarificationCardOf(runnerResult.Clarification),
 		UsedTopicKeys: append([]string{}, runnerResult.UsedTopicKeys...),
 		// A run that answered under a spent budget is not a run that
 		// answered freely, and the record has to say which one it was.
@@ -494,6 +500,10 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 		Sources:        model.MessageSources(append([]rag.Source{}, runnerResult.Sources...)),
 		EpisodeSources: append(model.EpisodeSourceRefs(nil), runnerResult.EpisodeSources...),
 		AnswerBasis:    runnerResult.AnswerBasis, KnowledgeStatus: runnerResult.KnowledgeStatus, KnowledgeReason: runnerResult.KnowledgeReason,
+		// The clarification travels with the message, because the learner
+		// answers it in their next message and the answer has to be
+		// resolvable against the candidates that were offered.
+		Clarification: runnerResult.Clarification,
 	}
 	encodedResult, err := json.Marshal(result)
 	if err != nil {
@@ -570,6 +580,7 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 		AnswerBasis: runnerResult.AnswerBasis, KnowledgeStatus: runnerResult.KnowledgeStatus, KnowledgeReason: runnerResult.KnowledgeReason,
 		ContextBudget: &runnerResult.ContextBudget,
 		MemoryDraft:   cloneMemoryDraftCard(runnerResult.MemoryDraft),
+		Clarification: ClarificationCardOf(runnerResult.Clarification),
 	}); err != nil {
 		return result, err
 	}

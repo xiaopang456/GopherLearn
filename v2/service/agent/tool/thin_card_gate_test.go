@@ -2,6 +2,7 @@ package agenttool
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"GopherAI/dao/summarysegment"
@@ -9,17 +10,17 @@ import (
 	"GopherAI/service/episode"
 )
 
-// The order of the search.
+// The routing is the model's.
 //
-// The rule is the one the learner would expect: a question that only points -
-// "last time", "last week" - and a conversation that already has a history of
-// its own is answered HERE first. The two searches refuse to go looking
-// elsewhere before looking here, and they say why.
+// The server does not read the question and decide that the turn is about
+// another conversation. A rule applied to the question's words refuses the
+// questions that need it - "what did we talk about last week in the other
+// chat" looks like a bare pointer and is not about this conversation at all.
 //
-// The rule reads the LEARNER's question rather than the tool's query, because
-// the model may compress the question into the query: the model may pass
-// "last time" while the learner wrote "the three exercises you set me last
-// time", and the second is a question about an earlier conversation.
+// So the two searches run when the model calls them, and the RULE is in the
+// tool description, which is what the model reads. What the server keeps is
+// the boundaries: whose history it reaches, which conversations a read may be
+// taken in, which ids it may cite, and how much of it comes back.
 
 // countingCardRetriever answers everything and counts how often it was asked.
 type countingCardRetriever struct {
@@ -66,115 +67,79 @@ func gateRun(question string) serviceagent.RunContext {
 	return run
 }
 
-// A bare pointer is refused, and the refusal says where to look first.
-func TestTheCardSearchStaysInThisConversationForABarePointer(t *testing.T) {
-	retriever := &countingCardRetriever{}
-	registry, err := NewSearchSessionCardsRegistry(retriever)
-	if err != nil {
-		t.Fatalf("build the card search: %v", err)
-	}
-	run := gateRun("上次讲了什么")
-	tools, err := registry.Tools(context.Background(), run)
-	if err != nil {
-		t.Fatalf("build the tool: %v", err)
-	}
-	out := callCards(t, tools[0], "", "上次")
-	if out.Reason != cardsReasonCurrentFirst {
-		t.Fatalf("the search went looking with the reason %q, want %q", out.Reason, cardsReasonCurrentFirst)
-	}
-	if len(out.Candidates) != 0 {
-		t.Fatalf("the search returned %d candidates", len(out.Candidates))
-	}
-	if retriever.calls != 0 {
-		t.Fatalf("the retriever was asked %d times, want none", retriever.calls)
-	}
-	if out.Notes == "" {
-		t.Fatalf("the refusal says nothing about where to look first")
-	}
-}
-
-// A question that names something goes looking, and the retriever is asked.
-func TestTheCardSearchLooksForANamedSubject(t *testing.T) {
-	retriever := &countingCardRetriever{}
-	registry, err := NewSearchSessionCardsRegistry(retriever)
-	if err != nil {
-		t.Fatalf("build the card search: %v", err)
-	}
-	run := gateRun("上次你给我排的那三道题里，第二道练的是什么？")
-	tools, err := registry.Tools(context.Background(), run)
-	if err != nil {
-		t.Fatalf("build the tool: %v", err)
-	}
-	out := callCards(t, tools[0], "", "三道题")
-	if out.Reason == cardsReasonCurrentFirst {
-		t.Fatalf("a named subject stayed in this conversation: %+v", out)
-	}
-	if retriever.calls == 0 {
-		t.Fatalf("the retriever was never asked")
+// The card search runs when the model calls it, whatever the question says.
+//
+// It used to refuse a question that only pointed, and the refusal was the
+// wrong order: the model is the one that can see whether the learner asked
+// about another conversation, and a refusal on the question's words sends it
+// back with a query that says no more than the question did.
+func TestTheCardSearchRunsWhateverTheQuestionSays(t *testing.T) {
+	for _, question := range []string{
+		"上次讲了什么",
+		"上周讲了什么",
+		"上周另一个聊天里讲了什么",
+		"上次你给我排的那三道题里，第二道练的是什么？",
+	} {
+		retriever := &countingCardRetriever{}
+		registry, err := NewSearchSessionCardsRegistry(retriever)
+		if err != nil {
+			t.Fatalf("build the card search: %v", err)
+		}
+		run := gateRun(question)
+		tools, err := registry.Tools(context.Background(), run)
+		if err != nil {
+			t.Fatalf("build the tool: %v", err)
+		}
+		out := callCards(t, tools[0], "", "上周")
+		if out.Reason == cardsReasonCurrentFirst {
+			t.Fatalf("%q was refused by the server: %+v", question, out)
+		}
+		if retriever.calls == 0 {
+			t.Fatalf("%q never reached the retriever", question)
+		}
 	}
 }
 
 // The segment search follows the same rule.
-func TestTheSegmentSearchStaysInThisConversationForABarePointer(t *testing.T) {
-	finder := &countingSegmentFinder{}
-	registry, err := NewSearchHistorySegmentsRegistry(finder, nil, &countingCardRetriever{})
-	if err != nil {
-		t.Fatalf("build the segment search: %v", err)
-	}
-	run := gateRun("上次讲了什么")
-	tools, err := registry.Tools(context.Background(), run)
-	if err != nil {
-		t.Fatalf("build the tool: %v", err)
-	}
-	out := callSegments(t, tools[0], "上次")
-	if out.Reason != segmentsReasonCurrentFirst {
-		t.Fatalf("the search went looking with the reason %q, want %q", out.Reason, segmentsReasonCurrentFirst)
-	}
-	if finder.calls != 0 {
-		t.Fatalf("the finder was asked %d times, want none", finder.calls)
+func TestTheSegmentSearchRunsWhateverTheQuestionSays(t *testing.T) {
+	for _, question := range []string{"上次讲了什么", "上周讲了什么"} {
+		finder := &countingSegmentFinder{}
+		registry, err := NewSearchHistorySegmentsRegistry(finder, nil, &countingCardRetriever{})
+		if err != nil {
+			t.Fatalf("build the segment search: %v", err)
+		}
+		run := gateRun(question)
+		tools, err := registry.Tools(context.Background(), run)
+		if err != nil {
+			t.Fatalf("build the tool: %v", err)
+		}
+		out := callSegments(t, tools[0], "上周")
+		if finder.calls == 0 {
+			t.Fatalf("%q never reached the finder", question)
+		}
+		if out.Status == segmentsStatusUnavailable {
+			t.Fatalf("%q was refused by the server: %+v", question, out)
+		}
 	}
 }
 
-// THE PAIR, at the tool: a period on its own stays in this conversation, and
-// a period with an explicit pointer to another conversation goes there.
+// The rule is in the description, because the description is what the model
+// reads.
 //
-// A period is a FILTER, not a reason to go looking. "上周讲了什么" names no
-// conversation, and the conversation in front of the learner is the better
-// answer to it. "上周另一个聊天里讲了什么" names another conversation, and
-// that is the clearest possible "go and look".
-func TestTheCardSearchStaysForABarePeriodAndGoesForANamedOtherChat(t *testing.T) {
-	retriever := &countingCardRetriever{}
-	registry, err := NewSearchSessionCardsRegistry(retriever)
-	if err != nil {
-		t.Fatalf("build the card search: %v", err)
-	}
-	stayRun := gateRun("上周讲了什么")
-	stayTools, err := registry.Tools(context.Background(), stayRun)
-	if err != nil {
-		t.Fatalf("build the tool: %v", err)
-	}
-	stay := callCards(t, stayTools[0], "", "上周")
-	if stay.Reason != cardsReasonCurrentFirst {
-		t.Fatalf("a bare period went looking with the reason %q, want %q",
-			stay.Reason, cardsReasonCurrentFirst)
-	}
-	if len(stay.Candidates) != 0 {
-		t.Fatalf("a bare period returned %d candidates", len(stay.Candidates))
-	}
-	if retriever.calls != 0 {
-		t.Fatalf("the retriever was asked %d times for a bare period, want none", retriever.calls)
-	}
-	goRun := gateRun("上周另一个聊天里讲了什么")
-	goTools, err := registry.Tools(context.Background(), goRun)
-	if err != nil {
-		t.Fatalf("build the tool: %v", err)
-	}
-	out := callCards(t, goTools[0], "", "上周另一个聊天")
-	if out.Reason == cardsReasonCurrentFirst {
-		t.Fatalf("a named other conversation stayed in this conversation: %+v", out)
-	}
-	if retriever.calls == 0 {
-		t.Fatalf("the retriever was never asked for a named other conversation")
+// It has to say three things: answer from this conversation first, go
+// looking only when the learner asked about another conversation, and ask the
+// learner when the reference is still ambiguous.
+func TestTheDescriptionsCarryTheRoutingRule(t *testing.T) {
+	for name, description := range map[string]string{
+		"search_session_cards":    searchSessionCardsDescription,
+		"search_history_segments": searchHistorySegmentsDescription,
+	} {
+		lowered := strings.ToLower(description)
+		for _, phrase := range []string{"this conversation", "ask the learner"} {
+			if !strings.Contains(lowered, phrase) {
+				t.Fatalf("the %s description does not say %q: %s", name, phrase, description)
+			}
+		}
 	}
 }
 

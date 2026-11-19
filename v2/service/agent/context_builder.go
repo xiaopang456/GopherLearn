@@ -748,10 +748,14 @@ type BudgetBreakdown struct {
 	// reduces what a later search may still bring back.
 	PreRetrievalEvidence int `json:"preRetrievalEvidence"`
 	CurrentQuestion      int `json:"currentQuestion"`
-	Assembled            int `json:"assembled"`
-	ProjectedInput       int `json:"projectedInput"`
-	DroppedMessages      int `json:"droppedMessages"`
-	TruncatedMessages    int `json:"truncatedMessages"`
+	// Clarification is what the resolved clarification cost: the block
+	// that tells the model which conversation the learner meant and which
+	// question was waiting for an answer.
+	Clarification     int `json:"clarification,omitempty"`
+	Assembled         int `json:"assembled"`
+	ProjectedInput    int `json:"projectedInput"`
+	DroppedMessages   int `json:"droppedMessages"`
+	TruncatedMessages int `json:"truncatedMessages"`
 	// SummarySyncFallback says the turn had to generate a summary segment
 	// before the answer went out, because the raw conversation no longer
 	// fit. It is the cost of the background not keeping up, and the
@@ -1824,6 +1828,21 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		summaryGrants = historyGrantsFromSummary(summary, summaryMessage, input.SessionID)
 	}
 
+	// The clarification the learner answered.
+	//
+	// Only the NEWEST clarification counts, and only when it is the last
+	// thing in the conversation: a clarification that has an answer after it
+	// was already answered, and answering it again would answer a question
+	// the learner is no longer asking.
+	clarificationText := ""
+	if pending := pendingClarification(history); pending != nil {
+		clarificationText = clarificationBlock(pending, input.Question)
+		if clarificationText != "" {
+			breakdown.Clarification = messageTokenCost(clarificationText)
+			remaining -= breakdown.Clarification
+		}
+	}
+
 	selected, selectedRows, historyTokens, dropped, truncated := selectRecentMessages(history, remaining)
 	breakdown.RecentMessages = historyTokens
 	breakdown.DroppedMessages = dropped
@@ -1928,6 +1947,18 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	}
 	if cardText != "" {
 		messages = append(messages, schema.SystemMessage(cardText))
+	}
+	// The clarification the learner answered.
+	//
+	// It is resolved here because this is where the conversation is: the
+	// question the model asked is on the last assistant message, and the
+	// learner's reply to it is the question this turn was asked.
+	//
+	// It is a block and not a message because the reply is already in the
+	// window as the user's message, and what the model is missing is not the
+	// reply but what the reply MEANS.
+	if clarificationText != "" {
+		messages = append(messages, schema.SystemMessage(clarificationText))
 	}
 	if currentText != "" {
 		messages = append(messages, schema.SystemMessage(currentText))

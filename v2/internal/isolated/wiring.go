@@ -325,6 +325,9 @@ func agentRunnerConfig(mode memoryrecall.ReadMode, agentConf config.AgentConfig,
 		runnerConfig.PerTool.SearchSessionCards = min(2, runnerConfig.MaxToolCalls)
 		runnerConfig.PerTool.SearchHistorySegments = min(1, runnerConfig.MaxToolCalls)
 		runnerConfig.PerTool.ReadSessionWhiteboard = min(2, runnerConfig.MaxToolCalls)
+		// The question the model asks when the candidates cannot be told
+		// apart is one question, and the turn ends with it.
+		runnerConfig.PerTool.AskWhichConversation = min(1, runnerConfig.MaxToolCalls)
 	}
 	if mode.OrdersMemoryDraftBeforeMemoryRead() {
 		runnerConfig.ForcesMemoryDraftBeforeMemoryRead = true
@@ -933,6 +936,19 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 			}
 			whiteboardTools.UseToolSurface(toolSurfaceFor(memoryReadMode))
 			registries = append(registries, whiteboardTools)
+			// The question the model asks when the candidates cannot be
+			// told apart.
+			//
+			// It is registered with the card retriever rather than with the
+			// index, because a candidate is offered only when the learner
+			// owns it and it has a card - the same boundary the search
+			// itself keeps.
+			askTools, askErr := agentTool.NewAskWhichConversationRegistry(thinCardRetriever)
+			if askErr != nil {
+				return nil, fmt.Errorf("initialize agent ask-which-conversation tool: %v", askErr)
+			}
+			askTools.UseToolSurface(toolSurfaceFor(memoryReadMode))
+			registries = append(registries, askTools)
 		}
 		if memoryReadMode.UsesMemorySearchTool() {
 			// read_history_message stays registered but has nothing to offer

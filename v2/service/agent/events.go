@@ -22,8 +22,11 @@ const (
 	EventCitation            EventType = "citation"
 	EventWaitingUser         EventType = "waiting_user"
 	EventWaitingConfirmation EventType = "waiting_confirmation"
-	EventRunCompleted        EventType = "run_completed"
-	EventRunFailed           EventType = "run_failed"
+	// EventWaitingChoice is the turn asking the learner which conversation
+	// they meant.
+	EventWaitingChoice EventType = "waiting_choice"
+	EventRunCompleted  EventType = "run_completed"
+	EventRunFailed     EventType = "run_failed"
 )
 
 type Event struct {
@@ -49,6 +52,9 @@ type Event struct {
 	KnowledgeReason   rag.KnowledgeReason `json:"knowledgeReason,omitempty"`
 	ContextBudget     *BudgetBreakdown    `json:"contextBudget,omitempty"`
 	MemoryDraft       *MemoryDraftCard    `json:"memoryDraft,omitempty"`
+	// Clarification is the question the model asked because it could not
+	// tell which conversation the learner meant.
+	Clarification *ClarificationCard `json:"clarification,omitempty"`
 	// UsedTopicKeys is the streaming half of the confirmation receipt. It
 	// carries the same values the synchronous response returns, so a client
 	// that streams and a client that does not can render the same line about

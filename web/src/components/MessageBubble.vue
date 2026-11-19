@@ -5,6 +5,7 @@ import AppIcon from './AppIcon.vue'
 import AgentResult from './AgentResult.vue'
 import AgentStepList from './AgentStepList.vue'
 import CitationList from './CitationList.vue'
+import ClarificationCard from './ClarificationCard.vue'
 import MemoryDraftCard from './MemoryDraftCard.vue'
 import V2MemoryDraftCard from './V2MemoryDraftCard.vue'
 import MessageContent from './MessageContent.vue'
@@ -25,6 +26,15 @@ const props = defineProps({
     default: () => [],
   },
 })
+
+/**
+ * The choice this reply asked the learner for, when it asked one.
+ *
+ * It travels on the reply rather than on the panel, for the same reason the
+ * draft does: the decision is about that sentence. The answer itself leaves
+ * here as an event, because it is the chat's own send channel that carries it.
+ */
+const emit = defineEmits(['clarify'])
 
 const ROLE_LABEL = {
   user: '我',
@@ -56,6 +66,20 @@ const draftCard = computed(() =>
 const v2DraftCard = computed(() => props.message.role === 'assistant'
   ? props.message.originalV2?.memoryDraft ?? (props.message.memoryContract === 'v2' ? props.message.memoryDraft : null)
   : null)
+
+/**
+ * The choice this reply asked the learner for, when it asked one.
+ *
+ * It is a fact about this one answer, in the same way the draft is: the server
+ * put it on this turn's run. A reply that was read back has no `originalV2` at
+ * all, and then there is nothing to ask — so no card is shown, rather than an
+ * empty one.
+ */
+const clarificationCard = computed(() => {
+  if (props.message.role !== 'assistant') return null
+  const value = props.message.originalV2?.clarification
+  return value && typeof value === 'object' ? value : null
+})
 
 /**
  * What the model said on its way to a tool, once this reply has an answer to be separate
@@ -135,6 +159,11 @@ const notesOpen = ref(false)
       />
       <CitationList :sources="props.message.sources ?? []" />
       <AgentResult v-if="props.message.originalV2" :result="props.message.originalV2" :run-id="props.message.runId" :message-id="props.message.serverId" />
+      <ClarificationCard
+        v-if="clarificationCard"
+        :clarification="clarificationCard"
+        @choose="emit('clarify', $event)"
+      />
       <V2MemoryDraftCard v-if="v2DraftCard" :key="v2DraftCard.draftId" :draft="v2DraftCard" :run-id="props.message.runId || ''" />
       <MemoryDraftCard
         v-if="draftCard"

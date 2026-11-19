@@ -220,6 +220,12 @@ type ToolCallLimits struct {
 	// One call is one board. The board is the current state of one
 	// conversation, and reading it twice reads the same state.
 	ReadSessionWhiteboard int
+	// AskWhichConversation bounds ask_which_conversation.
+	//
+	// One call is one question. The turn ends with it - the learner has
+	// to answer before anything else can happen - and a second question
+	// in the same turn would be asking the same thing twice.
+	AskWhichConversation int
 }
 
 // limitFor charges a call to the capability behind the name rather than to the
@@ -249,6 +255,8 @@ func (l ToolCallLimits) limitFor(name string) int {
 		return l.SearchHistorySegments
 	case CapabilityReadSessionWhiteboard:
 		return l.ReadSessionWhiteboard
+	case CapabilityAskWhichConversation:
+		return l.AskWhichConversation
 	default:
 		return 0
 	}
@@ -409,6 +417,7 @@ func (c RunnerConfig) Validate() error {
 		"search_session_cards":    c.PerTool.SearchSessionCards,
 		"search_history_segments": c.PerTool.SearchHistorySegments,
 		"read_session_whiteboard": c.PerTool.ReadSessionWhiteboard,
+		"ask_which_conversation":  c.PerTool.AskWhichConversation,
 	} {
 		if limit < 0 {
 			return fmt.Errorf("%s call limit must not be negative", name)
@@ -593,14 +602,19 @@ type Runner struct {
 }
 
 type RunnerResult struct {
-	Answer          string
-	ToolCalls       int
-	ModelCalls      int
-	Sources         []rag.Source
-	ContextBudget   BudgetBreakdown
-	EpisodeIDs      []string
-	EpisodeSources  model.EpisodeSourceRefs
-	MemoryDraft     *MemoryDraftCard
+	Answer         string
+	ToolCalls      int
+	ModelCalls     int
+	Sources        []rag.Source
+	ContextBudget  BudgetBreakdown
+	EpisodeIDs     []string
+	EpisodeSources model.EpisodeSourceRefs
+	MemoryDraft    *MemoryDraftCard
+	// Clarification is the question the model asked because it could not
+	// tell which conversation the learner meant.
+	//
+	// It is nil for a turn that answered, and set for a turn that asked.
+	Clarification   *model.SessionClarification
 	AnswerBasis     rag.AnswerBasis
 	KnowledgeStatus rag.KnowledgeStatus
 	KnowledgeReason rag.KnowledgeReason
@@ -712,6 +726,16 @@ func NewRunner(
 // exists at all) and none of the run's mutable state; a registry that
 // declines the probe leaves the table unknown and the window is measured as
 // it stands.
+// ToolNames lists the tools this turn may call.
+//
+// It is the tool table the model was shown, read back. A caller that has to
+// know which tools a deployment offers - an entry that assembles one, a
+// report that records what the model could reach - needs it without
+// running a turn.
+func (r *Runner) ToolNames(ctx context.Context, input RunContext) ([]string, error) {
+	return r.preWindowToolNames(ctx, input)
+}
+
 func (r *Runner) preWindowToolNames(ctx context.Context, input RunContext) ([]string, error) {
 	if r == nil || r.registry == nil {
 		return nil, fmt.Errorf("agent tool registry is not initialized")
@@ -1407,6 +1431,9 @@ type runState struct {
 	episodeIDs        []string
 	episodeSources    model.EpisodeSourceRefs
 	memoryDraft       *MemoryDraftCard
+	// clarification is the question the model asked because it could not
+	// tell which conversation the learner meant.
+	clarification *model.SessionClarification
 }
 
 func (s *runState) result() RunnerResult {
@@ -1420,6 +1447,7 @@ func (s *runState) result() RunnerResult {
 		EpisodeIDs:     append([]string(nil), s.episodeIDs...),
 		EpisodeSources: append(model.EpisodeSourceRefs(nil), s.episodeSources...),
 		MemoryDraft:    cloneMemoryDraftCard(s.memoryDraft),
+		Clarification:  s.clarification,
 		AnswerBasis:    s.answerBasis, KnowledgeStatus: s.knowledgeStatus, KnowledgeReason: s.knowledgeReason,
 		MemoryEvidence:   s.memoryTrace.Calls(),
 		TopicMemoryReads: s.memoryTrace.TopicReads(),
@@ -1730,6 +1758,23 @@ func (s *runState) toolMiddleware() compose.InvokableToolMiddleware {
 			}); sendErr != nil {
 				return nil, sendErr
 			}
+			if CapabilityOf(input.Name) == CapabilityAskWhichConversation && output != nil {
+				clarification, parseErr := parseClarificationResult(output.Result)
+				if parseErr != nil {
+					return nil, parseErr
+				}
+				if clarification != nil {
+					s.mu.Lock()
+					s.clarification = clarification
+					s.mu.Unlock()
+					if sendErr := sendEvent(ctx, s.sink, Event{
+						Type: EventWaitingChoice, RunID: s.input.RunID,
+						Clarification: ClarificationCardOf(clarification),
+					}); sendErr != nil {
+						return nil, sendErr
+					}
+				}
+			}
 			if CapabilityOf(input.Name) == CapabilityHistoryRead && output != nil {
 				evidence, parseErr := parseHistoryEvidence(output.Result)
 				if parseErr != nil {
@@ -1851,6 +1896,27 @@ func parseMemoryDraftResult(value string) (*MemoryDraftCard, bool, error) {
 		return nil, false, fmt.Errorf("invalid memory draft tool result")
 	}
 	return &MemoryDraftCard{DraftID: payload.DraftID, Scope: payload.Scope, Subject: payload.Subject, Content: payload.Content, Tags: payload.Tags, TopicKey: payload.TopicKey, Durability: payload.Durability, ValidUntil: payload.ValidUntil, ConflictIDs: payload.ConflictIDs}, false, nil
+}
+
+// parseClarificationResult reads the question the model asked.
+//
+// A tool that reported no candidate is not a question: the model asked
+// nothing, and the turn carries on as an ordinary one. A result that claims
+// a question without one is a broken contract, and it is worth failing on.
+func parseClarificationResult(value string) (*model.SessionClarification, error) {
+	var payload struct {
+		Clarification *model.SessionClarification `json:"clarification"`
+	}
+	if err := json.Unmarshal([]byte(value), &payload); err != nil {
+		return nil, fmt.Errorf("invalid clarification tool result: %w", err)
+	}
+	if payload.Clarification == nil {
+		return nil, nil
+	}
+	if err := payload.Clarification.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid clarification tool result: %w", err)
+	}
+	return payload.Clarification, nil
 }
 
 func parseHistoryEvidence(value string) (bool, error) {
