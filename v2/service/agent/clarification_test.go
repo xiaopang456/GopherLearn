@@ -107,29 +107,79 @@ func TestTheBlockSaysWhatWasChosenAndWhatWasPending(t *testing.T) {
 	if !strings.Contains(block, "上次你给我排的那三道题") {
 		t.Fatalf("the block does not carry the pending question: %s", block)
 	}
-	if !strings.Contains(block, "Answer THAT question") {
-		t.Fatalf("the block does not tell the model to answer the pending question: %s", block)
+	if !strings.Contains(block, "Answer the waiting question in that conversation") {
+		t.Fatalf("the block does not tell the model to answer in the chosen conversation: %s", block)
 	}
 }
 
-// The learner's own words are a clue, and the block says so.
+// A reply that names none of the candidates is the MODEL'S to read.
 //
-// The learner is not forced to pick one of the offered conversations, and a
-// clue that names a conversation outside the list is a better search - not a
-// refusal.
-func TestTheBlockSaysThatTheLearnersOwnWordsAreAClue(t *testing.T) {
+// Three things it can be, and the server cannot tell them apart: a clue for
+// a conversation outside the list, a pointer at the conversation in front of
+// the learner, or a new question. The block therefore hands over the waiting
+// question as background and the learner's own words, and says NOTHING about
+// what to do with them.
+//
+// A block that said "search again" would send the model through the
+// learner's history to answer a question the learner may have abandoned; a
+// block that said "answer the waiting question" would make the model answer a
+// question the learner replaced.
+func TestTheBlockDoesNotTellTheModelWhatToDoWithAnUnmatchedReply(t *testing.T) {
 	clarification := &model.SessionClarification{
-		Question: "哪一次？",
+		Question: "上次你给我排的那三道题里，第二道练的是什么？",
 		Candidates: []model.SessionClarificationCandidate{
 			{SessionID: "session-a", Title: "洄漪"},
 		},
 	}
-	block := clarificationBlock(clarification, "2026-04-04 那次，讲 HTTP 的")
-	if !strings.Contains(block, "clue") {
-		t.Fatalf("the block does not call the learner's own words a clue: %s", block)
+	for _, test := range []struct {
+		name  string
+		reply string
+	}{
+		// A clue for a conversation that was NOT among the candidates.
+		{"a clue outside the candidates", "周一聊 context 的那次"},
+		// A pointer at the conversation in front of the learner.
+		{"a pointer at this conversation", "我指这个聊天"},
+		// A question that replaces the one that was waiting.
+		{"a new question", "换个问题，怎么创建 channel？"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			block := clarificationBlock(clarification, test.reply)
+			if !strings.Contains(block, test.reply) {
+				t.Fatalf("the block does not carry the learner's own words %q: %s", test.reply, block)
+			}
+			if !strings.Contains(block, "上次你给我排的那三道题") {
+				t.Fatalf("the block does not carry the pending question as background: %s", block)
+			}
+			for _, forbidden := range []string{
+				"search again",
+				"use them to search",
+				"not in the list you offered",
+				"Answer THAT question",
+				"Answer the waiting question",
+			} {
+				if strings.Contains(block, forbidden) {
+					t.Fatalf("the block tells the model what to do with %q (%q): %s",
+						test.reply, forbidden, block)
+				}
+			}
+		})
 	}
-	if !strings.Contains(block, "not in the list you offered") {
-		t.Fatalf("the block does not say that the clue may reach other conversations: %s", block)
+}
+
+// The three readings the model has to be able to make are all left open.
+//
+// The block names the possibilities without choosing between them: a
+// different conversation, this one, or something else.
+func TestTheBlockLeavesTheThreeReadingsOpen(t *testing.T) {
+	clarification := &model.SessionClarification{
+		Question:   "哪一次？",
+		Candidates: []model.SessionClarificationCandidate{{SessionID: "session-a", Title: "洄漪"}},
+	}
+	block := clarificationBlock(clarification, "我指这个聊天")
+	for _, phrase := range []string{"different conversation", "this one", "something else"} {
+		if !strings.Contains(block, phrase) {
+			t.Fatalf("the block does not leave %q open: %s", phrase, block)
+		}
 	}
 }
 
@@ -210,5 +260,134 @@ func TestTheCardNamesTheConversationsAndAllowsTheirOwnWords(t *testing.T) {
 	}
 	if card.Prompt == "" {
 		t.Fatal("the card says nothing about what the learner may do")
+	}
+}
+
+// The clarification block is in the window once, and it is in the budget
+// once.
+//
+// The block travels once and the total counts it once: a block that was
+// counted twice would push a turn over its target that actually fits, and a
+// block that was not counted at all would let the window grow past what the
+// numbers say it is.
+func TestTheClarificationIsCountedOnceInTheBudget(t *testing.T) {
+	clarification := &model.SessionClarification{
+		Question: "上次你给我排的那三道题里，第二道练的是什么？",
+		Candidates: []model.SessionClarificationCandidate{
+			{SessionID: "session-a", Title: "洄漪"},
+			{SessionID: "session-b", Title: "浔漳"},
+		},
+	}
+	withBlock := &fakeHistoryReader{messages: []model.Message{
+		{ID: 1, IsUser: false, Content: "你在问哪一次？", Clarification: clarification},
+		{ID: 2, IsUser: true, Content: "2"},
+	}}
+	withoutBlock := &fakeHistoryReader{messages: []model.Message{
+		{ID: 1, IsUser: false, Content: "你在问哪一次？"},
+		{ID: 2, IsUser: true, Content: "2"},
+	}}
+	build := func(history *fakeHistoryReader) ContextWindow {
+		t.Helper()
+		builder, err := NewContextBuilder(testContextConfig(), history,
+			staticTaskState("active learning task"), nil, staticMemories{"prefers examples"},
+			staticSummary("earlier decision"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		window, err := builder.Build(context.Background(),
+			RunContext{UserID: 7, SessionID: "session", Question: "2"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return window
+	}
+	answered := build(withBlock)
+	plain := build(withoutBlock)
+
+	// The block is in the window exactly once.
+	occurrences := 0
+	for _, message := range answered.Messages {
+		if message == nil {
+			continue
+		}
+		if strings.Contains(message.Content, "The learner was asked which conversation they meant") {
+			occurrences++
+		}
+	}
+	if occurrences != 1 {
+		t.Fatalf("the clarification block is in the window %d times, want once", occurrences)
+	}
+	// And it is counted once: every other line of the breakdown is in the
+	// total exactly once, and the clarification is in it exactly once too.
+	//
+	// The sum is written out rather than derived from the builder's own
+	// arithmetic, because the claim IS that arithmetic: a line counted
+	// twice would push a turn over its target that actually fits, and a
+	// line counted not at all would let the window grow past what the
+	// numbers say it is.
+	budget := answered.Budget
+	other := budget.System + budget.TaskState + budget.Mastery + budget.GlobalUserMemory +
+		budget.TopicUserMemory + budget.EpisodeMemory + budget.SessionCardMemory +
+		budget.Summary + budget.RecentMessages + budget.CurrentQuestion +
+		budget.CurrentEvidence + budget.PreRetrievalEvidence + budget.Whiteboard +
+		budget.ResidentSegments + budget.RetrievedSegments
+	if budget.Assembled != other+budget.Clarification {
+		t.Fatalf("the assembled total is %d and the lines add up to %d plus a clarification of %d: %+v",
+			budget.Assembled, other, budget.Clarification, budget)
+	}
+	// And it is in the projected input, which is what the ceiling is
+	// checked against.
+	if budget.ProjectedInput != budget.Assembled+budget.EvidenceReserved {
+		t.Fatalf("projected input = %d, assembled = %d, evidence = %d",
+			budget.ProjectedInput, budget.Assembled, budget.EvidenceReserved)
+	}
+	if budget.ProjectedInput <= plain.Budget.ProjectedInput {
+		t.Fatalf("the clarification did not reach the projected input: %+v", budget)
+	}
+}
+
+// A window with no room left gets no clarification, and the turn still
+// happens.
+//
+// Failing the turn over a block of text would be the wrong trade: the
+// learner asked a question and would get no answer at all. A turn without
+// the explanation is a worse turn, not a failed one.
+func TestAClarificationThatDoesNotFitIsDroppedAndTheTurnGoesOn(t *testing.T) {
+	clarification := &model.SessionClarification{
+		Question: "上次你给我排的那三道题里，第二道练的是什么？",
+		Candidates: []model.SessionClarificationCandidate{
+			{SessionID: "session-a", Title: "洄漪"},
+		},
+	}
+	config := testContextConfig()
+	// A summary long enough to take the room the clarification would have
+	// had. The blocks before it are clamped by what is left, so a long
+	// summary is what leaves nothing over.
+	config.MaxSummaryTokens = 240
+	long := strings.Repeat("这轮会话的滚动摘要。", 80)
+	history := &fakeHistoryReader{messages: []model.Message{
+		{ID: 1, IsUser: false, Content: "你在问哪一次？", Clarification: clarification},
+		{ID: 2, IsUser: true, Content: "2"},
+	}}
+	builder, err := NewContextBuilder(config, history, staticTaskState("active learning task"),
+		nil, staticMemories{"prefers examples"}, staticSummary(long))
+	if err != nil {
+		t.Fatal(err)
+	}
+	window, err := builder.Build(context.Background(),
+		RunContext{UserID: 7, SessionID: "session", Question: "2"})
+	if err != nil {
+		t.Fatalf("the turn failed over a block of text: %v", err)
+	}
+	for _, message := range window.Messages {
+		if message == nil {
+			continue
+		}
+		if strings.Contains(message.Content, "The learner was asked which conversation they meant") {
+			t.Fatal("a clarification that did not fit reached the window")
+		}
+	}
+	if window.Budget.Clarification != 0 {
+		t.Fatalf("a clarification that did not fit was charged: %+v", window.Budget)
 	}
 }

@@ -1834,9 +1834,19 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	// thing in the conversation: a clarification that has an answer after it
 	// was already answered, and answering it again would answer a question
 	// the learner is no longer asking.
+	//
+	// It is a block like every other one, and it obeys the budget like every
+	// other one. A turn whose window has no room left gets no block, and the
+	// model sees the learner's reply without the explanation - a worse turn,
+	// but a turn. Failing the turn over a block of text would be the wrong
+	// trade: the learner asked a question and gets no answer at all.
 	clarificationText := ""
 	if pending := pendingClarification(history); pending != nil {
 		clarificationText = clarificationBlock(pending, input.Question)
+		if clarificationText != "" {
+			clarificationText = prefixWithinTokens(clarificationText,
+				minInt(remaining-4, maxClarificationTokens))
+		}
 		if clarificationText != "" {
 			breakdown.Clarification = messageTokenCost(clarificationText)
 			remaining -= breakdown.Clarification
@@ -1964,7 +1974,14 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		messages = append(messages, schema.SystemMessage(currentText))
 	}
 	messages = append(messages, schema.UserMessage(input.Question))
-	breakdown.Assembled = breakdown.System + breakdown.TaskState + breakdown.Mastery + breakdown.GlobalUserMemory + breakdown.TopicUserMemory + breakdown.EpisodeMemory + breakdown.SessionCardMemory + breakdown.Summary + breakdown.RecentMessages + breakdown.CurrentQuestion + breakdown.CurrentEvidence + breakdown.PreRetrievalEvidence + breakdown.Whiteboard + breakdown.ResidentSegments + breakdown.RetrievedSegments
+	// The clarification is part of what was assembled.
+	//
+	// It is counted once: the block travels once, and the line below is
+	// the only place it is added to the total. It is a line of its own
+	// rather than a part of the recent messages because it is not the
+	// conversation - it is what the conversation's last question MEANT -
+	// and a reader of the numbers has to be able to see it.
+	breakdown.Assembled = breakdown.System + breakdown.TaskState + breakdown.Mastery + breakdown.GlobalUserMemory + breakdown.TopicUserMemory + breakdown.EpisodeMemory + breakdown.SessionCardMemory + breakdown.Summary + breakdown.RecentMessages + breakdown.CurrentQuestion + breakdown.CurrentEvidence + breakdown.PreRetrievalEvidence + breakdown.Whiteboard + breakdown.ResidentSegments + breakdown.RetrievedSegments + breakdown.Clarification
 	breakdown.ProjectedInput = breakdown.Assembled + breakdown.EvidenceReserved
 	if breakdown.ProjectedInput > breakdown.InputTarget {
 		return ContextWindow{}, fmt.Errorf("assembled context exceeded target: %d > %d", breakdown.ProjectedInput, breakdown.InputTarget)

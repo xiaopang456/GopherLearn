@@ -136,33 +136,60 @@ func pendingClarification(history []model.Message) *model.SessionClarification {
 	return nil
 }
 
+// maxClarificationTokens bounds the clarification block.
+//
+// The block is a few lines: which question was waiting, what the learner
+// said, and - when they picked one - which conversation they picked. A
+// hundred tokens is enough for that, and a bound is what keeps a long
+// learner's own words from turning the block into the largest thing in the
+// window.
+const maxClarificationTokens = 200
+
 // The clarification block the next turn carries.
 //
-// It is what tells the model that the learner answered a question, and what
-// the answer was. Without it the reply is a bare word in the conversation
-// and the model has to guess that it answered anything.
+// It is what tells the model that the learner answered a question, what the
+// question was, and what the answer was. Without it the reply is a bare
+// word in the conversation and the model has to guess that it answered
+// anything.
 //
-// It also says the two things the model would otherwise get wrong: answer
-// the PENDING question (the one before the clarification, not the reply), and
-// treat the learner's own words as a clue that may reach conversations that
-// were not offered.
+// It says DIFFERENTLY depending on what the reply was, and the difference
+// is the point:
+//
+//   - The reply names one of the candidates. Then the learner has chosen a
+//     conversation, and the answer is the waiting question in that
+//     conversation. The block says so, and it says how to open it.
+//   - The reply names none of them. Then the learner has NOT refused and has
+//     NOT necessarily chosen anything: "the one where we talked about
+//     context on Monday" is a better clue, "I mean this chat" points at the
+//     conversation in front of them, and "actually, how do I create a
+//     channel?" is a new question. The block hands the model the waiting
+//     question as BACKGROUND and the learner's own words, and lets it work
+//     out which of the three it is.
+//
+// The second case deliberately carries no instruction. A block that said
+// "search again" would send the model off through the learner's history to
+// answer a question the learner may have abandoned, and a block that said
+// "answer the waiting question" would make the model answer a question the
+// learner replaced. The model is the one that can read the conversation, and
+// the server cannot: it sees the reply, not what the reply meant.
 func clarificationBlock(clarification *model.SessionClarification, reply string) string {
 	if clarification == nil {
 		return ""
 	}
 	chosen, matched := clarification.Resolve(reply)
 	var b strings.Builder
-	b.WriteString("The learner was asked which conversation they meant, and they answered.\n")
-	if matched && chosen != nil {
-		b.WriteString(fmt.Sprintf("They chose: %s (conversation id %s).\n", chosen.Label(), chosen.SessionID))
-	} else {
-		b.WriteString(fmt.Sprintf("They wrote their own words: %q.\n", strings.TrimSpace(reply)))
-		b.WriteString("Those words are a clue, not a refusal: use them to search again, including " +
-			"conversations that were not in the list you offered.\n")
-	}
+	b.WriteString("The learner was asked which conversation they meant.\n")
 	b.WriteString(fmt.Sprintf("The question that was waiting for an answer was: %s\n", clarification.Question))
-	b.WriteString("Answer THAT question, in the conversation they chose. Open it with " +
-		"search_session_cards naming its conversation id, then read it with browse_summary_segments " +
-		"or read_session_whiteboard.")
+	if matched && chosen != nil {
+		b.WriteString(fmt.Sprintf("They chose the conversation %s (conversation id %s).\n",
+			chosen.Label(), chosen.SessionID))
+		b.WriteString("Answer the waiting question in that conversation. Open it with " +
+			"search_session_cards naming its conversation id, then read it with " +
+			"browse_summary_segments or read_session_whiteboard.")
+		return b.String()
+	}
+	b.WriteString(fmt.Sprintf("They answered: %q\n", strings.TrimSpace(reply)))
+	b.WriteString("That reply may name a different conversation, point at this one, or ask " +
+		"something else. Work out which, and answer accordingly.")
 	return b.String()
 }
