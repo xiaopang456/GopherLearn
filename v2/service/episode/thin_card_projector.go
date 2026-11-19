@@ -254,12 +254,32 @@ func NewThinCardService(projector *ThinCardProjector, indexer *ThinCardIndexer) 
 // The name is the interface's: the agent package must not depend on this
 // one, so the method is named in the terms the caller uses.
 func (s *ThinCardService) SyncThinCard(ctx context.Context, userID int64, sessionID string) error {
+	_, err := s.SyncCard(ctx, userID, sessionID)
+	return err
+}
+
+// SyncCard brings one session's thin card up to date and puts it in the index.
+//
+// It returns the card it wrote, and it writes the index BEFORE it returns.
+//
+// The two are one operation because a card that is in the store and not in
+// the index is a card nobody can find: the row says the conversation
+// happened, the search says nothing about it, and the learner is told the
+// product does not remember. The background path is the one that depends on
+// this: it is the repair path for a session that moved while the product was
+// down, and it has no other chance to write the index.
+func (s *ThinCardService) SyncCard(ctx context.Context, userID int64, sessionID string) (*model.EpisodeMemory, error) {
 	if s == nil || userID <= 0 || strings.TrimSpace(sessionID) == "" {
-		return fmt.Errorf("invalid thin card sync request")
+		return nil, fmt.Errorf("invalid thin card sync request")
 	}
 	card, previous, err := s.projector.Project(ctx, userID, sessionID, 0)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return s.indexer.Index(ctx, card, previous)
+	if err := s.indexer.Index(ctx, card, previous); err != nil {
+		// The card is returned with the error: it IS in the store, and the
+		// caller that retries has to know that the row is there.
+		return card, err
+	}
+	return card, nil
 }

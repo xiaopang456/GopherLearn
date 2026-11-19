@@ -415,6 +415,11 @@ func projectionErrorCode(err error) string {
 		return "card_input_too_large"
 	case errors.Is(err, ErrCardSourceNotFound):
 		return "card_source_not_found"
+	case errors.Is(err, ErrThinCardIndex):
+		// The thin card is in the store and not in the index. The
+		// derivation worked, so a projection code would send whoever reads
+		// the job to the one stage that did not fail.
+		return "thin_card_index_failed"
 	default:
 		return "projection_failed"
 	}

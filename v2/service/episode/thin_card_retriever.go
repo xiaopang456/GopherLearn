@@ -3,6 +3,7 @@ package episode
 import (
 	"GopherAI/model"
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -43,32 +44,76 @@ func NewThinCardIndexer(index ThinCardIndexWriter, source ThinCardIndexStatusSou
 	return &ThinCardIndexer{index: index, source: source}, nil
 }
 
+// ErrThinCardIndex is a thin card that did not make it into the index.
+//
+// It is a sentinel of its own because the job row is the only place that says
+// which stage failed. A thin card that is not in the index is a card nobody
+// can find, and a job recorded as "projection_failed" would send whoever
+// reads it to the derivation - the one stage that worked.
+var ErrThinCardIndex = errors.New("thin card index write failed")
+
 // Index writes one card into the index.
 //
-// The index is only written when the card's searchable text changed. A card
-// that was rewritten with the same words does not need to be indexed again,
-// and an index write is a write to a shared store that every other attempt
+// The card is written when its searchable text changed OR when the row still
+// says that the index has not caught up with it.
+//
+// The second half is the one that decides whether a retry works. An index
+// write that failed leaves the row pending or failed, and a retry that looked
+// only at the words would say "nothing changed" and leave the card out of the
+// index for good: the row would be there, the search would not find it, and
+// nothing in the store would say why.
+//
+// A card that the index already holds, and whose row says so, is not written
+// again: an index write is a write to a shared store that every other attempt
 // is also writing to.
 //
-// The previous version of the card is what says whether the text changed. It
-// is passed in rather than read back, because the projector had it in hand a
-// moment ago and reading it again would be a query for a fact that is known.
+// A failure is recorded on the row before it is returned. The row's index
+// status is the diagnosis - it is the one place that says which stage of the
+// write did not finish - and the error that comes back says it to the job.
 func (i *ThinCardIndexer) Index(ctx context.Context, card *model.EpisodeMemory, previous *model.EpisodeMemory) error {
 	if card == nil {
 		return fmt.Errorf("thin card index needs a card")
 	}
 	if card.Status != model.EpisodeStatusActive {
-		return i.source.UpdateIndexStatus(ctx, card.UserID, card.ID, card.Version, model.EpisodeIndexFailed)
+		// A card that is not active is not in the index, and the row says so.
+		return i.mark(ctx, card, model.EpisodeIndexFailed)
 	}
-	if !ThinCardNeedsReindex(previous, card.Card) {
-		// The searchable text is the same. The card is in the index already,
-		// and the row says so.
-		return i.source.UpdateIndexStatus(ctx, card.UserID, card.ID, card.Version, model.EpisodeIndexIndexed)
+	if card.IndexStatus == model.EpisodeIndexIndexed && !ThinCardNeedsReindex(previous, card.Card) {
+		// The index already holds this card and the row agrees.
+		return nil
 	}
 	if err := i.index.Store(ctx, *card); err != nil {
-		return err
+		return i.failed(ctx, card, err)
 	}
-	return i.source.UpdateIndexStatus(ctx, card.UserID, card.ID, card.Version, model.EpisodeIndexIndexed)
+	return i.mark(ctx, card, model.EpisodeIndexIndexed)
+}
+
+// mark records the index outcome on the row.
+//
+// The write outlives the caller's context on purpose: the outcome is the
+// diagnosis, and a diagnosis lost because the request was cancelled is the
+// one that is needed most.
+func (i *ThinCardIndexer) mark(ctx context.Context, card *model.EpisodeMemory,
+	status model.EpisodeIndexStatus) error {
+	statusCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := i.source.UpdateIndexStatus(statusCtx, card.UserID, card.ID, card.Version, status); err != nil {
+		return fmt.Errorf("%w: mark %s: %w", ErrThinCardIndex, status, err)
+	}
+	card.IndexStatus = status
+	return nil
+}
+
+// failed records that the card could not be written into the index.
+//
+// The row is marked failed BEFORE the error is returned, so that the failure
+// is visible in the store and not only in a log line: the row's index status
+// is what tells the next attempt that there is something to make good.
+func (i *ThinCardIndexer) failed(ctx context.Context, card *model.EpisodeMemory, cause error) error {
+	if statusErr := i.mark(ctx, card, model.EpisodeIndexFailed); statusErr != nil {
+		return fmt.Errorf("%w: %v; mark failed: %w", ErrThinCardIndex, cause, statusErr)
+	}
+	return fmt.Errorf("%w: %w", ErrThinCardIndex, cause)
 }
 
 // The candidate retriever.
