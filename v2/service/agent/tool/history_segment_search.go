@@ -277,7 +277,11 @@ func (r *SearchHistorySegmentsRegistry) search(ctx context.Context, run servicea
 		out.Notes = "This question points at a conversation without naming a subject, and this conversation already has a history. Answer from it. Search again only if you can name a subject, a name or a phrase from the conversation you are looking for."
 		return out, nil
 	}
-	terms, _, _ := thinCardQueryTerms(query)
+	// The period the learner named filters the hits, the same way it filters
+	// the cards: a stretch of turns from outside the period is not an answer
+	// to the question, whatever its words say.
+	cardQuery := thinCardQuery(run.Question, query)
+	terms := cardQuery.Terms
 	hits, err := r.finder.SearchUserSegmentsByText(ctx, run.UserID, terms, historySegmentCandidateLimit)
 	if err != nil {
 		if ctxErr := contextError(ctx); ctxErr != nil {
@@ -287,6 +291,9 @@ func (r *SearchHistorySegmentsRegistry) search(ctx context.Context, run servicea
 		out.Reason = segmentsReasonStoreFailure
 		out.Retryable = true
 		return out, nil
+	}
+	if cardQuery.HasPeriod() {
+		hits = filterHitsByPeriod(hits, cardQuery.From, cardQuery.To)
 	}
 	// The semantic channel runs beside the lexical one, not after it.
 	//
@@ -348,6 +355,32 @@ func (r *SearchHistorySegmentsRegistry) search(ctx context.Context, run servicea
 		out.Reason = segmentsReasonNoMatch
 	}
 	return out, nil
+}
+
+// filterHitsByPeriod keeps the hits that fall inside the period the learner
+// named.
+//
+// The upper bound is exclusive, the way the store's own time filter reads
+// it: a period that ends at Monday covers the Monday up to midnight, not the
+// Monday itself. A hit with no time at all is kept - the store did not say
+// when it was written, and dropping it would drop the answer for a reason
+// nobody asked for.
+func filterHitsByPeriod(hits []summarysegmentdao.UserSegmentHit, from, to time.Time) []summarysegmentdao.UserSegmentHit {
+	out := make([]summarysegmentdao.UserSegmentHit, 0, len(hits))
+	for _, hit := range hits {
+		if hit.EndAt.IsZero() {
+			out = append(out, hit)
+			continue
+		}
+		if !from.IsZero() && hit.EndAt.Before(from) {
+			continue
+		}
+		if !to.IsZero() && !hit.EndAt.Before(to) {
+			continue
+		}
+		out = append(out, hit)
+	}
+	return out
 }
 
 // semanticHits runs the semantic channel and reports what it cost.

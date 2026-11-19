@@ -31,7 +31,7 @@ type countingCardRetriever struct {
 }
 
 func (f *countingCardRetriever) Recall(_ context.Context, _ int64, _ string,
-	_, _ []string, _ episode.TemporalMode) ([]episode.ThinCardCandidate, error) {
+	_ episode.ThinCardQuery) ([]episode.ThinCardCandidate, error) {
 	f.calls++
 	return nil, nil
 }
@@ -132,6 +132,74 @@ func TestTheSegmentSearchStaysInThisConversationForABarePointer(t *testing.T) {
 	}
 	if finder.calls != 0 {
 		t.Fatalf("the finder was asked %d times, want none", finder.calls)
+	}
+}
+
+// THE PAIR, at the tool: a period on its own stays in this conversation, and
+// a period with an explicit pointer to another conversation goes there.
+//
+// A period is a FILTER, not a reason to go looking. "上周讲了什么" names no
+// conversation, and the conversation in front of the learner is the better
+// answer to it. "上周另一个聊天里讲了什么" names another conversation, and
+// that is the clearest possible "go and look".
+func TestTheCardSearchStaysForABarePeriodAndGoesForANamedOtherChat(t *testing.T) {
+	retriever := &countingCardRetriever{}
+	registry, err := NewSearchSessionCardsRegistry(retriever)
+	if err != nil {
+		t.Fatalf("build the card search: %v", err)
+	}
+	stayRun := gateRun("上周讲了什么")
+	stayTools, err := registry.Tools(context.Background(), stayRun)
+	if err != nil {
+		t.Fatalf("build the tool: %v", err)
+	}
+	stay := callCards(t, stayTools[0], "", "上周")
+	if stay.Reason != cardsReasonCurrentFirst {
+		t.Fatalf("a bare period went looking with the reason %q, want %q",
+			stay.Reason, cardsReasonCurrentFirst)
+	}
+	if len(stay.Candidates) != 0 {
+		t.Fatalf("a bare period returned %d candidates", len(stay.Candidates))
+	}
+	if retriever.calls != 0 {
+		t.Fatalf("the retriever was asked %d times for a bare period, want none", retriever.calls)
+	}
+	goRun := gateRun("上周另一个聊天里讲了什么")
+	goTools, err := registry.Tools(context.Background(), goRun)
+	if err != nil {
+		t.Fatalf("build the tool: %v", err)
+	}
+	out := callCards(t, goTools[0], "", "上周另一个聊天")
+	if out.Reason == cardsReasonCurrentFirst {
+		t.Fatalf("a named other conversation stayed in this conversation: %+v", out)
+	}
+	if retriever.calls == 0 {
+		t.Fatalf("the retriever was never asked for a named other conversation")
+	}
+}
+
+// The period the question named reaches the index as a filter.
+//
+// The words of the question are the subject, and the period says when. A
+// card of a conversation outside the period is not an answer to the question,
+// however well its words match.
+func TestThePeriodReachesTheIndexAsAFilter(t *testing.T) {
+	retriever := &fakeThinCardRetriever{}
+	registry, err := NewSearchSessionCardsRegistry(retriever)
+	if err != nil {
+		t.Fatalf("build the card search: %v", err)
+	}
+	run := gateRun("上周那份练习清单，单项里最后定的是写什么？")
+	tools, err := registry.Tools(context.Background(), run)
+	if err != nil {
+		t.Fatalf("build the tool: %v", err)
+	}
+	callCards(t, tools[0], "", "练习清单")
+	if !retriever.period.HasPeriod() {
+		t.Fatalf("the query carries no period: %+v", retriever.period)
+	}
+	if retriever.period.From.IsZero() || retriever.period.To.IsZero() {
+		t.Fatalf("the period is half empty: %+v", retriever.period)
 	}
 }
 

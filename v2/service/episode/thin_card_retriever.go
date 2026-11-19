@@ -158,6 +158,51 @@ func NewThinCardRetriever(index ThinCardCandidateIndex, loader ThinCardCandidate
 		nowFunc: func() time.Time { return time.Now().UTC() }}, nil
 }
 
+// ThinCardQuery is what the card index is asked.
+//
+// It is one value rather than a list of arguments because the parts of it
+// answer each other: the period and the temporal mode are two readings of
+// the same words, and the words and the topic keys are two readings of the
+// same subject.
+type ThinCardQuery struct {
+	// Terms are the words the question was read into.
+	Terms []string
+	// Topics are the exact topic keys the question named.
+	Topics []string
+	// Temporal is how the question bounded itself in time.
+	Temporal TemporalMode
+	// From and To are the period the question named, if it named one.
+	//
+	// A period FILTERS. It says which conversations are eligible, and it is
+	// not a reason to go and look: "last week" narrows the candidates to
+	// that week, and the decision to leave this conversation at all is
+	// made by the cross-session intent, not by the period.
+	From, To time.Time
+}
+
+// HasPeriod says whether the question named a period.
+func (q ThinCardQuery) HasPeriod() bool {
+	return !q.From.IsZero() || !q.To.IsZero()
+}
+
+// inPeriod says whether a moment falls inside the question's period.
+//
+// The upper bound is exclusive, the way the store's own time filter reads it:
+// a period that ends at Monday covers the Monday up to midnight, not the
+// Monday itself.
+func (q ThinCardQuery) inPeriod(moment time.Time) bool {
+	if moment.IsZero() {
+		return false
+	}
+	if !q.From.IsZero() && moment.Before(q.From) {
+		return false
+	}
+	if !q.To.IsZero() && !moment.Before(q.To) {
+		return false
+	}
+	return true
+}
+
 // Recall returns the earlier sessions that could be the one.
 //
 // The three channels are the ones a card is found by: the exact topics the
@@ -173,19 +218,22 @@ func NewThinCardRetriever(index ThinCardCandidateIndex, loader ThinCardCandidate
 // So the time channel always contributes, and what it contributes depends on
 // what the question asked for:
 //
-//   - A question that names a period asks for that period.
 //   - A question that names a subject and a pointer ("the exercises you set
 //     me last time") asks for the newest of the conversations that match the
 //     subject - and for the newest conversation overall, because "we never
 //     talked about that last time" is an answer only the newest one can
 //     give.
-//   - A question that names no subject and no period is about the newest
-//     conversation, and the newest conversations are the whole answer.
+//   - A question that names no subject is about the newest conversation, and
+//     the newest conversations are the whole answer.
+//   - A question that names a period narrows every channel to that period:
+//     a conversation outside it is not an answer to the question, whatever
+//     its words say.
 func (r *ThinCardRetriever) Recall(ctx context.Context, userID int64, currentSession string,
-	terms, topics []string, temporal TemporalMode) ([]ThinCardCandidate, error) {
+	query ThinCardQuery) ([]ThinCardCandidate, error) {
 	if r == nil || userID <= 0 {
 		return nil, nil
 	}
+	temporal := query.Temporal
 	seen := map[string]struct{}{}
 	ids := make([]string, 0, r.limit*2)
 	collect := func(results []episodedao.ThinCardSearchResult) {
@@ -202,16 +250,16 @@ func (r *ThinCardRetriever) Recall(ctx context.Context, userID int64, currentSes
 	// the pointer and they point at everything.
 	bySubject := false
 	if temporal != TemporalLatestAny {
-		if len(topics) > 0 {
-			results, err := r.index.SearchExactTopics(ctx, userID, currentSession, topics, r.limit)
+		if len(query.Topics) > 0 {
+			results, err := r.index.SearchExactTopics(ctx, userID, currentSession, query.Topics, r.limit)
 			if err != nil {
 				return nil, err
 			}
 			collect(results)
 			bySubject = len(ids) > 0
 		}
-		if len(terms) > 0 && len(ids) < r.limit {
-			results, err := r.index.SearchByText(ctx, userID, currentSession, terms, r.limit)
+		if len(query.Terms) > 0 && len(ids) < r.limit {
+			results, err := r.index.SearchByText(ctx, userID, currentSession, query.Terms, r.limit)
 			if err != nil {
 				return nil, err
 			}
@@ -222,7 +270,7 @@ func (r *ThinCardRetriever) Recall(ctx context.Context, userID int64, currentSes
 	// The time channel. It always runs, and it is the whole answer for a
 	// question that named no subject.
 	if temporal == TemporalLatestAny || temporal == TemporalLatestMatching || !bySubject {
-		recent, err := r.recentCards(ctx, userID, currentSession)
+		recent, err := r.recentCards(ctx, userID, currentSession, query.From, query.To)
 		if err != nil {
 			return nil, err
 		}
@@ -237,6 +285,13 @@ func (r *ThinCardRetriever) Recall(ctx context.Context, userID int64, currentSes
 	}
 	out := make([]ThinCardCandidate, 0, len(cards))
 	for _, card := range cards {
+		// The period narrows every channel. A conversation outside the
+		// period the learner named is not an answer to the question, and
+		// offering it would put a wrong answer in front of the model
+		// before it ever read the summary.
+		if query.HasPeriod() && !query.inPeriod(card.LastMessageAt) {
+			continue
+		}
 		candidate := ThinCardCandidate{
 			SessionID:    card.SessionID,
 			CardID:       card.ID,
@@ -311,9 +366,14 @@ func (r *ThinCardRetriever) CardOfSession(ctx context.Context, userID int64,
 // sessions, and the order is what this returns. It is read from the store
 // rather than from the index, because the index finds a card by its words and
 // the time question has no words to find it by.
-func (r *ThinCardRetriever) recentCards(ctx context.Context, userID int64, currentSession string) ([]episodedao.ThinCardSearchResult, error) {
+//
+// The period the question named narrows the list: "上周" asks for the cards
+// of last week, and the cards of the week before that are not an answer to
+// it however recent they are.
+func (r *ThinCardRetriever) recentCards(ctx context.Context, userID int64, currentSession string,
+	from, to time.Time) ([]episodedao.ThinCardSearchResult, error) {
 	cards, err := r.loader.ListThinCardsByTime(ctx, userID, currentSession,
-		time.Time{}, time.Time{}, r.limit)
+		from, to, r.limit)
 	if err != nil {
 		return nil, err
 	}

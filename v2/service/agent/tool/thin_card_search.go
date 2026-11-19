@@ -122,12 +122,13 @@ type ThinCardRetriever interface {
 	// Recall returns the conversations that could be the one. It reads the
 	// cards and never their bodies.
 	//
-	// The temporal mode is the question's own reading of "last time", and
-	// it decides whether the time channel is the whole answer or one of
-	// three. It is not a hint: a question that named no subject is answered
-	// by the newest conversations alone.
-	Recall(ctx context.Context, userID int64, currentSession string, terms, topics []string,
-		temporal episode.TemporalMode) ([]episode.ThinCardCandidate, error)
+	// The query is the question's own reading: the words, the topic keys,
+	// how it bounded itself in time, and the period it named. The period
+	// FILTERS - it says which conversations are eligible, and the decision
+	// to leave this conversation at all is made by the cross-session
+	// intent, not by the period.
+	Recall(ctx context.Context, userID int64, currentSession string,
+		query episode.ThinCardQuery) ([]episode.ThinCardCandidate, error)
 	// CardOfSession returns the card of one conversation, by identity.
 	//
 	// It is the lookup a segment hit is checked against: a segment search
@@ -218,8 +219,8 @@ func (r *SearchSessionCardsRegistry) search(ctx context.Context, run serviceagen
 		out.Notes = "This question points at a conversation without naming a subject, and this conversation already has a history. Answer from it. Search again only if you can name a subject, a name or a phrase from the conversation you are looking for."
 		return out, nil
 	}
-	terms, topics, temporal := thinCardQueryTerms(strings.TrimSpace(input.Query))
-	candidates, err := r.retriever.Recall(ctx, run.UserID, run.SessionID, terms, topics, temporal)
+	query := thinCardQuery(run.Question, strings.TrimSpace(input.Query))
+	candidates, err := r.retriever.Recall(ctx, run.UserID, run.SessionID, query)
 	if err != nil {
 		if ctxErr := contextError(ctx); ctxErr != nil {
 			return nil, ctxErr
@@ -306,23 +307,45 @@ func thinCardCandidateTokens(view ThinCardCandidateView) int {
 	return tokens
 }
 
-// thinCardQueryTerms reads the question into the terms, the topic keys and
-// the temporal mode the card index is searched by.
+// thinCardQuery reads the question into the query the card index is asked.
 //
-// The read plan does the reading: it removes the history shell and the
-// discourse frame, so what is left is the subject of the question. The topic
-// keys are the plan's exact ones, and they are empty when the question named
-// no subject - a card that is filed under no topic cannot be found by one.
+// THE PERIOD AND THE TEMPORAL MODE COME FROM THE LEARNER'S QUESTION, and the
+// words come from the query the model passed.
 //
-// The temporal mode is the plan's too, and it is what decides whether the
-// newest conversations are the whole answer or one of the answers.
-func thinCardQueryTerms(query string) ([]string, []string, episode.TemporalMode) {
-	plan := episode.BuildReadPlan(episode.RouteRequest{Question: query})
-	terms := plan.TopicTerms
+// The split is deliberate, and it is the same split the cross-session intent
+// makes. The model compresses a question into a query, and a compression
+// drops the time word: "上周那份练习清单，单项里最后定的是写什么" becomes
+// "练习清单". A period read from the query would therefore be lost exactly
+// when it matters, and a period is a FILTER - it says which conversations
+// are eligible.
+//
+// The words come from the model's query because the model knows what it is
+// looking for, and the learner's own words are the fallback for a model that
+// passed a query with no subject in it.
+func thinCardQuery(learnerQuestion, modelQuery string) episode.ThinCardQuery {
+	learner := episode.BuildReadPlan(episode.RouteRequest{Question: learnerQuestion})
+	model := episode.BuildReadPlan(episode.RouteRequest{Question: modelQuery})
+	terms := model.TopicTerms
 	if len(terms) == 0 {
-		terms = thinCardFallbackTerms(query)
+		terms = learner.TopicTerms
 	}
-	return terms, plan.ExactTopicKeys, plan.TemporalMode
+	if len(terms) == 0 {
+		terms = thinCardFallbackTerms(modelQuery)
+	}
+	if len(terms) == 0 {
+		terms = thinCardFallbackTerms(learnerQuestion)
+	}
+	topics := model.ExactTopicKeys
+	if len(topics) == 0 {
+		topics = learner.ExactTopicKeys
+	}
+	return episode.ThinCardQuery{
+		Terms:    terms,
+		Topics:   topics,
+		Temporal: learner.TemporalMode,
+		From:     learner.From,
+		To:       learner.To,
+	}
 }
 
 // thinCardFallbackTerms splits a question the read plan read as having no

@@ -26,14 +26,16 @@ type fakeThinCardRetriever struct {
 	terms      []string
 	topics     []string
 	temporal   episode.TemporalMode
+	period     episode.ThinCardQuery
 	err        error
 }
 
 func (f *fakeThinCardRetriever) Recall(_ context.Context, _ int64, _ string,
-	terms, topics []string, temporal episode.TemporalMode) ([]episode.ThinCardCandidate, error) {
-	f.terms = terms
-	f.topics = topics
-	f.temporal = temporal
+	query episode.ThinCardQuery) ([]episode.ThinCardCandidate, error) {
+	f.terms = query.Terms
+	f.topics = query.Topics
+	f.temporal = query.Temporal
+	f.period = query
 	if f.err != nil {
 		return nil, f.err
 	}

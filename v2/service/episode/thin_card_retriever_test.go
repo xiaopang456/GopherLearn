@@ -58,8 +58,20 @@ func (f *fakeThinCardLoader) LoadThinCards(_ context.Context, _ int64,
 }
 
 func (f *fakeThinCardLoader) ListThinCardsByTime(_ context.Context, _ int64, _ string,
-	_, _ time.Time, _ int) ([]model.EpisodeMemory, error) {
-	return f.recent, nil
+	from, to time.Time, _ int) ([]model.EpisodeMemory, error) {
+	// The store's own period filter: a card outside the window is not in the
+	// list at all.
+	out := make([]model.EpisodeMemory, 0, len(f.recent))
+	for _, card := range f.recent {
+		if !from.IsZero() && card.LastMessageAt.Before(from) {
+			continue
+		}
+		if !to.IsZero() && !card.LastMessageAt.Before(to) {
+			continue
+		}
+		out = append(out, card)
+	}
+	return out, nil
 }
 
 func (f *fakeThinCardLoader) LoadThinCardOfSession(_ context.Context, _ int64,
@@ -103,7 +115,7 @@ func TestTheNewestConversationIsACandidateEvenWhenTheWordsFoundSome(t *testing.T
 		t.Fatalf("build the retriever: %v", err)
 	}
 	candidates, err := retriever.Recall(context.Background(), 7, "current",
-		[]string{"压测"}, nil, TemporalLatestMatching)
+		ThinCardQuery{Terms: []string{"压测"}, Temporal: TemporalLatestMatching})
 	if err != nil {
 		t.Fatalf("recall: %v", err)
 	}
@@ -142,7 +154,8 @@ func TestAQuestionWithNoSubjectIsAnsweredByTheNewestConversations(t *testing.T) 
 	if err != nil {
 		t.Fatalf("build the retriever: %v", err)
 	}
-	candidates, err := retriever.Recall(context.Background(), 7, "current", nil, nil, TemporalLatestAny)
+	candidates, err := retriever.Recall(context.Background(), 7, "current",
+		ThinCardQuery{Temporal: TemporalLatestAny})
 	if err != nil {
 		t.Fatalf("recall: %v", err)
 	}
@@ -165,11 +178,47 @@ func TestAQuestionWithNoPointerIsAnsweredByTheWords(t *testing.T) {
 		t.Fatalf("build the retriever: %v", err)
 	}
 	candidates, err := retriever.Recall(context.Background(), 7, "current",
-		[]string{"隔离级别"}, nil, TemporalNone)
+		ThinCardQuery{Terms: []string{"隔离级别"}, Temporal: TemporalNone})
 	if err != nil {
 		t.Fatalf("recall: %v", err)
 	}
 	if len(candidates) != 1 || candidates[0].SessionID != "word" {
 		t.Fatalf("the candidates are %+v, want the conversation the words found", candidates)
+	}
+}
+
+// A period FILTERS: a conversation outside it is not an answer to the
+// question, however well its words match.
+//
+// The period is asked of the store as well as of the loaded cards: the
+// store's own list is what the time channel reads, and a filter that only
+// applied to one of the two would let a conversation of the wrong week
+// through the other.
+func TestANamedPeriodFiltersTheCandidatesByDate(t *testing.T) {
+	base := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	inWeek := base
+	outOfWeek := base.AddDate(0, 0, -14)
+	index := &fakeThinCardIndex{text: []episodedao.ThinCardSearchResult{
+		{CardID: "card-in"}, {CardID: "card-out"}}}
+	loader := &fakeThinCardLoader{
+		pool: []model.EpisodeMemory{
+			cardRow("card-in", "in", inWeek),
+			cardRow("card-out", "out", outOfWeek),
+		},
+		recent: []model.EpisodeMemory{cardRow("card-in", "in", inWeek)},
+	}
+	retriever, err := NewThinCardRetriever(index, loader, 5)
+	if err != nil {
+		t.Fatalf("build the retriever: %v", err)
+	}
+	candidates, err := retriever.Recall(context.Background(), 7, "current", ThinCardQuery{
+		Terms: []string{"清单"}, Temporal: TemporalRange,
+		From: base.AddDate(0, 0, -7), To: base.AddDate(0, 0, 7),
+	})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if len(candidates) != 1 || candidates[0].SessionID != "in" {
+		t.Fatalf("the candidates are %+v, want only the conversation inside the period", candidates)
 	}
 }
