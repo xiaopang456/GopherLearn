@@ -1544,6 +1544,17 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	}
 	history = dropPersistedCurrentQuestion(history, input.Question)
 
+	// The clarification the learner is answering, if there is one.
+	//
+	// It is read here because the prompt has to say how to continue it, and
+	// the prompt is assembled before the budget is known - the block that
+	// reaches the model is fitted to the room later.
+	pending := pendingClarification(history)
+	clarificationText := ""
+	if pending != nil {
+		clarificationText = clarificationBlock(pending, input.Question)
+	}
+
 	// The evidence reserve is the only budget line that never flexed: every
 	// other block takes minInt(remaining, cap) and hands its leftover to the
 	// block after it. Reserving it on a run whose evidence tools are not even
@@ -1621,6 +1632,16 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 			confirmedStates, confirmedRecords, bootstrapTopics))
 		systemPrompt += layeredSummaryPrompt
 	}
+	// The rule for continuing a clarified question.
+	//
+	// It is here and not in the base prompt because the base prompt's bytes
+	// are the ones the published measurements were taken against, and this
+	// rule matters only on a turn that continues a clarification. The lines
+	// that name a tool this turn does not have are dropped by the renderer,
+	// so the model is told to use the tools it actually has.
+	if pending != nil {
+		systemPrompt += clarificationContinuationPrompt
+	}
 	systemPrompt = systemPromptForTurn(systemPrompt, input)
 	breakdown.System = messageTokenCost(systemPrompt)
 	breakdown.CurrentQuestion = messageTokenCost(input.Question)
@@ -1638,6 +1659,34 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		messages = append(messages, schema.SystemMessage(taskState))
 	}
 	remaining := baseBudget - required
+	// The clarification takes its room BEFORE the blocks that compress what
+	// the window already carries.
+	//
+	// The rolling summary, the board and the segments are compressions of
+	// the conversation; losing a piece of one of them costs detail the
+	// learner can still get another way. The clarification is the one thing
+	// that says what the learner's reply MEANT, and a turn that loses it
+	// answers a bare word.
+	//
+	// It is a block like every other one, and it obeys the budget like every
+	// other one. A window with no room left gets no block, and the model
+	// sees the learner's reply without the explanation - a worse turn, but a
+	// turn. Failing the turn over a block of text would be the wrong trade:
+	// the learner asked a question and gets no answer at all.
+	if clarificationText != "" {
+		// Whole or nothing.
+		//
+		// A truncated clarification is worse than no clarification: half a
+		// sentence about which conversation the learner meant is a sentence
+		// the model cannot act on, and it may be acted on wrongly.
+		if messageTokenCost(clarificationText) > minInt(remaining-4, maxClarificationTokens) {
+			clarificationText = ""
+		}
+	}
+	if clarificationText != "" {
+		breakdown.Clarification = messageTokenCost(clarificationText)
+		remaining -= breakdown.Clarification
+	}
 	if preRetrievalText != "" {
 		// The block is charged here and placed later. The order in which a
 		// block is measured is not the order in which it is sent.
@@ -1828,30 +1877,12 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		summaryGrants = historyGrantsFromSummary(summary, summaryMessage, input.SessionID)
 	}
 
-	// The clarification the learner answered.
-	//
-	// Only the NEWEST clarification counts, and only when it is the last
-	// thing in the conversation: a clarification that has an answer after it
-	// was already answered, and answering it again would answer a question
-	// the learner is no longer asking.
-	//
-	// It is a block like every other one, and it obeys the budget like every
-	// other one. A turn whose window has no room left gets no block, and the
-	// model sees the learner's reply without the explanation - a worse turn,
-	// but a turn. Failing the turn over a block of text would be the wrong
-	// trade: the learner asked a question and gets no answer at all.
-	clarificationText := ""
-	if pending := pendingClarification(history); pending != nil {
-		clarificationText = clarificationBlock(pending, input.Question)
-		if clarificationText != "" {
-			clarificationText = prefixWithinTokens(clarificationText,
-				minInt(remaining-4, maxClarificationTokens))
-		}
-		if clarificationText != "" {
-			breakdown.Clarification = messageTokenCost(clarificationText)
-			remaining -= breakdown.Clarification
-		}
-	}
+	// The clarification the learner answered was fitted to the room above,
+	// before the blocks that compress the conversation. Only the NEWEST
+	// clarification counts, and only when it is the last thing in the
+	// conversation: a clarification that has an answer after it was already
+	// answered, and answering it again would answer a question the learner is
+	// no longer asking.
 
 	selected, selectedRows, historyTokens, dropped, truncated := selectRecentMessages(history, remaining)
 	breakdown.RecentMessages = historyTokens

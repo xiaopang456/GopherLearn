@@ -288,7 +288,22 @@ func TestTheClarificationIsCountedOnceInTheBudget(t *testing.T) {
 	}}
 	build := func(history *fakeHistoryReader) ContextWindow {
 		t.Helper()
-		builder, err := NewContextBuilder(testContextConfig(), history,
+		// The shipped budget, not the toy one the other context tests use:
+		// what is under test here is the COUNTING, and a window that cannot
+		// hold a clarification at all would fail for a reason that has
+		// nothing to do with the count.
+		config := testContextConfig()
+		config.ModelWindowTokens = 32768
+
+		config.OutputReserveTokens = 4000
+
+		config.InputTargetTokens = 20000
+		config.EvidenceReserve = 6500
+		config.MaxGlobalUserMemoryTokens = 800
+		config.MaxTopicUserMemoryTokens = 1500
+		config.MaxSummaryTokens = 2000
+		config.MaxMasteryTokens = 900
+		builder, err := NewContextBuilder(config, history,
 			staticTaskState("active learning task"), nil, staticMemories{"prefers examples"},
 			staticSummary("earlier decision"))
 		if err != nil {
@@ -346,31 +361,40 @@ func TestTheClarificationIsCountedOnceInTheBudget(t *testing.T) {
 	}
 }
 
-// A window with no room left gets no clarification, and the turn still
-// happens.
+// A clarification that does not fit is dropped, and the turn goes on.
+//
+// The block is whole or nothing: half a sentence about which conversation
+// the learner meant is a sentence the model cannot act on, and it may be
+// acted on wrongly. A clarification whose question is longer than the
+// block's budget therefore goes away entirely.
 //
 // Failing the turn over a block of text would be the wrong trade: the
 // learner asked a question and would get no answer at all. A turn without
 // the explanation is a worse turn, not a failed one.
 func TestAClarificationThatDoesNotFitIsDroppedAndTheTurnGoesOn(t *testing.T) {
 	clarification := &model.SessionClarification{
-		Question: "上次你给我排的那三道题里，第二道练的是什么？",
+		Question: strings.Repeat("上次那个排练的安排到底是按什么定的？", 30),
 		Candidates: []model.SessionClarificationCandidate{
 			{SessionID: "session-a", Title: "洄漪"},
 		},
 	}
 	config := testContextConfig()
-	// A summary long enough to take the room the clarification would have
-	// had. The blocks before it are clamped by what is left, so a long
-	// summary is what leaves nothing over.
-	config.MaxSummaryTokens = 240
-	long := strings.Repeat("这轮会话的滚动摘要。", 80)
+	config.ModelWindowTokens = 32768
+
+	config.OutputReserveTokens = 4000
+
+	config.InputTargetTokens = 20000
+	config.EvidenceReserve = 6500
+	config.MaxGlobalUserMemoryTokens = 800
+	config.MaxTopicUserMemoryTokens = 1500
+	config.MaxSummaryTokens = 2000
+	config.MaxMasteryTokens = 900
 	history := &fakeHistoryReader{messages: []model.Message{
 		{ID: 1, IsUser: false, Content: "你在问哪一次？", Clarification: clarification},
 		{ID: 2, IsUser: true, Content: "2"},
 	}}
 	builder, err := NewContextBuilder(config, history, staticTaskState("active learning task"),
-		nil, staticMemories{"prefers examples"}, staticSummary(long))
+		nil, staticMemories{"prefers examples"}, staticSummary("earlier decision"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -145,6 +145,26 @@ func pendingClarification(history []model.Message) *model.SessionClarification {
 // window.
 const maxClarificationTokens = 200
 
+// clarificationContinuationPrompt is what a turn that continues a clarified
+// question is told about the tools it may use.
+//
+// It is a separate block and NOT a line of the base prompt, on purpose: the
+// base prompt's bytes are the ones the published measurements were taken
+// against, and a rule that matters only on a turn that continues a
+// clarification must not move them.
+//
+// Each line names ONE tool, and the renderer drops the line when this turn
+// does not have that tool. So the model is told to use the tools this turn
+// actually offers, and is never told to use one it cannot see - which is the
+// whole of J12: the summary browse is registered only when the summary is
+// in the applied mode, and the segment search only when the segment index
+// is there. A rule that named both unconditionally would be a rule the
+// model could not obey half the time.
+const clarificationContinuationPrompt = `
+You are continuing a question the learner asked in an earlier turn, after they told you which conversation they meant.
+- Read that conversation's summary with browse_summary_segments, naming the conversation in its session parameter.
+- When that browse does not reach the answer, find the stretch of turns you are looking for with search_history_segments.`
+
 // The clarification block the next turn carries.
 //
 // It is what tells the model that the learner answered a question, what the
@@ -183,9 +203,9 @@ func clarificationBlock(clarification *model.SessionClarification, reply string)
 	if matched && chosen != nil {
 		b.WriteString(fmt.Sprintf("They chose the conversation %s (conversation id %s).\n",
 			chosen.Label(), chosen.SessionID))
-		b.WriteString("Answer the waiting question in that conversation. Open it with " +
-			"search_session_cards naming its conversation id, then read it with " +
-			"browse_summary_segments or read_session_whiteboard.")
+		b.WriteString("Answer the waiting question in that conversation: open it with the " +
+			"cross-session search tool, then read it with the history-reading tools this " +
+			"turn offers.")
 		return b.String()
 	}
 	b.WriteString(fmt.Sprintf("They answered: %q\n", strings.TrimSpace(reply)))

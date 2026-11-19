@@ -1,6 +1,8 @@
 package model
 
 import (
+	"database/sql/driver"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -151,6 +153,66 @@ func (c SessionClarificationCandidate) topicsText() string {
 		out = append(out, topic)
 	}
 	return strings.Join(out, "、")
+}
+
+// IsEmpty says there is no clarification.
+//
+// A message that carries none has an empty one, and that is what the column
+// holds for it.
+func (c *SessionClarification) IsEmpty() bool {
+	return c == nil || (strings.TrimSpace(c.Question) == "" && len(c.Candidates) == 0)
+}
+
+// Value writes the clarification into its JSON column.
+//
+// It is the project's own JSON-field pattern - the same one MessageSources
+// uses beside it: an explicit Value and Scan rather than a tag the driver
+// has to guess at. A tag alone does not carry a pointer to a struct through
+// the driver, and the write fails with "unsupported type".
+//
+// A message with no clarification writes NULL, which is what the rows that
+// predate the column hold.
+func (c *SessionClarification) Value() (driver.Value, error) {
+	if c.IsEmpty() {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(c)
+	if err != nil {
+		return nil, fmt.Errorf("encode session clarification: %w", err)
+	}
+	return string(encoded), nil
+}
+
+// Scan reads the clarification back out of its JSON column.
+//
+// A NULL column - a message written before the column existed - is a
+// message with no clarification, and reading it must not be an error: the
+// column is added to a table that is already full of rows.
+func (c *SessionClarification) Scan(value any) error {
+	if c == nil {
+		return fmt.Errorf("scan session clarification: the target is nil")
+	}
+	if value == nil {
+		*c = SessionClarification{}
+		return nil
+	}
+	var data []byte
+	switch typed := value.(type) {
+	case []byte:
+		data = typed
+	case string:
+		data = []byte(typed)
+	default:
+		return fmt.Errorf("scan session clarification: unsupported type %T", value)
+	}
+	if len(data) == 0 || string(data) == "null" {
+		*c = SessionClarification{}
+		return nil
+	}
+	if err := json.Unmarshal(data, c); err != nil {
+		return fmt.Errorf("scan session clarification: %w", err)
+	}
+	return nil
 }
 
 // Validate refuses a clarification that cannot be shown.

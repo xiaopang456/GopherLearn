@@ -589,6 +589,43 @@ func messageRowView(row model.Message) map[string]any {
 		}
 		view["sources"] = sources
 	}
+	// The clarification travels with the message it was asked in, and the
+	// client needs it after a reload as much as it needed it in the moment:
+	// the learner may answer it minutes later, in a conversation they have
+	// reloaded in between.
+	if row.Clarification != nil && !row.Clarification.IsEmpty() {
+		view["clarification"] = clarificationView(*row.Clarification)
+	}
+	return view
+}
+
+// clarificationView is the clarification as the client reads it.
+//
+// It is the same shape the turn response carries, so a row a client reads
+// immediately cannot differ in shape from the same row after a reload.
+func clarificationView(clarification model.SessionClarification) map[string]any {
+	candidates := make([]any, 0, len(clarification.Candidates))
+	for _, candidate := range clarification.Candidates {
+		entry := map[string]any{"session_id": candidate.SessionID, "title": candidate.Title}
+		if len(candidate.Topics) > 0 {
+			entry["topics"] = candidate.Topics
+		}
+		if !candidate.LastTalkedAt.IsZero() {
+			entry["last_talked_at"] = candidate.LastTalkedAt.UTC().Format(time.RFC3339)
+		}
+		candidates = append(candidates, entry)
+	}
+	view := map[string]any{
+		"question":        clarification.Question,
+		"candidates":      candidates,
+		"allow_free_text": clarification.AllowFreeText,
+	}
+	if strings.TrimSpace(clarification.ClarificationID) != "" {
+		view["clarification_id"] = clarification.ClarificationID
+	}
+	if strings.TrimSpace(clarification.Prompt) != "" {
+		view["prompt"] = clarification.Prompt
+	}
 	return view
 }
 
