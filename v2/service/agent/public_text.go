@@ -64,18 +64,12 @@ var toolProtocolBars = []string{"｜", "|"}
 var toolProtocolMarkerPatterns = buildToolProtocolMarkerPatterns()
 
 func buildToolProtocolMarkerPatterns() []string {
-	patterns := make([]string, 0, 108)
+	patterns := make([]string, 0, 54)
 	for _, bar := range toolProtocolBars {
 		for before := 1; before <= 3; before++ {
 			for after := 1; after <= 3; after++ {
 				core := strings.Repeat(bar, before) + "DSML" + strings.Repeat(bar, after)
-				patterns = append(patterns,
-					core,
-					"<"+core,
-					"</"+core,
-					strings.Repeat(bar, before)+"dsml"+strings.Repeat(bar, after),
-					"<"+strings.Repeat(bar, before)+"dsml"+strings.Repeat(bar, after),
-				)
+				patterns = append(patterns, core, "<"+core, "</"+core)
 			}
 		}
 	}
@@ -88,6 +82,23 @@ func isToolProtocolBar(r rune) bool {
 
 func isToolProtocolLetter(r rune, want rune) bool {
 	return unicode.ToUpper(r) == want
+}
+
+// hasToolProtocolPrefix is the case-insensitive prefix test the streaming
+// filter needs: the marker word's case is the provider's choice, and a chunk
+// boundary can fall between any two of its letters.
+func hasToolProtocolPrefix(pattern, suffix string) bool {
+	patternRunes := []rune(pattern)
+	suffixRunes := []rune(suffix)
+	if len(suffixRunes) >= len(patternRunes) {
+		return false
+	}
+	for index, r := range suffixRunes {
+		if unicode.ToUpper(r) != unicode.ToUpper(patternRunes[index]) {
+			return false
+		}
+	}
+	return true
 }
 
 // hasToolProtocol reports whether text carries the protocol's marker word.
@@ -140,7 +151,7 @@ func toolProtocolHoldback(text string) int {
 	for n := limit; n >= 1; n-- {
 		suffix := string(runes[len(runes)-n:])
 		for _, pattern := range toolProtocolMarkerPatterns {
-			if len(suffix) < len(pattern) && strings.HasPrefix(pattern, suffix) {
+			if hasToolProtocolPrefix(pattern, suffix) {
 				return len(suffix)
 			}
 		}
@@ -172,8 +183,18 @@ func isIncompleteToolProtocol(text string) bool {
 	return false
 }
 
+// isToolProtocolText is the ONE recognition rule for protocol text.
+//
+// The streaming path (which publishes text while the model is still writing)
+// and the final answer path (which publishes the answer once) both ask it, so
+// a text that one of them refuses can never be published by the other. It
+// covers a complete marker and the piece of one a stream can end on.
+func isToolProtocolText(text string) bool {
+	return hasToolProtocol(text) || isIncompleteToolProtocol(text)
+}
+
 func safeModelText(text string) string {
-	if hasToolProtocol(text) {
+	if isToolProtocolText(text) {
 		return malformedToolCallAnswer
 	}
 	return text
@@ -230,7 +251,7 @@ func (c *publicModelCall) accept(ctx context.Context, message *schema.Message) e
 }
 func (c *publicModelCall) end(ctx context.Context, failed bool) error {
 	if !c.malformed && c.pending != "" {
-		if hasToolProtocol(c.pending) || isIncompleteToolProtocol(c.pending) {
+		if isToolProtocolText(c.pending) {
 			// The stream ended with protocol markup, or with a piece of it that
 			// never became a complete marker. Either way that text is not an
 			// answer, and publishing it would show the learner the transport.

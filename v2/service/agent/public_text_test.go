@@ -260,6 +260,135 @@ func TestASnapshotEndingInAPartialMarkerIsNotPublished(t *testing.T) {
 	}
 }
 
+// The streaming path and the final-answer path must refuse the same texts.
+//
+// One recognition rule (isToolProtocolText) sits behind both, and this test
+// drives the two paths with the same input and compares their verdicts. A text
+// one path publishes and the other refuses would mean the learner can see
+// protocol text depending on which path the turn happened to take.
+func TestTheStreamAndTheFinalAnswerAgreeOnWhatIsProtocol(t *testing.T) {
+	raw := readB3LeakedToolCall(t)
+	for _, tc := range []struct {
+		name string
+		text string
+	}{
+		{"the B3 raw output (single bar)", raw},
+		{"a complete marker in prose", "前文<｜DSML｜ invoke>后文"},
+		{"a mixed-case marker", "前文<｜DsMl｜ invoke>后文"},
+		{"a final answer ending in a partial marker", "前文<｜DS"},
+		{"a final answer ending in a mixed-case partial marker", "前文<｜dS"},
+		{"an ordinary answer", "第二道是依赖裁剪。"},
+		{"an ordinary answer ending in one bar", "第二道是依赖裁剪｜"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			finalReplaced := safeModelText(tc.text) != tc.text
+
+			var observed []PublicText
+			c := &publicModelCall{observer: func(_ context.Context, e PublicText) error {
+				observed = append(observed, e)
+				return nil
+			}}
+			runes := []rune(tc.text)
+			for i := 0; i < len(runes); i++ {
+				if err := c.accept(context.Background(), schema.AssistantMessage(string(runes[i:i+1]), nil)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := c.end(context.Background(), false); err != nil {
+				t.Fatal(err)
+			}
+			fallbackSeen := false
+			for _, e := range observed {
+				if e.Content == malformedToolCallAnswer {
+					fallbackSeen = true
+				}
+			}
+			if finalReplaced != fallbackSeen {
+				t.Fatalf("the two paths disagree: final replaced=%v, stream published the failure=%v",
+					finalReplaced, fallbackSeen)
+			}
+		})
+	}
+}
+
+// Mixed-case marker spellings must survive a chunk boundary.
+//
+// The marker word's case belongs to the provider; lower-casing part of it must
+// not make the streaming filter publish the piece it has already buffered.
+func TestMixedCaseProtocolAcrossChunksIsNotPublished(t *testing.T) {
+	raw := readB3LeakedToolCall(t)
+	mixed := strings.ReplaceAll(raw, "DSML", "DsMl")
+	for name, text := range map[string]string{
+		"a mixed-case marker":     "<｜DsMl｜ invoke name=\"x\">",
+		"the B3 text, mixed case": mixed,
+	} {
+		for _, size := range []int{1, 2, 3, 5} {
+			t.Run(name, func(t *testing.T) {
+				var observed []PublicText
+				c := &publicModelCall{observer: func(_ context.Context, e PublicText) error {
+					observed = append(observed, e)
+					return nil
+				}}
+				runes := []rune(text)
+				for i := 0; i < len(runes); i += size {
+					end := i + size
+					if end > len(runes) {
+						end = len(runes)
+					}
+					if err := c.accept(context.Background(), schema.AssistantMessage(string(runes[i:end]), nil)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := c.end(context.Background(), false); err != nil {
+					t.Fatal(err)
+				}
+				fallbacks := 0
+				for _, e := range observed {
+					if e.Content == malformedToolCallAnswer {
+						fallbacks++
+						continue
+					}
+					if strings.Contains(strings.ToUpper(e.Content), "DSML") {
+						t.Fatalf("protocol text was published: %q", e.Content)
+					}
+				}
+				if fallbacks != 1 {
+					t.Fatalf("the failure message was published %d times, want once: %v", fallbacks, observed)
+				}
+			})
+		}
+	}
+}
+
+// A final answer that ends in HALF a marker is refused by the answer path.
+//
+// The stream path had a rule for a stream that ends mid-marker; the final
+// answer needs the same one, because a non-streaming generation can end at the
+// same place without a stream to notice it.
+func TestAFinalAnswerThatEndsInAPartialMarkerIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name, text string
+		refused    bool
+	}{
+		{"upper-case partial", "前文<｜DS", true},
+		{"mixed-case partial", "前文<｜dS", true},
+		{"opener and one letter", "前文<｜D", true},
+		{"opener and one bar", "前文<｜", true},
+		{"one trailing bar only", "前文｜", false},
+		{"ordinary answer", "第二道是依赖裁剪。", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := safeModelText(tc.text)
+			if tc.refused && got != malformedToolCallAnswer {
+				t.Fatalf("a partial marker reached the learner: %q", got)
+			}
+			if !tc.refused && got != tc.text {
+				t.Fatalf("an ordinary answer was rewritten: %q -> %q", tc.text, got)
+			}
+		})
+	}
+}
+
 func TestTheLeakedToolCallIsAnAnswerFailureAndNotAStructuredCall(t *testing.T) {
 	raw := readB3LeakedToolCall(t)
 	fake := &scriptedChatModel{respond: func(context.Context, int) (*schema.Message, error) {
