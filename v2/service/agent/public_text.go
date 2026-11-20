@@ -3,9 +3,11 @@ package agent
 import (
 	"context"
 	"errors"
-	"github.com/cloudwego/eino/schema"
 	"io"
 	"strings"
+	"unicode"
+
+	"github.com/cloudwego/eino/schema"
 )
 
 // PublicText is an observation of Content at the existing model boundary. It
@@ -47,8 +49,131 @@ type publicModelCall struct {
 
 const malformedToolCallAnswer = "这一轮模型未能正常调用工具，请重试。"
 
+// The tool-call protocol of the provider leaks into Content when the model
+// boundary cannot turn a call into a structured ToolCall: the markup arrives
+// as ordinary text. The filter must not depend on one exact spelling of it.
+//
+// Two shapes have been seen in the records: the doubled bar (｜｜DSML｜｜) and
+// the single bar (｜DSML｜). The bar and the angle bracket belong to the
+// provider's markup, not to this program, so ASCII forms are accepted too.
+var toolProtocolBars = []string{"｜", "|"}
+
+// toolProtocolMarkerPatterns enumerates the complete marker shapes the filter
+// recognises. The streaming path also uses them as the set of prefixes it may
+// hold back, which is what keeps a marker split across chunks from leaking.
+var toolProtocolMarkerPatterns = buildToolProtocolMarkerPatterns()
+
+func buildToolProtocolMarkerPatterns() []string {
+	patterns := make([]string, 0, 108)
+	for _, bar := range toolProtocolBars {
+		for before := 1; before <= 3; before++ {
+			for after := 1; after <= 3; after++ {
+				core := strings.Repeat(bar, before) + "DSML" + strings.Repeat(bar, after)
+				patterns = append(patterns,
+					core,
+					"<"+core,
+					"</"+core,
+					strings.Repeat(bar, before)+"dsml"+strings.Repeat(bar, after),
+					"<"+strings.Repeat(bar, before)+"dsml"+strings.Repeat(bar, after),
+				)
+			}
+		}
+	}
+	return patterns
+}
+
+func isToolProtocolBar(r rune) bool {
+	return r == '｜' || r == '|'
+}
+
+func isToolProtocolLetter(r rune, want rune) bool {
+	return unicode.ToUpper(r) == want
+}
+
+// hasToolProtocol reports whether text carries the protocol's marker word.
+//
+// It is the word DSML with at least one vertical bar on each side, in either
+// bar width and either letter case. Requiring a bar on both sides is what
+// keeps ordinary prose that happens to contain the four letters from being
+// rewritten as a failure message.
+func hasToolProtocol(text string) bool {
+	runes := []rune(text)
+	for i := 0; i+len("DSML") <= len(runes); i++ {
+		if !isToolProtocolLetter(runes[i], 'D') ||
+			!isToolProtocolLetter(runes[i+1], 'S') ||
+			!isToolProtocolLetter(runes[i+2], 'M') ||
+			!isToolProtocolLetter(runes[i+3], 'L') {
+			continue
+		}
+		barsBefore := 0
+		for j := i - 1; j >= 0 && isToolProtocolBar(runes[j]); j-- {
+			barsBefore++
+		}
+		barsAfter := 0
+		for j := i + 4; j < len(runes) && isToolProtocolBar(runes[j]); j++ {
+			barsAfter++
+		}
+		if barsBefore > 0 && barsAfter > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// toolProtocolHoldback returns how many bytes at the end of text may still
+// become a protocol marker, so the streaming filter can keep them from being
+// published before the next chunk says what they are.
+func toolProtocolHoldback(text string) int {
+	if text == "" {
+		return 0
+	}
+	runes := []rune(text)
+	limit := 0
+	for _, pattern := range toolProtocolMarkerPatterns {
+		if length := len([]rune(pattern)); length > limit {
+			limit = length
+		}
+	}
+	if limit > len(runes) {
+		limit = len(runes)
+	}
+	for n := limit; n >= 1; n-- {
+		suffix := string(runes[len(runes)-n:])
+		for _, pattern := range toolProtocolMarkerPatterns {
+			if len(suffix) < len(pattern) && strings.HasPrefix(pattern, suffix) {
+				return len(suffix)
+			}
+		}
+	}
+	return 0
+}
+
+// isIncompleteToolProtocol reports whether a stream that ended left a piece of
+// the protocol's markup in the buffer. A single trailing bar is ordinary text
+// and is published; a bar plus a letter of the marker word is not.
+func isIncompleteToolProtocol(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	held := toolProtocolHoldback(trimmed)
+	if held <= 0 || held > len(trimmed) {
+		return false
+	}
+	suffix := trimmed[len(trimmed)-held:]
+	if len([]rune(suffix)) < 2 {
+		return false
+	}
+	for _, r := range suffix {
+		if isToolProtocolBar(r) {
+			return true
+		}
+	}
+	return false
+}
+
 func safeModelText(text string) string {
-	if strings.Contains(text, "｜｜DSML｜｜") {
+	if hasToolProtocol(text) {
 		return malformedToolCallAnswer
 	}
 	return text
@@ -93,25 +218,29 @@ func (c *publicModelCall) accept(ctx context.Context, message *schema.Message) e
 		return nil
 	}
 	c.pending += message.Content
-	if strings.Contains(c.pending, "｜｜DSML｜｜") {
+	if hasToolProtocol(c.pending) {
 		c.pending = ""
 		c.malformed = true
 		return c.emit(ctx, malformedToolCallAnswer)
 	}
-	// Retain a possible marker prefix across chunks; ordinary text remains streaming.
-	keep := 0
-	for _, marker := range []string{"<｜｜DSML｜｜", "</｜｜DSML｜｜", "｜｜DSML｜｜"} {
-		for n := 1; n < len(marker) && n <= len(c.pending); n++ {
-			if strings.HasSuffix(c.pending, marker[:n]) && n > keep {
-				keep = n
-			}
-		}
-	}
-	ready := c.pending[:len(c.pending)-keep]
-	c.pending = c.pending[len(c.pending)-keep:]
+	hold := toolProtocolHoldback(c.pending)
+	ready := c.pending[:len(c.pending)-hold]
+	c.pending = c.pending[len(c.pending)-hold:]
 	return c.emit(ctx, ready)
 }
 func (c *publicModelCall) end(ctx context.Context, failed bool) error {
+	if !c.malformed && c.pending != "" {
+		if hasToolProtocol(c.pending) || isIncompleteToolProtocol(c.pending) {
+			// The stream ended with protocol markup, or with a piece of it that
+			// never became a complete marker. Either way that text is not an
+			// answer, and publishing it would show the learner the transport.
+			c.pending = ""
+			c.malformed = true
+			if err := c.emit(ctx, malformedToolCallAnswer); err != nil {
+				return err
+			}
+		}
+	}
 	if err := c.emit(ctx, c.pending); err != nil {
 		return err
 	}

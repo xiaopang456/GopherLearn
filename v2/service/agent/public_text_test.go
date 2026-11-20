@@ -2,11 +2,13 @@ package agent
 
 import (
 	"context"
-	"github.com/cloudwego/eino/components/tool"
-	"github.com/cloudwego/eino/schema"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/schema"
 )
 
 func TestPublicGenerateIsOneSnapshotAndOptInOnly(t *testing.T) {
@@ -113,5 +115,172 @@ func TestMalformedToolCallIsNeverPublished(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// readB3LeakedToolCall is the exact Content a B3 attempt received from the
+// model on 2026-11-20, copied from
+// r3-targeted-b/out/B3-r1/turn1/record.jsonl. It is the SINGLE-bar spelling of
+// the protocol, which the old filter (doubled bar only) published verbatim as
+// the learner's answer.
+func readB3LeakedToolCall(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile("testdata/b3-single-pipe-tool-call.txt")
+	if err != nil {
+		t.Fatalf("read the B3 raw output: %v", err)
+	}
+	return string(raw)
+}
+
+func TestSafeModelTextReplacesEverySpellingOfTheToolProtocol(t *testing.T) {
+	raw := readB3LeakedToolCall(t)
+	for _, tc := range []struct {
+		name, text string
+		replace    bool
+	}{
+		{"the B3 raw output (single bar)", raw, true},
+		{"doubled bar", "<｜｜DSML｜｜ calls>", true},
+		{"ASCII bar", "<|DSML| invoke name=\"x\">", true},
+		{"lowercase marker word", "<｜dsml｜ invoke>", true},
+		{"marker inside prose", "前文" + raw + "后文", true},
+		{"the ordinary answer", "第二道是依赖裁剪。", false},
+		{"the word without bars", "DSML 是一个协议名。", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := safeModelText(tc.text)
+			if tc.replace {
+				if got != malformedToolCallAnswer {
+					t.Fatalf("a leaked protocol text was published: %q", got)
+				}
+				return
+			}
+			if got != tc.text {
+				t.Fatalf("an ordinary answer was rewritten: %q -> %q", tc.text, got)
+			}
+		})
+	}
+}
+
+func TestTheToolProtocolNeverLeaksAcrossChunkBoundaries(t *testing.T) {
+	raw := readB3LeakedToolCall(t)
+	cases := map[string]string{
+		"the B3 raw output (single bar)": raw,
+		"doubled bar":                    "<｜｜DSML｜｜ invoke name=\"x\">",
+		"lowcased marker word":           "<｜dsml｜ invoke>",
+		"marker inside prose":            "前文" + raw + "后文",
+		"marker ends the stream":         "前文<｜DS",
+	}
+	for name, text := range cases {
+		for _, size := range []int{1, 2, 3, 7} {
+			t.Run(name, func(t *testing.T) {
+				var observed []PublicText
+				c := &publicModelCall{observer: func(_ context.Context, e PublicText) error {
+					observed = append(observed, e)
+					return nil
+				}}
+				runes := []rune(text)
+				for i := 0; i < len(runes); i += size {
+					end := i + size
+					if end > len(runes) {
+						end = len(runes)
+					}
+					if err := c.accept(context.Background(), schema.AssistantMessage(string(runes[i:end]), nil)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := c.end(context.Background(), false); err != nil {
+					t.Fatal(err)
+				}
+				fallbacks := 0
+				for _, e := range observed {
+					if e.Content == malformedToolCallAnswer {
+						fallbacks++
+						continue
+					}
+					if strings.Contains(strings.ToUpper(e.Content), "DSML") {
+						t.Fatalf("protocol text was published: %q", e.Content)
+					}
+				}
+				if fallbacks != 1 {
+					t.Fatalf("the failure message was published %d times, want once: %v", fallbacks, observed)
+				}
+			})
+		}
+	}
+}
+
+func TestAnOrdinaryTrailingBarIsStillPublished(t *testing.T) {
+	var observed []PublicText
+	c := &publicModelCall{observer: func(_ context.Context, e PublicText) error {
+		observed = append(observed, e)
+		return nil
+	}}
+	text := "第二道是依赖裁剪。"
+	if err := c.accept(context.Background(), schema.AssistantMessage(text+"｜", nil)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.end(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	var published strings.Builder
+	for _, e := range observed {
+		published.WriteString(e.Content)
+	}
+	if got := published.String(); got != text+"｜" {
+		t.Fatalf("published %q, want the learner's text unchanged", got)
+	}
+}
+
+func TestASnapshotEndingInAPartialMarkerIsNotPublished(t *testing.T) {
+	var observed []PublicText
+	c := &publicModelCall{observer: func(_ context.Context, e PublicText) error {
+		observed = append(observed, e)
+		return nil
+	}}
+	// A non-streaming generation can hand the whole text back at once, so the
+	// partial marker sits in the buffer with prose in front of it.
+	if err := c.accept(context.Background(), schema.AssistantMessage("前文<｜DS", nil)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.end(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	fallbacks := 0
+	for _, e := range observed {
+		if e.Content == malformedToolCallAnswer {
+			fallbacks++
+			continue
+		}
+		if strings.Contains(strings.ToUpper(e.Content), "DSML") {
+			t.Fatalf("protocol text was published: %q", e.Content)
+		}
+	}
+	if fallbacks != 1 {
+		t.Fatalf("the failure message was published %d times, want once: %v", fallbacks, observed)
+	}
+}
+
+func TestTheLeakedToolCallIsAnAnswerFailureAndNotAStructuredCall(t *testing.T) {
+	raw := readB3LeakedToolCall(t)
+	fake := &scriptedChatModel{respond: func(context.Context, int) (*schema.Message, error) {
+		// The provider hands the call back as Content, with no ToolCall. The
+		// boundary must neither execute it nor show it.
+		return schema.AssistantMessage(raw, nil), nil
+	}}
+	var count atomic.Int32
+	config := DefaultRunnerConfig()
+	runner := mustRunner(t, fake, StaticToolRegistry{Registered: []tool.BaseTool{mustFakeTool(t, &count)}}, newMemoryStepRepository(), config)
+	result, err := runner.Run(context.Background(), testRunContext(), DiscardEvents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ToUpper(result.Answer), "DSML") {
+		t.Fatalf("answer=%q leaks the protocol", result.Answer)
+	}
+	if !strings.Contains(result.Answer, malformedToolCallAnswer) {
+		t.Fatalf("answer=%q, want the explicit failure message", result.Answer)
+	}
+	if count.Load() != 0 {
+		t.Fatalf("a tool ran %d times from text the model wrote", count.Load())
 	}
 }

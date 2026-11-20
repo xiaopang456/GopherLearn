@@ -1,0 +1,12 @@
+<｜DSML｜ calls>
+<｜DSML｜ invoke name="search_session_history">
+<｜DSML｜ parameter name="max_results" string="false">10</｜DSML｜ parameter>
+<｜DSML｜ parameter name="query" string="true">第一道题 第二道题 第三道题 分别练</｜DSML｜ parameter>
+<｜DSML｜ parameter name="session" string="true">p2c-06</｜DSML｜ parameter>
+</｜DSML｜ invoke>
+<｜DSML｜ invoke name="search_session_history">
+<｜DSML｜ parameter name="max_results" string="false">10</｜DSML｜ parameter>
+<｜DSML｜ parameter name="query" string="true">出三道题</｜DSML｜ parameter>
+<｜DSML｜ parameter name="session" string="true">p2c-06</｜DSML｜ parameter>
+</｜DSML｜ invoke>
+</｜DSML｜ calls>
