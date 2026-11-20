@@ -569,6 +569,12 @@ func (r *SearchHistorySegmentsRegistry) segment(ctx context.Context, run service
 // The run's own conversation is always open. Another one is open when a card
 // in this run pointed at it, or when the card index names one now - and then
 // the card is what every read in that conversation is checked against.
+//
+// The GRANT SET is the authority, and it is asked again after the scope was
+// offered: a scope it refused is a conversation this run may not open. That
+// is the case the server's LOCK makes - the learner said which conversation
+// they meant, and a hit in another conversation of theirs is still a
+// conversation they did not choose.
 func (r *SearchHistorySegmentsRegistry) authorise(run serviceagent.RunContext, session string,
 	cards map[string]segmentCard) (string, uint64, uint, bool) {
 	if session == strings.TrimSpace(run.SessionID) {
@@ -597,6 +603,11 @@ func (r *SearchHistorySegmentsRegistry) authorise(run serviceagent.RunContext, s
 			// hides every message of the conversation the hit points at.
 			CardWatermark: card.Watermark,
 		})
+		if !run.GrantSet.AuthorisesSession(run, session) {
+			// The scope was refused. The set is the authority, and a
+			// refused scope is a conversation this run may not open.
+			return "", 0, 0, false
+		}
 	}
 	return card.CardID, card.CardVersion, card.Watermark, true
 }

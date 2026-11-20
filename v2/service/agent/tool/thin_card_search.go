@@ -73,6 +73,14 @@ const (
 	cardsReasonNoMatch      = "no_match"
 	cardsReasonInvalidInput = "invalid_request"
 	cardsReasonStoreFailure = "store_unavailable"
+	// cardsReasonNotAllowed says the conversation is not one this turn may
+	// open.
+	//
+	// It is the lock's reason: the learner said which conversation they
+	// meant, and another conversation of the same learner is not refused by
+	// the store - it is the learner's own - so the refusal has to come from
+	// the turn's own reach.
+	cardsReasonNotAllowed = "session_not_allowed"
 	// cardsReasonCurrentFirst says the question was a bare pointer and THIS
 	// conversation has the history, so the answer is here before it is
 	// anywhere else.
@@ -250,6 +258,24 @@ func (r *SearchSessionCardsRegistry) search(ctx context.Context, run serviceagen
 	// conversation the learner does not own is not found, and neither is
 	// one that has no card.
 	if wanted != "" {
+		// A NAMED conversation is looked up BY IDENTITY, and the LOCK decides
+		// whether it may be looked up at all.
+		//
+		// The lock is the case that matters: the learner said which
+		// conversation they meant, the server checked that it is theirs, and
+		// this turn may read THAT one. Another conversation of the same
+		// learner is not refused by the store - it is the learner's own - so
+		// the refusal has to come from the lock.
+		//
+		// Without a lock nothing changes: a turn that has not locked
+		// anything may still open the conversation a clarification's pick
+		// named, which is how the picked conversation is reached at all.
+		if locked := lockedSessionOf(run); locked != "" && wanted != strings.TrimSpace(run.SessionID) &&
+			wanted != locked {
+			out.Status = cardsStatusNoEvidence
+			out.Reason = cardsReasonNotAllowed
+			return out, nil
+		}
 		candidate, found, lookupErr := r.retriever.CardOfSession(ctx, run.UserID, wanted)
 		if lookupErr != nil {
 			if ctxErr := contextError(ctx); ctxErr != nil {
@@ -323,6 +349,18 @@ func (r *SearchSessionCardsRegistry) openCandidate(run serviceagent.RunContext, 
 		// every message of the conversation the candidate just pointed at.
 		CardWatermark: candidate.Watermark,
 	})
+}
+
+// lockedSessionOf is the conversation the server locked for this turn.
+//
+// It is empty when no lock is in effect, and it is read from the GRANT SET
+// rather than from the run context: the set is what the run's tools are
+// actually given, and a lock the set does not know about is not a lock.
+func lockedSessionOf(run serviceagent.RunContext) string {
+	if run.GrantSet == nil {
+		return ""
+	}
+	return run.GrantSet.LockedSession()
 }
 
 // thinCardCandidateView renders one candidate.

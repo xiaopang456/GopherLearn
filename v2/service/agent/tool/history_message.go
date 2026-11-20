@@ -369,8 +369,9 @@ func (r *HistoryMessageRegistry) Tools(ctx context.Context, run serviceagent.Run
 	// the same facts, and re-reading the row per id would turn two tool calls into a
 	// query per citation.
 	facts := &episodeFactsCache{reader: r.episodeEvidence, segments: r.segmentEvidence, userID: userID,
-		sessionID: strings.TrimSpace(run.SessionID),
-		loaded:    map[string]episodeFactsEntry{}, segmentLoaded: map[int]segmentFactsEntry{}}
+		sessionID:       strings.TrimSpace(run.SessionID),
+		lockedSessionID: strings.TrimSpace(run.LockedSessionID),
+		loaded:          map[string]episodeFactsEntry{}, segmentLoaded: map[int]segmentFactsEntry{}}
 	// A message this run reads back is evidence the learner actually said those words,
 	// and the only thing that can make a citation to them legal. The registry comes from
 	// the run, exactly like memory_search's does, so the reference the tool issues is the
@@ -596,6 +597,14 @@ type episodeFactsCache struct {
 	// it, so the check that decides it is "is this the conversation the run
 	// is in", and answering that needs to know which conversation that is.
 	sessionID string
+	// lockedSessionID is the conversation the server locked for this turn.
+	//
+	// It is the second conversation this run may read, and it may have no
+	// card at all: the learner may have picked it from their own list, which
+	// no search had offered. The authority behind a read taken in it is the
+	// LOCK - the server checked that it is the learner's and read it - and
+	// not a card.
+	lockedSessionID string
 
 	mu     sync.Mutex
 	loaded map[string]episodeFactsEntry
@@ -681,7 +690,16 @@ func (c *episodeFactsCache) confirmSearch(ctx context.Context, grant serviceagen
 	// another conversation without a card never reaches this point: the
 	// grant set refuses it before it is stored.
 	if strings.TrimSpace(grant.CardID) == "" {
-		if c.sessionID == "" || strings.TrimSpace(grant.SourceSessionID) != c.sessionID {
+		// No card behind the hit. That is the case of a search in the
+		// conversation the run is already in, and the case of the LOCKED
+		// conversation: the learner pointed at it, the server checked that
+		// it is theirs and read it, and it may have no card at all.
+		//
+		// The authority is the run's own conversation or the lock, and
+		// nothing else: a hit that names a third conversation never reaches
+		// this point, because the grant set refuses it before it is stored.
+		session := strings.TrimSpace(grant.SourceSessionID)
+		if session != c.sessionID && (c.lockedSessionID == "" || session != c.lockedSessionID) {
 			return refusalEpisodeSession, false
 		}
 		return "", true

@@ -47,28 +47,42 @@ func clarificationRecords(stage, outcome string) uint64 {
 // lockFixture is an earlier conversation with a summary of its own.
 func lockFixture(t *testing.T, db *gorm.DB, userID int64, userName, sessionID, title, topic, point string) {
 	t.Helper()
+	lockFixtureSegments(t, db, userID, userName, sessionID, title, topic, 1, point)
+}
+
+// lockFixtureSegments is an earlier conversation with SEVERAL summary
+// segments.
+//
+// The count matters: the locked evidence is the conversation's whole summary,
+// and one segment is too small to push the evidence past the block's cap.
+func lockFixtureSegments(t *testing.T, db *gorm.DB, userID int64, userName, sessionID, title, topic string,
+	segments int, point string) {
+	t.Helper()
 	earlier := model.Session{ID: sessionID, UserID: userID, UserName: userName,
 		Mode: model.SessionModeAgent, Title: title}
 	if err := db.Create(&earlier).Error; err != nil {
 		t.Fatalf("write the earlier session: %v", err)
 	}
-	content, err := json.Marshal(model.SessionSummarySegmentContent{
-		SchemaVersion: model.SessionSummarySegmentSchemaV1,
-		Topic:         topic,
-		Points: []model.SessionSummarySegmentPoint{
-			{Text: point, EvidenceMessageIDs: []uint{1}},
-		},
-	})
-	if err != nil {
-		t.Fatalf("encode the segment: %v", err)
-	}
-	segment := model.SessionSummarySegment{
-		UserID: userID, SessionID: sessionID, Seq: 1, StartMessageID: 1, EndMessageID: 2,
-		Content: string(content), WhiteboardChanges: "null",
-		IndexStatus: model.SessionSummarySegmentIndexPending, TokenEstimate: 40,
-	}
-	if err := db.Create(&segment).Error; err != nil {
-		t.Fatalf("write the segment: %v", err)
+	for seq := 1; seq <= segments; seq++ {
+		content, err := json.Marshal(model.SessionSummarySegmentContent{
+			SchemaVersion: model.SessionSummarySegmentSchemaV1,
+			Topic:         topic,
+			Points: []model.SessionSummarySegmentPoint{
+				{Text: point, EvidenceMessageIDs: []uint{uint(seq)}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("encode the segment: %v", err)
+		}
+		segment := model.SessionSummarySegment{
+			UserID: userID, SessionID: sessionID, Seq: seq,
+			StartMessageID: uint(seq), EndMessageID: uint(seq) + 1,
+			Content: string(content), WhiteboardChanges: "null",
+			IndexStatus: model.SessionSummarySegmentIndexPending, TokenEstimate: 40,
+		}
+		if err := db.Create(&segment).Error; err != nil {
+			t.Fatalf("write the segment: %v", err)
+		}
 	}
 }
 
@@ -238,5 +252,70 @@ func TestATurnWithoutAClarificationLocksNothing(t *testing.T) {
 	}
 	if window.ClarificationReask != nil {
 		t.Fatal("a turn without a clarification asked one again")
+	}
+}
+
+// The evidence block that does not fit still scopes the turn.
+//
+// The evidence is dropped and the clarification block stays - the model then
+// reads the conversation with the tools - and that read is bounded by the
+// lock the same way. A turn whose evidence did not fit must not become a turn
+// that may read any conversation of the learner's.
+func TestTheLockHoldsWhenTheEvidenceBlockDoesNotFit(t *testing.T) {
+	s := thinCardSettings(t)
+	// The shipped window, and a record long enough that its evidence does
+	// not fit the block's own cap.
+	//
+	// The evidence is capped at 4000 runes when it is read, and the block is
+	// capped at 2000 tokens: a Chinese record of that length is more than
+	// 2000 tokens, so the block cannot fit and the turn falls back to the
+	// clarification block.
+	app, db, _, token := newFixture(t, s, func(context.Context, int) (*schema.Message, error) {
+		return schema.AssistantMessage("你好", nil), nil
+	})
+	session := createSession(t, app, token, "create-lock-over-budget")
+	var row model.Session
+	if err := db.Where("id = ?", session).First(&row).Error; err != nil {
+		t.Fatalf("read the session: %v", err)
+	}
+	// A long enough record that its evidence cannot fit the block.
+	//
+	// The point is at the schema's own limit (500 runes) and there are 24
+	// segments, so the conversation's summary is far past the reader's 4000
+	// runes and far past the block's 2000 tokens.
+	long := strings.Repeat("这是锁定那一次会话里的很长一段记录。", 22)
+	lockFixtureSegments(t, db, row.UserID, row.UserName, "l4r2-2026am-a1-03", "洄漪", "三道题", 24, long)
+	askFixture(t, db, row.UserID, row.UserName, session,
+		"上次你给我排的那三道题里，第二道练的是什么？", "l4r2-2026am-a1-03")
+
+	window, err := app.Context.Build(context.Background(), agentService.RunContext{
+		UserID: row.UserID, SessionID: session, Question: "l4r2-2026am-a1-03",
+	})
+	if err != nil {
+		t.Fatalf("build the window: %v", err)
+	}
+	// The lock is there whether or not the evidence fit.
+	if window.SessionLock == nil {
+		t.Fatal("the turn locked no conversation")
+	}
+	if window.SessionLock.SessionID != "l4r2-2026am-a1-03" {
+		t.Fatalf("the lock is %q", window.SessionLock.SessionID)
+	}
+	// The evidence did not fit, so it is not in the window - and the
+	// clarification block is.
+	if window.Budget.LockedSession != 0 {
+		t.Fatalf("the evidence block cost %d tokens, want none", window.Budget.LockedSession)
+	}
+	if window.Budget.Clarification == 0 {
+		t.Fatal("the clarification block was dropped too: the turn would not know what the learner meant")
+	}
+	carried := false
+	for _, message := range window.Messages {
+		if message != nil && strings.Contains(message.Content, "上次你给我排的那三道题") {
+			carried = true
+		}
+	}
+	if !carried {
+		t.Fatal("the clarification did not reach the window")
 	}
 }

@@ -65,6 +65,23 @@ const (
 	// model asked for was there, and a reader or an evaluation has to be able
 	// to tell the two apart.
 	TerminationToolUnavailable = "answered_tool_unavailable"
+	// TerminationWaitingChoice is the reason of a run that ENDED BY ASKING.
+	//
+	// The server asked the learner which conversation they meant, and the
+	// turn stopped there. It is not an answer and it is not a failure: the
+	// question is waiting for the learner's reply, and the answer comes in
+	// their NEXT message.
+	//
+	// The reason is what tells a reader - and an evaluation - that this turn
+	// did not run out of room to answer: it was not asked to answer at all.
+	TerminationWaitingChoice = "waiting_for_choice"
+	// WaitingChoiceAnswer is what the assistant says when the server asks
+	// again.
+	//
+	// It is a fixed sentence and not a model's: the turn ends BEFORE the
+	// model is asked anything, because a question the learner has not
+	// answered yet cannot be answered.
+	WaitingChoiceAnswer = "你在问哪一次？选一个，或者告诉我时间、标题或主题。"
 )
 
 const (
@@ -550,6 +567,20 @@ type RunContext struct {
 	// "which sessions are reachable" from the cited message ids would deny
 	// that conversation.
 	CardScopes []CardScope
+	// LockedSessionID is the earlier conversation the server locked for
+	// this turn, after the learner said which one they meant and the
+	// ownership check passed.
+	//
+	// It is a RESTRICTION, not a permission: while it is set, the run may
+	// read that conversation and no other earlier one - not the ones the
+	// window's cards opened, and not the ones a tool finds. The learner has
+	// already said which conversation they meant, and the evidence block
+	// that answers their question comes out of that one.
+	//
+	// It is set even when the evidence block does not fit the window: the
+	// model then reads the conversation with the tools instead, and that
+	// read is bounded the same way.
+	LockedSessionID string
 	// Relevance is what the server-side pre-retrieval found before the model
 	// was asked anything. It is server-owned and nil when no pre-retrieval ran.
 	//
@@ -933,6 +964,17 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	// opened, and a tool that browses one of them asks the set rather than the
 	// model.
 	toolInput.CardScopes = window.SessionCardScopes
+	// The locked conversation travels into the tool input, and it is a
+	// RESTRICTION: while it is set, the grant set refuses every other
+	// earlier conversation - the ones the window's cards opened and the ones
+	// a tool finds.
+	//
+	// It is set even when the evidence block did not fit the window: the
+	// model then reads the locked conversation with the tools instead, and
+	// that read is bounded the same way.
+	if window.SessionLock != nil {
+		toolInput.LockedSessionID = window.SessionLock.SessionID
+	}
 	// One authorisation set for the whole turn, shared by every tool that
 	// reads the learner's own words. A tool that opens an older segment
 	// extends it, and the read-back tool sees the extension.
@@ -1044,6 +1086,19 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 		}); sendErr != nil {
 			return state.result(), sendErr
 		}
+		// The turn ENDS here.
+		//
+		// The learner's answer did not identify one conversation, so the
+		// server asked again - and a question the learner has not answered
+		// yet cannot be answered. Asking the model anyway would spend a
+		// call on a turn whose answer is "which one did you mean?", and the
+		// model would answer it with a guess - which is exactly the
+		// behaviour the clarification exists to stop.
+		//
+		// The waiting state is what is saved: the clarification travels on
+		// the assistant's message, and the learner's NEXT message is the
+		// answer to it.
+		return state.waitingForChoice(ctx, sink)
 	}
 
 	// The server-side pre-retrieval is a search of the learner's material, so
@@ -1488,6 +1543,36 @@ func (s *runState) result() RunnerResult {
 		Closeout:         s.closeoutReason(),
 		UnknownToolCalls: s.unknownToolCalls,
 	}
+}
+
+// waitingForChoice ends a turn that asked the learner a question.
+//
+// The turn is over and it is not a failure: the question is waiting for the
+// learner's reply, and the answer comes in their next message. The model is
+// NOT called - the run had nothing to answer, and a model asked to answer it
+// would answer with a guess, which is exactly what the clarification exists to
+// stop.
+//
+// The step that records the wait is a step like any other: a reader of the
+// run has to be able to see that this turn ended by asking and not by
+// answering.
+func (s *runState) waitingForChoice(ctx context.Context, sink EventSink) (RunnerResult, error) {
+	if err := s.appendStep(ctx, &model.AgentStep{
+		UserID: s.input.UserID, RunID: s.input.RunID, Type: model.AgentStepAnswer,
+		ResultSummary: truncate(WaitingChoiceAnswer, 1000),
+	}); err != nil {
+		return s.result(), err
+	}
+	if err := sendEvent(ctx, sink, Event{
+		Type: EventAnswerDelta, RunID: s.input.RunID, Content: WaitingChoiceAnswer,
+	}); err != nil {
+		return s.result(), err
+	}
+	result := s.result()
+	result.Answer = WaitingChoiceAnswer
+	result.Closeout = TerminationWaitingChoice
+	observability.Memory.ClarificationSession("waiting_choice", true, 1)
+	return result, nil
 }
 
 // closeoutReason names how the turn ended.

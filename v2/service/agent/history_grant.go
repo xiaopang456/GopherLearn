@@ -140,6 +140,20 @@ func (g HistoryMessageGrant) UsableIn(run RunContext) bool {
 	if g.MessageID == 0 || strings.TrimSpace(g.SourceSessionID) == "" {
 		return false
 	}
+	// A grant out of the LOCKED conversation is the server's own.
+	//
+	// The server read that conversation's own record after checking that it
+	// is the learner's, so a read taken in it is bounded by the ownership
+	// check rather than by a card - and the locked conversation may have no
+	// card at all, the learner having picked it from their own list.
+	//
+	// It is bounded to the LOCKED conversation and to nothing else: a grant
+	// out of any other conversation is refused by the lock, whether it came
+	// from a card, a search or a browse.
+	if locked := strings.TrimSpace(run.LockedSessionID); locked != "" &&
+		g.SourceSessionID == locked && g.SourceKind != HistorySourceSummary {
+		return true
+	}
 	switch g.SourceKind {
 	case HistorySourceSummary:
 		// Summary grants are bounded by the watermark they were drawn from, and
@@ -296,6 +310,19 @@ type HistoryGrantSet struct {
 	// the learner may browse. A grant set that derived "which sessions are
 	// reachable" from the cited message ids would deny that conversation.
 	cardScopes map[string]CardScope
+	// lockedSession is the ONE earlier conversation the server locked for
+	// this turn.
+	//
+	// It is the server's own handover: the learner said which conversation
+	// they meant, the server checked that it is theirs, and it read that
+	// conversation's record. A turn with a lock may read THAT conversation
+	// and no other - and that is a restriction, not a permission: a card
+	// scope, or a tool that found another conversation, does not widen it.
+	//
+	// It is a session of its own and not a card scope because the locked
+	// conversation may have no card at all: it may be a conversation the
+	// learner picked from their OWN list, which no search had offered.
+	lockedSession string
 	// sessionID is the conversation this run is in.
 	//
 	// It is here to keep the run's own conversation out of the card scopes: a
@@ -315,8 +342,14 @@ type HistoryGrantSet struct {
 // "this id in it may be read".
 func NewHistoryGrantSet(run RunContext, grants []HistoryMessageGrant) *HistoryGrantSet {
 	set := &HistoryGrantSet{byMessage: make(map[uint][]HistoryMessageGrant, len(grants)),
-		cardScopes: make(map[string]CardScope, len(run.CardScopes)),
-		sessionID:  strings.TrimSpace(run.SessionID)}
+		cardScopes:    make(map[string]CardScope, len(run.CardScopes)),
+		lockedSession: strings.TrimSpace(run.LockedSessionID),
+		sessionID:     strings.TrimSpace(run.SessionID)}
+	if set.lockedSession != "" && set.lockedSession == set.sessionID {
+		// The run's own conversation is not an earlier one, and a lock on it
+		// would restrict the run to nothing at all.
+		set.lockedSession = ""
+	}
 	for _, scope := range run.CardScopes {
 		session := strings.TrimSpace(scope.SessionID)
 		if session == "" || strings.TrimSpace(scope.CardID) == "" || scope.CardVersion == 0 {
@@ -324,6 +357,12 @@ func NewHistoryGrantSet(run RunContext, grants []HistoryMessageGrant) *HistoryGr
 		}
 		if session == set.sessionID {
 			// The run's own conversation is never an earlier one.
+			continue
+		}
+		if set.lockedSession != "" && session != set.lockedSession {
+			// The lock is the whole of this turn's reach. A card that was
+			// shown beside it does not open a second conversation: the
+			// learner has already said which one they meant.
 			continue
 		}
 		set.cardScopes[session] = scope
@@ -420,6 +459,14 @@ func (s *HistoryGrantSet) Extend(run RunContext, grants []HistoryMessageGrant) {
 		if !grant.UsableIn(run) {
 			continue
 		}
+		// The lock is a restriction on the WHOLE turn, not only on the
+		// sessions it opened: a grant out of any other conversation is
+		// refused here too, so a tool cannot widen the turn's reach by
+		// handing the grant set an id it found somewhere else.
+		if s.lockedSession != "" && grant.SourceSessionID != s.lockedSession &&
+			strings.TrimSpace(grant.SourceSessionID) != s.sessionID {
+			continue
+		}
 		duplicate := false
 		for _, held := range s.byMessage[grant.MessageID] {
 			if held == grant {
@@ -477,7 +524,14 @@ func (s *HistoryGrantSet) CardSessions() []string {
 // AuthorisesSession reports whether this run may read the given session.
 //
 // The run's own session is always readable. An earlier one is readable only
-// when a card in this run pointed at it.
+// when a card in this run pointed at it - or when the server LOCKED it for
+// this turn.
+//
+// The lock is a restriction and not a permission: when one is in effect, the
+// locked conversation is the ONLY earlier conversation this run may read, and
+// every other one is refused however it was found. The learner has already
+// said which conversation they meant, and a turn that could still wander into
+// another one would be answering from a conversation they did not choose.
 func (s *HistoryGrantSet) AuthorisesSession(run RunContext, sessionID string) bool {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
@@ -486,8 +540,23 @@ func (s *HistoryGrantSet) AuthorisesSession(run RunContext, sessionID string) bo
 	if sessionID == strings.TrimSpace(run.SessionID) {
 		return true
 	}
+	if locked := s.LockedSession(); locked != "" {
+		return sessionID == locked
+	}
 	_, opened := s.CardScopeFor(sessionID)
 	return opened
+}
+
+// LockedSession is the earlier conversation the server locked for this turn.
+//
+// It is empty when no lock is in effect.
+func (s *HistoryGrantSet) LockedSession() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lockedSession
 }
 
 // CardAuthorisation returns the card that opened a session.
@@ -509,6 +578,19 @@ func (s *HistoryGrantSet) CardAuthorisation(sessionID string) (string, uint64, u
 	sessionID = strings.TrimSpace(sessionID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.lockedSession != "" && sessionID == s.lockedSession {
+		// The locked conversation is opened by the LOCK and not by a card:
+		// it may have no card at all - the learner may have picked it from
+		// their own list. The ceiling is zero, which means "no ceiling": the
+		// server read the conversation's own record, and a read taken in it
+		// is not bounded by a card that never described it.
+		return "", 0, 0, true
+	}
+	if s.lockedSession != "" {
+		// Every other earlier conversation is refused while a lock is in
+		// effect, and a card scope does not widen that.
+		return "", 0, 0, false
+	}
 	scope, ok := s.cardScopes[sessionID]
 	if !ok {
 		return "", 0, 0, false
@@ -572,6 +654,12 @@ func (s *HistoryGrantSet) ExtendCardScope(run RunContext, scope CardScope) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.sessionID != "" && session == s.sessionID {
+		return
+	}
+	if s.lockedSession != "" && session != s.lockedSession {
+		// The lock is the whole of this turn's reach. A tool that found
+		// another conversation does not widen it: the learner has already
+		// said which one they meant, and the server has checked it.
 		return
 	}
 	if s.cardScopes == nil {
