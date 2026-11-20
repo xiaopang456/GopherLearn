@@ -1024,6 +1024,28 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	}
 	bounded := &boundedModel{inner: r.chatModel, state: state, thinkingDialect: r.config.ThinkingDialect, outputReserveTokens: r.config.OutputReserveTokens}
 
+	// The question the server asks again.
+	//
+	// The learner's answer to a clarification did not identify one
+	// conversation, so the server asks again - with the ORIGINAL question
+	// kept, and with the run carrying a real clarification.
+	//
+	// It is a real clarification and not a list of possibilities in the
+	// model's own words: a model that names three conversations in its
+	// answer has not asked anything, and a reader of the run has to be able
+	// to tell the two apart.
+	if window.ClarificationReask != nil {
+		state.mu.Lock()
+		state.clarification = window.ClarificationReask
+		state.mu.Unlock()
+		if sendErr := sendEvent(ctx, sink, Event{
+			Type: EventWaitingChoice, RunID: input.RunID,
+			Clarification: ClarificationCardOf(window.ClarificationReask),
+		}); sendErr != nil {
+			return state.result(), sendErr
+		}
+	}
+
 	// The server-side pre-retrieval is a search of the learner's material, so
 	// it is a step and it costs a tool slot. Recording it is what keeps the
 	// step list and the tool count telling the same story, and it is what lets
@@ -1174,6 +1196,15 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	result := state.result()
 	result.Answer = finalAnswer
 	observability.Memory.KnowledgeAnswer(string(result.AnswerBasis), string(result.KnowledgeStatus), string(result.KnowledgeReason))
+	// The last of the four records of a locked conversation.
+	//
+	// The three before it said which conversation was locked, that its
+	// evidence came back, and that a tool failed; this one says the answer
+	// went out. A run that broke before this point has no answer, and the
+	// four records together are what says where it broke.
+	if window.SessionLock != nil {
+		observability.Memory.ClarificationSession("answer", true, 1)
+	}
 	return result, nil
 }
 

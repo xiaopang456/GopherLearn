@@ -547,6 +547,31 @@ func (r *MemoryRecorder) SummarySegment(outcome, reason string, points, pointsDr
 		mode, outcome, reason, points, pointsDropped)
 }
 
+// ClarificationSession records one step of the cross-session lock.
+//
+// The four steps are recorded separately because the question they answer is
+// "where did it break": the conversation was locked, the evidence was
+// returned, the answer went out, or a tool failed. One counter for all four
+// cannot say which of them happened, and a run that failed somewhere in the
+// chain is exactly the run somebody has to look at.
+//
+// The stage label is bounded, so a new stage has to be named here before it
+// can be reported.
+func (r *MemoryRecorder) ClarificationSession(stage string, ok bool, count int) {
+	mode := r.modeLabel()
+	stage = boundedLabel(stage, "session_locked", "evidence_returned", "answer", "tool_failure")
+	outcome := "ok"
+	if !ok {
+		outcome = "failed"
+	}
+	r.add("clarification_session_total{mode="+mode+",stage="+stage+",outcome="+outcome+"}", 1)
+	if count > 0 {
+		r.addTotal("clarification_session_items_total", int64(count))
+	}
+	r.logf("memory_metric name=clarification_session mode=%s stage=%s outcome=%s count=%d",
+		mode, stage, outcome, count)
+}
+
 // SummarySegmentJob records what one background segment attempt did.
 //
 // The status label is bounded, and the error code is a fixed set, so neither

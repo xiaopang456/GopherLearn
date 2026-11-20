@@ -71,13 +71,14 @@ const v2DraftCard = computed(() => props.message.role === 'assistant'
  * The choice this reply asked the learner for, when it asked one.
  *
  * It is a fact about this one answer, in the same way the draft is: the server
- * put it on this turn's run. A reply that was read back has no `originalV2` at
- * all, and then there is nothing to ask — so no card is shown, rather than an
- * empty one.
+ * put it on this turn's run. A reply that was READ BACK carries it on the
+ * message instead — the learner may answer it minutes later, in a
+ * conversation they have reloaded in between, so a card that only lived on the
+ * live turn would be gone exactly when it was still answerable.
  */
 const clarificationCard = computed(() => {
   if (props.message.role !== 'assistant') return null
-  const value = props.message.originalV2?.clarification
+  const value = props.message.originalV2?.clarification ?? props.message.clarification
   return value && typeof value === 'object' ? value : null
 })
 

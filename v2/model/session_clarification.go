@@ -50,6 +50,16 @@ type SessionClarification struct {
 	Candidates []SessionClarificationCandidate `json:"candidates"`
 	// AllowFreeText says the learner may answer with their own words.
 	AllowFreeText bool `json:"allow_free_text"`
+	// AllowHistoryBrowse says the learner may pick from their OWN list of
+	// conversations instead of from the candidates.
+	//
+	// It is what makes the second operation of the clarification possible:
+	// the candidates are what one lightweight search found, and a search that
+	// found nothing - or found the wrong thing - must not be the end of the
+	// road. The learner's own history is the ground truth, and a target
+	// that never made it into the candidate list is still reachable through
+	// it.
+	AllowHistoryBrowse bool `json:"allow_history_browse"`
 	// CreatedAt is when the clarification was asked.
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -216,6 +226,12 @@ func (c *SessionClarification) Scan(value any) error {
 }
 
 // Validate refuses a clarification that cannot be shown.
+//
+// A clarification with no candidate is still a question when the learner may
+// browse their own history: that is the case where one lightweight search
+// found nothing credible, and the learner's own list is the way forward. A
+// clarification with no candidate and no way to browse is not a question at
+// all - there is nothing the learner could answer with.
 func (c *SessionClarification) Validate() error {
 	if c == nil {
 		return fmt.Errorf("clarification is nil")
@@ -223,7 +239,7 @@ func (c *SessionClarification) Validate() error {
 	if strings.TrimSpace(c.Question) == "" {
 		return fmt.Errorf("clarification has no question")
 	}
-	if len(c.Candidates) == 0 {
+	if len(c.Candidates) == 0 && !c.AllowHistoryBrowse {
 		return fmt.Errorf("clarification has no candidates")
 	}
 	if len(c.Candidates) > 8 {

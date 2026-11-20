@@ -1086,6 +1086,50 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	if err != nil {
 		return nil, fmt.Errorf("initialize agent context builder: %v", err)
 	}
+	// The server's own door to the learner's other conversations.
+	//
+	// It is attached under the card path only: a deployment that does not
+	// keep the cards has no earlier conversation to point at, and a window
+	// that resolved a clarification against conversations the deployment
+	// never indexed would be reading a history it does not have.
+	//
+	// The locator is the card search - one lightweight lookup, no model
+	// call - and the reader locks one conversation of the learner's own and
+	// reads the evidence out of it. They go together: a reader without a
+	// locator could only answer a click, and a locator without a reader
+	// could only find candidates.
+	if sessionCardThin {
+		crossStore, crossStoreErr := agentService.NewDatabaseCrossSessionStore(
+			sessionDAO.DefaultRepository(), message.DefaultRepository())
+		if crossStoreErr != nil {
+			return nil, fmt.Errorf("initialize cross session store: %v", crossStoreErr)
+		}
+		crossReader, crossReaderErr := agentService.NewDatabaseCrossSessionReader(crossStore)
+		if crossReaderErr != nil {
+			return nil, fmt.Errorf("initialize cross session reader: %v", crossReaderErr)
+		}
+		contextBuilder.UseCrossSession(
+			agentService.CrossSessionLocatorFunc(func(ctx context.Context, userID int64,
+				currentSession, clue string) ([]agentService.SessionCandidate, error) {
+				found, recallErr := thinCardRetriever.Recall(ctx, userID, currentSession,
+					agentTool.ThinCardQueryFor(clue, clue))
+				if recallErr != nil {
+					return nil, recallErr
+				}
+				out := make([]agentService.SessionCandidate, 0, len(found))
+				for _, candidate := range found {
+					out = append(out, agentService.SessionCandidate{
+						SessionID:    candidate.SessionID,
+						Title:        candidate.Title,
+						Topics:       append([]string{}, candidate.Topics...),
+						LastTalkedAt: candidate.LastTalkedAt,
+					})
+				}
+				return out, nil
+			}),
+			crossReader,
+		)
+	}
 	// The layered summary's read side. It is attached only in the applied
 	// mode: the off and the shadow modes send exactly what they sent before.
 	if summarySegmentAssembly.Applies() {

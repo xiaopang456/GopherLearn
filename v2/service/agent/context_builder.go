@@ -751,7 +751,11 @@ type BudgetBreakdown struct {
 	// Clarification is what the resolved clarification cost: the block
 	// that tells the model which conversation the learner meant and which
 	// question was waiting for an answer.
-	Clarification     int `json:"clarification,omitempty"`
+	Clarification int `json:"clarification,omitempty"`
+	// LockedSession is what the locked conversation's evidence cost: the
+	// block that carries the conversation the learner pointed at, so that
+	// the original question can be answered from it.
+	LockedSession     int `json:"lockedSession,omitempty"`
 	Assembled         int `json:"assembled"`
 	ProjectedInput    int `json:"projectedInput"`
 	DroppedMessages   int `json:"droppedMessages"`
@@ -846,6 +850,23 @@ type ContextWindow struct {
 	WhiteboardDisplayedEntries  []WhiteboardDisplayEntry
 	WhiteboardDisplayedAnchors  []WhiteboardDisplayAnchor
 	WhiteboardAnchorMessageIDs  []uint
+	// SessionLock is the conversation the learner's reply to a
+	// clarification pointed at, and the evidence that was read out of it.
+	//
+	// It is set only when the server resolved their answer into one
+	// conversation of their own. A window without it either had no
+	// clarification to answer, or could not resolve the answer, and the
+	// difference is visible in ClarificationReask.
+	SessionLock *LockedSession
+	// ClarificationReask is the question the server asks again.
+	//
+	// It is set when the learner's answer did not identify one conversation:
+	// their clue named several, or named none, or named a conversation that
+	// is not theirs. The original question is kept in it - the learner has
+	// not changed their mind about WHAT they are asking - and the run
+	// carries it as a real clarification, so a list of possibilities in the
+	// model's own words is not mistaken for one.
+	ClarificationReask *model.SessionClarification
 }
 
 type MessageHistoryReader interface {
@@ -1056,6 +1077,30 @@ type DatabaseContextBuilder struct {
 	// conversation no longer fits. It is nil when the layered summary is
 	// not read, because there is then nothing for a segment to compress.
 	fallback SummarySegmentFallbackStarter
+	// crossLocator and crossReader are the server's own door to the
+	// learner's other conversations.
+	//
+	// They are attached only under the card path, and they are what turns
+	// the learner's answer to a clarification into ONE conversation: the
+	// locator finds the conversations a clue names and the reader locks one
+	// of them and reads its evidence. Nil means the window keeps the
+	// behaviour it had before the lock existed.
+	crossLocator CrossSessionLocator
+	crossReader  CrossSessionReader
+}
+
+// UseCrossSession attaches the server's own cross-session door.
+//
+// It is attached under the card path only: a deployment that does not keep
+// the cards has no earlier conversation to point at, and a window that
+// resolved a clarification against conversations the deployment never
+// indexed would be reading a history the deployment does not have.
+func (b *DatabaseContextBuilder) UseCrossSession(locator CrossSessionLocator, reader CrossSessionReader) {
+	if b == nil {
+		return
+	}
+	b.crossLocator = locator
+	b.crossReader = reader
 }
 
 // SummarySegmentFallbackStarter is the synchronous fallback the window may
@@ -1555,6 +1600,57 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		clarificationText = clarificationBlock(pending, input.Question)
 	}
 
+	// The session lock.
+	//
+	// When the learner answered a clarification, the server resolves their
+	// answer into ONE conversation and reads the evidence out of it. The
+	// model then answers the original question from that evidence instead
+	// of opening candidates one by one.
+	//
+	// The three outcomes are three different turns:
+	//
+	//   - One conversation was locked. The evidence and the original
+	//     question go into the window, and the answer follows from them.
+	//   - The learner's clue named several conversations. The question is
+	//     asked AGAIN, with the original question kept: the learner has not
+	//     changed their mind about what they are asking, only about which
+	//     conversation it is about.
+	//   - The learner's clue named none, or named a conversation that is
+	//     not theirs. The question is asked again too, and the learner's
+	//     own conversation list stays open - a target that never made it
+	//     into a candidate list is still reachable through it.
+	var lockResolution SessionLockResolution
+	var lockedBlock string
+	var reask *model.SessionClarification
+	if pending != nil && (b.crossLocator != nil || b.crossReader != nil) {
+		lockResolution = ResolveSessionLock(ctx, b.crossLocator, b.crossReader,
+			input.UserID, input.SessionID, pending, input.Question)
+		switch {
+		case lockResolution.Locked != nil:
+			lockedBlock = renderLockedSessionBlock(lockResolution.Locked, pending.Question)
+			observability.Memory.ClarificationSession("session_locked", true, 1)
+			if strings.TrimSpace(lockResolution.Locked.Evidence) != "" {
+				observability.Memory.ClarificationSession("evidence_returned", true, 1)
+			}
+		case lockResolution.Ambiguous, lockResolution.Reason == lockReasonNoCandidate,
+			lockResolution.Reason == lockReasonNotOwned:
+			reask = BuildReaskClarification(pending, lockResolution.Candidates)
+			if lockResolution.Reason == lockReasonNotOwned {
+				// The learner named a conversation that is not theirs. The
+				// record says so, because it is the one failure here that
+				// is somebody reaching across a boundary.
+				observability.Memory.ClarificationSession("tool_failure", false, 1)
+				log.Printf("[agent-context] clarification named a conversation that is not the learner's: session=%s",
+					input.SessionID)
+			}
+		case lockResolution.Reason == lockReasonUnavailable:
+			observability.Memory.ClarificationSession("tool_failure", false, 1)
+		}
+	}
+	if reask != nil {
+		clarificationText = renderReaskBlock(reask, input.Question)
+	}
+
 	// The evidence reserve is the only budget line that never flexed: every
 	// other block takes minInt(remaining, cap) and hands its leftover to the
 	// block after it. Reserving it on a run whose evidence tools are not even
@@ -1686,6 +1782,27 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	if clarificationText != "" {
 		breakdown.Clarification = messageTokenCost(clarificationText)
 		remaining -= breakdown.Clarification
+	}
+	// The locked conversation's evidence takes the clarification's place.
+	//
+	// The learner has already answered, so what the model is missing is not
+	// an explanation of what their answer meant - it is the evidence itself.
+	// And the evidence is bigger than the clarification block was, so it has
+	// its own budget line and its own cap.
+	//
+	// When the evidence does not fit, the clarification block stays: the
+	// model then falls back to reading the conversation with the tools this
+	// turn offers, which is slower and costs a call, but the turn still
+	// knows which conversation the learner meant.
+	if lockedBlock != "" {
+		cost := messageTokenCost(lockedBlock)
+		if cost > minInt(remaining-4, maxLockedSessionTokens) {
+			lockedBlock = ""
+		} else {
+			breakdown.LockedSession = cost
+			remaining -= cost
+			clarificationText = ""
+		}
 	}
 	if preRetrievalText != "" {
 		// The block is charged here and placed later. The order in which a
@@ -2001,6 +2118,12 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	if clarificationText != "" {
 		messages = append(messages, schema.SystemMessage(clarificationText))
 	}
+	if lockedBlock != "" {
+		// The locked conversation's evidence, in front of the learner's
+		// reply: the reply says WHICH conversation, and this says what is
+		// in it.
+		messages = append(messages, schema.SystemMessage(lockedBlock))
+	}
 	if currentText != "" {
 		messages = append(messages, schema.SystemMessage(currentText))
 	}
@@ -2012,7 +2135,7 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	// rather than a part of the recent messages because it is not the
 	// conversation - it is what the conversation's last question MEANT -
 	// and a reader of the numbers has to be able to see it.
-	breakdown.Assembled = breakdown.System + breakdown.TaskState + breakdown.Mastery + breakdown.GlobalUserMemory + breakdown.TopicUserMemory + breakdown.EpisodeMemory + breakdown.SessionCardMemory + breakdown.Summary + breakdown.RecentMessages + breakdown.CurrentQuestion + breakdown.CurrentEvidence + breakdown.PreRetrievalEvidence + breakdown.Whiteboard + breakdown.ResidentSegments + breakdown.RetrievedSegments + breakdown.Clarification
+	breakdown.Assembled = breakdown.System + breakdown.TaskState + breakdown.Mastery + breakdown.GlobalUserMemory + breakdown.TopicUserMemory + breakdown.EpisodeMemory + breakdown.SessionCardMemory + breakdown.Summary + breakdown.RecentMessages + breakdown.CurrentQuestion + breakdown.CurrentEvidence + breakdown.PreRetrievalEvidence + breakdown.Whiteboard + breakdown.ResidentSegments + breakdown.RetrievedSegments + breakdown.Clarification + breakdown.LockedSession
 	breakdown.ProjectedInput = breakdown.Assembled + breakdown.EvidenceReserved
 	if breakdown.ProjectedInput > breakdown.InputTarget {
 		return ContextWindow{}, fmt.Errorf("assembled context exceeded target: %d > %d", breakdown.ProjectedInput, breakdown.InputTarget)
@@ -2020,6 +2143,7 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	observability.Memory.Context(breakdown.ProjectedInput, breakdown.InputTarget, breakdown.EpisodeMemory, breakdown.GlobalUserMemory, breakdown.TopicUserMemory)
 	return ContextWindow{
 		Messages: messages, Budget: breakdown, EpisodeIDs: episodeIDs,
+		SessionLock: lockResolution.Locked, ClarificationReask: reask,
 		EpisodeSources:       episodeSources,
 		EpisodeHistoryGrants: episodeGrants, SummaryHistoryGrants: summaryGrants,
 		SessionCardHistoryGrants: cardGrants, SessionCardIDs: cardIDs,

@@ -168,10 +168,56 @@ func TestAnAnswerThatNamesNoneIsTheLearnersOwnClue(t *testing.T) {
 }
 
 // A clarification that cannot be shown is refused.
-func TestAClarificationWithoutCandidatesIsRefused(t *testing.T) {
-	clarification := &model.SessionClarification{Question: "哪一次？"}
-	if err := clarification.Validate(); err == nil {
-		t.Fatal("a clarification with no candidates was accepted")
+//
+// A clarification with no candidate IS shown when the learner may browse
+// their own conversation list: that is the case where one lightweight search
+// found nothing credible, and the learner's own list is the way forward. A
+// clarification with no candidate and no way to browse is not a question at
+// all - there is nothing the learner could answer with.
+func TestAClarificationWithoutCandidatesIsRefusedUnlessTheHistoryIsOpen(t *testing.T) {
+	closed := &model.SessionClarification{Question: "哪一次？"}
+	if err := closed.Validate(); err == nil {
+		t.Fatal("a clarification with no candidates and no way to browse was accepted")
+	}
+	open := &model.SessionClarification{Question: "哪一次？", AllowHistoryBrowse: true}
+	if err := open.Validate(); err != nil {
+		t.Fatalf("a clarification that may be answered from the learner's own list was refused: %v", err)
+	}
+}
+
+// A search that found nothing credible still asks.
+//
+// This is the case the tool used to refuse: no candidate, no question, and
+// the learner left with a model that lists possibilities in its own words. A
+// list of possibilities is not a question, and nobody was ever asked.
+//
+// The learner is offered their own conversation list instead, and a target
+// that never made it into a candidate list is still reachable through it.
+func TestASearchThatFoundNothingStillAsks(t *testing.T) {
+	retriever := &clarifyingRetriever{}
+	registry, err := NewAskWhichConversationRegistry(retriever)
+	if err != nil {
+		t.Fatalf("build the registry: %v", err)
+	}
+	pending := "上次你给我排的那三道题里，第二道练的是什么？"
+	out := askWhich(t, registry, clarifyingRun(pending), pending, nil)
+	if out.Status != askWhichStatusOK {
+		t.Fatalf("the question reported %q", out.Status)
+	}
+	if out.Clarification == nil {
+		t.Fatalf("the question carried no clarification: %+v", out)
+	}
+	if len(out.Clarification.Candidates) != 0 {
+		t.Fatalf("the question offered %d candidates, want none", len(out.Clarification.Candidates))
+	}
+	if out.Clarification.Question != pending {
+		t.Fatalf("the question carried %q, want the pending one", out.Clarification.Question)
+	}
+	if !out.Clarification.AllowHistoryBrowse {
+		t.Fatal("the question does not offer the learner's own conversation list")
+	}
+	if !out.Clarification.AllowFreeText {
+		t.Fatal("the question does not allow the learner to write their own clue")
 	}
 }
 

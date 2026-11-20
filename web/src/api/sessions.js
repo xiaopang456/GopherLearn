@@ -103,6 +103,14 @@ export function normalizeMessage(raw, fallbackId) {
     // the empty string rather than a made-up id: the key is only read when the server
     // sent it, and a message of a plain conversation must not look like a turn of an
     // Agent run.
+    // The clarification travels with the message it was asked in. The learner
+    // may answer it minutes later, in a conversation they have reloaded in
+    // between, so the card has to survive the read-back: without it the
+    // question that was waiting for an answer is gone with it.
+    clarification:
+      source.clarification && typeof source.clarification === 'object'
+        ? source.clarification
+        : null,
     runId: String(source.run_id ?? ''),
   }
 }

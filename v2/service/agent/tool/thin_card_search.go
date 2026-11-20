@@ -58,7 +58,7 @@ const (
 // So the rule is stated here, where the model reads it, and the server keeps
 // the boundaries: whose history it may read, which conversation a read may
 // be taken in, which ids a read may cite, and how much of it may come back.
-const searchSessionCardsDescription = "Search your earlier conversations for the one a question is about. Prefer answering from THIS conversation: its current state, its summary segments and its recent words are already in front of you, and they are the answer to a question about this conversation. Call this tool only when the learner explicitly asks about another conversation, or when the previous turn settled which conversation is meant. If the reference is still ambiguous, ask the learner which conversation they mean instead of searching - and if the candidates you found cannot be told apart, ask them with ask_which_conversation rather than guessing. It returns candidates: the conversation id, its title, what it was about, when it was last talked in and the summary segments it points at. It reads no transcript: check each candidate's summary against the question, stop at the one whose evidence matches, and open that one with browse_summary_segments or read_session_whiteboard. A date the learner named filters the candidates to that period."
+const searchSessionCardsDescription = "Search your earlier conversations for the one a question is about. Prefer answering from THIS conversation: its current state, its summary segments and its recent words are already in front of you, and they are the answer to a question about this conversation. Call this tool only when the learner explicitly asks about another conversation, or when the previous turn settled which conversation is meant. Make ONE search and read what it returns: the thin cards locate the conversations, they do not carry their bodies. When the search returns ONE conversation that clearly matches, go straight into it - open it with browse_summary_segments or read_session_whiteboard and answer the question there. When it returns several that cannot be told apart, or none that is credible, ask the learner with ask_which_conversation straight away - do NOT open the candidates one by one to read their summaries first, because that spends a call per candidate on conversations the learner may not have meant. It returns candidates: the conversation id, its title, what it was about, when it was last talked in and the summary segments it points at. A date the learner named filters the candidates to that period."
 
 // The states a search can report.
 const (
@@ -396,6 +396,16 @@ func thinCardQuery(learnerQuestion, modelQuery string) episode.ThinCardQuery {
 		From:     learner.From,
 		To:       learner.To,
 	}
+}
+
+// ThinCardQueryFor reads a clue into the query the card index is asked.
+//
+// It is the tool's own reading, exposed so that the server's cross-session
+// lookup asks the index exactly what the tool would have asked. One copy of
+// the rule: two readers of a question would otherwise drift, and the drift
+// would show up as a candidate list the tool and the server disagree about.
+func ThinCardQueryFor(learnerQuestion, modelQuery string) episode.ThinCardQuery {
+	return thinCardQuery(learnerQuestion, modelQuery)
 }
 
 // thinCardFallbackTerms splits a question the read plan read as having no

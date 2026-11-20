@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref } from 'vue'
 import AppIcon from './AppIcon.vue'
+import { listSessions, normalizeSession, readList } from '../api/sessions.js'
 
 /**
  * One clarification, waiting for the learner to say which conversation they meant.
@@ -12,16 +13,28 @@ import AppIcon from './AppIcon.vue'
  * card does not talk to the server: it hands the answer up, and the chat's own
  * send channel carries it, exactly as if the learner had typed it.
  *
- * The learner therefore never has to ask again. A chosen candidate is sent as
- * its session id, because that is the one reading the server can match exactly;
- * the title and the date on the button are for the learner, who has to tell
- * two conversations of the same family apart.
+ * The learner therefore never has to ask again. There are three ways to answer:
+ *
+ *  - click one of the candidates. The answer is its session id, because that is
+ *    the one reading the server can match exactly; the title and the date on
+ *    the button are for the learner, who has to tell two conversations of the
+ *    same family apart.
+ *  - pick one from their OWN conversation list. The candidates are what one
+ *    search found, and a conversation that never made it into them is still
+ *    the learner's own conversation — so the ground truth stays reachable.
+ *  - write a clue: a date, a title, a keyword. The server reads it, and if it
+ *    still names more than one conversation, the question is asked again.
  */
 const props = defineProps({ clarification: { type: Object, required: true } })
 const emit = defineEmits(['choose'])
 
 const freeText = ref('')
 const answered = ref(false)
+const browsing = ref(false)
+const history = ref([])
+const historyLoading = ref(false)
+const historyError = ref('')
+const historyFilter = ref('')
 
 const question = computed(() => String(props.clarification.question ?? ''))
 const prompt = computed(() => String(props.clarification.prompt ?? ''))
@@ -29,6 +42,16 @@ const candidates = computed(() =>
   Array.isArray(props.clarification.candidates) ? props.clarification.candidates : [],
 )
 const allowFreeText = computed(() => props.clarification.allowFreeText === true)
+const allowHistoryBrowse = computed(() => props.clarification.allowHistoryBrowse === true)
+
+/** The learner's own conversations, narrowed by what they typed. */
+const visibleHistory = computed(() => {
+  const needle = historyFilter.value.trim().toLowerCase()
+  if (needle === '') return history.value
+  return history.value.filter((session) =>
+    `${session.title} ${session.id}`.toLowerCase().includes(needle),
+  )
+})
 
 /** What the button says the conversation is called. */
 function candidateTitle(candidate) {
@@ -79,6 +102,32 @@ function submitFreeText() {
   freeText.value = ''
   emit('choose', text)
 }
+
+/**
+ * Opens the learner's own conversation list.
+ *
+ * It is loaded on demand: the list is the learner's whole history, and a
+ * clarification the learner answers from the candidates never pays for it.
+ */
+async function toggleHistory() {
+  if (answered.value) return
+  if (browsing.value) {
+    browsing.value = false
+    return
+  }
+  browsing.value = true
+  if (history.value.length > 0 || historyLoading.value) return
+  historyLoading.value = true
+  historyError.value = ''
+  try {
+    const payload = await listSessions()
+    history.value = readList(payload, 'sessions').map(normalizeSession).filter((s) => s.id !== '')
+  } catch (cause) {
+    historyError.value = cause?.message ?? '会话列表读不出来，请稍后再试。'
+  } finally {
+    historyLoading.value = false
+  }
+}
 </script>
 <template>
   <section class="gl-card v2-clarification" data-test="clarification-card" aria-label="澄清卡">
@@ -99,6 +148,38 @@ function submitFreeText() {
         </button>
       </li>
     </ul>
+    <div v-if="allowHistoryBrowse && !answered" class="v2-clarification__history" data-test="clarification-history">
+      <button
+        type="button"
+        class="gl-btn"
+        data-test="clarification-history-toggle"
+        :aria-expanded="browsing ? 'true' : 'false'"
+        @click="toggleHistory"
+      >
+        {{ browsing ? '收起我的会话' : '从我的会话里选' }}
+      </button>
+      <div v-if="browsing" class="v2-clarification__history-panel">
+        <label>
+          过滤我的会话
+          <input v-model="historyFilter" data-test="clarification-history-filter" placeholder="例如：缓存" />
+        </label>
+        <p v-if="historyLoading" class="gl-muted" data-test="clarification-history-loading">正在读你的会话……</p>
+        <p v-else-if="historyError" class="gl-muted" data-test="clarification-history-error">{{ historyError }}</p>
+        <ul v-else class="v2-clarification__list" data-test="clarification-history-list">
+          <li v-for="session in visibleHistory" :key="session.id">
+            <button
+              type="button"
+              class="gl-btn v2-clarification__candidate"
+              :data-test="`clarification-history-session-${session.id}`"
+              @click="pick({ sessionId: session.id, title: session.title })"
+            >
+              <span class="v2-clarification__name">{{ session.title }}</span>
+              <span v-if="session.updatedAt" class="v2-clarification__when">{{ candidateDate({ lastTalkedAt: session.updatedAt }) }}</span>
+            </button>
+          </li>
+        </ul>
+      </div>
+    </div>
     <form
       v-if="allowFreeText && !answered"
       class="v2-clarification__free"
@@ -121,4 +202,6 @@ function submitFreeText() {
 .v2-clarification__when, .v2-clarification__topics { color: var(--gl-ink-faint); font-size: var(--gl-text-xs); }
 .v2-clarification__free { display: flex; flex-wrap: wrap; align-items: end; gap: .4rem; margin-block: .5rem; }
 .v2-clarification__free label { display: grid; gap: .25rem; flex: 1 1 12rem; }
+.v2-clarification__history { margin-block: .5rem; }
+.v2-clarification__history-panel label { display: grid; gap: .25rem; margin-block: .4rem; }
 </style>

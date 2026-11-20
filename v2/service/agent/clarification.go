@@ -33,6 +33,13 @@ type ClarificationCard struct {
 	Candidates []ClarificationCandidate `json:"candidates"`
 	// AllowFreeText says the learner may answer with their own words.
 	AllowFreeText bool `json:"allowFreeText"`
+	// AllowHistoryBrowse says the learner may pick from their OWN list of
+	// conversations instead of from the candidates.
+	//
+	// It is the second of the clarification's three operations, and it is
+	// what makes a target that never made it into a candidate list
+	// reachable.
+	AllowHistoryBrowse bool `json:"allowHistoryBrowse"`
 }
 
 // ClarificationCandidate is one conversation the learner may pick.
@@ -87,11 +94,12 @@ func ClarificationCardOf(clarification *model.SessionClarification) *Clarificati
 		return nil
 	}
 	card := &ClarificationCard{
-		ClarificationID: clarification.ClarificationID,
-		Question:        clarification.Question,
-		Prompt:          clarification.Prompt,
-		AllowFreeText:   clarification.AllowFreeText,
-		Candidates:      make([]ClarificationCandidate, 0, len(clarification.Candidates)),
+		ClarificationID:    clarification.ClarificationID,
+		Question:           clarification.Question,
+		Prompt:             clarification.Prompt,
+		AllowFreeText:      clarification.AllowFreeText,
+		AllowHistoryBrowse: clarification.AllowHistoryBrowse,
+		Candidates:         make([]ClarificationCandidate, 0, len(clarification.Candidates)),
 	}
 	for _, candidate := range clarification.Candidates {
 		entry := ClarificationCandidate{
@@ -144,6 +152,14 @@ func pendingClarification(history []model.Message) *model.SessionClarification {
 // learner's own words from turning the block into the largest thing in the
 // window.
 const maxClarificationTokens = 200
+
+// maxLockedSessionTokens bounds the evidence of one locked conversation.
+//
+// It is bigger than the clarification block's cap because the evidence IS
+// the answer's input: a block that says which conversation the learner meant
+// is a few lines, and a block that says what is in it is the conversation's
+// own compressed body. Two thousand tokens is a whole session's summary.
+const maxLockedSessionTokens = 2000
 
 // clarificationContinuationPrompt is what a turn that continues a clarified
 // question is told about the tools it may use.

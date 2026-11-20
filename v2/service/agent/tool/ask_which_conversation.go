@@ -45,7 +45,23 @@ const (
 )
 
 // askWhichConversationDescription is the contract the model reads.
-const askWhichConversationDescription = "Ask the learner which conversation they mean, when the candidates you found cannot be told apart. Use it when the question is about an earlier conversation and the search returned several equally plausible ones - several conversations of the same family, each with a similar title. Carry the question the learner asked, because the next turn answers THAT question in the conversation they pick; carry the conversation ids you found. The learner may pick one of them or write their own clue, and their own clue may reach conversations you did not offer. Do not use it to ask a question you could answer from this conversation."
+//
+// It carries the routing rule, because the routing is the model's to make:
+// the server does not read the question and decide that the turn is about
+// another conversation, because the server cannot see the whole conversation
+// and the model can. A rule the server applied to the question's words would
+// refuse exactly the questions that need it - "what did we talk about last
+// week in the other chat" is a bare-looking question that is not about this
+// conversation at all.
+//
+// The candidates are optional on purpose. A search that found nothing
+// credible is exactly the case where the learner has to be asked, and a tool
+// that refuses to ask without candidates makes that case unreachable: the
+// learner is left with a model that lists possibilities in its own words, and
+// a list of possibilities is not a question. With no candidates the
+// clarification offers the learner's OWN conversation list instead, and a
+// target that never made it into a candidate list is still reachable.
+const askWhichConversationDescription = "Ask the learner which conversation they mean, when the candidates you found cannot be told apart, or when no candidate is credible. Use it when the question is about an earlier conversation and the search returned several equally plausible ones - several conversations of the same family, each with a similar title - or returned nothing at all. Carry the question the learner asked, because the next turn answers THAT question in the conversation they pick; carry the conversation ids you found, and carry none when the search found none. The learner may pick one of them, pick one from their own conversation list, or write their own clue, and their own clue may reach conversations you did not offer. Do not use it to ask a question you could answer from this conversation, and do not open the candidates one by one to read their summaries first - ask, and let the learner decide."
 
 // The states a question can report.
 const (
@@ -73,8 +89,10 @@ type AskWhichConversationInput struct {
 	// Candidates are the conversations you found and are offering.
 	//
 	// They are the conversation ids the search returned. One that the
-	// learner does not own, or that has no card, is dropped.
-	Candidates []string `json:"candidates" jsonschema:"required,description=The conversation ids you found and are offering, best first."`
+	// learner does not own, or that has no card, is dropped. Leave the list
+	// empty when the search found nothing credible: the learner is then
+	// offered their own conversation list instead.
+	Candidates []string `json:"candidates,omitempty" jsonschema:"description=The conversation ids you found and are offering, best first. Leave it empty when the search found nothing credible."`
 	// Prompt says what the learner may do, in your own words.
 	Prompt string `json:"prompt,omitempty" jsonschema:"description=What the learner may answer: they can pick one of the candidates, or write their own clue."`
 }
@@ -148,7 +166,7 @@ func (r *AskWhichConversationRegistry) resolvedSurface() serviceagent.ToolSurfac
 func (r *AskWhichConversationRegistry) ask(ctx context.Context, run serviceagent.RunContext,
 	input *AskWhichConversationInput) (*AskWhichConversationOutput, error) {
 	out := &AskWhichConversationOutput{Status: askWhichStatusOK, Reason: askWhichReasonNone}
-	if input == nil || strings.TrimSpace(input.Question) == "" || len(input.Candidates) == 0 {
+	if input == nil || strings.TrimSpace(input.Question) == "" {
 		out.Status = askWhichStatusUnavailable
 		out.Reason = askWhichReasonInvalidInput
 		return out, nil
@@ -158,7 +176,12 @@ func (r *AskWhichConversationRegistry) ask(ctx context.Context, run serviceagent
 		Question:        strings.TrimSpace(input.Question),
 		Prompt:          strings.TrimSpace(input.Prompt),
 		AllowFreeText:   true,
-		CreatedAt:       time.Now().UTC(),
+		// The learner's own conversation list is always reachable from the
+		// clarification. It is the ground truth: the candidates are what one
+		// search found, and a target that never made it into them is still
+		// the learner's own conversation.
+		AllowHistoryBrowse: true,
+		CreatedAt:          time.Now().UTC(),
 	}
 	for _, session := range input.Candidates {
 		session = strings.TrimSpace(session)
@@ -190,9 +213,14 @@ func (r *AskWhichConversationRegistry) ask(ctx context.Context, run serviceagent
 		})
 	}
 	if len(clarification.Candidates) == 0 {
-		out.Status = askWhichStatusNoEvidence
+		// No candidate survived. The question is still a question: the
+		// learner is offered their own conversation list, and a target that
+		// never made it into a candidate list is still reachable through it.
+		//
+		// Refusing here is what left the learner with a model that lists
+		// possibilities in its own words: a list of possibilities is not a
+		// question, and nobody was ever asked.
 		out.Reason = askWhichReasonNoCandidate
-		return out, nil
 	}
 	if err := clarification.Validate(); err != nil {
 		out.Status = askWhichStatusUnavailable

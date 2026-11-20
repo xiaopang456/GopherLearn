@@ -113,6 +113,76 @@ describe('澄清卡', () => {
     wrapper.unmount()
   })
 
+  it('the learner may pick from their own conversation list, and the pick is the session id', async () => {
+    routeRequests((path, init) => {
+      if (path.endsWith('/stream')) return sseResponse(streamFrames)
+      if (path === '/api/v1/sessions' && init.method === 'POST') {
+        return jsonResponse({ data: { id: 's-1', title: '未命名会话' }, error: null })
+      }
+      if (path === '/api/v1/sessions') {
+        return jsonResponse({
+          data: {
+            items: [
+              { id: 'l4r2-2026pm-b2-07', title: '浔漳', mode: 'learning_agent', updated_at: '2026-03-28T09:05:00Z' },
+              { id: 'l4r2-2026am-a1-03', title: '洄漪', mode: 'learning_agent', updated_at: '2026-04-03T14:36:00Z' },
+            ],
+          },
+          error: null,
+        })
+      }
+      return jsonResponse({ data: null, error: { code: 'not_found', message: '会话不存在' } }, { status: 404 })
+    })
+
+    const wrapper = mount(ClarificationCard, {
+      props: { clarification: { ...clarification, allowHistoryBrowse: true } },
+    })
+
+    // The list is the learner's own history, and it is loaded on demand: a
+    // clarification answered from the candidates never pays for it.
+    expect(wrapper.find('[data-test=clarification-history-toggle]').exists()).toBe(true)
+    expect(wrapper.find('[data-test=clarification-history-list]').exists()).toBe(false)
+
+    await wrapper.get('[data-test=clarification-history-toggle]').trigger('click')
+    await flushPromises()
+
+    const entries = wrapper.findAll('[data-test^=clarification-history-session-]')
+    expect(entries).toHaveLength(2)
+    expect(entries[0].text()).toContain('浔漳')
+
+    // The filter narrows the learner's own list.
+    await wrapper.get('[data-test=clarification-history-filter]').setValue('洄漪')
+    expect(wrapper.findAll('[data-test^=clarification-history-session-]')).toHaveLength(1)
+
+    await wrapper.get('[data-test=clarification-history-session-l4r2-2026am-a1-03]').trigger('click')
+    // The answer is the session id, which the server reads exactly.
+    expect(wrapper.emitted('choose')).toEqual([['l4r2-2026am-a1-03']])
+    wrapper.unmount()
+  })
+
+  it('a card that may not browse the history offers the choices only', () => {
+    const wrapper = mount(ClarificationCard, { props: { clarification } })
+
+    expect(wrapper.find('[data-test=clarification-history-toggle]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('a reply that was read back still carries its card, so the learner can answer it later', async () => {
+    // The learner may answer minutes later, in a conversation they have
+    // reloaded in between: a card that only lived on the live turn is gone
+    // exactly when it is still answerable.
+    const message = {
+      id: 'history', role: 'assistant', content: '你在问哪一次？', status: 'done',
+      clarification: { ...clarification, allowHistoryBrowse: true },
+    }
+    const wrapper = mount(MessageBubble, { props: { message } })
+
+    expect(wrapper.findComponent(ClarificationCard).exists()).toBe(true)
+    expect(wrapper.get('[data-test=clarification-question]').text()).toBe(clarification.question)
+    expect(wrapper.get('[data-test=clarification-candidate-1]').text()).toContain('洄漪')
+    expect(wrapper.find('[data-test=clarification-history-toggle]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
   it('a message without originalV2 never grows a card, and the choice leaves the bubble', async () => {
     const message = {
       id: 'local', role: 'assistant', content: '你问的是哪一次？', status: 'done',
