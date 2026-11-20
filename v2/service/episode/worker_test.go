@@ -82,7 +82,7 @@ func (r *workerRepository) UpsertDesired(_ context.Context, userID int64, sessio
 	return &model.EpisodeProjectionJob{UserID: userID, SessionID: sessionID, DesiredMessageID: messageID}, nil
 }
 
-func (r *workerRepository) ListProjectionGaps(context.Context, int) ([]episodedao.ProjectionGap, error) {
+func (r *workerRepository) ListProjectionGaps(context.Context, int, model.EpisodeContentKind) ([]episodedao.ProjectionGap, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]episodedao.ProjectionGap(nil), r.gaps...), nil

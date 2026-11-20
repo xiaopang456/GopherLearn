@@ -1,0 +1,7 @@
+{
+  "scenario": "compliant",
+  "arguments": "{\"version\":1,\"title\":\"题量\",\"synopsis\":\"讨论了每轮题量，助手给了三道取消机制练习。\",\"topics\":[{\"key\":\"ti\",\"label\":\"题量\"}],\"arrangements\":[{\"text\":\"每轮9道题\",\"status\":\"stated\",\"message_ids\":[1]}],\"assistant_products\":[{\"text\":\"三道取消机制练习\",\"status\":\"assistant_proposed\",\"message_ids\":[1]}],\"open_items\":[]}",
+  "message_ids": [1],
+  "problems": [],
+  "expect": "accepted"
+}

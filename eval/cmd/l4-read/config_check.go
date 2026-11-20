@@ -50,6 +50,12 @@ func runConfigCheck(args []string, out io.Writer) error {
 		"the assistant-content switch the run needs (on or off)")
 	expectDebugDump := flags.String("expect-debug-dump", "on",
 		"the debug-dump switch the run needs (on or off)")
+	expectCardMode := flags.String("expect-card-mode", "",
+		"the cross-session memory path the run needs (disabled or enabled); empty does not compare it")
+	expectCardIndexName := flags.String("expect-card-index-name", "",
+		"the card index name the run needs; empty does not compare it")
+	expectCardIndexKeyPrefix := flags.String("expect-card-index-key-prefix", "",
+		"the card index key prefix the run needs; empty does not compare it")
 	chatModel := flags.String("chat-model", "config-check-no-model",
 		"the model name the run would use; the check never calls a model")
 	if err := flags.Parse(args); err != nil {
@@ -68,9 +74,12 @@ func runConfigCheck(args []string, out io.Writer) error {
 		return err
 	}
 	report.Expected = conversation.ExpectedConfiguration{
-		SummarySegmentMode:      strings.TrimSpace(*expectMode),
-		SummaryAssistantContent: strings.TrimSpace(*expectAssistantContent),
-		SummarySegmentDebugDump: strings.TrimSpace(*expectDebugDump) == "on",
+		SummarySegmentMode:        strings.TrimSpace(*expectMode),
+		SummaryAssistantContent:   strings.TrimSpace(*expectAssistantContent),
+		SummarySegmentDebugDump:   strings.TrimSpace(*expectDebugDump) == "on",
+		SessionCardMode:           strings.TrimSpace(*expectCardMode),
+		SessionCardIndexName:      strings.TrimSpace(*expectCardIndexName),
+		SessionCardIndexKeyPrefix: strings.TrimSpace(*expectCardIndexKeyPrefix),
 	}
 	report.Matches = report.MatchesExpected(report.Expected)
 
@@ -82,11 +91,15 @@ func runConfigCheck(args []string, out io.Writer) error {
 	if !report.Matches {
 		return fmt.Errorf("the configuration does not say what this run needs: "+
 			"the mode is %q (want %q), the assistant content is %q (want %q), "+
-			"the debug dump is %v (want %v); the effective budgets are "+
+			"the debug dump is %v (want %v); the card path is %q (want %q) with index %q (want %q) "+
+			"and key prefix %q (want %q); the effective budgets are "+
 			"a whiteboard of %d, a resident block of %d, a retrieved block of %d and one segment of %d",
 			report.SummarySegmentMode, report.Expected.SummarySegmentMode,
 			report.SummaryAssistantContent, report.Expected.SummaryAssistantContent,
 			report.SummarySegmentDebugDump, report.Expected.SummarySegmentDebugDump,
+			report.SessionCardMode, report.Expected.SessionCardMode,
+			report.SessionCardIndexName, report.Expected.SessionCardIndexName,
+			report.SessionCardIndexPrefix, report.Expected.SessionCardIndexKeyPrefix,
 			report.Budgets.WhiteboardTokens, report.Budgets.ResidentSegmentTokens,
 			report.Budgets.RetrievedSegmentTokens, report.Budgets.SegmentTokens)
 	}

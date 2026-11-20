@@ -1,0 +1,12 @@
+{
+  "scenario": "over-limit-with-a-later-change",
+  "arguments": "{\"version\":1,\"title\":\"题量与节奏\",\"synopsis\":\"讨论了每轮做多少题。\",\"topics\":[{\"key\":\"ti\",\"label\":\"题量\"}],\"arrangements\":[{\"text\":\"每轮做6道题\",\"status\":\"stated\",\"message_ids\":[1]},{\"text\":\"每轮做8道题\",\"status\":\"stated\",\"message_ids\":[1]},{\"text\":\"每轮做10道题\",\"status\":\"stated\",\"message_ids\":[1]},{\"text\":\"每轮做12道题\",\"status\":\"stated\",\"message_ids\":[1]},{\"text\":\"每轮做14道题\",\"status\":\"stated\",\"message_ids\":[1]},{\"text\":\"每轮做16道题\",\"status\":\"stated\",\"message_ids\":[1]},{\"text\":\"每轮做18道题\",\"status\":\"stated\",\"message_ids\":[1]},{\"text\":\"每轮做20道题\",\"status\":\"stated\",\"message_ids\":[1]},{\"text\":\"每轮做22道题\",\"status\":\"stated\",\"message_ids\":[1]},{\"text\":\"每轮做24道题\",\"status\":\"stated\",\"message_ids\":[1]},{\"text\":\"每轮做26道题\",\"status\":\"stated\",\"message_ids\":[1]},{\"text\":\"每轮做28道题\",\"status\":\"stated\",\"message_ids\":[1]},{\"text\":\"原来每轮做28道题\",\"status\":\"later_changed\",\"message_ids\":[1]},{\"text\":\"现在改成每轮做9道题，旧的28道安排划掉\",\"status\":\"later_changed\",\"message_ids\":[1]}],\"assistant_products\":[],\"open_items\":[]}",
+  "message_ids": [1],
+  "problems": [
+    "arrangements has more than 12 entries"
+  ],
+  "expect": "accepted",
+  "must_survive": [
+    "现在改成每轮做9道题，旧的28道安排划掉"
+  ]
+}

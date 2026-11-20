@@ -84,7 +84,7 @@ func TestMemoryIndexStateNeverCreditsAnotherUser(t *testing.T) {
 			keys(rediscommon.MemoryKeyPrefix, third, 2)...),
 			rediscommon.MemoryKeyPrefix+"broken"),
 	}
-	state, err := readMemoryIndexState(context.Background(), lister, me)
+	state, err := readMemoryIndexState(context.Background(), lister, me, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestMemoryIndexStateNeverCreditsAnotherUser(t *testing.T) {
 
 func TestMemoryIndexStateFailureIsNotSilentlyClean(t *testing.T) {
 	boom := errors.New("scan failed")
-	state, err := readMemoryIndexState(context.Background(), &fakeIndexKeys{err: boom}, 7)
+	state, err := readMemoryIndexState(context.Background(), &fakeIndexKeys{err: boom}, 7, "")
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v want the scan failure", err)
 	}
@@ -127,7 +127,7 @@ func TestMemoryIndexStateFailureIsNotSilentlyClean(t *testing.T) {
 
 func TestMemoryIndexStateRejectsMissingEvaluationUser(t *testing.T) {
 	for _, id := range []int64{0, -1} {
-		if _, err := readMemoryIndexState(context.Background(), &fakeIndexKeys{}, id); err == nil {
+		if _, err := readMemoryIndexState(context.Background(), &fakeIndexKeys{}, id, ""); err == nil {
 			t.Fatalf("user %d read without an identity error", id)
 		}
 	}
@@ -136,11 +136,11 @@ func TestMemoryIndexStateRejectsMissingEvaluationUser(t *testing.T) {
 func TestGateKeepsAnotherUsersEntriesOutOfTheDecision(t *testing.T) {
 	const me, other = int64(1001), int64(2002)
 	lister := &fakeIndexKeys{episodes: []string{rediscommon.EpisodeKeyPrefix + strconv.FormatInt(other, 10) + ":one"}}
-	if _, err := checkEmptyUserIndexes(context.Background(), lister, me); err != nil {
+	if _, err := checkEmptyUserIndexes(context.Background(), lister, me, ""); err != nil {
 		t.Fatalf("foreign entries refused the gate: %v", err)
 	}
 	lister.episodes = append(lister.episodes, rediscommon.EpisodeKeyPrefix+strconv.FormatInt(me, 10)+":mine")
-	state, err := checkEmptyUserIndexes(context.Background(), lister, me)
+	state, err := checkEmptyUserIndexes(context.Background(), lister, me, "")
 	if err == nil {
 		t.Fatal("the evaluation user's own entry was accepted")
 	}
@@ -174,7 +174,7 @@ func TestEmptyUserIndexesIntegration(t *testing.T) {
 
 	// Another scenario's user is present in the same shared index; only this
 	// user's own entries may refuse the attempt.
-	if _, err := checkEmptyUserIndexes(ctx, lister, base+1); err == nil {
+	if _, err := checkEmptyUserIndexes(ctx, lister, base+1, ""); err == nil {
 		t.Fatal("a user with entries passed the gate")
 	}
 	// The evaluation user is dirty here, so the gate must refuse even though
@@ -182,7 +182,7 @@ func TestEmptyUserIndexesIntegration(t *testing.T) {
 	if _, err := requireEmptyUserIndexes(ctx, env); err == nil {
 		t.Fatal("dirty user accepted")
 	}
-	state, err := readMemoryIndexState(ctx, lister, base)
+	state, err := readMemoryIndexState(ctx, lister, base, "")
 	if err != nil {
 		t.Fatal(err)
 	}

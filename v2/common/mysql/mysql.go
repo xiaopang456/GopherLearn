@@ -7,6 +7,7 @@ import (
 	"fmt"
 	stdlog "log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -88,6 +89,9 @@ func migrate(db *gorm.DB) error {
 	if err := prepareUserMemoryScopeMigration(db); err != nil {
 		return err
 	}
+	if err := prepareEpisodeContentKindMigration(db); err != nil {
+		return err
+	}
 	if err := db.AutoMigrate(
 		new(model.User),
 		new(model.Session),
@@ -133,6 +137,9 @@ func migrate(db *gorm.DB) error {
 		return err
 	}
 	if err := backfillMessageAnswerStates(db); err != nil {
+		return err
+	}
+	if err := ensureEpisodeContentKindUniqueness(db); err != nil {
 		return err
 	}
 	if err := ensureUniqueNormalizedUserEmail(db); err != nil {
@@ -191,6 +198,97 @@ func backfillAgentRunExecutionKinds(db *gorm.DB) error {
 		WHERE runs.execution_kind <> ?
 	`, model.AgentRunExecutionLearning, model.AgentRunExecutionLearning).Error; err != nil {
 		return fmt.Errorf("backfill learning run execution kinds: %w", err)
+	}
+	return nil
+}
+
+// prepareEpisodeContentKindMigration makes the Episode content column
+// nullable before AutoMigrate runs.
+//
+// The one table now holds two kinds of derived row. A session card row has no
+// Episode document, and the Episode decoder refuses a document it cannot read
+// - so the card row's Episode column has to be allowed to be empty rather than
+// hold a placeholder that would read as an Episode.
+//
+// The column is relaxed rather than replaced: a nullable column accepts every
+// value the not-null one accepted, so the existing rows are untouched.
+func prepareEpisodeContentKindMigration(db *gorm.DB) error {
+	if !db.Migrator().HasTable(&model.EpisodeMemory{}) {
+		return nil
+	}
+	if !db.Migrator().HasColumn(&model.EpisodeMemory{}, "content_json") {
+		return nil
+	}
+	var nullable string
+	if err := db.Raw(`
+		SELECT is_nullable
+		FROM information_schema.columns
+		WHERE table_schema = DATABASE()
+		  AND table_name = 'episode_memories'
+		  AND column_name = 'content_json'
+	`).Row().Scan(&nullable); err != nil {
+		return fmt.Errorf("inspect episode content column: %w", err)
+	}
+	if strings.EqualFold(nullable, "YES") {
+		return nil
+	}
+	if err := db.Exec(`ALTER TABLE episode_memories MODIFY COLUMN content_json JSON NULL`).Error; err != nil {
+		return fmt.Errorf("make episode content column nullable: %w", err)
+	}
+	return nil
+}
+
+// ensureEpisodeContentKindUniqueness replaces the one-row-per-session unique
+// index with one that includes the content kind.
+//
+// A session may hold two derived rows now: the Episode written before the
+// session-card path existed and the session card written after it. The old
+// index would refuse the second one, and the two ways out of that were both
+// wrong - overwriting the old document in place, or dropping one of them.
+//
+// The swap is ordered so that the table is never unprotected: the new index is
+// created by AutoMigrate before this runs, and the existing rows satisfy it,
+// because every row written before the discriminator existed is an Episode row
+// and the column defaults to that. Only then is the old index dropped.
+//
+// The old index is left in place if the new one is missing. A table whose rows
+// could collide is a state this function cannot repair by dropping
+// anything, and refusing to guess is better than dropping the only
+// uniqueness the table has.
+func ensureEpisodeContentKindUniqueness(db *gorm.DB) error {
+	if !db.Migrator().HasTable(&model.EpisodeMemory{}) {
+		return nil
+	}
+	if !db.Migrator().HasColumn(&model.EpisodeMemory{}, "content_kind") {
+		return nil
+	}
+	var oldIndexCount, newIndexCount int64
+	if err := db.Raw(`
+		SELECT COUNT(*)
+		FROM information_schema.statistics
+		WHERE table_schema = DATABASE()
+		  AND table_name = 'episode_memories'
+		  AND index_name = 'idx_episode_owner_session'
+	`).Row().Scan(&oldIndexCount); err != nil {
+		return fmt.Errorf("inspect episode owner-session index: %w", err)
+	}
+	if oldIndexCount == 0 {
+		return nil
+	}
+	if err := db.Raw(`
+		SELECT COUNT(*)
+		FROM information_schema.statistics
+		WHERE table_schema = DATABASE()
+		  AND table_name = 'episode_memories'
+		  AND index_name = 'idx_episode_owner_session_kind'
+	`).Row().Scan(&newIndexCount); err != nil {
+		return fmt.Errorf("inspect episode owner-session-kind index: %w", err)
+	}
+	if newIndexCount == 0 {
+		return fmt.Errorf("refusing episode index migration: the owner-session-kind index is missing")
+	}
+	if err := db.Exec(`ALTER TABLE episode_memories DROP INDEX idx_episode_owner_session`).Error; err != nil {
+		return fmt.Errorf("drop episode owner-session index: %w", err)
 	}
 	return nil
 }

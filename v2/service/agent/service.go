@@ -109,6 +109,7 @@ type Service struct {
 	shadow         EpisodeShadowObserver
 	episodeHistory EpisodeSessionHistoryReader
 	summarySegment SummarySegmentEnqueuer
+	thinCards      ThinCardSyncer
 
 	// thinkingEnabled is the deployment's choice about the chat model's
 	// thinking. It is the value a request gets when the request says nothing
@@ -123,6 +124,30 @@ type Service struct {
 	leaseDuration  time.Duration
 	leaseHeartbeat time.Duration
 }
+
+// ThinCardSyncer keeps one session's thin card current.
+//
+// It is an interface of its own, and it is small on purpose: a thin card is
+// derived from data the program already has, so keeping it current costs no
+// model call, and the only thing the caller has to say is "this session
+// moved".
+//
+// The interface lives here and not in the episode package because the agent
+// package must not depend on it: the card's shape is the episode package's
+// business, and the agent's business is that a session moved.
+type ThinCardSyncer interface {
+	SyncThinCard(context.Context, int64, string) error
+}
+
+// DiscardThinCardSyncs is the syncer a deployment without thin cards gets.
+//
+// It is not an error: a deployment that does not run the thin card path has
+// nothing to keep current, and a turn that said so would fail every run.
+var DiscardThinCardSyncs ThinCardSyncer = discardThinCardSyncs{}
+
+type discardThinCardSyncs struct{}
+
+func (discardThinCardSyncs) SyncThinCard(context.Context, int64, string) error { return nil }
 
 // ServiceOption configures a Service that NewService built.
 type ServiceOption func(*Service)
@@ -186,7 +211,12 @@ type RunResult struct {
 	KnowledgeReason rag.KnowledgeReason `json:"knowledgeReason"`
 	ContextBudget   BudgetBreakdown     `json:"contextBudget"`
 	MemoryDraft     *MemoryDraftCard    `json:"memoryDraft,omitempty"`
-	Replayed        bool                `json:"replayed,omitempty"`
+	// Clarification is the question the model asked because it could not
+	// tell which conversation the learner meant.
+	//
+	// It is nil for a turn that answered, and set for a turn that asked.
+	Clarification *ClarificationCard `json:"clarification,omitempty"`
+	Replayed      bool               `json:"replayed,omitempty"`
 	// UsedTopicKeys names the topics whose personal state actually reached the
 	// model, so the user can see what their confirmation did. It carries keys
 	// and never note text: the answer already shows whatever it used.
@@ -204,8 +234,8 @@ func NewService(sessions SessionRepository, runs RunRepository, messages Message
 	service := &Service{
 		sessions: sessions, runs: runs, messages: messages, runner: runner,
 		memory: DiscardMemoryEvents, episodes: DiscardEpisodeEvents, shadow: DiscardEpisodeShadow,
-		summarySegment: DiscardSummarySegmentEnqueues,
-		leaseDuration:  defaultRunLeaseDuration, leaseHeartbeat: defaultRunHeartbeatInterval,
+		summarySegment: DiscardSummarySegmentEnqueues, thinCards: DiscardThinCardSyncs,
+		leaseDuration: defaultRunLeaseDuration, leaseHeartbeat: defaultRunHeartbeatInterval,
 	}
 	for _, option := range options {
 		if option != nil {
@@ -253,6 +283,22 @@ func (s *Service) SetSummarySegmentEnqueuer(enqueuer SummarySegmentEnqueuer) {
 		return
 	}
 	s.summarySegment = enqueuer
+}
+
+// SetThinCardSyncer enables the thin card's update.
+//
+// The sync runs after an answer is stored, so a turn never waits for it, and
+// it costs no model call: the card is derived from data the program already
+// has. It runs on EVERY turn and not only on the first one, because the card
+// has to follow the session: a title that changed is a card that is out of
+// date, and a session that talked again is a card whose "last talked in" is
+// out of date.
+func (s *Service) SetThinCardSyncer(syncer ThinCardSyncer) {
+	if syncer == nil {
+		s.thinCards = DiscardThinCardSyncs
+		return
+	}
+	s.thinCards = syncer
 }
 
 func NewDatabaseService(runner *Runner, options ...ServiceOption) (*Service, error) {
@@ -422,6 +468,7 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 		AnswerBasis: runnerResult.AnswerBasis, KnowledgeStatus: runnerResult.KnowledgeStatus, KnowledgeReason: runnerResult.KnowledgeReason,
 		ContextBudget: runnerResult.ContextBudget,
 		MemoryDraft:   cloneMemoryDraftCard(runnerResult.MemoryDraft),
+		Clarification: ClarificationCardOf(runnerResult.Clarification),
 		UsedTopicKeys: append([]string{}, runnerResult.UsedTopicKeys...),
 		// A run that answered under a spent budget is not a run that
 		// answered freely, and the record has to say which one it was.
@@ -453,6 +500,10 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 		Sources:        model.MessageSources(append([]rag.Source{}, runnerResult.Sources...)),
 		EpisodeSources: append(model.EpisodeSourceRefs(nil), runnerResult.EpisodeSources...),
 		AnswerBasis:    runnerResult.AnswerBasis, KnowledgeStatus: runnerResult.KnowledgeStatus, KnowledgeReason: runnerResult.KnowledgeReason,
+		// The clarification travels with the message, because the learner
+		// answers it in their next message and the answer has to be
+		// resolvable against the candidates that were offered.
+		Clarification: runnerResult.Clarification,
 	}
 	encodedResult, err := json.Marshal(result)
 	if err != nil {
@@ -505,6 +556,23 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 		log.Printf("summary segment enqueue failed: session=%s error_type=%T", run.SessionID, err)
 	}
 	cancelSummary()
+	// The thin card's sync sits beside it, and it is the one write that costs
+	// no model call at all.
+	//
+	// The card is a finding aid: it says which session this was, what it was
+	// called, when it was last talked in, and where its summary segments are.
+	// All of that comes from data the program already has, so the card can be
+	// brought up to date on every turn without a model being asked anything.
+	//
+	// It runs on EVERY turn and not only on the first one, because the card
+	// has to follow the session: a session that talked again has a later
+	// "last talked in", and a title that changed is a card that is out of
+	// date.
+	thinCtx, cancelThin := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	if err := s.thinCards.SyncThinCard(thinCtx, run.UserID, run.SessionID); err != nil {
+		log.Printf("thin card sync failed: session=%s error_type=%T", run.SessionID, err)
+	}
+	cancelThin()
 	if err := sendEvent(ctx, sink, Event{
 		Type: EventRunCompleted, RunID: run.ID, TerminationReason: result.TerminationReason, UsedTopicKeys: append([]string{}, runnerResult.UsedTopicKeys...),
 		Content:     runnerResult.Answer,
@@ -512,6 +580,7 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 		AnswerBasis: runnerResult.AnswerBasis, KnowledgeStatus: runnerResult.KnowledgeStatus, KnowledgeReason: runnerResult.KnowledgeReason,
 		ContextBudget: &runnerResult.ContextBudget,
 		MemoryDraft:   cloneMemoryDraftCard(runnerResult.MemoryDraft),
+		Clarification: ClarificationCardOf(runnerResult.Clarification),
 	}); err != nil {
 		return result, err
 	}

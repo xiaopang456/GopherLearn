@@ -86,11 +86,88 @@ func (r *MemoryRecorder) modeLabel() string {
 
 func (r *MemoryRecorder) Projection(status, errorCode string, duration, lag time.Duration) {
 	status = boundedLabel(status, "completed", "failed")
-	errorCode = boundedLabel(errorCode, "none", "projection_timeout", "projection_cancelled", "sensitive_content", "source_boundary", "invalid_model_output", "source_not_found", "projection_failed")
+	errorCode = boundedLabel(errorCode, "none", "projection_timeout", "projection_cancelled", "sensitive_content", "source_boundary", "invalid_model_output", "source_not_found", "projection_failed",
+		"card_source_boundary", "card_output_truncated", "card_tool_protocol", "card_empty", "card_input_too_large", "card_source_not_found")
 	r.add("episode_projection_jobs_total{status="+status+",error_code="+errorCode+"}", 1)
 	r.addTotal("episode_projection_duration_ms", duration.Milliseconds())
 	r.addTotal("episode_projection_lag_seconds", int64(nonNegative(lag).Seconds()))
 	r.logf("memory_metric name=episode_projection status=%s error_code=%s duration_ms=%d lag_seconds=%d", status, errorCode, duration.Milliseconds(), int64(nonNegative(lag).Seconds()))
+}
+
+// SessionCardLimited records what a session card had to leave out.
+//
+// The card writer keeps whole entries up to the server's limits, so a card that
+// came back over a limit is shorter than the model wrote it. The numbers are
+// recorded because a reader who does not know them reads a trimmed card as a
+// complete one - and "this session had nineteen arrangements" and "this card
+// holds twelve of them" are different facts about the same conversation.
+//
+// The kind says which limit was reached: the count limits (omitted) or the
+// per-entry rules (dropped). A dropped entry is one the server could not store
+// at all; an omitted one is one that fitted but did not fit together with the
+// others. The two are counted apart, because they are two different facts
+// about the card and a reader who cannot tell them apart cannot tell a card
+// that was trimmed from one that was cleaned.
+//
+// The totals are kept apart per domain as well: entries and topics have
+// their own limits and their own kept counters, so a reader who compares
+// what was kept with what was left out has to compare like with like.
+func (r *MemoryRecorder) SessionCardLimited(kind string, leftOut int) {
+	kind = boundedLabel(kind, "omitted_entries", "omitted_topics", "dropped_entries", "dropped_topics")
+	r.add("session_card_limited_total{kind="+kind+"}", 1)
+	switch kind {
+	case "omitted_entries":
+		r.addTotal("session_card_omitted_entries_total", int64(leftOut))
+	case "omitted_topics":
+		r.addTotal("session_card_omitted_topics_total", int64(leftOut))
+	case "dropped_entries":
+		r.addTotal("session_card_dropped_entries_total", int64(leftOut))
+	default:
+		r.addTotal("session_card_dropped_topics_total", int64(leftOut))
+	}
+	r.logf("memory_metric name=session_card_limited kind=%s left_out=%d", kind, leftOut)
+}
+
+// SessionCardKept records what a session card kept.
+//
+// The kept count is what the left-out count is counted against, so it is a
+// number of its own and not a field of the left-out line.
+func (r *MemoryRecorder) SessionCardKept(domain string, kept int) {
+	domain = boundedLabel(domain, "entries", "topics")
+	r.addTotal("session_card_kept_"+domain+"_total", int64(kept))
+	r.logf("memory_metric name=session_card_kept domain=%s kept=%d", domain, kept)
+}
+
+// SessionCardTruncated records a piece of the card's own text that was cut
+// down to fit.
+//
+// The cut is a fact about the card: a reader who sees a description that ends
+// mid-thought should be able to find out that it was cut, and how much was
+// taken off.
+//
+// The reason says where the cut landed. A cut at a sentence end is a whole
+// description with its tail left out; a cut at a plain boundary is a
+// description that stops in the middle of a thought. The two are different
+// facts about the card, so they are counted apart.
+func (r *MemoryRecorder) SessionCardTruncated(field string, runes int, reason string) {
+	field = boundedLabel(field, "title", "synopsis")
+	reason = boundedLabel(reason, "sentence", "boundary")
+	r.add("session_card_truncated_total{field="+field+",reason="+reason+"}", 1)
+	r.addTotal("session_card_truncated_runes_total", int64(runes))
+	r.logf("memory_metric name=session_card_truncated field=%s reason=%s runes=%d", field, reason, runes)
+}
+
+// SessionCardFilled records a piece of the card's own text that the server
+// wrote because the model did not.
+//
+// A missing title or synopsis is not a reason to throw a session away: the
+// card still holds the entries, and the entries are what a later reader looks
+// at. The filled count says how often that happened, so a card whose
+// description came from somewhere other than the model is visible as one.
+func (r *MemoryRecorder) SessionCardFilled(field string) {
+	field = boundedLabel(field, "title", "synopsis")
+	r.add("session_card_filled_total{field="+field+"}", 1)
+	r.logf("memory_metric name=session_card_filled field=%s", field)
 }
 
 func (r *MemoryRecorder) Index(status string, duration, lag time.Duration) {
@@ -468,6 +545,31 @@ func (r *MemoryRecorder) SummarySegment(outcome, reason string, points, pointsDr
 	}
 	r.logf("memory_metric name=summary_segment mode=%s outcome=%s reason=%s points=%d points_dropped=%d",
 		mode, outcome, reason, points, pointsDropped)
+}
+
+// ClarificationSession records one step of the cross-session lock.
+//
+// The four steps are recorded separately because the question they answer is
+// "where did it break": the conversation was locked, the evidence was
+// returned, the answer went out, or a tool failed. One counter for all four
+// cannot say which of them happened, and a run that failed somewhere in the
+// chain is exactly the run somebody has to look at.
+//
+// The stage label is bounded, so a new stage has to be named here before it
+// can be reported.
+func (r *MemoryRecorder) ClarificationSession(stage string, ok bool, count int) {
+	mode := r.modeLabel()
+	stage = boundedLabel(stage, "session_locked", "evidence_returned", "answer", "tool_failure")
+	outcome := "ok"
+	if !ok {
+		outcome = "failed"
+	}
+	r.add("clarification_session_total{mode="+mode+",stage="+stage+",outcome="+outcome+"}", 1)
+	if count > 0 {
+		r.addTotal("clarification_session_items_total", int64(count))
+	}
+	r.logf("memory_metric name=clarification_session mode=%s stage=%s outcome=%s count=%d",
+		mode, stage, outcome, count)
 }
 
 // SummarySegmentJob records what one background segment attempt did.

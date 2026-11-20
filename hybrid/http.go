@@ -589,6 +589,17 @@ func messageRowView(row model.Message) map[string]any {
 		}
 		view["sources"] = sources
 	}
+	// The clarification travels with the message it was asked in, and the
+	// client needs it after a reload as much as it needed it in the moment:
+	// the learner may answer it minutes later, in a conversation they have
+	// reloaded in between.
+	//
+	// It is the product's OWN card, not a second hand-written shape: the turn
+	// response carries the same struct, and a row that is read back in a
+	// different shape is a card whose buttons lost their titles.
+	if row.Clarification != nil && !row.Clarification.IsEmpty() {
+		view["clarification"] = agentService.ClarificationCardOf(row.Clarification)
+	}
 	return view
 }
 

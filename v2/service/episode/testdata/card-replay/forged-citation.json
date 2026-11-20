@@ -1,0 +1,9 @@
+{
+  "scenario": "forged-citation",
+  "arguments": "{\"version\":1,\"title\":\"题量\",\"synopsis\":\"讨论了每轮题量。\",\"topics\":[],\"arrangements\":[{\"text\":\"每轮9道题\",\"status\":\"stated\",\"message_ids\":[99]}],\"assistant_products\":[],\"open_items\":[]}",
+  "message_ids": [1],
+  "problems": [
+    "the card cites a message it was never shown"
+  ],
+  "expect": "refused"
+}

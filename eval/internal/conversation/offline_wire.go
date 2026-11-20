@@ -78,8 +78,32 @@ func offlineWire(ledger *ModelLedger, roles RolePrompts, chat *offlineChat) *htt
 			_, err = fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", bytes)
 			return
 		}
-		err = json.NewEncoder(w).Encode(map[string]any{"id": "offline", "object": "chat.completion", "created": time.Now().Unix(), "model": "synthetic-offline", "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": message.Content}, "finish_reason": "stop"}}})
+		err = json.NewEncoder(w).Encode(map[string]any{"id": "offline", "object": "chat.completion", "created": time.Now().Unix(), "model": "synthetic-offline", "choices": []any{offlineChoice(message)}})
 	})))
+}
+
+// offlineChoice renders the model's answer in the wire shape.
+//
+// A tool call is a different shape from a text answer, and the product reads
+// the card out of it: the card's tool call carries the card document, and an
+// answer that dropped the call would leave the product with a card that was
+// never written.
+func offlineChoice(message *schema.Message) map[string]any {
+	choice := map[string]any{"index": 0, "finish_reason": "stop"}
+	answer := map[string]any{"role": "assistant", "content": message.Content}
+	if len(message.ToolCalls) > 0 {
+		calls := make([]any, 0, len(message.ToolCalls))
+		for _, call := range message.ToolCalls {
+			calls = append(calls, map[string]any{
+				"id": call.ID, "type": "function",
+				"function": map[string]any{"name": call.Function.Name, "arguments": call.Function.Arguments},
+			})
+		}
+		answer["tool_calls"] = calls
+		choice["finish_reason"] = "tool_calls"
+	}
+	choice["message"] = answer
+	return choice
 }
 
 type redisSandbox struct{ id, nonce, addr string }

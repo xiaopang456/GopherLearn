@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/xiaopang456/GopherLearn/eval/internal/conversation"
 )
 
 // scenarioIdentity is stable across preparation and repetitions, but differs
@@ -17,12 +19,24 @@ import (
 // characters is nineteen characters, which fits and still carries sixty-four
 // bits of the digest; the name is an opaque label, the identity is the id.
 func scenarioIdentity(run, arm, scenario, condition string) (int64, string, error) {
-	for _, part := range []string{run, arm, scenario, condition} {
+	return scenarioIdentityForPath(run, arm, scenario, condition, conversation.CardArmModeOff)
+}
+
+// scenarioIdentityForPath derives the evaluation user of one attempt.
+//
+// The path is the cross-session memory the attempt measures: the old Episode
+// or the session card. It is part of the digest on purpose. The two paths are
+// the two arms of the comparison, and an attempt that ran one of them under
+// the same user as the other would read the other one's memories: the card
+// arm would find the Episode arm's rows, and the comparison would have
+// measured nothing at all.
+func scenarioIdentityForPath(run, arm, scenario, condition, path string) (int64, string, error) {
+	for _, part := range []string{run, arm, scenario, condition, path} {
 		if strings.TrimSpace(part) == "" {
-			return 0, "", fmt.Errorf("run, configuration, scenario and condition are required")
+			return 0, "", fmt.Errorf("run, configuration, scenario, condition and memory path are required")
 		}
 	}
-	data, _ := json.Marshal([]string{run, arm, scenario, condition})
+	data, _ := json.Marshal([]string{run, arm, scenario, condition, path})
 	digest := sha256.Sum256(data)
 	id := int64(binary.BigEndian.Uint64(digest[:8]) & 0x7fffffffffffffff)
 	if id == 0 {
@@ -43,6 +57,18 @@ type identityInput struct {
 	knowledgeSeed string
 	userID        int64
 	userName      string
+	// sessionCardMode is the cross-session memory the attempt measures. It is
+	// part of the identity, so the two arms of the comparison never share a
+	// database.
+	sessionCardMode string
+	// scope names the preparation the attempt belongs to.
+	//
+	// The preparation is done once per arm, and every question of that arm
+	// reuses it. The identity therefore follows the scope and not the
+	// question: a query that ran under a different identity would restore
+	// the archive into a database that does not belong to the learner the
+	// memories belong to.
+	scope string
 }
 
 // deriveScenarioIdentity decides which evaluation user one attempt runs as.
@@ -59,7 +85,14 @@ func deriveScenarioIdentity(explicit map[string]bool, in identityInput) (int64, 
 		return in.userID, in.userName, nil
 	}
 	missing := make([]string, 0, 4)
-	for _, name := range []string{"run-id", "arm", "qid", "condition"} {
+	required := []string{"run-id", "arm", "condition"}
+	// The qid names the question. When the attempt belongs to a scope - a
+	// preparation that several questions share - the scope names the
+	// identity instead, and the qid is only the label of the record.
+	if strings.TrimSpace(in.scope) == "" {
+		required = append(required, "qid")
+	}
+	for _, name := range required {
 		if !explicit[name] {
 			missing = append(missing, name)
 		}
@@ -73,5 +106,37 @@ func deriveScenarioIdentity(explicit map[string]bool, in identityInput) (int64, 
 	if in.knowledgeSeed != "" || in.userID != 0 || in.userName != "" {
 		return 0, "", fmt.Errorf("scenario runs require an empty knowledge base and derived identity")
 	}
-	return scenarioIdentity(in.run, in.arm, in.qid, in.condition)
+	path := strings.TrimSpace(in.sessionCardMode)
+	if path == "" {
+		path = conversation.CardArmModeOff
+	}
+	// The scope names the preparation. When it is given, the identity follows
+	// it and every question of that preparation shares one user and one
+	// archive. Without it, the identity follows the question, which is the
+	// older behaviour: one preparation per question.
+	scope := strings.TrimSpace(in.scope)
+	if scope == "" {
+		scope = in.qid
+	}
+	return scenarioIdentityForPath(in.run, in.arm, scope, in.condition, path)
+}
+
+// cardNamespace is the card index's own namespace for one arm.
+//
+// The namespace is derived from the arm rather than written by hand, so that
+// two arms of the same run cannot be pointed at one index by accident. The
+// name stays inside the product's declared family, and the key prefix is the
+// one the index is created over: an index over a different prefix would hold
+// nothing.
+//
+// The two cards have different families, because they are different indexes
+// with different documents: a full card and a thin card in one index would be
+// found by searches that expect the other.
+func cardNamespace(arm, mode string) (name, prefix string) {
+	digest := sha256.Sum256([]byte(strings.TrimSpace(arm)))
+	tag := hex.EncodeToString(digest[:6])
+	if strings.TrimSpace(mode) == conversation.CardArmModeThin {
+		return "gopherai_thin_card_" + tag + "_idx", "gopherai:thin_card:" + tag + ":"
+	}
+	return "gopherai_session_card_" + tag + "_idx", "gopherai:session_card:" + tag + ":"
 }

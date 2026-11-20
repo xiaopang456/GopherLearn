@@ -100,6 +100,10 @@ var promptToolMarkers = []struct {
 	{"search_past_sessions", CapabilityEpisodeSearch},
 	{"topic_memory_read", CapabilityTopicMemoryRead},
 	{"browse_summary_segments", CapabilityBrowseSummarySegments},
+	{"search_session_cards", CapabilitySearchSessionCards},
+	{"search_history_segments", CapabilitySearchHistorySegments},
+	{"read_session_whiteboard", CapabilityReadSessionWhiteboard},
+	{"ask_which_conversation", CapabilityAskWhichConversation},
 }
 
 // RenderSystemPrompt drops from the base prompt every rule that talks about a

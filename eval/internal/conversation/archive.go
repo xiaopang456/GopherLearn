@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 
+	"GopherAI/model"
 	"github.com/xiaopang456/GopherLearn/eval/internal/pathguard"
 )
 
@@ -30,12 +31,15 @@ func WriteSnapshot(path string, snapshot Snapshot) error {
 	if err := pathguard.Check("snapshot", path); err != nil {
 		return err
 	}
-	payload, err := json.Marshal(snapshotPayload{snapshot, snapshot.Session.CreationRequestKey, snapshot.Session.CreationInputHash})
+	primary, _ := snapshot.Primary()
+	payload, err := json.Marshal(snapshotPayload{Snapshot: snapshot,
+		CreationRequestKey: primary.Session.CreationRequestKey,
+		CreationInputHash:  primary.Session.CreationInputHash})
 	if err != nil {
 		return err
 	}
 	hash := sha256.Sum256(payload)
-	data, err := json.Marshal(snapshotEnvelope{1, hex.EncodeToString(hash[:]), payload})
+	data, err := json.Marshal(snapshotEnvelope{2, hex.EncodeToString(hash[:]), payload})
 	if err != nil {
 		return err
 	}
@@ -55,6 +59,11 @@ func WriteSnapshot(path string, snapshot Snapshot) error {
 }
 
 // ReadSnapshot verifies its digest before decoding or accepting its content.
+//
+// Version 1 carried exactly one conversation and version 2 carries a list.
+// Both are read, because a run that was prepared before the list existed is
+// still a run, and refusing its archive would make the older evidence
+// unreadable.
 func ReadSnapshot(path string) (Snapshot, error) {
 	var result Snapshot
 	if err := pathguard.Check("snapshot", path); err != nil {
@@ -77,7 +86,7 @@ func ReadSnapshot(path string) (Snapshot, error) {
 	if err = json.Unmarshal(b, &env); err != nil {
 		return result, err
 	}
-	if env.Version != 1 {
+	if env.Version != 1 && env.Version != 2 {
 		return result, fmt.Errorf("unsupported snapshot version")
 	}
 	sum := sha256.Sum256(env.Payload)
@@ -85,12 +94,42 @@ func ReadSnapshot(path string) (Snapshot, error) {
 		return result, fmt.Errorf("snapshot digest mismatch")
 	}
 	var payload snapshotPayload
-	if err = json.Unmarshal(env.Payload, &payload); err != nil {
-		return result, err
+	if env.Version == 1 {
+		// The first version named one conversation at the top level of the
+		// snapshot object. It is read into the list shape here, so that the
+		// rest of the harness only ever sees one shape.
+		var legacy struct {
+			Snapshot struct {
+				Session  model.Session         `json:"session"`
+				Messages []model.Message       `json:"messages"`
+				Summary  *model.SessionSummary `json:"summary,omitempty"`
+			} `json:"snapshot"`
+			CreationRequestKey *string `json:"creation_request_key,omitempty"`
+			CreationInputHash  string  `json:"creation_input_hash,omitempty"`
+		}
+		if err = json.Unmarshal(env.Payload, &legacy); err != nil {
+			return result, err
+		}
+		result.Sessions = []SessionSnapshot{{
+			Session: legacy.Snapshot.Session, Messages: legacy.Snapshot.Messages, Summary: legacy.Snapshot.Summary,
+		}}
+		primary, _ := result.Primary()
+		primary.Session.CreationRequestKey = legacy.CreationRequestKey
+		primary.Session.CreationInputHash = legacy.CreationInputHash
+		result.Sessions[0] = primary
+	} else {
+		if err = json.Unmarshal(env.Payload, &payload); err != nil {
+			return result, err
+		}
+		result = payload.Snapshot
+		primary, _ := result.Primary()
+		primary.Session.CreationRequestKey = payload.CreationRequestKey
+		primary.Session.CreationInputHash = payload.CreationInputHash
+		result.Sessions[0] = primary
 	}
-	result = payload.Snapshot
-	result.Session.CreationRequestKey = payload.CreationRequestKey
-	result.Session.CreationInputHash = payload.CreationInputHash
+	if len(result.Sessions) == 0 {
+		return result, fmt.Errorf("the archive carries no conversation")
+	}
 	if err = result.Validate(); err != nil {
 		return Snapshot{}, err
 	}

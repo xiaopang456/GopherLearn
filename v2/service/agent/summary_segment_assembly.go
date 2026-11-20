@@ -266,6 +266,19 @@ func (a *SummarySegmentAssembly) UseIndexRepairer(repairer SummarySegmentIndexRe
 	a.Worker.UseIndexRepairer(repairer)
 }
 
+// UseThinCardSyncer attaches the writer that keeps the session's thin card
+// current.
+//
+// It is attached only when the thin card path is running. The segment is the
+// thin card's source of topics, names and segment references, so the card is
+// brought up to date once the segment is safely on disk.
+func (a *SummarySegmentAssembly) UseThinCardSyncer(syncer ThinCardSyncer) {
+	if a == nil || a.Producer == nil {
+		return
+	}
+	a.Producer.UseThinCardSyncer(syncer)
+}
+
 // Enqueuer returns the part of the write path the service calls after an
 // answer, or nil when the write path is off.
 //

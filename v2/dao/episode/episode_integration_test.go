@@ -63,7 +63,7 @@ func TestListProjectionGapsOnlyReturnsCompletedAgentConversation(t *testing.T) {
 	if err := db.Create(&userMessage).Error; err != nil {
 		t.Fatal(err)
 	}
-	if gaps, err := repository.ListProjectionGaps(ctx, 100); err != nil {
+	if gaps, err := repository.ListProjectionGaps(ctx, 100, model.EpisodeContentEpisode); err != nil {
 		t.Fatal(err)
 	} else {
 		for _, gap := range gaps {
@@ -76,7 +76,7 @@ func TestListProjectionGapsOnlyReturnsCompletedAgentConversation(t *testing.T) {
 	if err := db.Create(&assistantMessage).Error; err != nil {
 		t.Fatal(err)
 	}
-	gaps, err := repository.ListProjectionGaps(ctx, 100)
+	gaps, err := repository.ListProjectionGaps(ctx, 100, model.EpisodeContentEpisode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestListProjectionGapsOnlyReturnsCompletedAgentConversation(t *testing.T) {
 	if err := repository.Save(ctx, episode, 0); err != nil {
 		t.Fatal(err)
 	}
-	gaps, err = repository.ListProjectionGaps(ctx, 100)
+	gaps, err = repository.ListProjectionGaps(ctx, 100, model.EpisodeContentEpisode)
 	if err != nil {
 		t.Fatal(err)
 	}

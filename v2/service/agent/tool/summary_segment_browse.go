@@ -47,6 +47,19 @@ const (
 // browseSummarySegmentsDescription is the contract the model reads.
 const browseSummarySegmentsDescription = "Browse this session's earlier summary segments. Use it when the segments already in front of you do not cover what the learner is asking about, or when they are too compressed to answer from. A segment is a compressed record of earlier turns, not a transcript: the words the learner used are read back with read_history_message. Segment numbers are counted from 1 within this session."
 
+// browseSummarySegmentsSessionDescription is the contract the model reads when
+// a session card is in play.
+//
+// It is a separate sentence rather than an edit to the one above because the
+// base one is measured: a freeze digests exactly those bytes, and a tool
+// whose contract changed under it would bind a number to something nobody
+// measured.
+//
+// The promise it adds is the one the card path needs: an earlier
+// conversation may be browsed, but only one a session card in this turn
+// pointed at.
+const browseSummarySegmentsSessionDescription = "Browse this session's earlier summary segments. Use it when the segments already in front of you do not cover what the learner is asking about, or when they are too compressed to answer from. A segment is a compressed record of earlier turns, not a transcript: the words the learner used are read back with read_history_message. Segment numbers are counted from 1 within this session. Pass session when a session card pointed at another conversation and you need that conversation's summary; a session no card pointed at cannot be opened."
+
 // The states a browse call can report.
 const (
 	browseStatusOK          = "ok"
@@ -61,6 +74,13 @@ const (
 	browseReasonIndexUnavailable = "index_unavailable"
 	browseReasonCancelled        = "cancelled"
 	browseReasonInvalidRequest   = "invalid_request"
+	// browseReasonSessionNotAllowed says the named session is not one this
+	// run may open.
+	//
+	// It is a separate reason because "there are no segments" and "you may
+	// not look there" are different facts, and a model that is told the first
+	// will try the same call again with a different query.
+	browseReasonSessionNotAllowed = "session_not_allowed"
 )
 
 // BrowseSummarySegmentsInput is what the model asks for.
@@ -68,6 +88,23 @@ type BrowseSummarySegmentsInput struct {
 	Query      string `json:"query" jsonschema:"required,description=Search terms to match against the segment topics, points, names and numbers."`
 	Segments   []int  `json:"segments,omitempty" jsonschema:"description=Optional specific segment numbers to read directly, counted from 1 within this session. At most five."`
 	MaxResults int    `json:"max_results,omitempty" jsonschema:"description=How many segments to return, 1-5."`
+}
+
+// BrowseSummarySegmentsSessionInput is the input of the card path.
+//
+// The session parameter is a separate input type rather than an extra field
+// on the one above, because a tool's schema is part of its contract: a mode
+// whose measurements were taken with the old schema must keep showing the
+// model the old schema.
+type BrowseSummarySegmentsSessionInput struct {
+	BrowseSummarySegmentsInput
+	// Session is the conversation to browse.
+	//
+	// It is empty for this run's own conversation. It may name an earlier
+	// conversation only when a session card in this run pointed at it, and
+	// the server checks that against the cards it actually showed: a model
+	// that fills in an arbitrary id gets nothing.
+	Session string `json:"session,omitempty" jsonschema:"description=The conversation to browse. Leave empty for this conversation. Name an earlier one only when a session card in this turn pointed at it."`
 }
 
 // SummarySegmentView is one segment as the model sees it.
@@ -150,6 +187,13 @@ func (a summarySegmentEvidenceAdapter) LoadSummarySegmentEvidence(ctx context.Co
 type BrowseSummarySegmentsRegistry struct {
 	browser SummarySegmentBrowser
 	surface serviceagent.ToolSurface
+	// sessionParameter says the card path is in play and the tool may be
+	// pointed at an earlier conversation.
+	//
+	// It is a flag rather than a mode because the tool's schema is part of
+	// its contract: a deployment that does not run the card path must keep
+	// showing the model the schema its measurements were taken with.
+	sessionParameter bool
 	// recent records the segments the model reached for, so that the next
 	// turn can keep them in front of the learner. It is optional: without it
 	// the tool still works, and the learner simply does not get the segment
@@ -181,6 +225,18 @@ func (r *BrowseSummarySegmentsRegistry) UseRecentUse(recent serviceagent.Summary
 	r.recent = recent
 }
 
+// UseSessionParameter lets the tool open an earlier conversation.
+//
+// It is attached only by the card path. The tool then takes a session
+// argument, and the server checks it against the cards this run was shown:
+// an arbitrary id reaches nothing.
+func (r *BrowseSummarySegmentsRegistry) UseSessionParameter(enabled bool) {
+	if r == nil {
+		return
+	}
+	r.sessionParameter = enabled
+}
+
 // Tools returns the browse tool for one run.
 func (r *BrowseSummarySegmentsRegistry) Tools(ctx context.Context, run serviceagent.RunContext) ([]tool.BaseTool, error) {
 	if err := contextError(ctx); err != nil {
@@ -190,9 +246,22 @@ func (r *BrowseSummarySegmentsRegistry) Tools(ctx context.Context, run serviceag
 		return nil, fmt.Errorf("%w: a trusted user id and session are required", ErrInvalidKnowledgeSearchRequest)
 	}
 	name := serviceagent.MustToolNameFor(serviceagent.CapabilityBrowseSummarySegments, r.resolvedSurface())
+	if r.sessionParameter {
+		browse, err := toolutils.InferTool(name, browseSummarySegmentsSessionDescription,
+			func(ctx context.Context, input *BrowseSummarySegmentsSessionInput) (*BrowseSummarySegmentsOutput, error) {
+				if input == nil {
+					return r.browse(ctx, run, nil, "")
+				}
+				return r.browse(ctx, run, &input.BrowseSummarySegmentsInput, input.Session)
+			})
+		if err != nil {
+			return nil, fmt.Errorf("build summary segment browse schema: %w", err)
+		}
+		return []tool.BaseTool{browse}, nil
+	}
 	browse, err := toolutils.InferTool(name, browseSummarySegmentsDescription,
 		func(ctx context.Context, input *BrowseSummarySegmentsInput) (*BrowseSummarySegmentsOutput, error) {
-			return r.browse(ctx, run, input)
+			return r.browse(ctx, run, input, "")
 		})
 	if err != nil {
 		return nil, fmt.Errorf("build summary segment browse schema: %w", err)
@@ -209,12 +278,42 @@ func (r *BrowseSummarySegmentsRegistry) resolvedSurface() serviceagent.ToolSurfa
 
 // browse runs one call.
 func (r *BrowseSummarySegmentsRegistry) browse(ctx context.Context, run serviceagent.RunContext,
-	input *BrowseSummarySegmentsInput) (*BrowseSummarySegmentsOutput, error) {
+	input *BrowseSummarySegmentsInput, requestedSession string) (*BrowseSummarySegmentsOutput, error) {
 	out := &BrowseSummarySegmentsOutput{Status: browseStatusOK, Reason: browseReasonNone, Segments: []SummarySegmentView{}}
 	if input == nil {
 		out.Status = browseStatusUnavailable
 		out.Reason = browseReasonInvalidRequest
 		return out, nil
+	}
+	// The conversation to browse, and the card that authorised it.
+	//
+	// An earlier conversation is reachable only through a session card this
+	// run was actually shown. The check is made here rather than in the
+	// database query, because the query is owner-scoped and would happily
+	// answer for any session this learner owns - including one the model
+	// invented.
+	targetSession := strings.TrimSpace(requestedSession)
+	cardID, cardVersion, cardWatermark := "", uint64(0), uint(0)
+	if targetSession == "" {
+		targetSession = run.SessionID
+	} else if targetSession != strings.TrimSpace(run.SessionID) {
+		if run.GrantSet == nil || !run.GrantSet.AuthorisesSession(run, targetSession) {
+			out.Status = browseStatusNoEvidence
+			out.Reason = browseReasonSessionNotAllowed
+			return out, nil
+		}
+		granted, version, ceiling, ok := run.GrantSet.CardAuthorisation(targetSession)
+		if !ok {
+			out.Status = browseStatusNoEvidence
+			out.Reason = browseReasonSessionNotAllowed
+			return out, nil
+		}
+		// The ceiling comes with the card because it is the ceiling of every
+		// step taken in that conversation. The card described the session as
+		// far as it had reached, and the grants issued for the segments read
+		// here carry it, so a message above that line is not something the
+		// card ever saw and is not readable back either.
+		cardID, cardVersion, cardWatermark = granted, version, ceiling
 	}
 	limit := input.MaxResults
 	if limit <= 0 {
@@ -223,7 +322,24 @@ func (r *BrowseSummarySegmentsRegistry) browse(ctx context.Context, run servicea
 	if limit > maxBrowseSummarySegments {
 		limit = maxBrowseSummarySegments
 	}
-	segments, err := r.resolve(ctx, run, input, limit)
+	segments, err := r.resolve(ctx, run, targetSession, input, limit)
+	if err == nil && cardWatermark > 0 {
+		// Another conversation, opened through a card. The card described
+		// that session as far as it had reached, and a segment that reaches
+		// past that line is a stretch of the conversation the card never
+		// saw. Showing it would make the browse reach further than the
+		// search does, and the two are the same door into the same
+		// conversation: a detail the search refuses to find must not be
+		// readable by browsing around it.
+		bounded := make([]model.SessionSummarySegment, 0, len(segments))
+		for _, segment := range segments {
+			if segment.EndMessageID > cardWatermark {
+				continue
+			}
+			bounded = append(bounded, segment)
+		}
+		segments = bounded
+	}
 	if err != nil {
 		if ctxErr := contextError(ctx); ctxErr != nil {
 			return nil, ctxErr
@@ -243,11 +359,11 @@ func (r *BrowseSummarySegmentsRegistry) browse(ctx context.Context, run servicea
 		out.Reason = browseReasonNoCandidate
 		return out, nil
 	}
-	document := r.boardState(ctx, run)
+	document := r.boardState(ctx, run, targetSession)
 	grants := make([]serviceagent.HistoryMessageGrant, 0, 8)
 	tokens := 0
 	for _, segment := range segments {
-		browsed, ok := r.render(segment, document)
+		browsed, ok := r.render(segment, document, cardWatermark)
 		if !ok {
 			continue
 		}
@@ -272,7 +388,7 @@ func (r *BrowseSummarySegmentsRegistry) browse(ctx context.Context, run servicea
 		out.Segments = append(out.Segments, browsed.view)
 		// The grants follow the trimming: an id of a point that was cut
 		// is an id the model never saw.
-		grants = append(grants, r.grantsForView(run, segment, browsed)...)
+		grants = append(grants, r.grantsForView(targetSession, segment, browsed, cardID, cardVersion, cardWatermark)...)
 		r.recordRecentUse(ctx, run, segment.Seq)
 	}
 	out.ObservationTokens = tokens
@@ -309,7 +425,7 @@ func (r *BrowseSummarySegmentsRegistry) recordRecentUse(ctx context.Context, run
 // knows which one it wants. Otherwise the question is matched against the
 // session's segments, and the best matches are returned.
 func (r *BrowseSummarySegmentsRegistry) resolve(ctx context.Context, run serviceagent.RunContext,
-	input *BrowseSummarySegmentsInput, limit int) ([]model.SessionSummarySegment, error) {
+	sessionID string, input *BrowseSummarySegmentsInput, limit int) ([]model.SessionSummarySegment, error) {
 	if len(input.Segments) > 0 {
 		named := input.Segments
 		if len(named) > maxBrowseSummarySegments {
@@ -320,7 +436,7 @@ func (r *BrowseSummarySegmentsRegistry) resolve(ctx context.Context, run service
 			if seq <= 0 {
 				continue
 			}
-			segment, err := r.browser.GetSummarySegment(ctx, run.UserID, run.SessionID, seq)
+			segment, err := r.browser.GetSummarySegment(ctx, run.UserID, sessionID, seq)
 			if err != nil {
 				if errors.Is(err, model.ErrSummarySegmentNotFound) {
 					continue
@@ -331,7 +447,7 @@ func (r *BrowseSummarySegmentsRegistry) resolve(ctx context.Context, run service
 		}
 		return segments, nil
 	}
-	all, err := r.browser.ListSummarySegments(ctx, run.UserID, run.SessionID, browseSummaryCandidateLimit)
+	all, err := r.browser.ListSummarySegments(ctx, run.UserID, sessionID, browseSummaryCandidateLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -347,8 +463,9 @@ func (r *BrowseSummarySegmentsRegistry) resolve(ctx context.Context, run service
 // The board may be missing or unreadable, and then the segments are shown
 // without the supersession notes: a note that cannot be verified is not
 // written, because a wrong note would mark a current value as superseded.
-func (r *BrowseSummarySegmentsRegistry) boardState(ctx context.Context, run serviceagent.RunContext) model.SessionWhiteboardDocument {
-	board, err := r.browser.GetWhiteboard(ctx, run.UserID, run.SessionID)
+func (r *BrowseSummarySegmentsRegistry) boardState(ctx context.Context, run serviceagent.RunContext,
+	sessionID string) model.SessionWhiteboardDocument {
+	board, err := r.browser.GetWhiteboard(ctx, run.UserID, sessionID)
 	if err != nil || board == nil {
 		return model.SessionWhiteboardDocument{}
 	}
@@ -371,8 +488,14 @@ type browsedSegment struct {
 }
 
 // render turns one stored segment into the view the model reads.
+// The watermark is the card's, and it is zero for this run's own conversation.
+//
+// The board of another conversation is read live, so what it holds now may be
+// a change that happened after the card was written. That change is past the
+// card's line, and the note that carries it is dropped rather than trimmed: a
+// trimmed note would still carry the later value.
 func (r *BrowseSummarySegmentsRegistry) render(segment model.SessionSummarySegment,
-	document model.SessionWhiteboardDocument) (browsedSegment, bool) {
+	document model.SessionWhiteboardDocument, watermark uint) (browsedSegment, bool) {
 	content, err := model.DecodeSessionSummarySegmentContent(segment.Content)
 	if err != nil {
 		return browsedSegment{}, false
@@ -389,6 +512,13 @@ func (r *BrowseSummarySegmentsRegistry) render(segment model.SessionSummarySegme
 	view.NamesAndNumbers = append(view.NamesAndNumbers, content.Names...)
 	view.NamesAndNumbers = append(view.NamesAndNumbers, content.Numbers...)
 	for _, note := range serviceagent.SummarySegmentSupersessionNotes(segment, document) {
+		if watermark > 0 && note.ChangedAtMessageID > watermark {
+			// The board was written after the card that opened this
+			// conversation was written. What it holds now is a change the
+			// card never saw, so saying "this value was replaced" would hand
+			// the model a value from past the card's line.
+			continue
+		}
 		view.WhiteboardStatus = append(view.WhiteboardStatus,
 			fmt.Sprintf("%s: %s -> %s（第 %d 轮，以当前状态为准）", note.Key, note.OldValue, note.CurrentValue,
 				note.ChangedAtMessageID))
@@ -410,8 +540,9 @@ func renderSegmentPoints(points []model.SessionSummarySegmentPoint) []string {
 // The ids come from the points the view really carries, and they are bounded
 // by the segment's own stretch of turns: a message before the segment starts
 // or after it ends was not one of the messages this segment compressed.
-func (r *BrowseSummarySegmentsRegistry) grantsForView(run serviceagent.RunContext,
-	segment model.SessionSummarySegment, browsed browsedSegment) []serviceagent.HistoryMessageGrant {
+func (r *BrowseSummarySegmentsRegistry) grantsForView(sessionID string,
+	segment model.SessionSummarySegment, browsed browsedSegment,
+	cardID string, cardVersion uint64, cardWatermark uint) []serviceagent.HistoryMessageGrant {
 	grants := make([]serviceagent.HistoryMessageGrant, 0, 8)
 	for _, point := range browsed.points {
 		for _, id := range point.EvidenceMessageIDs {
@@ -423,9 +554,14 @@ func (r *BrowseSummarySegmentsRegistry) grantsForView(run serviceagent.RunContex
 			}
 			grants = append(grants, serviceagent.HistoryMessageGrant{
 				MessageID: id, SourceKind: serviceagent.HistorySourceSummarySegment,
-				SourceSessionID: run.SessionID, SegmentSeq: segment.Seq,
+				SourceSessionID: sessionID, SegmentSeq: segment.Seq,
 				SegmentStartMessageID: segment.StartMessageID,
 				SegmentEndMessageID:   segment.EndMessageID,
+				// A segment of another conversation is reachable only
+				// because a card opened it, and the card is what the
+				// grant is checked against. Its watermark comes along so
+				// that the read is bounded by what the card saw.
+				CardID: cardID, CardVersion: cardVersion, CardWatermark: cardWatermark,
 			})
 		}
 	}

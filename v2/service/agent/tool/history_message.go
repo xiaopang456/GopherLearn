@@ -101,6 +101,13 @@ type EpisodeEvidenceFacts struct {
 	Status      string
 	IndexStatus string
 	Watermark   uint
+	// ContentKind says which document the row carries.
+	//
+	// One table holds two kinds of derived row, and the citation closure
+	// below belongs to one of them: an Episode cites through its assertions,
+	// a card cites through its entries. A grant that named the wrong kind
+	// would be checked against a closure that is not there.
+	ContentKind string
 	// EvidenceMessageIDs is the closure the stored card cites right now. An id that
 	// is not in it was not cited by this version, whatever the rendered block showed.
 	EvidenceMessageIDs []uint
@@ -144,6 +151,16 @@ const (
 	refusalEpisodeWatermark = "message_past_episode_watermark"
 	refusalVerifierAbsent   = "episode_verifier_not_wired"
 	refusalUnreadable       = "episode_evidence_unreadable"
+
+	// The session card's refusal reasons.
+	//
+	// A card is the same kind of derived row as an Episode and is checked
+	// the same way, with one addition: the row must still be the card the
+	// grant was drawn from. A row that was rewritten as an Episode in the
+	// meantime cites a different closure, and the id the run holds would
+	// not be in it.
+	refusalCardMissing = "session_card_not_found"
+	refusalCardKind    = "session_card_kind_mismatch"
 
 	// The summary segments' refusal reasons.
 	//
@@ -352,7 +369,9 @@ func (r *HistoryMessageRegistry) Tools(ctx context.Context, run serviceagent.Run
 	// the same facts, and re-reading the row per id would turn two tool calls into a
 	// query per citation.
 	facts := &episodeFactsCache{reader: r.episodeEvidence, segments: r.segmentEvidence, userID: userID,
-		loaded: map[string]episodeFactsEntry{}, segmentLoaded: map[int]segmentFactsEntry{}}
+		sessionID:       strings.TrimSpace(run.SessionID),
+		lockedSessionID: strings.TrimSpace(run.LockedSessionID),
+		loaded:          map[string]episodeFactsEntry{}, segmentLoaded: map[int]segmentFactsEntry{}}
 	// A message this run reads back is evidence the learner actually said those words,
 	// and the only thing that can make a citation to them legal. The registry comes from
 	// the run, exactly like memory_search's does, so the reference the tool issues is the
@@ -502,7 +521,7 @@ func registerReadBackEvidence(registry *serviceagent.MemoryEvidenceRegistry, own
 	if registry == nil || len(grants) == 0 {
 		return ""
 	}
-	var summary, episode, segment bool
+	var summary, episode, segment, card, search bool
 	var version uint64
 	for _, grant := range grants {
 		switch grant.SourceKind {
@@ -515,6 +534,22 @@ func registerReadBackEvidence(registry *serviceagent.MemoryEvidenceRegistry, own
 			episode = true
 			if grant.EpisodeVersion > version {
 				version = grant.EpisodeVersion
+			}
+		case serviceagent.HistorySourceSessionCard:
+			card = true
+			if grant.CardVersion > version {
+				version = grant.CardVersion
+			}
+		case serviceagent.HistorySourceSessionSearch:
+			// A keyword search inside a conversation the learner owns. It
+			// gets its own source label so that the ledger can tell a
+			// card's own citation from a word found in the conversation the
+			// card opened. The two are different facts about how the answer
+			// reached the learner's original words, and an audit that
+			// cannot tell them apart cannot say which one was used.
+			search = true
+			if grant.CardVersion > version {
+				version = grant.CardVersion
 			}
 		case serviceagent.HistorySourceSummarySegment:
 			segment = true
@@ -531,6 +566,10 @@ func registerReadBackEvidence(registry *serviceagent.MemoryEvidenceRegistry, own
 		source = "summary+episode"
 	case episode:
 		source = serviceagent.HistorySourceEpisode
+	case search:
+		source = serviceagent.HistorySourceSessionSearch
+	case card:
+		source = serviceagent.HistorySourceSessionCard
 	case segment:
 		source = serviceagent.HistorySourceSummarySegment
 	}
@@ -552,6 +591,20 @@ type episodeFactsCache struct {
 	// episode card, and one store's miss is not the other's.
 	segments SummarySegmentEvidenceReader
 	userID   int64
+	// sessionID is the conversation this run is in.
+	//
+	// A search hit found in this run's own conversation has no card behind
+	// it, so the check that decides it is "is this the conversation the run
+	// is in", and answering that needs to know which conversation that is.
+	sessionID string
+	// lockedSessionID is the conversation the server locked for this turn.
+	//
+	// It is the second conversation this run may read, and it may have no
+	// card at all: the learner may have picked it from their own list, which
+	// no search had offered. The authority behind a read taken in it is the
+	// LOCK - the server checked that it is the learner's and read it - and
+	// not a card.
+	lockedSessionID string
 
 	mu     sync.Mutex
 	loaded map[string]episodeFactsEntry
@@ -578,11 +631,132 @@ func (c *episodeFactsCache) confirm(ctx context.Context, grant serviceagent.Hist
 	switch grant.SourceKind {
 	case serviceagent.HistorySourceEpisode:
 		return c.confirmEpisode(ctx, grant)
+	case serviceagent.HistorySourceSessionCard:
+		return c.confirmCard(ctx, grant)
+	case serviceagent.HistorySourceSessionSearch:
+		return c.confirmSearch(ctx, grant)
 	case serviceagent.HistorySourceSummarySegment:
 		return c.confirmSegment(ctx, grant)
 	default:
 		return "", true
 	}
+}
+
+// confirmCard re-establishes a session card's facts.
+//
+// It is the Episode check with the kind added, and the kind is the point: the
+// card and the Episode are two documents in one table, and the citation
+// closure a grant is checked against is the one the row really carries.
+func (c *episodeFactsCache) confirmCard(ctx context.Context, grant serviceagent.HistoryMessageGrant) (string, bool) {
+	facts, reason, ok := c.cardFacts(ctx, grant)
+	if !ok {
+		return reason, false
+	}
+	if !slices.Contains(facts.EvidenceMessageIDs, grant.MessageID) {
+		return refusalEpisodeClosure, false
+	}
+	if facts.Watermark > 0 && grant.MessageID > facts.Watermark {
+		return refusalEpisodeWatermark, false
+	}
+	return "", true
+}
+
+// confirmSearch re-establishes a keyword search hit.
+//
+// A search hit is checked against the card that opened the conversation, and
+// the check is deliberately not the citation closure. A card cites the
+// messages it was written from, so its citations are inside its closure; a
+// search finds the detail the card and the summary did not keep, so its hits
+// are outside that closure by definition. Holding the hit to the closure
+// would refuse every hit the search exists to find, and the third step of
+// the chain - card, then summary, then the original words - would be
+// unreachable.
+//
+// What is checked is the card itself: that it is still there, still this
+// card, still this version, still active, still indexed, still owned by this
+// learner, and still about the session the hit was found in. The watermark is
+// the ceiling: the card read the session as far as it had reached, and a
+// message above that line is not something it ever saw.
+func (c *episodeFactsCache) confirmSearch(ctx context.Context, grant serviceagent.HistoryMessageGrant) (string, bool) {
+	// A hit found in this run's own conversation has no card behind it: the
+	// search looked in the conversation the run is already in, so the card
+	// there is to look at is the one that does not exist. What authorises the
+	// hit is the owner and the conversation, and the read-back query binds
+	// both again - the same authority a summary grant rests on, and confirmed
+	// the same way.
+	//
+	// The one thing such a hit may not do is name another conversation, so
+	// the session is checked here rather than assumed. A grant that names
+	// another conversation without a card never reaches this point: the
+	// grant set refuses it before it is stored.
+	if strings.TrimSpace(grant.CardID) == "" {
+		// No card behind the hit. That is the case of a search in the
+		// conversation the run is already in, and the case of the LOCKED
+		// conversation: the learner pointed at it, the server checked that
+		// it is theirs and read it, and it may have no card at all.
+		//
+		// The authority is the run's own conversation or the lock, and
+		// nothing else: a hit that names a third conversation never reaches
+		// this point, because the grant set refuses it before it is stored.
+		session := strings.TrimSpace(grant.SourceSessionID)
+		if session != c.sessionID && (c.lockedSessionID == "" || session != c.lockedSessionID) {
+			return refusalEpisodeSession, false
+		}
+		return "", true
+	}
+	facts, reason, ok := c.cardFacts(ctx, grant)
+	if !ok {
+		return reason, false
+	}
+	if facts.Watermark > 0 && grant.MessageID > facts.Watermark {
+		return refusalEpisodeWatermark, false
+	}
+	return "", true
+}
+
+// cardFacts re-establishes the card a grant was drawn from.
+//
+// The checks are the ones every card-drawn grant shares: the row is still
+// there, it is still a card, it is still the same card at the same version,
+// it is still active and indexed, it belongs to this learner, and it is
+// about the session the grant names. What the caller adds on top is the
+// check that differs between the kinds - the citation closure for a card's
+// own citation, and nothing for a search hit.
+func (c *episodeFactsCache) cardFacts(ctx context.Context,
+	grant serviceagent.HistoryMessageGrant) (EpisodeEvidenceFacts, string, bool) {
+	if c.reader == nil {
+		return EpisodeEvidenceFacts{}, refusalVerifierAbsent, false
+	}
+	entry := c.entry(ctx, grant.CardID)
+	if entry.err != nil {
+		if errors.Is(entry.err, ErrEpisodeEvidenceMissing) {
+			return EpisodeEvidenceFacts{}, refusalCardMissing, false
+		}
+		return EpisodeEvidenceFacts{}, refusalUnreadable, false
+	}
+	facts := entry.facts
+	if strings.TrimSpace(facts.ContentKind) != string(model.EpisodeContentSessionCard) {
+		return facts, refusalCardKind, false
+	}
+	if strings.TrimSpace(facts.EpisodeID) != strings.TrimSpace(grant.CardID) {
+		return facts, refusalCardMissing, false
+	}
+	if facts.UserID != c.userID {
+		return facts, refusalEpisodeOwner, false
+	}
+	if strings.TrimSpace(facts.SessionID) != strings.TrimSpace(grant.SourceSessionID) {
+		return facts, refusalEpisodeSession, false
+	}
+	if facts.Version == 0 || facts.Version != grant.CardVersion {
+		return facts, refusalEpisodeVersion, false
+	}
+	if facts.Status != string(model.EpisodeStatusActive) {
+		return facts, refusalEpisodeInactive, false
+	}
+	if facts.IndexStatus != string(model.EpisodeIndexIndexed) {
+		return facts, refusalEpisodeIndex, false
+	}
+	return facts, "", true
 }
 
 // confirmSegment re-establishes that a summary segment is still the segment

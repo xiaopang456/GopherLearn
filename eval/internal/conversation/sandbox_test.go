@@ -60,8 +60,8 @@ func TestSandboxIntegration(t *testing.T) {
 	if err = s.Restore(ctx, snap); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.Capture(ctx, snap.Session.UserID, snap.Session.ID)
-	if err != nil || len(got.Messages) != 2 {
+	got, err := s.Capture(ctx, snap.Sessions[0].Session.UserID, snap.Sessions[0].Session.ID)
+	if err != nil || len(got.Sessions[0].Messages) != 2 {
 		t.Fatalf("capture: %+v %v", got, err)
 	}
 	if err = s.Restore(ctx, snap); err == nil {
@@ -135,8 +135,8 @@ func TestSandboxWarmupIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snap.Messages) != 80 || snap.Summary.CoveredMessageID != 71 {
-		t.Fatalf("messages=%d summary=%+v", len(snap.Messages), snap.Summary)
+	if len(primaryOf(snap).Messages) != 80 || snap.Sessions[0].Summary.CoveredMessageID != 71 {
+		t.Fatalf("messages=%d summary=%+v", len(primaryOf(snap).Messages), snap.Sessions[0].Summary)
 	}
 	if _, err = s.Prepare(ctx, 7, "session", "learner", turns, g, agent.DefaultSummaryConfig()); err == nil {
 		t.Fatal("prepared a nonempty session")

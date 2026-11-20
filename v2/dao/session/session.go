@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -242,4 +243,30 @@ func (r *Repository) GetByIDAndUserID(ctx context.Context, sessionID string, use
 		return nil, err
 	}
 	return &result, nil
+}
+
+// SessionExists says whether a conversation is there at all.
+//
+// It returns a boolean and no content, and it exists for one reason: the
+// server has to tell "there is no such conversation" from "that is somebody
+// else's conversation". A read scoped to the learner cannot tell them apart
+// - both come back as not found - and a report that cannot tell them apart
+// cannot say whether somebody reached across the boundary.
+//
+// A deleted conversation is not there: the soft delete is the learner's own
+// deletion, and a deleted conversation is not a conversation anybody may open.
+func (r *Repository) SessionExists(ctx context.Context, sessionID string) (bool, error) {
+	if r == nil || r.db == nil {
+		return false, fmt.Errorf("session repository is not initialized")
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		return false, nil
+	}
+	var count int64
+	err := r.db.WithContext(ctx).Model(&model.Session{}).
+		Where("id = ?", sessionID).Count(&count).Error
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }

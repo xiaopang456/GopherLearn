@@ -39,6 +39,11 @@ func TestJobJournalIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// The preparation phase ends before the job is touched, so the claim and
+	// the reset belong to the query phase and have to be reported.
+	if err = j.PrepareBarrier(ctx); err != nil {
+		t.Fatal(err)
+	}
 	exec("INSERT INTO episode_projection_jobs VALUES ('a','pending',0)")
 	// A short claim/reset/delete must survive in evidence even when both samples are empty.
 	exec("UPDATE episode_projection_jobs SET status='processing',attempts=1 WHERE id='a'")
@@ -49,15 +54,19 @@ func TestJobJournalIntegration(t *testing.T) {
 	}
 	exec("INSERT INTO memory_extraction_jobs VALUES ('after','processing',1)")
 	events, executed, err := j.Finish(ctx)
-	if err != nil || !executed || len(events) != 8 {
+	if err != nil || !executed || len(events) != 9 {
 		t.Fatalf("events=%+v executed=%v err=%v", events, executed, err)
 	}
-	audit := BackgroundAudit{Started: time.Now().Add(-time.Minute), Answered: time.Now(), Complete: true, ExecutedBeforeAnswer: executed}
+	audit := BackgroundAudit{Started: time.Now().Add(-time.Minute), Prepared: time.Now().Add(-time.Second),
+		Answered: time.Now(), Complete: true, ExecutedInQueryPhase: executed}
 	if err := audit.ValidateBackground(); err == nil {
 		t.Fatal("transient execution certified as valid")
 	}
 	if err = j.AnswerBarrier(ctx); err == nil {
 		t.Fatal("duplicate barrier accepted")
+	}
+	if err = j.PrepareBarrier(ctx); err == nil {
+		t.Fatal("duplicate prepare barrier accepted")
 	}
 	exec("DROP TRIGGER eval_episode_update")
 	if _, _, err = j.Finish(ctx); err == nil {

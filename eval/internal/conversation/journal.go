@@ -27,6 +27,7 @@ func (JobEvent) TableName() string { return "eval_job_events" }
 type JobJournal struct {
 	sandbox     *Sandbox
 	definitions map[string]string
+	prepare     uint64
 	answer      uint64
 }
 
@@ -98,11 +99,43 @@ func (j *JobJournal) readDefinitions(ctx context.Context) (map[string]string, er
 	return out, err
 }
 
+// PrepareBarrier closes the preparation phase.
+//
+// The preparation phase is the part of the run before the question is asked.
+// It is where the registered summary, projection and index tasks are allowed
+// to run: the card arm writes the card there on purpose, and a run that
+// forbade it would measure a window without the memory it is about.
+//
+// The barrier is what makes the rest of the run readable. Everything after it
+// is the query phase, and in the query phase nothing may be generated: the
+// source data and the memory version are fixed, and a task that ran in
+// between would have changed the answer's own ground.
+func (j *JobJournal) PrepareBarrier(ctx context.Context) error {
+	if j == nil {
+		return fmt.Errorf("job journal is required")
+	}
+	if j.prepare != 0 {
+		return fmt.Errorf("prepare barrier already recorded")
+	}
+	if j.answer != 0 {
+		return fmt.Errorf("the answer barrier was already recorded")
+	}
+	e := JobEvent{Kind: "barrier", Operation: "prepare", ObservedAt: time.Now().UTC()}
+	err := guardedStore{j.sandbox}.with(ctx, func(tx *gorm.DB) error { return tx.Create(&e).Error })
+	if err == nil {
+		j.prepare = e.Sequence
+	}
+	return err
+}
+
 // AnswerBarrier is called immediately after the final HTTP response is received.
 // Pre-answer work that has not committed yet still reserves a smaller sequence.
 func (j *JobJournal) AnswerBarrier(ctx context.Context) error {
 	if j.answer != 0 {
 		return fmt.Errorf("answer barrier already recorded")
+	}
+	if j.prepare == 0 {
+		return fmt.Errorf("the prepare barrier was not recorded")
 	}
 	e := JobEvent{Kind: "barrier", Operation: "answer", ObservedAt: time.Now().UTC()}
 	err := guardedStore{j.sandbox}.with(ctx, func(tx *gorm.DB) error { return tx.Create(&e).Error })
@@ -114,9 +147,20 @@ func (j *JobJournal) AnswerBarrier(ctx context.Context) error {
 
 // Finish must run after successful product shutdown, using the observer's
 // separate DB pool. Missing/replaced triggers or absent barriers fail closed.
+//
+// The bool it returns says whether a task ran in the query phase - that is,
+// between the prepare barrier and the answer barrier. A task that ran in the
+// preparation phase is not a violation: that phase exists so the card arm can
+// write its card before the question is asked.
 func (j *JobJournal) Finish(ctx context.Context) ([]JobEvent, bool, error) {
 	if j == nil || j.answer == 0 {
 		return nil, false, fmt.Errorf("journal has no answer barrier")
+	}
+	if j.prepare == 0 {
+		return nil, false, fmt.Errorf("journal has no prepare barrier")
+	}
+	if j.prepare >= j.answer {
+		return nil, false, fmt.Errorf("the prepare barrier is not before the answer barrier")
 	}
 	if err := j.sandbox.verify(ctx); err != nil {
 		return nil, false, err
@@ -139,21 +183,32 @@ func (j *JobJournal) Finish(ctx context.Context) ([]JobEvent, bool, error) {
 		return nil, false, err
 	}
 	barrier := false
+	prepared := false
 	executed := false
 	for _, e := range events {
-		if e.Sequence == j.answer && e.Kind == "barrier" && e.Operation == "answer" {
-			barrier = true
-			continue
+		if e.Kind == "barrier" {
+			switch {
+			case e.Sequence == j.answer && e.Operation == "answer":
+				barrier = true
+				continue
+			case e.Sequence == j.prepare && e.Operation == "prepare":
+				prepared = true
+				continue
+			}
+			return nil, false, fmt.Errorf("unexpected journal barrier")
 		}
 		if e.Kind != "episode" && e.Kind != "memory" {
 			return nil, false, fmt.Errorf("unexpected journal event")
 		}
-		if e.Sequence < j.answer && (e.Status != "pending" || e.Attempts != 0) {
+		if e.Sequence > j.prepare && e.Sequence < j.answer && (e.Status != "pending" || e.Attempts != 0) {
 			executed = true
 		}
 	}
 	if !barrier {
 		return nil, false, fmt.Errorf("answer barrier missing")
+	}
+	if !prepared {
+		return nil, false, fmt.Errorf("prepare barrier missing")
 	}
 	return events, executed, nil
 }

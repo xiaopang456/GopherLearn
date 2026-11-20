@@ -147,7 +147,7 @@ func TestOfflineProductRunsInBothSummaryModes(t *testing.T) {
 			for i := range turns {
 				turns[i] = testTurn(i)
 			}
-			warmup, err := PrepareOfflineProductReport(ctx, repository, turns, AttemptInput{})
+			warmup, err := PrepareOfflineProductReport(ctx, repository, SingleHistory("synthetic-evaluation", turns), AttemptInput{}, "")
 			if err != nil {
 				t.Fatalf("warmup: %v", err)
 			}
@@ -218,7 +218,7 @@ func TestTheSummarySegmentReachesTheWindowInBothModes(t *testing.T) {
 				t.Fatalf("settings: %v", err)
 			}
 			turns := longSegmentTurns(settings.Config.AgentConfig.SummarySegmentFallbackTokens)
-			warmup, err := PrepareOfflineProductReport(ctx, repository, turns, AttemptInput{})
+			warmup, err := PrepareOfflineProductReport(ctx, repository, SingleHistory("synthetic-evaluation", turns), AttemptInput{}, "")
 			if err != nil {
 				t.Fatalf("warmup: %v", err)
 			}

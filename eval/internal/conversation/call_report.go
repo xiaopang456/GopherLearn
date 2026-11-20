@@ -31,13 +31,33 @@ type RoleUsage struct {
 // suggested: a call the product sent after the answer came back is background
 // work whatever its prompt looked like.
 func AttributeCalls(calls []ModelCall, answered time.Time) []ModelCall {
+	return AttributeCallPhases(calls, time.Time{}, answered)
+}
+
+// AttributeCallPhases splits the calls of one attempt by the phase they were
+// sent in.
+//
+// There are three phases. The preparation phase ends at the prepare barrier:
+// the summary, the projection and the indexing happen there, and their cost is
+// the cost of the memory the answer was asked against. The answer phase is the
+// question itself. The after-answer phase is the work the product started once
+// the answer had come back.
+//
+// The boundary is a time, not the role the prompt suggested. A call the
+// product sent after the answer came back is background work whatever its
+// prompt looked like, and a call it sent while it was preparing the memory is
+// preparation work whatever role the prompt claimed.
+func AttributeCallPhases(calls []ModelCall, prepared, answered time.Time) []ModelCall {
 	result := append([]ModelCall(nil), calls...)
 	for i := range result {
 		result[i].Purpose = result[i].Role
-		if result[i].Started.After(answered) {
+		switch {
+		case result[i].Started.After(answered):
 			result[i].Role = "background"
 			result[i].Phase = callledger.PhaseAfterAnswer
-		} else {
+		case !prepared.IsZero() && !result[i].Started.After(prepared):
+			result[i].Phase = callledger.PhasePrepare
+		default:
 			result[i].Phase = callledger.PhaseAnswer
 		}
 	}

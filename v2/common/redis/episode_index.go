@@ -16,6 +16,17 @@ const (
 	EpisodeVectorDimension = KnowledgeChunkVectorDimension
 )
 
+// The session card index has a namespace of its own.
+//
+// The cards and the Episodes are two documents in one table, and a search
+// that could see both would answer "what did we decide" with whichever kind
+// of row ranked higher. A separate index is what keeps the two arms of a
+// comparison from reading each other's rows.
+const (
+	SessionCardIndexName = "gopherai_session_card_v1_idx"
+	SessionCardKeyPrefix = "gopherai:session_card:vec:"
+)
+
 const (
 	EpisodeFieldEpisodeID        = "episode_id"
 	EpisodeFieldUserID           = "user_id"

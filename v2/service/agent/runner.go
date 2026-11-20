@@ -65,6 +65,23 @@ const (
 	// model asked for was there, and a reader or an evaluation has to be able
 	// to tell the two apart.
 	TerminationToolUnavailable = "answered_tool_unavailable"
+	// TerminationWaitingChoice is the reason of a run that ENDED BY ASKING.
+	//
+	// The server asked the learner which conversation they meant, and the
+	// turn stopped there. It is not an answer and it is not a failure: the
+	// question is waiting for the learner's reply, and the answer comes in
+	// their NEXT message.
+	//
+	// The reason is what tells a reader - and an evaluation - that this turn
+	// did not run out of room to answer: it was not asked to answer at all.
+	TerminationWaitingChoice = "waiting_for_choice"
+	// WaitingChoiceAnswer is what the assistant says when the server asks
+	// again.
+	//
+	// It is a fixed sentence and not a model's: the turn ends BEFORE the
+	// model is asked anything, because a question the learner has not
+	// answered yet cannot be answered.
+	WaitingChoiceAnswer = "你在问哪一次？选一个，或者告诉我时间、标题或主题。"
 )
 
 const (
@@ -202,6 +219,30 @@ type ToolCallLimits struct {
 	// convention the other capabilities use: a zero leaves the whole-run
 	// total as the only fuse.
 	BrowseSummarySegments int
+	// SearchSessionCards bounds search_session_cards.
+	//
+	// One call is the shape of the use: the tool returns a handful of
+	// candidates, and a second call with the same words would return the
+	// same candidates. A second call with different words is a different
+	// question and is allowed under the whole-run total.
+	SearchSessionCards int
+	// SearchHistorySegments bounds search_history_segments.
+	//
+	// It is the fallback of the card search, and it is the one that costs an
+	// embedding, so it gets one call: a hunt that did not find the
+	// conversation with the cards is not going to find it by hunting more.
+	SearchHistorySegments int
+	// ReadSessionWhiteboard bounds read_session_whiteboard.
+	//
+	// One call is one board. The board is the current state of one
+	// conversation, and reading it twice reads the same state.
+	ReadSessionWhiteboard int
+	// AskWhichConversation bounds ask_which_conversation.
+	//
+	// One call is one question. The turn ends with it - the learner has
+	// to answer before anything else can happen - and a second question
+	// in the same turn would be asking the same thing twice.
+	AskWhichConversation int
 }
 
 // limitFor charges a call to the capability behind the name rather than to the
@@ -225,6 +266,14 @@ func (l ToolCallLimits) limitFor(name string) int {
 		return l.HistoryRead
 	case CapabilityBrowseSummarySegments:
 		return l.BrowseSummarySegments
+	case CapabilitySearchSessionCards:
+		return l.SearchSessionCards
+	case CapabilitySearchHistorySegments:
+		return l.SearchHistorySegments
+	case CapabilityReadSessionWhiteboard:
+		return l.ReadSessionWhiteboard
+	case CapabilityAskWhichConversation:
+		return l.AskWhichConversation
 	default:
 		return 0
 	}
@@ -382,6 +431,10 @@ func (c RunnerConfig) Validate() error {
 		"document_read": c.PerTool.DocumentRead, "propose_memory": c.PerTool.ProposeMemory,
 		"topic_memory_read": c.PerTool.TopicMemoryRead, "read_history_message": c.PerTool.HistoryRead,
 		"browse_summary_segments": c.PerTool.BrowseSummarySegments,
+		"search_session_cards":    c.PerTool.SearchSessionCards,
+		"search_history_segments": c.PerTool.SearchHistorySegments,
+		"read_session_whiteboard": c.PerTool.ReadSessionWhiteboard,
+		"ask_which_conversation":  c.PerTool.AskWhichConversation,
 	} {
 		if limit < 0 {
 			return fmt.Errorf("%s call limit must not be negative", name)
@@ -504,6 +557,30 @@ type RunContext struct {
 	// extends the same set, so the read-back tool can read back the ids the
 	// browse tool just showed the model.
 	GrantSet *HistoryGrantSet
+	// CardScopes are the earlier conversations the session cards in this
+	// turn opened.
+	//
+	// They travel apart from the grants because a card authorises a
+	// session and not only the messages it happens to cite: a card whose
+	// entries point at summary segments and at no raw message still opens
+	// a conversation the learner may browse. A grant set that derived
+	// "which sessions are reachable" from the cited message ids would deny
+	// that conversation.
+	CardScopes []CardScope
+	// LockedSessionID is the earlier conversation the server locked for
+	// this turn, after the learner said which one they meant and the
+	// ownership check passed.
+	//
+	// It is a RESTRICTION, not a permission: while it is set, the run may
+	// read that conversation and no other earlier one - not the ones the
+	// window's cards opened, and not the ones a tool finds. The learner has
+	// already said which conversation they meant, and the evidence block
+	// that answers their question comes out of that one.
+	//
+	// It is set even when the evidence block does not fit the window: the
+	// model then reads the conversation with the tools instead, and that
+	// read is bounded the same way.
+	LockedSessionID string
 	// Relevance is what the server-side pre-retrieval found before the model
 	// was asked anything. It is server-owned and nil when no pre-retrieval ran.
 	//
@@ -556,14 +633,19 @@ type Runner struct {
 }
 
 type RunnerResult struct {
-	Answer          string
-	ToolCalls       int
-	ModelCalls      int
-	Sources         []rag.Source
-	ContextBudget   BudgetBreakdown
-	EpisodeIDs      []string
-	EpisodeSources  model.EpisodeSourceRefs
-	MemoryDraft     *MemoryDraftCard
+	Answer         string
+	ToolCalls      int
+	ModelCalls     int
+	Sources        []rag.Source
+	ContextBudget  BudgetBreakdown
+	EpisodeIDs     []string
+	EpisodeSources model.EpisodeSourceRefs
+	MemoryDraft    *MemoryDraftCard
+	// Clarification is the question the model asked because it could not
+	// tell which conversation the learner meant.
+	//
+	// It is nil for a turn that answered, and set for a turn that asked.
+	Clarification   *model.SessionClarification
 	AnswerBasis     rag.AnswerBasis
 	KnowledgeStatus rag.KnowledgeStatus
 	KnowledgeReason rag.KnowledgeReason
@@ -675,6 +757,16 @@ func NewRunner(
 // exists at all) and none of the run's mutable state; a registry that
 // declines the probe leaves the table unknown and the window is measured as
 // it stands.
+// ToolNames lists the tools this turn may call.
+//
+// It is the tool table the model was shown, read back. A caller that has to
+// know which tools a deployment offers - an entry that assembles one, a
+// report that records what the model could reach - needs it without
+// running a turn.
+func (r *Runner) ToolNames(ctx context.Context, input RunContext) ([]string, error) {
+	return r.preWindowToolNames(ctx, input)
+}
+
 func (r *Runner) preWindowToolNames(ctx context.Context, input RunContext) ([]string, error) {
 	if r == nil || r.registry == nil {
 		return nil, fmt.Errorf("agent tool registry is not initialized")
@@ -866,7 +958,23 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	// registry can scope itself to what this run may reach.
 	toolInput := input
 	toolInput.HistoryGrants = MergeHistoryMessageGrants(window.EpisodeHistoryGrants, window.SummaryHistoryGrants,
-		window.SummarySegmentHistoryGrants)
+		window.SummarySegmentHistoryGrants, window.SessionCardHistoryGrants)
+	// The card scopes are set before the grant set is built, because the grant
+	// set reads them: they are what says which earlier conversations this turn
+	// opened, and a tool that browses one of them asks the set rather than the
+	// model.
+	toolInput.CardScopes = window.SessionCardScopes
+	// The locked conversation travels into the tool input, and it is a
+	// RESTRICTION: while it is set, the grant set refuses every other
+	// earlier conversation - the ones the window's cards opened and the ones
+	// a tool finds.
+	//
+	// It is set even when the evidence block did not fit the window: the
+	// model then reads the locked conversation with the tools instead, and
+	// that read is bounded the same way.
+	if window.SessionLock != nil {
+		toolInput.LockedSessionID = window.SessionLock.SessionID
+	}
 	// One authorisation set for the whole turn, shared by every tool that
 	// reads the learner's own words. A tool that opens an older segment
 	// extends it, and the read-back tool sees the extension.
@@ -957,6 +1065,41 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 		availableTools:        availableTools,
 	}
 	bounded := &boundedModel{inner: r.chatModel, state: state, thinkingDialect: r.config.ThinkingDialect, outputReserveTokens: r.config.OutputReserveTokens}
+
+	// The question the server asks again.
+	//
+	// The learner's answer to a clarification did not identify one
+	// conversation, so the server asks again - with the ORIGINAL question
+	// kept, and with the run carrying a real clarification.
+	//
+	// It is a real clarification and not a list of possibilities in the
+	// model's own words: a model that names three conversations in its
+	// answer has not asked anything, and a reader of the run has to be able
+	// to tell the two apart.
+	if window.ClarificationReask != nil {
+		state.mu.Lock()
+		state.clarification = window.ClarificationReask
+		state.mu.Unlock()
+		if sendErr := sendEvent(ctx, sink, Event{
+			Type: EventWaitingChoice, RunID: input.RunID,
+			Clarification: ClarificationCardOf(window.ClarificationReask),
+		}); sendErr != nil {
+			return state.result(), sendErr
+		}
+		// The turn ENDS here.
+		//
+		// The learner's answer did not identify one conversation, so the
+		// server asked again - and a question the learner has not answered
+		// yet cannot be answered. Asking the model anyway would spend a
+		// call on a turn whose answer is "which one did you mean?", and the
+		// model would answer it with a guess - which is exactly the
+		// behaviour the clarification exists to stop.
+		//
+		// The waiting state is what is saved: the clarification travels on
+		// the assistant's message, and the learner's NEXT message is the
+		// answer to it.
+		return state.waitingForChoice(ctx, sink)
+	}
 
 	// The server-side pre-retrieval is a search of the learner's material, so
 	// it is a step and it costs a tool slot. Recording it is what keeps the
@@ -1108,6 +1251,15 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	result := state.result()
 	result.Answer = finalAnswer
 	observability.Memory.KnowledgeAnswer(string(result.AnswerBasis), string(result.KnowledgeStatus), string(result.KnowledgeReason))
+	// The last of the four records of a locked conversation.
+	//
+	// The three before it said which conversation was locked, that its
+	// evidence came back, and that a tool failed; this one says the answer
+	// went out. A run that broke before this point has no answer, and the
+	// four records together are what says where it broke.
+	if window.SessionLock != nil {
+		observability.Memory.ClarificationSession("answer", true, 1)
+	}
 	return result, nil
 }
 
@@ -1365,6 +1517,9 @@ type runState struct {
 	episodeIDs        []string
 	episodeSources    model.EpisodeSourceRefs
 	memoryDraft       *MemoryDraftCard
+	// clarification is the question the model asked because it could not
+	// tell which conversation the learner meant.
+	clarification *model.SessionClarification
 }
 
 func (s *runState) result() RunnerResult {
@@ -1378,6 +1533,7 @@ func (s *runState) result() RunnerResult {
 		EpisodeIDs:     append([]string(nil), s.episodeIDs...),
 		EpisodeSources: append(model.EpisodeSourceRefs(nil), s.episodeSources...),
 		MemoryDraft:    cloneMemoryDraftCard(s.memoryDraft),
+		Clarification:  s.clarification,
 		AnswerBasis:    s.answerBasis, KnowledgeStatus: s.knowledgeStatus, KnowledgeReason: s.knowledgeReason,
 		MemoryEvidence:   s.memoryTrace.Calls(),
 		TopicMemoryReads: s.memoryTrace.TopicReads(),
@@ -1387,6 +1543,36 @@ func (s *runState) result() RunnerResult {
 		Closeout:         s.closeoutReason(),
 		UnknownToolCalls: s.unknownToolCalls,
 	}
+}
+
+// waitingForChoice ends a turn that asked the learner a question.
+//
+// The turn is over and it is not a failure: the question is waiting for the
+// learner's reply, and the answer comes in their next message. The model is
+// NOT called - the run had nothing to answer, and a model asked to answer it
+// would answer with a guess, which is exactly what the clarification exists to
+// stop.
+//
+// The step that records the wait is a step like any other: a reader of the
+// run has to be able to see that this turn ended by asking and not by
+// answering.
+func (s *runState) waitingForChoice(ctx context.Context, sink EventSink) (RunnerResult, error) {
+	if err := s.appendStep(ctx, &model.AgentStep{
+		UserID: s.input.UserID, RunID: s.input.RunID, Type: model.AgentStepAnswer,
+		ResultSummary: truncate(WaitingChoiceAnswer, 1000),
+	}); err != nil {
+		return s.result(), err
+	}
+	if err := sendEvent(ctx, sink, Event{
+		Type: EventAnswerDelta, RunID: s.input.RunID, Content: WaitingChoiceAnswer,
+	}); err != nil {
+		return s.result(), err
+	}
+	result := s.result()
+	result.Answer = WaitingChoiceAnswer
+	result.Closeout = TerminationWaitingChoice
+	observability.Memory.ClarificationSession("waiting_choice", true, 1)
+	return result, nil
 }
 
 // closeoutReason names how the turn ended.
@@ -1688,6 +1874,23 @@ func (s *runState) toolMiddleware() compose.InvokableToolMiddleware {
 			}); sendErr != nil {
 				return nil, sendErr
 			}
+			if CapabilityOf(input.Name) == CapabilityAskWhichConversation && output != nil {
+				clarification, parseErr := parseClarificationResult(output.Result)
+				if parseErr != nil {
+					return nil, parseErr
+				}
+				if clarification != nil {
+					s.mu.Lock()
+					s.clarification = clarification
+					s.mu.Unlock()
+					if sendErr := sendEvent(ctx, s.sink, Event{
+						Type: EventWaitingChoice, RunID: s.input.RunID,
+						Clarification: ClarificationCardOf(clarification),
+					}); sendErr != nil {
+						return nil, sendErr
+					}
+				}
+			}
 			if CapabilityOf(input.Name) == CapabilityHistoryRead && output != nil {
 				evidence, parseErr := parseHistoryEvidence(output.Result)
 				if parseErr != nil {
@@ -1809,6 +2012,27 @@ func parseMemoryDraftResult(value string) (*MemoryDraftCard, bool, error) {
 		return nil, false, fmt.Errorf("invalid memory draft tool result")
 	}
 	return &MemoryDraftCard{DraftID: payload.DraftID, Scope: payload.Scope, Subject: payload.Subject, Content: payload.Content, Tags: payload.Tags, TopicKey: payload.TopicKey, Durability: payload.Durability, ValidUntil: payload.ValidUntil, ConflictIDs: payload.ConflictIDs}, false, nil
+}
+
+// parseClarificationResult reads the question the model asked.
+//
+// A tool that reported no candidate is not a question: the model asked
+// nothing, and the turn carries on as an ordinary one. A result that claims
+// a question without one is a broken contract, and it is worth failing on.
+func parseClarificationResult(value string) (*model.SessionClarification, error) {
+	var payload struct {
+		Clarification *model.SessionClarification `json:"clarification"`
+	}
+	if err := json.Unmarshal([]byte(value), &payload); err != nil {
+		return nil, fmt.Errorf("invalid clarification tool result: %w", err)
+	}
+	if payload.Clarification == nil {
+		return nil, nil
+	}
+	if err := payload.Clarification.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid clarification tool result: %w", err)
+	}
+	return payload.Clarification, nil
 }
 
 func parseHistoryEvidence(value string) (bool, error) {

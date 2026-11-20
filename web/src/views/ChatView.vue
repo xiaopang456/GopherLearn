@@ -230,6 +230,7 @@ function select(id) {
             :key="item.id"
             :message="item"
             :steps="chat.stepsForMessage(item)"
+            @clarify="chat.send($event)"
           />
         </div>
       </div>
