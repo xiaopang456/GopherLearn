@@ -1627,7 +1627,10 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 			input.UserID, input.SessionID, pending, input.Question)
 		switch {
 		case lockResolution.Locked != nil:
-			lockedBlock = renderLockedSessionBlock(lockResolution.Locked, pending.Question)
+			// The summary and the unsummarized tail share the block's cap; the
+			// tail is what gets cut if the two do not fit.
+			lockedBlock = renderLockedSessionBlockWithinBudget(lockResolution.Locked,
+				pending.Question, maxLockedSessionTokens)
 			observability.Memory.ClarificationSession("session_locked", true, 1)
 			if strings.TrimSpace(lockResolution.Locked.Evidence) != "" {
 				observability.Memory.ClarificationSession("evidence_returned", true, 1)

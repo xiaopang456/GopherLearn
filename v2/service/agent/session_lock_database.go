@@ -31,6 +31,15 @@ const (
 	// maxLockedMessages is how many of the conversation's own words one
 	// locked conversation contributes when it has no summary.
 	maxLockedMessages = 40
+	// maxLockedTailMessages is how many of the conversation's own words one
+	// locked conversation contributes AFTER the summary's last covered
+	// message.
+	//
+	// The summary stops where the compressor got to; a conversation can go on
+	// after it, and the answer can be in the stretch the summary never
+	// covered. The read is bounded like every other read here: the evidence
+	// block's token cap decides how much of the tail is actually rendered.
+	maxLockedTailMessages = 40
 	// maxLockedEvidenceRunes bounds the rendered evidence.
 	maxLockedEvidenceRunes = 4000
 	// maxLockedSegmentRunes bounds one rendered segment.
@@ -64,6 +73,10 @@ type CrossSessionStore interface {
 	ListSegments(ctx context.Context, userID int64, sessionID string, limit int) ([]model.SessionSummarySegment, error)
 	// ListWords reads the conversation's own words, oldest first.
 	ListWords(ctx context.Context, userID int64, sessionID string, limit int) ([]model.Message, error)
+	// ListWordsAfter reads the conversation's own words after one message id,
+	// oldest first. The id is the summary's last covered message: the words
+	// after it are the stretch no summary covers.
+	ListWordsAfter(ctx context.Context, userID int64, sessionID string, afterID uint, limit int) ([]model.Message, error)
 }
 
 // DatabaseCrossSessionStore reads locked conversations from MySQL.
@@ -130,6 +143,12 @@ func (s *DatabaseCrossSessionStore) ListWords(ctx context.Context, userID int64,
 	return page.Messages, nil
 }
 
+// ListWordsAfter reads the conversation's own words after one message id.
+func (s *DatabaseCrossSessionStore) ListWordsAfter(ctx context.Context, userID int64,
+	sessionID string, afterID uint, limit int) ([]model.Message, error) {
+	return s.Messages.ListOwnedWordsAfter(ctx, userID, sessionID, afterID, limit)
+}
+
 // DatabaseCrossSessionReader locks one conversation and reads its evidence.
 type DatabaseCrossSessionReader struct {
 	store CrossSessionStore
@@ -183,7 +202,26 @@ func (r *DatabaseCrossSessionReader) LockSession(ctx context.Context, userID int
 		return nil, err
 	}
 	if rendered, count := renderLockedSegments(segments); rendered != "" {
-		locked.Evidence, locked.Segments = rendered, count
+		locked.Summary, locked.Segments = rendered, count
+		locked.Evidence = rendered
+		// The summary ends where the compressor stopped, and the conversation
+		// can go on after it. The words after the last covered message are
+		// the stretch no summary carries; they are read only from THIS
+		// conversation, and only after the ownership check above has passed.
+		//
+		// The read is bounded, and how much of it is rendered is decided by
+		// the evidence block's token cap, not here: the summary keeps its
+		// place first, and the tail is what gets cut when the two do not fit.
+		if watermark := summaryWatermark(segments); watermark > 0 {
+			tail, tailErr := r.store.ListWordsAfter(ctx, userID, sessionID, watermark, maxLockedTailMessages)
+			if tailErr != nil {
+				return nil, tailErr
+			}
+			if renderedTail, tailCount := renderLockedTail(tail); renderedTail != "" {
+				locked.Tail, locked.TailMessages = renderedTail, tailCount
+				locked.Evidence = rendered + "\n" + renderedTail
+			}
+		}
 		return locked, nil
 	}
 	words, err := r.store.ListWords(ctx, userID, sessionID, maxLockedMessages)
@@ -192,6 +230,20 @@ func (r *DatabaseCrossSessionReader) LockSession(ctx context.Context, userID int
 	}
 	locked.Evidence, locked.Messages = renderLockedWords(words), len(words)
 	return locked, nil
+}
+
+// summaryWatermark is the last message the conversation's summary covers.
+//
+// It is the end of the last segment, not the number of segments: the tail is
+// everything the summary never reached.
+func summaryWatermark(segments []model.SessionSummarySegment) uint {
+	watermark := uint(0)
+	for _, segment := range segments {
+		if segment.EndMessageID > watermark {
+			watermark = segment.EndMessageID
+		}
+	}
+	return watermark
 }
 
 // renderLockedSegments renders a conversation's summary as the evidence.
@@ -234,6 +286,31 @@ func renderLockedSegments(segments []model.SessionSummarySegment) (string, int) 
 		return "", 0
 	}
 	return boundRunes(strings.Join(lines, "\n"), maxLockedEvidenceRunes), len(lines)
+}
+
+// renderLockedTail renders the words after the summary as the evidence's tail.
+//
+// It is the same rendering as the no-summary fallback, and the difference is
+// in the caller: this stretch is evidence BECAUSE the summary did not reach
+// it, not because the conversation has no summary. The total size is not
+// bounded here; the block's token cap decides how much of it is rendered.
+func renderLockedTail(words []model.Message) (string, int) {
+	lines := make([]string, 0, len(words))
+	for _, word := range words {
+		content := strings.TrimSpace(word.Content)
+		if content == "" {
+			continue
+		}
+		who := "learner"
+		if !word.IsUser {
+			who = "assistant"
+		}
+		lines = append(lines, who+": "+boundRunes(content, maxLockedMessageRunes))
+	}
+	if len(lines) == 0 {
+		return "", 0
+	}
+	return strings.Join(lines, "\n"), len(lines)
 }
 
 // renderLockedWords renders a conversation's own words as the evidence.

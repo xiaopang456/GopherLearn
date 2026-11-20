@@ -88,6 +88,34 @@ func (r *Repository) ListOwnedHistoryPage(ctx context.Context, userID int64, ses
 	return HistoryPage{Messages: newestFirst, HasMore: hasMore, NextBeforeID: nextBeforeID}, nil
 }
 
+// ListOwnedWordsAfter reads one learner's conversation words after one message
+// id, oldest first.
+//
+// It is the read of the stretch a summary has NOT covered yet: the summary's
+// last covered message is the high-water mark, and everything after it exists
+// only as words. The session join is the ownership boundary, exactly as in
+// ListOwnedHistoryPage, so this read cannot reach a conversation the learner
+// does not own however the caller names it.
+func (r *Repository) ListOwnedWordsAfter(ctx context.Context, userID int64, sessionID string,
+	afterID uint, limit int) ([]model.Message, error) {
+	if r == nil || r.db == nil || userID <= 0 || sessionID == "" {
+		return nil, fmt.Errorf("invalid owned message read")
+	}
+	if limit <= 0 {
+		limit = DefaultHistoryPageLimit
+	}
+	if limit > MaxHistoryPageLimit {
+		limit = MaxHistoryPageLimit
+	}
+	var messages []model.Message
+	err := r.db.WithContext(ctx).
+		Joins("JOIN sessions ON sessions.id = messages.session_id AND sessions.deleted_at IS NULL").
+		Where("sessions.user_id = ? AND messages.session_id = ? AND messages.id > ?", userID, sessionID, afterID).
+		Order("messages.id ASC").Limit(limit).
+		Find(&messages).Error
+	return messages, err
+}
+
 // ListRecentAfter is identical to ListRecent but excludes messages already
 // represented by a rolling session summary.
 func (r *Repository) ListRecentAfter(ctx context.Context, sessionID string, afterID uint, limit int) ([]model.Message, error) {

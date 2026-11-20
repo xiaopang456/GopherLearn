@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"GopherAI/model"
@@ -20,7 +21,15 @@ type fakeCrossStore struct {
 	conversations map[string]*model.Session
 	segments      map[string][]model.SessionSummarySegment
 	words         map[string][]model.Message
+	wordsAfter    map[string][]model.Message
 	ownershipErr  error
+
+	// The arguments of the last tail read, so a test can assert the bound and
+	// the conversation the reader asked for.
+	afterReads   int
+	afterSession string
+	afterID      uint
+	afterLimit   int
 }
 
 func (f *fakeCrossStore) GetConversation(_ context.Context, userID int64,
@@ -52,6 +61,15 @@ func (f *fakeCrossStore) ListSegments(_ context.Context, _ int64, sessionID stri
 func (f *fakeCrossStore) ListWords(_ context.Context, _ int64, sessionID string,
 	_ int) ([]model.Message, error) {
 	return f.words[sessionID], nil
+}
+
+func (f *fakeCrossStore) ListWordsAfter(_ context.Context, _ int64, sessionID string,
+	afterID uint, limit int) ([]model.Message, error) {
+	f.afterReads++
+	f.afterSession = sessionID
+	f.afterID = afterID
+	f.afterLimit = limit
+	return f.wordsAfter[sessionID], nil
 }
 
 // A conversation of somebody else is refused, and nothing of it is read.
@@ -177,5 +195,132 @@ func TestTheReaderFallsBackToTheConversationsOwnWords(t *testing.T) {
 	}
 	if locked.Evidence == "" {
 		t.Fatal("the lock carries no evidence")
+	}
+}
+
+func lockedSegment(t *testing.T, sessionID string, seq int, start, end uint, topic string,
+	points ...string) model.SessionSummarySegment {
+	t.Helper()
+	content := make([]model.SessionSummarySegmentPoint, 0, len(points))
+	for index, point := range points {
+		content = append(content, model.SessionSummarySegmentPoint{
+			Text: point, EvidenceMessageIDs: []uint{start + uint(index)},
+		})
+	}
+	encoded, err := json.Marshal(model.SessionSummarySegmentContent{
+		SchemaVersion: model.SessionSummarySegmentSchemaV1,
+		Topic:         topic,
+		Points:        content,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return model.SessionSummarySegment{
+		SessionID: sessionID, Seq: seq, StartMessageID: start, EndMessageID: end,
+		Topic: topic, Content: string(encoded),
+	}
+}
+
+// The words after the summary's watermark are merged into the evidence.
+//
+// The summary stops where the compressor got to; a conversation can go on
+// after it, and the stretch it never covered exists only as words. The answer
+// can be in that stretch, and the locked evidence has to carry it.
+func TestTheReaderMergesTheWordsTheSummaryNeverCovered(t *testing.T) {
+	store := &fakeCrossStore{
+		conversations: map[string]*model.Session{
+			"p2c-06": {ID: "p2c-06", UserID: 7, Title: "Evaluation conversation"},
+		},
+		segments: map[string][]model.SessionSummarySegment{
+			"p2c-06": {lockedSegment(t, "p2c-06", 1, 655, 718, "Go 构建变慢排查",
+				"怀疑是全量重建，但没细看", "调试信息我还挺需要")},
+		},
+		wordsAfter: map[string][]model.Message{
+			"p2c-06": {
+				{ID: 719, Content: "构建这块我每次都靠等，给我三个练习吧，就叫「蓁葭」。", IsUser: true},
+				{ID: 720, Content: "「蓁葭」三道：一、构建缓存；二、依赖裁剪；三、静态检查。", IsUser: false},
+			},
+		},
+	}
+	reader, err := NewDatabaseCrossSessionReader(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked, err := reader.LockSession(context.Background(), 7, "p2c-06")
+	if err != nil {
+		t.Fatalf("lock the conversation: %v", err)
+	}
+	if locked.Segments != 1 || locked.Messages != 0 {
+		t.Fatalf("the lock is %+v", locked)
+	}
+	if locked.TailMessages != 2 {
+		t.Fatalf("the tail carries %d words, want two", locked.TailMessages)
+	}
+	// The evidence is the summary, then the tail in message order.
+	summaryAt := strings.Index(locked.Evidence, "怀疑是全量重建")
+	firstTailAt := strings.Index(locked.Evidence, "给我三个练习吧")
+	answerAt := strings.Index(locked.Evidence, "依赖裁剪")
+	if summaryAt < 0 || firstTailAt < 0 || answerAt < 0 {
+		t.Fatalf("the evidence lost a part: %q", locked.Evidence)
+	}
+	if !(summaryAt < firstTailAt && firstTailAt < answerAt) {
+		t.Fatalf("the evidence is not summary-then-tail in message order: %q", locked.Evidence)
+	}
+	// The read is bounded and starts at the summary's watermark.
+	if store.afterReads != 1 || store.afterSession != "p2c-06" || store.afterID != 718 {
+		t.Fatalf("the tail read was %+v", store)
+	}
+	if store.afterLimit != maxLockedTailMessages {
+		t.Fatalf("the tail read asked for %d words, want the bound %d", store.afterLimit, maxLockedTailMessages)
+	}
+}
+
+// The tail starts after the LAST segment, not after the first one.
+func TestTheTailReadStartsAtTheLastCoveredMessage(t *testing.T) {
+	store := &fakeCrossStore{
+		conversations: map[string]*model.Session{
+			"session-c": {ID: "session-c", UserID: 7, Title: "浔漳"},
+		},
+		segments: map[string][]model.SessionSummarySegment{
+			"session-c": {
+				lockedSegment(t, "session-c", 1, 10, 100, "第一段", "第一段的点"),
+				lockedSegment(t, "session-c", 2, 101, 718, "第二段", "第二段的点"),
+			},
+		},
+	}
+	reader, err := NewDatabaseCrossSessionReader(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reader.LockSession(context.Background(), 7, "session-c"); err != nil {
+		t.Fatalf("lock the conversation: %v", err)
+	}
+	if store.afterID != 718 {
+		t.Fatalf("the tail started at %d, want the last covered message 718", store.afterID)
+	}
+}
+
+// A conversation of somebody else is refused, and its tail is not read either.
+func TestTheReaderReadsNoTailOfSomebodyElsesConversation(t *testing.T) {
+	store := &fakeCrossStore{
+		conversations: map[string]*model.Session{
+			"session-x": {ID: "session-x", UserID: 99, Title: "别人的会话"},
+		},
+		segments: map[string][]model.SessionSummarySegment{
+			"session-x": {lockedSegment(t, "session-x", 1, 1, 2, "不该被读到", "不该被读到的内容")},
+		},
+		wordsAfter: map[string][]model.Message{
+			"session-x": {{ID: 3, Content: "别人的尾部原话"}},
+		},
+	}
+	reader, err := NewDatabaseCrossSessionReader(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reader.LockSession(context.Background(), 7, "session-x"); !errors.Is(err, ErrSessionNotOwned) {
+		t.Fatalf("the refusal is %v", err)
+	}
+	if store.afterReads != 0 {
+		t.Fatalf("somebody else's tail was read %d times", store.afterReads)
 	}
 }

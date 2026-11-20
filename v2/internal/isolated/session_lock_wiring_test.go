@@ -3,6 +3,7 @@ package isolated
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -317,5 +318,269 @@ func TestTheLockHoldsWhenTheEvidenceBlockDoesNotFit(t *testing.T) {
 	}
 	if !carried {
 		t.Fatal("the clarification did not reach the window")
+	}
+}
+
+// b3LockFixture is the frozen B3 sample: the p2c-06 summary and the two words
+// after it, copied verbatim from the evaluation run's snapshot.
+type b3LockFixture struct {
+	TargetSession struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	} `json:"target_session"`
+	Segment struct {
+		Seq            int      `json:"seq"`
+		StartMessageID uint     `json:"start_message_id"`
+		EndMessageID   uint     `json:"end_message_id"`
+		Topic          string   `json:"topic"`
+		Points         []string `json:"points"`
+	} `json:"segment"`
+	Tail []struct {
+		ID      uint   `json:"id"`
+		IsUser  bool   `json:"is_user"`
+		Content string `json:"content"`
+	} `json:"tail"`
+	Question     string `json:"question"`
+	OtherSession struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+		Point string `json:"point"`
+		Tail  string `json:"tail"`
+	} `json:"other_session"`
+}
+
+func loadB3LockFixture(t *testing.T) b3LockFixture {
+	t.Helper()
+	raw, err := os.ReadFile("testdata/b3-p2c-06-lock.json")
+	if err != nil {
+		t.Fatalf("read the frozen B3 sample: %v", err)
+	}
+	var fixture b3LockFixture
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatalf("decode the frozen B3 sample: %v", err)
+	}
+	return fixture
+}
+
+// The frozen B3 sample: the answer after the summary watermark reaches the
+// actual model input.
+//
+// B3 locked p2c-06 and the lock's evidence carried 374 tokens of summary, but
+// the answer ("依赖裁剪") is message 720, two messages after the summary's last
+// covered message 718. The window the runner sends must now carry those words
+// as well - the summary first, then the tail in message order - and it must
+// stay inside the one cap the two parts share. Another conversation's tail
+// must not be merged: the read is bounded by the lock, not by the learner.
+func TestTheFrozenB3SampleCarriesTheWordAfterTheSummaryWatermark(t *testing.T) {
+	fixture := loadB3LockFixture(t)
+	s := thinCardSettings(t)
+	app, db, _, token := newFixture(t, s, func(context.Context, int) (*schema.Message, error) {
+		return schema.AssistantMessage("你好", nil), nil
+	})
+	session := createSession(t, app, token, "create-lock-b3-frozen")
+	var current model.Session
+	if err := db.Where("id = ?", session).First(&current).Error; err != nil {
+		t.Fatalf("read the session: %v", err)
+	}
+
+	target := model.Session{ID: fixture.TargetSession.ID, UserID: current.UserID,
+		UserName: current.UserName, Mode: model.SessionModeAgent, Title: fixture.TargetSession.Title}
+	if err := db.Create(&target).Error; err != nil {
+		t.Fatalf("write the frozen conversation: %v", err)
+	}
+	points := make([]model.SessionSummarySegmentPoint, 0, len(fixture.Segment.Points))
+	for index, text := range fixture.Segment.Points {
+		points = append(points, model.SessionSummarySegmentPoint{
+			Text: text, EvidenceMessageIDs: []uint{fixture.Segment.StartMessageID + uint(index)},
+		})
+	}
+	encoded, err := json.Marshal(model.SessionSummarySegmentContent{
+		SchemaVersion: model.SessionSummarySegmentSchemaV2,
+		Topic:         fixture.Segment.Topic,
+		Points:        points,
+	})
+	if err != nil {
+		t.Fatalf("encode the frozen summary: %v", err)
+	}
+	segment := model.SessionSummarySegment{
+		UserID: current.UserID, SessionID: fixture.TargetSession.ID, Seq: fixture.Segment.Seq,
+		StartMessageID: fixture.Segment.StartMessageID, EndMessageID: fixture.Segment.EndMessageID,
+		Topic: fixture.Segment.Topic, Content: string(encoded), WhiteboardChanges: "null",
+		IndexStatus: model.SessionSummarySegmentIndexPending, TokenEstimate: 100,
+	}
+	if err := db.Create(&segment).Error; err != nil {
+		t.Fatalf("write the frozen summary: %v", err)
+	}
+	for _, word := range fixture.Tail {
+		message := model.Message{ID: word.ID, SessionID: fixture.TargetSession.ID,
+			UserName: current.UserName, Content: word.Content, IsUser: word.IsUser}
+		if err := db.Create(&message).Error; err != nil {
+			t.Fatalf("write the frozen word %d: %v", word.ID, err)
+		}
+	}
+	// Another conversation with a tail of its own. It is never named by the
+	// learner, so its words must never be merged into the locked evidence.
+	other := model.Session{ID: fixture.OtherSession.ID, UserID: current.UserID,
+		UserName: current.UserName, Mode: model.SessionModeAgent, Title: fixture.OtherSession.Title}
+	if err := db.Create(&other).Error; err != nil {
+		t.Fatalf("write the other conversation: %v", err)
+	}
+	otherPoint, err := json.Marshal(model.SessionSummarySegmentContent{
+		SchemaVersion: model.SessionSummarySegmentSchemaV2,
+		Topic:         fixture.OtherSession.Point,
+		Points:        []model.SessionSummarySegmentPoint{{Text: fixture.OtherSession.Point}},
+	})
+	if err != nil {
+		t.Fatalf("encode the other summary: %v", err)
+	}
+	if err := db.Create(&model.SessionSummarySegment{
+		UserID: current.UserID, SessionID: fixture.OtherSession.ID, Seq: 1,
+		StartMessageID: 400, EndMessageID: 500, Topic: fixture.OtherSession.Point,
+		Content: string(otherPoint), WhiteboardChanges: "null",
+		IndexStatus: model.SessionSummarySegmentIndexPending,
+	}).Error; err != nil {
+		t.Fatalf("write the other summary: %v", err)
+	}
+	if err := db.Create(&model.Message{ID: 501, SessionID: fixture.OtherSession.ID,
+		UserName: current.UserName, Content: fixture.OtherSession.Tail}).Error; err != nil {
+		t.Fatalf("write the other tail: %v", err)
+	}
+
+	askFixture(t, db, current.UserID, current.UserName, session, fixture.Question)
+
+	window, err := app.Context.Build(context.Background(), agentService.RunContext{
+		UserID: current.UserID, SessionID: session, Question: fixture.TargetSession.ID,
+	})
+	if err != nil {
+		t.Fatalf("build the window: %v", err)
+	}
+	if window.SessionLock == nil || window.SessionLock.SessionID != fixture.TargetSession.ID {
+		t.Fatalf("the frozen conversation was not locked: %+v", window.SessionLock)
+	}
+	if window.SessionLock.TailMessages != len(fixture.Tail) {
+		t.Fatalf("the lock carries %d words after the summary, want %d",
+			window.SessionLock.TailMessages, len(fixture.Tail))
+	}
+
+	var joined strings.Builder
+	lockedBlock := ""
+	for _, message := range window.Messages {
+		if message == nil {
+			continue
+		}
+		joined.WriteString(message.Content)
+		joined.WriteString("\n")
+		if strings.Contains(message.Content, "The learner told you which conversation they meant") {
+			lockedBlock = message.Content
+		}
+	}
+	all := joined.String()
+	if !strings.Contains(all, "怀疑是全量重建") {
+		t.Fatal("the summary did not reach the window")
+	}
+	if !strings.Contains(all, "依赖裁剪") {
+		t.Fatal("message 720's words did not reach the actual model input")
+	}
+	if !strings.Contains(all, "「蓁葭」三道") {
+		t.Fatal("the merged word is not message 720's")
+	}
+	// The lock's own block carries summary first, then the tail in message order.
+	if lockedBlock == "" {
+		t.Fatal("the locked evidence block did not reach the window")
+	}
+	firstWordAt := strings.Index(lockedBlock, "给我三个练习吧")
+	answerAt := strings.Index(lockedBlock, "依赖裁剪")
+	summaryAt := strings.Index(lockedBlock, "怀疑是全量重建")
+	if summaryAt < 0 || firstWordAt < 0 || answerAt < 0 || !(summaryAt < firstWordAt && firstWordAt < answerAt) {
+		t.Fatalf("the locked block is not summary-then-tail in message order: %q", lockedBlock)
+	}
+	// The summary and the tail share the one cap.
+	if window.Budget.LockedSession <= 0 || window.Budget.LockedSession > 2000 {
+		t.Fatalf("the locked block cost %d tokens, want it inside the 2000 cap", window.Budget.LockedSession)
+	}
+	// The other conversation's tail is not merged.
+	if strings.Contains(all, fixture.OtherSession.Tail) {
+		t.Fatal("another conversation's tail reached the locked evidence")
+	}
+}
+
+// A tail longer than the shared cap is cut; the summary stays.
+//
+// The tail is read in message order and bounded, and the summary keeps its
+// place first: a long tail must not push the whole block over the cap and
+// cost the conversation the summary it already had.
+func TestALongTailIsCutToFitAndTheSummaryStays(t *testing.T) {
+	s := thinCardSettings(t)
+	app, db, _, token := newFixture(t, s, func(context.Context, int) (*schema.Message, error) {
+		return schema.AssistantMessage("你好", nil), nil
+	})
+	session := createSession(t, app, token, "create-lock-long-tail")
+	var current model.Session
+	if err := db.Where("id = ?", session).First(&current).Error; err != nil {
+		t.Fatalf("read the session: %v", err)
+	}
+
+	long := model.Session{ID: "long-tail-session", UserID: current.UserID,
+		UserName: current.UserName, Mode: model.SessionModeAgent, Title: "长尾会话"}
+	if err := db.Create(&long).Error; err != nil {
+		t.Fatalf("write the earlier session: %v", err)
+	}
+	encoded, err := json.Marshal(model.SessionSummarySegmentContent{
+		SchemaVersion: model.SessionSummarySegmentSchemaV2,
+		Topic:         "摘要",
+		Points:        []model.SessionSummarySegmentPoint{{Text: "摘要里的结论要保留", EvidenceMessageIDs: []uint{100}}},
+	})
+	if err != nil {
+		t.Fatalf("encode the summary: %v", err)
+	}
+	if err := db.Create(&model.SessionSummarySegment{
+		UserID: current.UserID, SessionID: long.ID, Seq: 1,
+		StartMessageID: 1, EndMessageID: 100, Topic: "摘要",
+		Content: string(encoded), WhiteboardChanges: "null",
+		IndexStatus: model.SessionSummarySegmentIndexPending, TokenEstimate: 20,
+	}).Error; err != nil {
+		t.Fatalf("write the summary: %v", err)
+	}
+	const lastReadWord = 140
+	for id := uint(101); id <= lastReadWord; id++ {
+		content := strings.Repeat("尾部很长的原话内容", 18)
+		if id == lastReadWord {
+			content = "最后一条被读到的尾部原话，肯定放不下"
+		}
+		if err := db.Create(&model.Message{ID: id, SessionID: long.ID,
+			UserName: current.UserName, Content: content}).Error; err != nil {
+			t.Fatalf("write the tail word %d: %v", id, err)
+		}
+	}
+	askFixture(t, db, current.UserID, current.UserName, session, "上次那三道题里第二道练的是什么？")
+
+	window, err := app.Context.Build(context.Background(), agentService.RunContext{
+		UserID: current.UserID, SessionID: session, Question: long.ID,
+	})
+	if err != nil {
+		t.Fatalf("build the window: %v", err)
+	}
+	if window.SessionLock == nil || window.SessionLock.TailMessages != 40 {
+		t.Fatalf("the lock is %+v, want the bounded tail read", window.SessionLock)
+	}
+	if window.Budget.LockedSession <= 0 || window.Budget.LockedSession > 2000 {
+		t.Fatalf("the locked block cost %d tokens, want it inside the 2000 cap", window.Budget.LockedSession)
+	}
+	var joined strings.Builder
+	for _, message := range window.Messages {
+		if message != nil {
+			joined.WriteString(message.Content)
+			joined.WriteString("\n")
+		}
+	}
+	all := joined.String()
+	if !strings.Contains(all, "摘要里的结论要保留") {
+		t.Fatal("the summary did not survive the long tail")
+	}
+	if !strings.Contains(all, "尾部很长的原话内容") {
+		t.Fatal("the first tail words that fit were dropped")
+	}
+	if strings.Contains(all, "最后一条被读到的尾部原话") {
+		t.Fatal("a tail word that does not fit was kept")
 	}
 }
