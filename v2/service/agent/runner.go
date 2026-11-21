@@ -1170,6 +1170,20 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 		}
 		answer.WriteString(message.Content)
 	}
+	// The unconfirmed-conversation rule is independent of how the turn ends.
+	//
+	// The knowledge search can end the turn early (its no-evidence boundary
+	// sets knowledgeTerminal), and the old placement inside
+	// "if !knowledgeTerminal" meant such a turn skipped the rule entirely -
+	// which is exactly the p2-open-03-r1 shape: the card search offered the
+	// target, the segment search handed over another conversation's body,
+	// the knowledge base was empty, and the turn fell through to the general
+	// knowledge fallback without ever asking which conversation was meant.
+	if window.SessionLock == nil {
+		if card := state.unconfirmedEvidenceHandoff(); card != nil {
+			return state.handOffToClarification(ctx, sink, card)
+		}
+	}
 	if !knowledgeTerminal {
 		finalAnswer = safeModelText(strings.TrimSpace(answer.String()))
 		// A locked turn cannot hand the question back: the learner has
@@ -1195,14 +1209,8 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 		// card carries the original question and the candidates this turn
 		// found; the learner may pick one, pick from their own list, or
 		// write a clue. It ends the turn with no model call.
-		// A locked turn is excluded: the learner has already chosen. A turn
-		// that read evidence from more than one unconfirmed conversation is
-		// asked about BEFORE publishing an answer that may be about the wrong
-		// one.
+		// A locked turn is excluded: the learner has already chosen.
 		if window.SessionLock == nil {
-			if card := state.unconfirmedEvidenceHandoff(); card != nil {
-				return state.handOffToClarification(ctx, sink, card)
-			}
 			if card := state.clarificationHandoff(finalAnswer); card != nil {
 				return state.handOffToClarification(ctx, sink, card)
 			}
@@ -1580,6 +1588,19 @@ type runState struct {
 	// not settled which conversation the learner meant - that is a question
 	// for the learner, not an answer.
 	evidenceSessions []string
+	// segmentEvidenceSessions are the conversations whose SEGMENTS were
+	// handed to the model by search_history_segments. A segment is the
+	// conversation s own words: it is evidence, even though no session was
+	// named. It matters only when the turn never opened a conversation, in
+	// which case an answer would rest on whatever sessions the segment search
+	// happened to return.
+	segmentEvidenceSessions []string
+	// crossSessionRetrievalStarted records that this turn actually looked in
+	// earlier conversations. The clarification rules below are for the
+	// cross-session recall path; a turn that stayed in this conversation
+	// (no card search, no segment search, no history read) is answered
+	// normally even when its words sound like a pointer ("你之前说的…吗").
+	crossSessionRetrievalStarted bool
 	// turnEvidence is what the reads INSIDE the locked conversation returned
 	// this turn, in the order they were read. A locked turn that has to make
 	// a repair request carries it along: the repair starts from the original
@@ -1869,9 +1890,14 @@ func (s *runState) unconfirmedEvidenceHandoff() *model.SessionClarification {
 	s.mu.Lock()
 	candidates := append([]model.SessionClarificationCandidate{}, s.clarificationCandidates...)
 	reads := append([]string{}, s.evidenceSessions...)
+	segmentSessions := append([]string{}, s.segmentEvidenceSessions...)
+	started := s.crossSessionRetrievalStarted
 	asked := s.clarification != nil
 	s.mu.Unlock()
-	if asked || !pointerQuestion(s.input.Question) {
+	if asked || !started || !pointerQuestion(s.input.Question) {
+		// The rule belongs to the cross-session recall path. A turn that
+		// never looked at an earlier conversation is answered normally, even
+		// when its words sound like a pointer ("你之前说的这个方案可行吗").
 		return nil
 	}
 	knownCandidate := func(session string) bool {
@@ -1900,7 +1926,8 @@ func (s *runState) unconfirmedEvidenceHandoff() *model.SessionClarification {
 			"请选一次，或者从你的完整会话列表里选，也可以给我一句线索（哪个项目、大概哪天）。"
 		return buildRetrievalClarification(s.input.Question, candidates, prompt)
 	}
-	if len(reads) < 2 && !outsideCandidates {
+	segmentOnly := len(reads) == 0 && len(segmentSessions) > 0
+	if len(reads) < 2 && !outsideCandidates && !segmentOnly {
 		// One conversation, and it is one the card search offered: the
 		// target is confirmed enough to answer from directly.
 		return nil
@@ -1972,6 +1999,13 @@ func (s *runState) observeCrossSessionResult(input *compose.ToolInput, output *c
 	if !isCrossSessionRetrievalCapability(capability) {
 		return
 	}
+	// The turn is on the cross-session recall path: the pointer rules below
+	// may apply. A turn with no cross-session call never reaches them, so
+	// "你之前说的这个方案可行吗" inside the present conversation is answered
+	// normally.
+	s.mu.Lock()
+	s.crossSessionRetrievalStarted = true
+	s.mu.Unlock()
 	if callErr != nil {
 		s.markRetrievalFailed()
 		return
@@ -1990,6 +2024,22 @@ func (s *runState) observeCrossSessionResult(input *compose.ToolInput, output *c
 	if statusKnown && status.Status == "unavailable" {
 		s.markRetrievalFailed()
 	}
+	if capability == CapabilitySearchHistorySegments && statusKnown && status.Status == "ok" {
+		// A segment is the conversation s own words. The tool hands a
+		// stretch (with its source session) to the model even though it
+		// names no session in its arguments; when the turn never opened a
+		// conversation, that is what an answer would rest on.
+		var outputSegments struct {
+			Segments []struct {
+				SessionID string `json:"session_id"`
+			} `json:"segments"`
+		}
+		if err := json.Unmarshal([]byte(output.Result), &outputSegments); err == nil {
+			for _, segment := range outputSegments.Segments {
+				s.rememberSegmentEvidenceSession(segment.SessionID)
+			}
+		}
+	}
 	if sessionScopedEvidenceCapability(capability) && statusKnown && status.Status == "ok" {
 		var arguments struct {
 			Session string `json:"session"`
@@ -2003,6 +2053,23 @@ func (s *runState) observeCrossSessionResult(input *compose.ToolInput, output *c
 			}
 		}
 	}
+}
+
+// rememberSegmentEvidenceSession records one conversation whose segments were
+// handed to the model by the segment search.
+func (s *runState) rememberSegmentEvidenceSession(sessionID string) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || sessionID == strings.TrimSpace(s.input.SessionID) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, held := range s.segmentEvidenceSessions {
+		if held == sessionID {
+			return
+		}
+	}
+	s.segmentEvidenceSessions = append(s.segmentEvidenceSessions, sessionID)
 }
 
 // rememberEvidenceSession records one earlier conversation the turn read.

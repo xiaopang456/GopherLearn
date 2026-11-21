@@ -305,3 +305,46 @@ func TestTheLockedBlockSaysToNameWhatIsMissing(t *testing.T) {
 		}
 	}
 }
+
+// Pointer words inside the PRESENT conversation are not a history question.
+//
+// "你之前说的这个方案可行吗？" continues the current chat. The clarification
+// rules belong to the cross-session recall path: a turn that never searched
+// history must answer normally, even when it offers the history tools and the
+// question contains "之前" and "吗".
+func TestACurrentConversationFollowUpWithPointerWordsIsAnsweredDirectly(t *testing.T) {
+	const answer = "可行，按现在这个方案走。"
+	for _, test := range []struct {
+		name     string
+		registry ToolRegistry
+	}{
+		{name: "no tools registered", registry: StaticToolRegistry{}},
+		{name: "history tools offered but not used", registry: StaticToolRegistry{Registered: []tool.BaseTool{
+			mustEvidenceControlCardTool(t, candidatesOfSessions("p2c-10", "p2c-11")),
+			mustEvidenceControlBrowseTool(t, &[]string{}),
+		}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			chat := &scriptedChatModel{respond: func(context.Context, int) (*schema.Message, error) {
+				return schema.AssistantMessage(answer, nil), nil
+			}}
+			runner, err := NewRunner(chat, test.registry, newMemoryStepRepository(),
+				MinimalContextBuilder{}, DefaultRunnerConfig())
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := testRunContext()
+			input.Question = "你之前说的这个方案可行吗？"
+			result, err := runner.Run(context.Background(), input, DiscardEvents)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Clarification != nil {
+				t.Fatalf("a current-conversation follow-up was turned into a history question: %+v", result.Clarification)
+			}
+			if result.Answer != answer {
+				t.Fatalf("answer=%q", result.Answer)
+			}
+		})
+	}
+}
