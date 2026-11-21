@@ -162,6 +162,11 @@ func (r *ReadSessionWhiteboardRegistry) read(ctx context.Context, run serviceage
 		out.Reason = whiteboardReasonInvalidInput
 		return out, nil
 	}
+	// The locked conversation may be named by the title the block showed the
+	// model; a title of any other conversation resolves to nothing.
+	if alias := lockedSessionAlias(run, session); alias != "" {
+		session = alias
+	}
 	out.Session = session
 	// The board of another conversation is reachable only because a card
 	// pointed at it. The check is made here rather than in the query, because

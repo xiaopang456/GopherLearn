@@ -581,6 +581,14 @@ type RunContext struct {
 	// model then reads the conversation with the tools instead, and that
 	// read is bounded the same way.
 	LockedSessionID string
+	// LockedSessionTitle is the locked conversation's title, as the block
+	// showed it to the model.
+	//
+	// It is carried so a tool can recognise the model naming the locked
+	// conversation by its title instead of its id. The title is not a
+	// conversation id and must never open another conversation: it resolves
+	// to the locked id only, and only while a lock is in effect.
+	LockedSessionTitle string
 	// Relevance is what the server-side pre-retrieval found before the model
 	// was asked anything. It is server-owned and nil when no pre-retrieval ran.
 	//
@@ -974,6 +982,9 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	// that read is bounded the same way.
 	if window.SessionLock != nil {
 		toolInput.LockedSessionID = window.SessionLock.SessionID
+		// The title travels beside the id so a tool can recognise the model
+		// naming the locked conversation by the words the block showed it.
+		toolInput.LockedSessionTitle = window.SessionLock.Title
 	}
 	// One authorisation set for the whole turn, shared by every tool that
 	// reads the learner's own words. A tool that opens an older segment

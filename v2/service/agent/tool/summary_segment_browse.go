@@ -354,6 +354,11 @@ func (r *BrowseSummarySegmentsRegistry) browse(ctx context.Context, run servicea
 	if targetSession == "" {
 		targetSession = run.SessionID
 	} else if targetSession != strings.TrimSpace(run.SessionID) {
+		// The locked conversation may be named by the title the block showed
+		// the model. Only the locked title resolves, and only to the locked id.
+		if alias := lockedSessionAlias(run, targetSession); alias != "" {
+			targetSession = alias
+		}
 		if run.GrantSet == nil || !run.GrantSet.AuthorisesSession(run, targetSession) {
 			out.Status = browseStatusNoEvidence
 			out.Reason = browseReasonSessionNotAllowed

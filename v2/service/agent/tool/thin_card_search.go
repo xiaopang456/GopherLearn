@@ -271,6 +271,11 @@ func (r *SearchSessionCardsRegistry) search(ctx context.Context, run serviceagen
 	// conversation the learner does not own is not found, and neither is
 	// one that has no card.
 	if wanted != "" {
+		// The locked conversation may be named by the title the block showed
+		// the model; a title of any other conversation resolves to nothing.
+		if alias := lockedSessionAlias(run, wanted); alias != "" {
+			wanted = alias
+		}
 		// A NAMED conversation is looked up BY IDENTITY, and the LOCK decides
 		// whether it may be looked up at all.
 		//

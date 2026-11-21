@@ -208,6 +208,12 @@ func (r *SearchSessionHistoryRegistry) search(ctx context.Context, run serviceag
 	if targetSession == "" {
 		targetSession = run.SessionID
 	} else if targetSession != strings.TrimSpace(run.SessionID) {
+		// The model may name the locked conversation by the title the block
+		// showed it. A title is not an id, and only the locked title maps to
+		// the locked id; any other title still gets nothing.
+		if alias := lockedSessionAlias(run, targetSession); alias != "" {
+			targetSession = alias
+		}
 		if run.GrantSet == nil || !run.GrantSet.AuthorisesSession(run, targetSession) {
 			out.Status = searchSessionStatusNoEvidence
 			out.Reason = searchSessionReasonNotAllowed
