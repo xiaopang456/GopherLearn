@@ -362,6 +362,51 @@ func loadB3LockFixture(t *testing.T) b3LockFixture {
 	return fixture
 }
 
+// A conversation picked from the learner's OWN list locks the same way a
+// clicked candidate does.
+//
+// The candidate list is what one search found; a conversation that never made
+// it into the list is still the learner's own. The reply is its id, the server
+// checks the ownership, and the evidence travels with the original question.
+func TestAConversationPickedFromTheOwnListLocksAndCarriesItsEvidence(t *testing.T) {
+	s := thinCardSettings(t)
+	app, db, _, token := newFixture(t, s, func(context.Context, int) (*schema.Message, error) {
+		return schema.AssistantMessage("你好", nil), nil
+	})
+	session := createSession(t, app, token, "create-lock-own-list")
+	var row model.Session
+	if err := db.Where("id = ?", session).First(&row).Error; err != nil {
+		t.Fatalf("read the session: %v", err)
+	}
+	lockFixture(t, db, row.UserID, row.UserName, "l4r2-2026am-a1-09", "蓁葭", "三道题", "第二道练的是依赖裁剪")
+	// The card the model asked with offered no candidate: the learner picked
+	// the conversation from their own list and sent its id.
+	askFixture(t, db, row.UserID, row.UserName, session,
+		"上次你给我排的那三道题里，第二道练的是什么？")
+
+	window, err := app.Context.Build(context.Background(), agentService.RunContext{
+		UserID: row.UserID, SessionID: session, Question: "l4r2-2026am-a1-09",
+	})
+	if err != nil {
+		t.Fatalf("build the window: %v", err)
+	}
+	if window.SessionLock == nil || window.SessionLock.SessionID != "l4r2-2026am-a1-09" {
+		t.Fatalf("the id picked from the learner's own list did not lock: %+v", window.SessionLock)
+	}
+	if window.Budget.LockedSession == 0 {
+		t.Fatal("the locked evidence did not reach the window")
+	}
+	carried := false
+	for _, message := range window.Messages {
+		if message != nil && strings.Contains(message.Content, "依赖裁剪") {
+			carried = true
+		}
+	}
+	if !carried {
+		t.Fatal("the locked conversation's evidence did not reach the window")
+	}
+}
+
 // The frozen B3 sample: the answer after the summary watermark reaches the
 // actual model input.
 //

@@ -59,6 +59,26 @@ func clarificationWindow(t *testing.T, tools []string) ContextWindow {
 	return window
 }
 
+// The rule that keeps a tool read from being refused as somebody else's.
+//
+// The acceptance run's follow-up turns named the conversation by its TITLE in
+// the tool call ("Evaluation conversation"), and the tools refused it with
+// session_not_allowed: the lookup is by conversation id. The continuation rule
+// has to say so, because the lock block shows both the title and the id.
+func TestTheContinuationRuleSaysToPassTheConversationID(t *testing.T) {
+	window := clarificationWindow(t, []string{
+		"browse_summary_segments", "search_history_segments", "search_session_history",
+		"read_session_whiteboard",
+	})
+	prompt := window.Messages[0].Content
+	if !strings.Contains(prompt, "conversation ID") {
+		t.Fatalf("the prompt does not say to pass the conversation id: %s", prompt)
+	}
+	if !strings.Contains(prompt, "not the conversation's title") {
+		t.Fatalf("the prompt does not warn against the title: %s", prompt)
+	}
+}
+
 // The prompt of a turn that continues a clarification names the tools this
 // turn offers, and only those.
 func TestTheContinuationRuleNamesOnlyTheToolsThisTurnOffers(t *testing.T) {

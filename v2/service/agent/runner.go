@@ -1169,6 +1169,15 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	}
 	if !knowledgeTerminal {
 		finalAnswer = safeModelText(strings.TrimSpace(answer.String()))
+		// A turn that auto-retrieved conversations but cannot answer from
+		// them hands the choice back to the learner instead of publishing a
+		// retry sentence or a list of possibilities in its own words. The
+		// card carries the original question and the candidates this turn
+		// found; the learner may pick one, pick from their own list, or
+		// write a clue. It ends the turn with no model call.
+		if card := state.clarificationHandoff(finalAnswer); card != nil {
+			return state.handOffToClarification(ctx, sink, card)
+		}
 		if finalAnswer == "" && !policy.CarriesAnyCapability() {
 			// The learner switched this turn's capabilities off; they did not
 			// cancel their question. A model that answers with a tool call under a
@@ -1520,6 +1529,16 @@ type runState struct {
 	// clarification is the question the model asked because it could not
 	// tell which conversation the learner meant.
 	clarification *model.SessionClarification
+	// clarificationCandidates are the conversations the thin-card search
+	// found in this turn. They are what a turn that cannot settle on one
+	// conversation offers the learner instead of guessing: the learner may
+	// pick one, pick one from their own list, or write a clue.
+	clarificationCandidates []model.SessionClarificationCandidate
+	// retrievalFailed records that a cross-session read failed in this turn
+	// (the storage could not answer, or the retrieval budget was spent). It
+	// is the second reason a turn hands the question back instead of
+	// answering it from a half-read conversation.
+	retrievalFailed bool
 }
 
 func (s *runState) result() RunnerResult {
@@ -1575,8 +1594,228 @@ func (s *runState) waitingForChoice(ctx context.Context, sink EventSink) (Runner
 	return result, nil
 }
 
-// closeoutReason names how the turn ended.
+// The bounds of the automatic-retrieval handoff.
 //
+// The per-capability ceilings already bound the round trips: one card search
+// is the shape of the use, the segment search is allowed once, the board is
+// read once per conversation and the question is one. These two numbers bound
+// what is OFFERED and what counts as a question rather than an answer, so a
+// turn that could not settle on one conversation hands the learner a card
+// instead of spending more calls on candidates it cannot tell apart.
+const (
+	// maxClarificationCandidates is the number a card may offer. The model's
+	// own question tool has the same bound; a card with more buttons than a
+	// person will read is not more helpful than one with fewer.
+	maxClarificationCandidates = 8
+	// maxProseClarificationRunes bounds what counts as "the model asked in
+	// its own words". A long answer that mentions asking is an answer, and
+	// turning it into a card would throw away what it said.
+	maxProseClarificationRunes = 400
+)
+
+// proseClarificationMarkers are the phrases with which a model that did not
+// call ask_which_conversation asks the learner to choose instead.
+//
+// The product does not want to read meaning out of the model's prose - the
+// tool exists so that it does not have to. This list is the bridge for the
+// observed failure where the model listed candidates in its answer and the
+// learner had nothing to click, and it is deliberately a closed set: a phrase
+// outside it leaves the answer as an answer.
+var proseClarificationMarkers = []string{
+	"分不清", "不确定", "哪一次", "哪一段", "哪一份", "哪一个", "哪个对话",
+	"是指哪", "先确认", "先核实", "确认一下", "你选一个", "你说一下",
+	"你指的是哪", "挑一个",
+}
+
+// sessionCardSearchJSON is the part of search_session_cards' result the
+// runner reads back.
+type sessionCardSearchJSON struct {
+	Status     string `json:"status"`
+	Reason     string `json:"reason"`
+	Candidates []struct {
+		SessionID    string    `json:"session_id"`
+		Title        string    `json:"title"`
+		Topics       []string  `json:"topics"`
+		LastTalkedAt time.Time `json:"last_talked_at"`
+	} `json:"candidates"`
+}
+
+// rememberClarificationCandidates keeps what the card search found, for the
+// turn that ends without an answer and with the question still open.
+func (s *runState) rememberClarificationCandidates(result string) {
+	var output sessionCardSearchJSON
+	if err := json.Unmarshal([]byte(result), &output); err != nil || len(output.Candidates) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, candidate := range output.Candidates {
+		sessionID := strings.TrimSpace(candidate.SessionID)
+		if sessionID == "" {
+			continue
+		}
+		seen := false
+		for _, held := range s.clarificationCandidates {
+			if held.SessionID == sessionID {
+				seen = true
+				break
+			}
+		}
+		if seen {
+			continue
+		}
+		s.clarificationCandidates = append(s.clarificationCandidates, model.SessionClarificationCandidate{
+			SessionID:    sessionID,
+			Title:        strings.TrimSpace(candidate.Title),
+			Topics:       append([]string{}, candidate.Topics...),
+			LastTalkedAt: candidate.LastTalkedAt,
+		})
+		if len(s.clarificationCandidates) >= maxClarificationCandidates {
+			break
+		}
+	}
+}
+
+// markRetrievalFailed records that a cross-session read could not be made.
+func (s *runState) markRetrievalFailed() {
+	s.mu.Lock()
+	s.retrievalFailed = true
+	s.mu.Unlock()
+}
+
+// clarificationHandoff decides whether this turn should become a formal
+// clarification instead of publishing what it has.
+//
+// It fires in exactly two shapes, both observed in the acceptance run:
+//
+//   - the answer is not usable (empty, or the fixed "the model could not call
+//     a tool" sentence), and the turn did find conversations. The learner had
+//     nothing to click and nothing to read; the candidates and the original
+//     question are what the card carries.
+//   - the model asked the learner to choose in its own words, briefly, and
+//     the turn did find conversations. A list of possibilities in prose is
+//     not a question: nobody can click it.
+//
+// A turn that answered is left alone, and so is a turn that found no
+// conversation: a card with no candidates and no list is not a question.
+func (s *runState) clarificationHandoff(answer string) *model.SessionClarification {
+	s.mu.Lock()
+	candidates := append([]model.SessionClarificationCandidate{}, s.clarificationCandidates...)
+	failed := s.retrievalFailed
+	alreadyAsked := s.clarification != nil
+	s.mu.Unlock()
+	if alreadyAsked {
+		// The model already asked with the tool; its own card is the one the
+		// learner should see, and this turn is not a stranded one.
+		return nil
+	}
+	if len(candidates) == 0 && !failed {
+		return nil
+	}
+	trimmed := strings.TrimSpace(answer)
+	unusable := trimmed == "" || trimmed == malformedToolCallAnswer
+	if !unusable && !isProseClarificationAsk(trimmed) {
+		return nil
+	}
+	prompt := "我找到了几段可能相关的对话，但还不能确定你指的是哪一次。请选一次，或者从你的完整会话列表里选，也可以直接给我一句线索。"
+	if len(candidates) == 0 {
+		prompt = "我没能确认你指的是哪一次。请从你的完整会话列表里选一次，或者直接给我一句线索（哪个项目、大概哪天）。"
+	}
+	card := &model.SessionClarification{
+		ClarificationID:    NewClarificationID(),
+		Question:           strings.TrimSpace(s.input.Question),
+		Prompt:             prompt,
+		AllowFreeText:      true,
+		AllowHistoryBrowse: true,
+		Candidates:         candidates,
+		CreatedAt:          time.Now().UTC(),
+	}
+	if err := card.Validate(); err != nil {
+		return nil
+	}
+	return card
+}
+
+// isProseClarificationAsk says whether a short answer is the model asking the
+// learner to choose, rather than answering.
+func isProseClarificationAsk(answer string) bool {
+	if answer == "" || len([]rune(answer)) > maxProseClarificationRunes {
+		return false
+	}
+	marker := false
+	for _, phrase := range proseClarificationMarkers {
+		if strings.Contains(answer, phrase) {
+			marker = true
+			break
+		}
+	}
+	if !marker {
+		return false
+	}
+	return strings.ContainsAny(answer, "？?：:")
+}
+
+// handOffToClarification ends the turn with a formal card.
+//
+// It is the same waiting state a model-made question produces: the card
+// travels on the assistant message, the learner's reply is the answer to it,
+// and the next turn resolves it through the same ownership check and the same
+// session lock. No model call is made here, and no tool is executed.
+func (s *runState) handOffToClarification(ctx context.Context, sink EventSink,
+	card *model.SessionClarification) (RunnerResult, error) {
+	s.mu.Lock()
+	s.clarification = card
+	s.mu.Unlock()
+	if err := sendEvent(ctx, sink, Event{
+		Type: EventWaitingChoice, RunID: s.input.RunID, Clarification: ClarificationCardOf(card),
+	}); err != nil {
+		return s.result(), err
+	}
+	return s.waitingForChoice(ctx, sink)
+}
+
+// isCrossSessionRetrievalCapability says whether a tool reads an earlier
+// conversation. These are the reads whose failure can strand a turn without
+// the conversation it was working on.
+func isCrossSessionRetrievalCapability(capability MemoryToolCapability) bool {
+	switch capability {
+	case CapabilitySearchSessionCards, CapabilitySearchHistorySegments,
+		CapabilityBrowseSummarySegments, CapabilityReadSessionWhiteboard,
+		CapabilitySearchSessionHistory:
+		return true
+	default:
+		return false
+	}
+}
+
+// observeCrossSessionResult keeps what a cross-session tool found or failed to
+// find. The candidates become the card a stranded turn hands over; a storage
+// failure or a spent retrieval budget is the other reason the turn stops
+// guessing and asks.
+func (s *runState) observeCrossSessionResult(name string, output *compose.ToolOutput, callErr error) {
+	capability := CapabilityOf(name)
+	if !isCrossSessionRetrievalCapability(capability) {
+		return
+	}
+	if callErr != nil {
+		s.markRetrievalFailed()
+		return
+	}
+	if output == nil {
+		return
+	}
+	if capability == CapabilitySearchSessionCards {
+		s.rememberClarificationCandidates(output.Result)
+	}
+	var status struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(output.Result), &status); err == nil && status.Status == "unavailable" {
+		s.markRetrievalFailed()
+	}
+}
+
+// closeoutReason names how the turn ended.//
 // The model budget is the tighter constraint when both are spent, because it
 // is the one that ran out of room to write anything at all: the tool budget
 // running out still leaves the model a generation to answer in.
@@ -1787,6 +2026,12 @@ func (s *runState) toolMiddleware() compose.InvokableToolMiddleware {
 					// the evidence the earlier calls of this same batch
 					// brought back - so the refusal is an observation: the
 					// call did not run, and the model is told so.
+					if isCrossSessionRetrievalCapability(CapabilityOf(input.Name)) {
+						// The conversation the turn was reading is now out of
+						// reach for this turn, so a turn that cannot answer
+						// has to hand the question back.
+						s.markRetrievalFailed()
+					}
 					observation := toolBudgetObservation(input.Name, boundaryErr)
 					step.ResultSummary = truncate(observation, 1000)
 					if err := s.appendStep(ctx, step); err != nil {
@@ -1862,6 +2107,9 @@ func (s *runState) toolMiddleware() compose.InvokableToolMiddleware {
 					step.ResultSummary = truncate(output.Result, 1000)
 				}
 			}
+			// Keep what the cross-session read found, or that it failed: a
+			// turn that cannot answer needs them to hand the question back.
+			s.observeCrossSessionResult(input.Name, output, err)
 			if persistErr := s.appendStep(ctx, step); persistErr != nil {
 				return nil, persistErr
 			}
