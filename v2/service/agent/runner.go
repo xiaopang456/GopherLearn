@@ -724,6 +724,9 @@ type GroundingRefusal struct {
 	// record said only "invalid_citation", which could not tell an invented
 	// id from an id granted for a conversation the lock does not cover.
 	CitationChecks []GroundingCitationCheck `json:"citation_checks,omitempty"`
+	// MessageCitations are the conversation message ids the draft cited in
+	// the message_ids= form, in order.
+	MessageCitations []int `json:"message_citations,omitempty"`
 }
 
 // GroundingCitationCheck is what the record can say about one refused
@@ -735,6 +738,9 @@ type GroundingRefusal struct {
 // guessed would be read as evidence it is not.
 type GroundingCitationCheck struct {
 	Citation int `json:"citation"`
+	// Kind is "document" for a bracketed number and "message" for a
+	// conversation message id.
+	Kind string `json:"kind,omitempty"`
 	// InDocuments says the citation resolved to a document this turn showed.
 	InDocuments bool `json:"in_documents,omitempty"`
 	// AuthorisedForThisTurn says the citation resolved to something this run
@@ -3558,6 +3564,34 @@ func probeSearchSummary(outcome *RelevanceOutcome) string {
 
 var finalCitationPattern = regexp.MustCompile(`[\[［](\d{1,4})[\]］]`)
 
+// messageIDsCitationPattern matches the citation form the conversation prompt
+// teaches: message_ids=405, message_ids=405,406, message_ids=[405], with the
+// punctuation real answers use (parentheses or square brackets around it,
+// ASCII or Chinese lists).
+//
+// The prompt tells the model not to write bracketed numbers for conversation
+// answers and to use this form instead, so the final citation check has to
+// parse it: otherwise the taught form is invisible and every conversation
+// citation escapes the authorisation check.
+var messageIDsCitationPattern = regexp.MustCompile(`message_ids\s*=\s*[\[［]?([0-9]+(?:[[:space:],，、]*[0-9]+)*)[\]］]?`)
+
+// citationDigitsPattern pulls the ids out of a message_ids= match.
+var citationDigitsPattern = regexp.MustCompile(`[0-9]+`)
+
+// extractMessageIDCitations reads the conversation citations out of an answer.
+func extractMessageIDCitations(answer string) map[int]struct{} {
+	out := make(map[int]struct{})
+	for _, match := range messageIDsCitationPattern.FindAllStringSubmatch(answer, -1) {
+		for _, digits := range citationDigitsPattern.FindAllString(match[1], -1) {
+			id, err := strconv.Atoi(digits)
+			if err == nil && id > 0 {
+				out[id] = struct{}{}
+			}
+		}
+	}
+	return out
+}
+
 // probeSourcesFor returns the pre-retrieval's chunks that the answer cites.
 //
 // The citation numbers are the ones the model was shown, so a citation that
@@ -3719,12 +3753,25 @@ func (s *runState) notesWereNeverConsulted() bool {
 //
 // The caller holds the state lock.
 func (s *runState) refuse(rule string, wanted map[int]struct{}, draft string) {
+	s.refuseWithMessages(rule, wanted, nil, draft)
+}
+
+// refuseWithMessages records a refusal that may also concern conversation
+// citations written in the message_ids= form.
+//
+// The caller holds the state lock.
+func (s *runState) refuseWithMessages(rule string, wanted, messageIDs map[int]struct{}, draft string) {
 	citations := make([]int, 0, len(wanted))
 	for citation := range wanted {
 		citations = append(citations, citation)
 	}
 	sort.Ints(citations)
-	checks := make([]GroundingCitationCheck, 0, len(citations))
+	messageCitations := make([]int, 0, len(messageIDs))
+	for citation := range messageIDs {
+		messageCitations = append(messageCitations, citation)
+	}
+	sort.Ints(messageCitations)
+	checks := make([]GroundingCitationCheck, 0, len(citations)+len(messageCitations))
 	documents := make(map[int]struct{}, len(s.documentSources()))
 	for _, source := range s.documentSources() {
 		documents[source.Citation] = struct{}{}
@@ -3737,7 +3784,7 @@ func (s *runState) refuse(rule string, wanted map[int]struct{}, draft string) {
 		}
 	}
 	for _, citation := range citations {
-		check := GroundingCitationCheck{Citation: citation}
+		check := GroundingCitationCheck{Citation: citation, Kind: "document"}
 		if _, ok := documents[citation]; ok {
 			check.InDocuments = true
 			check.AuthorisedForThisTurn = true
@@ -3770,12 +3817,69 @@ func (s *runState) refuse(rule string, wanted map[int]struct{}, draft string) {
 		}
 		checks = append(checks, check)
 	}
-	s.groundingRefusal = &GroundingRefusal{Rule: rule, Citations: citations, Draft: draft, CitationChecks: checks}
+	for _, citation := range messageCitations {
+		authorised := s.messageCitationAuthorised(citation)
+		check := GroundingCitationCheck{Citation: citation, Kind: "message",
+			AuthorisedForThisTurn: authorised}
+		if authorised {
+			check.Verdict = "authorised"
+		} else {
+			check.Verdict = "unauthorized"
+		}
+		checks = append(checks, check)
+	}
+	s.groundingRefusal = &GroundingRefusal{Rule: rule, Citations: citations, Draft: draft,
+		CitationChecks: checks, MessageCitations: messageCitations}
 	// The learner never sees the draft or the checks, so the product log is
 	// where a refusal has to be readable: which check, which citation ids and
 	// what the record could say about each. No draft text is logged.
-	log.Printf("[agent-grounding] rule=%s citations=%v checks=%s draft_runes=%d",
-		rule, citations, groundingChecksForLog(checks), len([]rune(draft)))
+	log.Printf("[agent-grounding] rule=%s citations=%v message_citations=%v checks=%s draft_runes=%d",
+		rule, citations, messageCitations, groundingChecksForLog(checks), len([]rune(draft)))
+}
+
+// citationsResolveMessageIDs reports whether every conversation message id
+// the answer cited is authorised for this turn.
+//
+// The caller holds the state lock.
+func (s *runState) citationsResolveMessageIDs(wanted map[int]struct{}) bool {
+	if len(wanted) == 0 || s.grantSet == nil {
+		return false
+	}
+	for citation := range wanted {
+		if !s.messageCitationAuthorised(citation) {
+			return false
+		}
+	}
+	return true
+}
+
+// messageCitationAuthorised says whether one conversation message id may be
+// cited in this turn: it has to be in the run's references, and under a lock
+// the grant has to come from the locked conversation.
+func (s *runState) messageCitationAuthorised(citation int) bool {
+	if citation <= 0 || s.grantSet == nil {
+		return false
+	}
+	known := false
+	for _, reference := range s.grantSet.References() {
+		if reference == citation {
+			known = true
+			break
+		}
+	}
+	if !known {
+		return false
+	}
+	locked := strings.TrimSpace(s.lockedSessionID)
+	if locked == "" {
+		return true
+	}
+	for _, grant := range s.grantSet.Grants(uint(citation)) {
+		if strings.TrimSpace(grant.SourceSessionID) == locked {
+			return true
+		}
+	}
+	return false
 }
 
 // groundingChecksForLog renders the citation checks for one log line.
@@ -3805,6 +3909,30 @@ func (s *runState) finalizeGroundedAnswer(answer string, allowRepair, allowFallb
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Conversation citations in the message_ids= form are authorised against
+	// the same grant set and lock as the bracketed form. The conversation
+	// prompt teaches this form, so checking it here is what makes the
+	// citation boundary apply to the answers real models write.
+	messageCitations := extractMessageIDCitations(answer)
+	if len(messageCitations) > 0 && s.grantSet != nil {
+		if !s.citationsResolveMessageIDs(messageCitations) {
+			s.sources = nil
+			s.answerBasis = rag.AnswerBasisRefused
+			s.knowledgeStatus = rag.KnowledgeStatusInvalidGrounding
+			s.knowledgeReason = rag.KnowledgeReasonInvalidCitation
+			s.refuseWithMessages(GroundingRuleInvalidCitation, wanted, messageCitations, answer)
+			return UnsupportedGroundingAnswer, groundingFinalized
+		}
+		if len(wanted) == 0 {
+			// The answer cites only conversation message ids, and they were
+			// just authorised: it is a conversation answer.
+			s.sources = nil
+			s.answerBasis = rag.AnswerBasisConversation
+			s.knowledgeStatus = rag.KnowledgeStatusNotRequired
+			s.knowledgeReason = rag.KnowledgeReasonNone
+			return answer, groundingFinalized
+		}
+	}
 	if !s.groundingUsed {
 		// The server-side pre-retrieval may have handed the model evidence
 		// before it was asked anything. An answer that cites that evidence is

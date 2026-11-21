@@ -110,10 +110,10 @@ func (b rollingSummaryWindowBuilder) Build(ctx context.Context, input RunContext
 // both, it resolves against the ids this turn may read in both, and a number
 // that resolves to nothing is refused in both.
 //
-// The "message_ids=" form is the other half. The prompt asks for that form,
-// and whether the id is written in brackets decides what the check sees: a
-// bare id is not a citation at all and is never refused as one, while a
-// bracketed id is a citation and has to resolve.
+// The "message_ids=" form is the other half, and it is a citation in both
+// arms too: the prompt asks for that form, so the check reads it. A granted id
+// written that way resolves; an id this turn never granted is refused, whether
+// it is written bare or bracketed.
 func TestAConversationReferenceIsReadTheSameWayInBothArms(t *testing.T) {
 	const bracketed = "是「芦青」——这是之前定下的固定标题（message_ids=[63]）。"
 	const bare = "是「芦青」——这是之前定下的固定标题（message_ids=63）。"
@@ -146,14 +146,26 @@ func TestAConversationReferenceIsReadTheSameWayInBothArms(t *testing.T) {
 			wantRefusal: true,
 		},
 		{
-			name:    "a bare id is not a citation in the off arm",
+			name:    "a bare granted id resolves in the off arm",
 			draft:   bare,
-			builder: rollingSummaryWindowBuilder{summary: 1104},
+			builder: rollingSummaryWindowBuilder{summary: 1104, grants: []uint{63}},
 		},
 		{
-			name:    "a bare id is not a citation in the applied arm",
+			name:    "a bare granted id resolves in the applied arm",
 			draft:   bare,
-			builder: conversationWindowBuilder{summary: 1104},
+			builder: conversationWindowBuilder{summary: 1104, grants: []uint{63}},
+		},
+		{
+			name:        "a bare ungranted id is refused in the off arm",
+			draft:       bare,
+			builder:     rollingSummaryWindowBuilder{summary: 1104},
+			wantRefusal: true,
+		},
+		{
+			name:        "a bare ungranted id is refused in the applied arm",
+			draft:       bare,
+			builder:     conversationWindowBuilder{summary: 1104},
+			wantRefusal: true,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

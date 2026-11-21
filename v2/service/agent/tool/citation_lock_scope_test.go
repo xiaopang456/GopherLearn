@@ -127,13 +127,18 @@ func citationRun() serviceagent.RunContext {
 
 func browseRegistryWithPoint(t *testing.T, point string) *BrowseSummarySegmentsRegistry {
 	t.Helper()
+	return browseRegistryWithEvidenceIDs(t, point, 405)
+}
+
+func browseRegistryWithEvidenceIDs(t *testing.T, point string, ids ...uint) *BrowseSummarySegmentsRegistry {
+	t.Helper()
 	// The point's evidence ids are what the browse tool draws the read-back
 	// grants from; the text carries them the way the stored record does.
 	segment := model.SessionSummarySegment{
 		UserID: 7, SessionID: "p2c-04", Seq: 1, StartMessageID: 1, EndMessageID: 500,
 		Topic: "三道练习题做完后的复盘与心得",
 		Content: storedSegment(t, "三道练习题做完后的复盘与心得", []model.SessionSummarySegmentPoint{{
-			Text: point, EvidenceMessageIDs: []uint{405},
+			Text: point, EvidenceMessageIDs: ids,
 		}}),
 	}
 	registry, err := NewBrowseSummarySegmentsRegistry(&fakeSegmentBrowser{
@@ -274,4 +279,62 @@ func containsReference(references []int, wanted int) bool {
 		}
 	}
 	return false
+}
+
+// Both forms real answers use are authorised the same way: the taught
+// message_ids= form and the bracketed [number] form.
+func TestBothCitationFormsFollowTheSameAuthorisation(t *testing.T) {
+	pass := []string{
+		"[405]",
+		"message_ids=405",
+		"（message_ids=405）",
+		"[message_ids=405]",
+		"message_ids=405,406",
+		"（message_ids=405、406）",
+	}
+	for _, draft := range pass {
+		t.Run("pass:"+draft, func(t *testing.T) {
+			run := citationRun()
+			result := runCitationTurn(t, browseRegistryWithEvidenceIDs(t, "第二道：性能与并发用例 [message_ids=405,406]", 405, 406), run, draft)
+			if result.GroundingRefusal != nil {
+				t.Fatalf("a valid citation was refused: %+v", result.GroundingRefusal)
+			}
+			if result.Answer != draft {
+				t.Fatalf("answer=%q, want the draft", result.Answer)
+			}
+			if string(result.AnswerBasis) != "conversation" {
+				t.Fatalf("basis=%q, want conversation", result.AnswerBasis)
+			}
+		})
+	}
+	reject := []string{
+		"[999]",
+		"message_ids=999",
+		"（message_ids=999）",
+	}
+	for _, draft := range reject {
+		t.Run("reject:"+draft, func(t *testing.T) {
+			run := citationRun()
+			result := runCitationTurn(t, browseRegistryWithEvidenceIDs(t, "第二道：性能与并发用例 [message_ids=405,406]", 405, 406), run, draft)
+			if result.GroundingRefusal == nil {
+				t.Fatalf("an unauthorised citation passed: %q", result.Answer)
+			}
+			if result.GroundingRefusal.Rule != serviceagent.GroundingRuleInvalidCitation {
+				t.Fatalf("rule=%q", result.GroundingRefusal.Rule)
+			}
+			wantKind := "document"
+			if strings.Contains(draft, "message_ids") {
+				wantKind = "message"
+			}
+			found := false
+			for _, check := range result.GroundingRefusal.CitationChecks {
+				if check.Citation == 999 && check.Kind == wantKind && check.Verdict == "unauthorized" {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("the refusal does not locate the message citation: %+v", result.GroundingRefusal.CitationChecks)
+			}
+		})
+	}
 }
