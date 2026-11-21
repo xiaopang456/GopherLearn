@@ -29,6 +29,10 @@ type handoffCandidate struct {
 	LastTalkedAt string   `json:"last_talked_at"`
 }
 
+type handoffCardQuery struct {
+	Query string `json:"query"`
+}
+
 type handoffCardOutput struct {
 	Status     string             `json:"status"`
 	Reason     string             `json:"reason"`
@@ -39,7 +43,7 @@ func mustHandoffCardTool(t *testing.T, executions *atomic.Int32, status string,
 	candidates []handoffCandidate) tool.InvokableTool {
 	t.Helper()
 	built, err := toolutils.InferTool("search_session_cards", "find earlier conversations",
-		func(context.Context, *struct{}) (*handoffCardOutput, error) {
+		func(context.Context, *handoffCardQuery) (*handoffCardOutput, error) {
 			if executions != nil {
 				executions.Add(1)
 			}
@@ -57,10 +61,18 @@ func mustHandoffCardTool(t *testing.T, executions *atomic.Int32, status string,
 }
 
 func handoffCardSearchCall() *schema.Message {
+	return handoffCardSearchCallWithID("call-1", "练习清单")
+}
+
+func handoffCardSearchCallWithArgs(query string) *schema.Message {
+	return handoffCardSearchCallWithID("call-1", query)
+}
+
+func handoffCardSearchCallWithID(id, query string) *schema.Message {
 	return schema.AssistantMessage("", []schema.ToolCall{{
-		ID: "call-1",
+		ID: id,
 		Function: schema.FunctionCall{
-			Name: "search_session_cards", Arguments: `{}`,
+			Name: "search_session_cards", Arguments: `{"query":"` + query + `"}`,
 		},
 	}})
 }
@@ -249,6 +261,75 @@ func TestAnAlreadyAskedClarificationIsNotReplaced(t *testing.T) {
 	}
 	if got := state.clarificationHandoff(malformedToolCallAnswer); got != nil {
 		t.Fatalf("a model-made card was replaced: %+v", got)
+	}
+}
+
+// The card's candidate cap is enforced before the append, not after.
+//
+// The thin card search may be called twice, and the second search can return
+// a candidate the first one did not. If the first search already filled the
+// card, the extra candidate must be dropped: a ninth candidate makes the
+// model's own card validator refuse the card, and the turn would end with no
+// card and no list - the opposite of what the handoff is for.
+func TestAFullCardDropsTheNextCandidateInsteadOfBeingRejected(t *testing.T) {
+	var executions atomic.Int32
+	full := make([]handoffCandidate, 0, maxClarificationCandidates)
+	for index := 1; index <= maxClarificationCandidates; index++ {
+		full = append(full, handoffCandidate{
+			SessionID:    "p2c-" + string(rune('0'+index)),
+			Title:        "Evaluation conversation",
+			Topics:       []string{"话题"},
+			LastTalkedAt: "2026-05-09T06:21:00Z",
+		})
+	}
+	extra := handoffCandidate{SessionID: "p2c-99", Title: "Evaluation conversation",
+		Topics: []string{"另一个候选"}, LastTalkedAt: "2026-05-09T06:22:00Z"}
+	cardTool, err := toolutils.InferTool("search_session_cards", "find earlier conversations",
+		func(context.Context, *handoffCardQuery) (*handoffCardOutput, error) {
+			if executions.Add(1) == 1 {
+				return &handoffCardOutput{Status: "ok", Reason: "none", Candidates: full}, nil
+			}
+			return &handoffCardOutput{Status: "ok", Reason: "none", Candidates: []handoffCandidate{extra}}, nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {
+		switch call {
+		case 1:
+			return handoffCardSearchCallWithID("call-1", "练习清单"), nil
+		case 2:
+			return handoffCardSearchCallWithID("call-2", "练习清单 说明"), nil
+		default:
+			return schema.AssistantMessage("<｜DSML｜ invoke name=\"browse_summary_segments\">", nil), nil
+		}
+	}}
+	runner := mustRunner(t, chat, StaticToolRegistry{Registered: []tool.BaseTool{cardTool}},
+		newMemoryStepRepository(), DefaultRunnerConfig())
+	result, err := runner.Run(context.Background(), testRunContext(), DiscardEvents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executions.Load() != 2 {
+		t.Fatalf("the card search ran %d times, want two", executions.Load())
+	}
+	if result.Clarification == nil {
+		t.Fatal("a full first search plus one new candidate produced no card")
+	}
+	if len(result.Clarification.Candidates) != maxClarificationCandidates {
+		t.Fatalf("the card offers %d candidates, want the cap %d",
+			len(result.Clarification.Candidates), maxClarificationCandidates)
+	}
+	for _, candidate := range result.Clarification.Candidates {
+		if candidate.SessionID == extra.SessionID {
+			t.Fatalf("the candidate beyond the cap was kept: %+v", candidate)
+		}
+	}
+	if !result.Clarification.AllowHistoryBrowse || !result.Clarification.AllowFreeText {
+		t.Fatal("the card does not keep the learner's own list and words")
+	}
+	if result.Closeout != TerminationWaitingChoice {
+		t.Fatalf("the closeout is %q, want waiting_for_choice", result.Closeout)
 	}
 }
 

@@ -1664,15 +1664,22 @@ func (s *runState) rememberClarificationCandidates(result string) {
 		if seen {
 			continue
 		}
+		// The capacity is checked BEFORE the append. A second search is
+		// allowed, and it can return candidates the first one did not; if the
+		// first search already filled the card, the extra candidate has to be
+		// dropped here. Appending first would make nine, and the model's own
+		// card validator refuses a card with more than eight - the turn would
+		// then end with no card at all, which is exactly what this handoff
+		// exists to avoid.
+		if len(s.clarificationCandidates) >= maxClarificationCandidates {
+			break
+		}
 		s.clarificationCandidates = append(s.clarificationCandidates, model.SessionClarificationCandidate{
 			SessionID:    sessionID,
 			Title:        strings.TrimSpace(candidate.Title),
 			Topics:       append([]string{}, candidate.Topics...),
 			LastTalkedAt: candidate.LastTalkedAt,
 		})
-		if len(s.clarificationCandidates) >= maxClarificationCandidates {
-			break
-		}
 	}
 }
 
