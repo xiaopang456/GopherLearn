@@ -471,12 +471,19 @@ func (r *BrowseSummarySegmentsRegistry) browse(ctx context.Context, run servicea
 		if cardWatermark == 0 || lastEnd <= cardWatermark {
 			later, tailErr := r.tail.ListOwnedWordsAfter(ctx, run.UserID, targetSession, lastEnd, maxBrowseTailScan)
 			if tailErr == nil {
-				// Keep the NEWEST words, oldest first: the end of the
-				// conversation is where a proposal is changed.
-				if len(later) > maxBrowseTailMessages {
-					later = later[len(later)-maxBrowseTailMessages:]
-				}
+				// Keep the words that answer THIS question: the messages
+				// mentioning the question's terms (and their neighbours),
+				// then the newest as a fallback. Keeping only the newest cut
+				// the "change it to 37 minutes" message in p2-hist-01, which
+				// sits a little after the summary.
+				later = selectSegmentTail(later, thinCardQuery(run.Question, input.Query).Terms, maxBrowseTailMessages)
 				for _, message := range later {
+					// The card is the question-time ceiling: a word above it
+					// was not part of the conversation when the card was
+					// written, so the tail may not reach past it.
+					if cardWatermark > 0 && message.ID > cardWatermark {
+						continue
+					}
 					text, truncated := boundRunes(strings.TrimSpace(message.Content), maxBrowseTailRunes)
 					if text == "" {
 						continue

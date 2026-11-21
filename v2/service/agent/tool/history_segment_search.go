@@ -91,6 +91,11 @@ type SearchHistorySegmentsOutput struct {
 	Reason string `json:"reason"`
 	// Segments are the stretches that were found, best first.
 	Segments []HistorySegmentHitView `json:"segments"`
+	// LaterMessages are the words after a hit segment's high-water mark that
+	// mention this question. A summary can stop before the conversation
+	// settles, and the later decision exists only as words; the search shows
+	// them so the answer can see the update and its order.
+	LaterMessages []HistorySegmentLaterView `json:"later_messages,omitempty"`
 	// ObservationTokens is what the answer has to spend on this observation.
 	ObservationTokens int  `json:"observation_tokens"`
 	Truncated         bool `json:"truncated,omitempty"`
@@ -109,6 +114,16 @@ type SearchHistorySegmentsOutput struct {
 	EmbeddingCalls int `json:"embedding_calls"`
 	// Notes says what the call did not do.
 	Notes string `json:"notes,omitempty"`
+}
+
+// HistorySegmentLaterView is one message after a hit segment, as the model
+// sees it.
+type HistorySegmentLaterView struct {
+	SessionID string `json:"session_id"`
+	MessageID int    `json:"message_id"`
+	Role      string `json:"role"`
+	SentAt    string `json:"sent_at,omitempty"`
+	Text      string `json:"text"`
 }
 
 // HistorySegmentHitView is one segment as the model sees it.
@@ -184,6 +199,10 @@ type SearchHistorySegmentsRegistry struct {
 	vectors  HistorySegmentVectorFinder
 	embedder HistorySegmentEmbedder
 	surface  serviceagent.ToolSurface
+	// tail reads the words after a hit segment's high-water mark. It is the
+	// same read the browse tool's tail uses, and it is optional: without it
+	// the search reports the summary alone.
+	tail SummaryTailReader
 }
 
 // NewSearchHistorySegmentsRegistry builds the registry.
@@ -220,6 +239,17 @@ func (r *SearchHistorySegmentsRegistry) UseSemanticChannel(finder HistorySegment
 // UseToolSurface changes only the name and description shown to the model.
 func (r *SearchHistorySegmentsRegistry) UseToolSurface(surface serviceagent.ToolSurface) {
 	r.surface = surface
+}
+
+// UseTailReader attaches the read of the words after a hit segment.
+//
+// It is a setter because the reader is optional: without it the search shows
+// the segments alone, exactly as before.
+func (r *SearchHistorySegmentsRegistry) UseTailReader(reader SummaryTailReader) {
+	if r == nil {
+		return
+	}
+	r.tail = reader
 }
 
 // Tools returns the search tool for one run.
@@ -362,6 +392,12 @@ func (r *SearchHistorySegmentsRegistry) search(ctx context.Context, run servicea
 		tokens += historySegmentTokens(view)
 	}
 	out.ObservationTokens = tokens
+	if r.tail != nil && len(out.Segments) > 0 {
+		later, laterGrants, laterTokens := r.laterWordsForHits(ctx, run, out.Segments, cards, terms)
+		out.LaterMessages = later
+		grants = append(grants, laterGrants...)
+		out.ObservationTokens += laterTokens
+	}
 	// The ids the search just showed the model are now readable back in full,
 	// and the run has to know it: the read-back tool refuses ids it was not
 	// given.
@@ -373,6 +409,86 @@ func (r *SearchHistorySegmentsRegistry) search(ctx context.Context, run servicea
 		out.Reason = segmentsReasonNoMatch
 	}
 	return out, nil
+}
+
+// laterWordsForHits reads the words after each hit segment, keeping the
+// messages that mention the question (and their neighbours) plus the newest.
+//
+// The session scope is the hit's own: the tail read is owner-scoped by the
+// repository, the card watermark is the ceiling, and under a lock the hits
+// were already filtered to the locked conversation before this runs.
+func (r *SearchHistorySegmentsRegistry) laterWordsForHits(ctx context.Context, run serviceagent.RunContext,
+	views []HistorySegmentHitView, cards map[string]segmentCard, terms []string) ([]HistorySegmentLaterView,
+	[]serviceagent.HistoryMessageGrant, int) {
+	ends := make(map[string]uint, len(views))
+	sessions := make([]string, 0, len(views))
+	for _, view := range views {
+		session := strings.TrimSpace(view.SessionID)
+		if !view.Reachable || session == "" || session == strings.TrimSpace(run.SessionID) {
+			continue
+		}
+		if _, seen := ends[session]; !seen {
+			sessions = append(sessions, session)
+			ends[session] = 0
+		}
+		if uint(view.EndMessageID) > ends[session] {
+			ends[session] = uint(view.EndMessageID)
+		}
+	}
+	later := make([]HistorySegmentLaterView, 0, maxBrowseTailMessages)
+	grants := make([]serviceagent.HistoryMessageGrant, 0, maxBrowseTailMessages)
+	tokens := 0
+	remaining := maxBrowseTailMessages
+	for _, session := range sessions {
+		if remaining <= 0 {
+			break
+		}
+		if r.tail == nil {
+			break
+		}
+		cardID, cardVersion, watermark, ok := r.authorise(run, session, cards)
+		if !ok {
+			continue
+		}
+		if watermark > 0 && ends[session] > watermark {
+			continue
+		}
+		messages, err := r.tail.ListOwnedWordsAfter(ctx, run.UserID, session, ends[session], maxBrowseTailScan)
+		if err != nil {
+			continue
+		}
+		selected := selectSegmentTail(messages, terms, remaining)
+		for _, message := range selected {
+			// The card watermark is the question-time ceiling.
+			if watermark > 0 && message.ID > watermark {
+				continue
+			}
+			text, _ := boundRunes(strings.TrimSpace(message.Content), maxBrowseTailRunes)
+			if text == "" {
+				continue
+			}
+			role := "user"
+			if !message.IsUser {
+				role = "assistant"
+			}
+			later = append(later, HistorySegmentLaterView{
+				SessionID: session, MessageID: int(message.ID), Role: role,
+				SentAt: message.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+				Text:   text,
+			})
+			tokens += rag.EstimateTokens(text) + 8
+			grants = append(grants, serviceagent.HistoryMessageGrant{
+				MessageID: message.ID, SourceKind: serviceagent.HistorySourceSessionSearch,
+				SourceSessionID: session, CardID: cardID, CardVersion: cardVersion,
+				CardWatermark: watermark,
+			})
+			remaining--
+			if remaining <= 0 {
+				break
+			}
+		}
+	}
+	return later, grants, tokens
 }
 
 // onlyHitsInSession keeps the hits that belong to the named conversation.

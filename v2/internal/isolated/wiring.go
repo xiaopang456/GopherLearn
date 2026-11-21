@@ -941,6 +941,9 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 					return nil, fmt.Errorf("initialize history segment query embedder: %v", embedderErr)
 				}
 				historySegmentTools.UseSemanticChannel(summarySegmentIndex, queryEmbedder)
+				// A hit segment's summary can stop before the conversation
+				// settles; the words after it carry the later decision.
+				historySegmentTools.UseTailReader(message.DefaultRepository())
 				historySegmentTools.UseToolSurface(toolSurfaceFor(memoryReadMode))
 				registries = append(registries, historySegmentTools)
 			}
