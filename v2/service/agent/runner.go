@@ -3627,11 +3627,29 @@ func (s *runState) citationsResolveConversation(wanted map[int]struct{}) bool {
 	for _, reference := range s.grantSet.References() {
 		known[reference] = struct{}{}
 	}
+	locked := strings.TrimSpace(s.lockedSessionID)
 	for citation := range wanted {
 		if citation <= 0 {
 			return false
 		}
 		if _, ok := known[citation]; !ok {
+			return false
+		}
+		if locked == "" {
+			continue
+		}
+		// Under a lock the citation has to belong to the conversation the
+		// learner picked. An id that exists somewhere in the learner's
+		// history is not a citation of THIS conversation, and a card scope the
+		// turn holds for another conversation does not make it one.
+		inLocked := false
+		for _, grant := range s.grantSet.Grants(uint(citation)) {
+			if strings.TrimSpace(grant.SourceSessionID) == locked {
+				inLocked = true
+				break
+			}
+		}
+		if !inLocked {
 			return false
 		}
 	}
@@ -3811,7 +3829,18 @@ func (s *runState) finalizeGroundedAnswer(answer string, allowRepair, allowFallb
 			// belong: a turn that showed documents still has to cite them,
 			// and a turn whose number points at nothing is refused whether
 			// the window carried a summary or not.
-			if s.notesWereNeverConsulted() && s.citationsResolveConversation(wanted) {
+			//
+			// A LOCKED turn is the case the old condition got wrong: the
+			// learner picked one conversation, the segments shown were from
+			// it, the answer cited ids this turn was granted for that
+			// conversation - and the draft was refused with "no verifiable
+			// citation" only because the knowledge pre-retrieval had also run
+			// and found nothing. "The notes were consulted" is not a reason to
+			// distrust a citation that is authorised for the locked
+			// conversation.
+			conversationCitation := s.citationsResolveConversation(wanted) &&
+				(s.notesWereNeverConsulted() || strings.TrimSpace(s.lockedSessionID) != "")
+			if conversationCitation {
 				s.sources = nil
 				s.answerBasis = rag.AnswerBasisConversation
 				s.knowledgeStatus = rag.KnowledgeStatusNotRequired
