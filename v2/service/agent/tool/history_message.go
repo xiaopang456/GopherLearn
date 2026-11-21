@@ -26,6 +26,11 @@ const maxHistoryMessageRunes = 600
 // tool budget allows, so five ids is what a learner gets asked about at once.
 const maxHistoryMessageIDsPerCall = 5
 
+// maxAdjacentMessages bounds the neighbour read: at most one message on each
+// side of a search hit. The neighbour is a completion of the hit, not a way to
+// read a conversation by walking it.
+const maxAdjacentMessages = 2
+
 // readHistoryMessageDescription is the contract the model reads.
 //
 // It is a constant rather than an inline argument because a freeze must be able
@@ -242,6 +247,12 @@ type HistoryMessageRegistry struct {
 	// It is off by default. With it off, only the learner's own words are
 	// readable, and the tool says so.
 	assistantContent bool
+	// adjacentRead says a read-back of a SEARCH hit also brings the messages
+	// immediately before and after it in the same conversation. A search hit
+	// is a window onto a sentence: the half that answers the question often
+	// sits in the neighbouring message ("练习单子" in one, "动作、提问、验收" in
+	// the next). Only a search grant is expanded; a card citation is not.
+	adjacentRead bool
 	// onDemandSearch says this deployment offers the conversation search in
 	// the same turn. The search registers the ids it shows the model as
 	// read-back grants, but the tool table is built BEFORE any tool runs: with
@@ -332,18 +343,40 @@ func (r *HistoryMessageRegistry) UseOnDemandSearchGrants(enabled bool) {
 	r.onDemandSearch = enabled
 }
 
+// UseAdjacentRead turns on the neighbour read for search hits.
+//
+// The neighbour is authorised against the SAME grant as the hit it came from
+// (same conversation, same card, same watermark, same lock/session check); it
+// is not an independent id the model supplied.
+func (r *HistoryMessageRegistry) UseAdjacentRead(enabled bool) {
+	if r == nil {
+		return
+	}
+	r.adjacentRead = enabled
+}
+
 // readHistoryMessageOnDemandDescription is the extra sentence a run with the
 // conversation search adds: the search is what makes a message id readable in
 // the same turn, and the model has to know that before it searches.
 const readHistoryMessageOnDemandDescription = " A message id that a conversation search in this turn returned can be read back in full with this tool; an id nothing showed you is refused."
 
+// readHistoryMessageAdjacentDescription is the extra sentence the neighbour
+// read adds: a search hit is a window, and the message beside it often carries
+// the other half of the sentence.
+const readHistoryMessageAdjacentDescription = " When a search hit is read back, the messages immediately before and after it in the same conversation are included as adjacent=true, so a sentence the search cut in half can be read whole."
+
 // description is the contract the model reads for this run.
 func (r *HistoryMessageRegistry) description() string {
 	if r != nil && r.onDemandSearch {
+		description := readHistoryMessageDescription
 		if r.assistantContent {
-			return readHistoryMessageAssistantDescription + readHistoryMessageOnDemandDescription
+			description = readHistoryMessageAssistantDescription
 		}
-		return readHistoryMessageDescription + readHistoryMessageOnDemandDescription
+		description += readHistoryMessageOnDemandDescription
+		if r.adjacentRead {
+			description += readHistoryMessageAdjacentDescription
+		}
+		return description
 	}
 	if r != nil && r.assistantContent {
 		return readHistoryMessageAssistantDescription
@@ -378,6 +411,10 @@ type HistoryMessageView struct {
 	// check resolves it. It is empty only when the run carried no evidence registry, in
 	// which case nothing this tool returns is citable and the read itself is unchanged.
 	Reference string `json:"reference,omitempty"`
+	// Adjacent says this message was not requested: it is the message beside
+	// a requested search hit, read because a sentence the search cut in half
+	// often continues there. It is authorised by the same grant as the hit.
+	Adjacent bool `json:"adjacent,omitempty"`
 }
 
 func (r *HistoryMessageRegistry) Tools(ctx context.Context, run serviceagent.RunContext) ([]tool.BaseTool, error) {
@@ -529,6 +566,96 @@ func (r *HistoryMessageRegistry) Tools(ctx context.Context, run serviceagent.Run
 				view.Reference = registerReadBackEvidence(evidence, userID, int64(message.ID),
 					allowed[message.ID], message.CreatedAt, content)
 				out.Messages = append(out.Messages, view)
+			}
+			// The message beside a search hit.
+			//
+			// A keyword hit is a window onto a sentence, not the sentence: a
+			// search for "练习单子" lands on the message that says "那就弄成
+			// 一张练习单子", while the answer ("动作、提问、验收") is the very
+			// next message. The neighbour is authorised against the SAME
+			// grant as the hit - same conversation, card, watermark and
+			// lock/session check - never as an id the model supplied.
+			if r.adjacentRead && len(wanted) > 0 {
+				type neighbour struct {
+					id    uint
+					grant serviceagent.HistoryMessageGrant
+				}
+				candidates := make([]neighbour, 0, maxAdjacentMessages)
+				seen := make(map[uint]struct{}, maxAdjacentMessages)
+				for _, messageID := range wanted {
+					for _, grant := range allowed[messageID] {
+						if grant.SourceKind != serviceagent.HistorySourceSessionSearch {
+							continue
+						}
+						for _, delta := range []int{-1, 1} {
+							neighbourID := int(messageID) + delta
+							if neighbourID <= 0 {
+								continue
+							}
+							id := uint(neighbourID)
+							if _, already := wantedSet[id]; already {
+								continue
+							}
+							if _, done := seen[id]; done {
+								continue
+							}
+							neighbourGrant := grant
+							neighbourGrant.MessageID = id
+							if _, ok := facts.confirm(ctx, neighbourGrant); !ok {
+								continue
+							}
+							seen[id] = struct{}{}
+							candidates = append(candidates, neighbour{id: id, grant: neighbourGrant})
+							if len(candidates) >= maxAdjacentMessages {
+								break
+							}
+						}
+					}
+				}
+				if len(candidates) > 0 {
+					idsBySession := make(map[string][]uint, len(candidates))
+					for _, candidate := range candidates {
+						idsBySession[candidate.grant.SourceSessionID] =
+							append(idsBySession[candidate.grant.SourceSessionID], candidate.id)
+					}
+					adjacentMessages, readErr := r.reader.ReadOwnedMessagesBySession(ctx, userID, idsBySession)
+					if readErr == nil {
+						byID := make(map[uint]model.Message, len(adjacentMessages))
+						for _, message := range adjacentMessages {
+							byID[message.ID] = message
+						}
+						for _, candidate := range candidates {
+							message, found := byID[candidate.id]
+							if !found || (!message.IsUser && !r.assistantContent) {
+								continue
+							}
+							if !sessionCovered([]serviceagent.HistoryMessageGrant{candidate.grant}, message.SessionID) {
+								continue
+							}
+							content, truncated := boundRunes(message.Content, maxHistoryMessageRunes)
+							if content == "" {
+								continue
+							}
+							role := "user"
+							if !message.IsUser {
+								role = "assistant"
+							}
+							view := HistoryMessageView{
+								MessageID: int(message.ID), Role: role,
+								SentAt:  message.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+								Content: content, Truncated: truncated, Adjacent: true,
+							}
+							view.Reference = registerReadBackEvidence(evidence, userID, int64(message.ID),
+								[]serviceagent.HistoryMessageGrant{candidate.grant}, message.CreatedAt, content)
+							out.Messages = append(out.Messages, view)
+							// The neighbour becomes readable/citable exactly
+							// as the hit is: it is the same provenance.
+							if run.GrantSet != nil {
+								run.GrantSet.Extend(run, []serviceagent.HistoryMessageGrant{candidate.grant})
+							}
+						}
+					}
+				}
 			}
 			return out, nil
 		})

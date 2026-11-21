@@ -852,6 +852,10 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		// the search just showed could not be read in full. The per-call grant
 		// check remains the authorisation boundary.
 		historyTools.UseOnDemandSearchGrants(sessionCardPathEnabled)
+		// A search hit is a window onto a sentence: the answer often sits in
+		// the message beside it. The neighbour read is authorised by the same
+		// grant as the hit, so this does not widen what the run may read.
+		historyTools.UseAdjacentRead(sessionCardPathEnabled)
 		registries := []agentService.ToolRegistry{knowledgeTools, memoryDraftTools, historyTools}
 		if summarySegmentAssembly.Applies() {
 			// browse_summary_segments opens the session's older segments. It

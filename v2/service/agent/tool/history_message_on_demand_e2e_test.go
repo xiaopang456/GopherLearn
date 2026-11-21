@@ -279,3 +279,135 @@ func TestTheOnDemandReadBackStillObeysTheSessionLock(t *testing.T) {
 		t.Fatalf("a grant from another session was not refused under the lock: %s", raw)
 	}
 }
+
+// The p2-acc-04-r1 chain with the question's own word.
+//
+// Searching "练习单子" lands on #4191 ("那就弄成一张练习单子"). The answer
+// ("动作、提问、验收") is the message BEFORE it, #4190. Reading the hit brings
+// the neighbour too; the neighbour of the other side is in a different
+// conversation and must not come along.
+type e2eNeighbourChatModel struct {
+	calls    int
+	requests [][]*schema.Message
+}
+
+func (m *e2eNeighbourChatModel) next() (*schema.Message, error) {
+	m.calls++
+	switch m.calls {
+	case 1:
+		return schema.AssistantMessage("", []schema.ToolCall{{
+			ID: "call-search", Type: "function",
+			Function: schema.FunctionCall{Name: "search_session_history",
+				Arguments: `{"session":"p2c-32","query":"练习单子"}`},
+		}}), nil
+	case 2:
+		return schema.AssistantMessage("", []schema.ToolCall{{
+			ID: "call-read", Type: "function",
+			Function: schema.FunctionCall{Name: "read_history_message",
+				Arguments: `{"message_ids":[4191]}`},
+		}}), nil
+	default:
+		return schema.AssistantMessage("清单是按动作、提问、验收分开列的。", nil), nil
+	}
+}
+
+func (m *e2eNeighbourChatModel) Generate(_ context.Context, input []*schema.Message,
+	_ ...modelcomponent.Option) (*schema.Message, error) {
+	m.requests = append(m.requests, append([]*schema.Message{}, input...))
+	return m.next()
+}
+
+func (m *e2eNeighbourChatModel) Stream(_ context.Context, input []*schema.Message,
+	_ ...modelcomponent.Option) (*schema.StreamReader[*schema.Message], error) {
+	m.requests = append(m.requests, append([]*schema.Message{}, input...))
+	message, err := m.next()
+	if err != nil {
+		return nil, err
+	}
+	if message.ResponseMeta == nil {
+		message.ResponseMeta = &schema.ResponseMeta{}
+	}
+	if message.ResponseMeta.FinishReason == "" {
+		message.ResponseMeta.FinishReason = "stop"
+		if len(message.ToolCalls) > 0 {
+			message.ResponseMeta.FinishReason = "tool_calls"
+		}
+	}
+	reader, writer := schema.Pipe[*schema.Message](1)
+	writer.Send(message, nil)
+	writer.Close()
+	return reader, nil
+}
+
+func (m *e2eNeighbourChatModel) WithTools([]*schema.ToolInfo) (modelcomponent.ToolCallingChatModel, error) {
+	return m, nil
+}
+
+func TestTheSearchHitBringsItsSameConversationNeighbourNotTheOtherSessions(t *testing.T) {
+	reader := &e2eHistoryReader{messages: []model.Message{
+		{ID: 4190, SessionID: "p2c-32", Content: "行，我按环节把动作、提问、验收整理成统一的样子。",
+			CreatedAt: time.Now().UTC()},
+		{ID: 4191, SessionID: "p2c-32", IsUser: true, Content: "那就弄成一张练习单子。",
+			CreatedAt: time.Now().UTC()},
+		{ID: 4192, SessionID: "p2c-03", Content: "另一会话的相邻消息。",
+			CreatedAt: time.Now().UTC()},
+	}}
+	run := serviceagent.RunContext{RunID: "run-neighbour", UserID: 7, UserName: "learner",
+		SessionID: "current-session", LockedSessionID: "p2c-32",
+		Question: "上次那份练习单子，你当时按哪几样东西分开列的？"}
+	run.GrantSet = serviceagent.NewHistoryGrantSet(run, nil)
+
+	searchRegistry, err := NewSearchSessionHistoryRegistry(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	searchRegistry.UseAssistantContent(true)
+	readRegistry, err := NewHistoryMessageRegistry(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readRegistry.UseAssistantContent(true)
+	readRegistry.UseOnDemandSearchGrants(true)
+	readRegistry.UseAdjacentRead(true)
+	searchTools, err := searchRegistry.Tools(context.Background(), run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readTools, err := readRegistry.Tools(context.Background(), run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered := append([]tool.BaseTool{}, searchTools...)
+	registered = append(registered, readTools...)
+
+	chat := &e2eNeighbourChatModel{}
+	runner, err := serviceagent.NewRunner(chat, serviceagent.StaticToolRegistry{Registered: registered},
+		e2eVerbatimSteps{}, e2eVerbatimWindowBuilder{locked: &serviceagent.LockedSession{SessionID: "p2c-32"}},
+		serviceagent.DefaultRunnerConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Run(context.Background(), run, serviceagent.DiscardEvents); err != nil {
+		t.Fatal(err)
+	}
+	if len(chat.requests) < 3 {
+		t.Fatalf("the model was called %d times", len(chat.requests))
+	}
+	var answerRequest strings.Builder
+	for _, message := range chat.requests[2] {
+		if message != nil {
+			answerRequest.WriteString(message.Content)
+			answerRequest.WriteString("\n")
+		}
+	}
+	text := answerRequest.String()
+	if !strings.Contains(text, "动作、提问、验收") {
+		t.Fatalf("the neighbour's answer text did not reach the model: %s", text)
+	}
+	if !strings.Contains(text, `"adjacent":true`) {
+		t.Fatalf("the neighbour is not marked adjacent: %s", text)
+	}
+	if strings.Contains(text, "另一会话的相邻消息") {
+		t.Fatalf("another conversation's message came along: %s", text)
+	}
+}
