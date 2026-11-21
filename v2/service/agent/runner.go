@@ -1186,6 +1186,33 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	}
 	if !knowledgeTerminal {
 		finalAnswer = safeModelText(strings.TrimSpace(answer.String()))
+		// A promise to look is not an answer.
+		//
+		// The record's shape: the model replies "I'll look for that earlier
+		// conversation.", issues no tool call, and the turn ends - nothing was
+		// read, nobody was asked, and the learner waits for a turn that is
+		// already over. Continue once within the budget; if that still does
+		// not retrieve or answer, ask which conversation was meant (a formal
+		// card); only if even that is impossible, say the query did not
+		// finish.
+		if window.SessionLock == nil && state.toolCallsMade == 0 &&
+			pointerQuestion(input.Question) && isPromiseOnlyAnswer(finalAnswer) {
+			continued := state.continueUnfinishedRetrieval(ctx, bounded, registered, messages)
+			if continued != "" && !isPromiseOnlyAnswer(continued) {
+				finalAnswer = continued
+			}
+			if state.toolCallsMade == 0 && (finalAnswer == "" || isPromiseOnlyAnswer(finalAnswer)) {
+				state.mu.Lock()
+				candidates := append([]model.SessionClarificationCandidate{}, state.clarificationCandidates...)
+				state.mu.Unlock()
+				prompt := "我还没能确认你指的是哪一次会话：这次还没有开始查。" +
+					"请选一次，或者从你的完整会话列表里选，也可以给我一句线索（哪个项目、大概哪天）。"
+				if card := buildRetrievalClarification(input.Question, candidates, prompt); card != nil {
+					return state.handOffToClarification(ctx, sink, card)
+				}
+				finalAnswer = UnfinishedRetrievalAnswer
+			}
+		}
 		// A locked turn cannot hand the question back: the learner has
 		// already said which conversation they meant. When its answer is
 		// unusable, one bounded repair pass is made - the model may call the
@@ -1481,14 +1508,18 @@ func normalizeRunnerError(ctx context.Context, err error) error {
 }
 
 type runState struct {
-	mu              sync.Mutex
-	input           RunContext
-	sink            EventSink
-	steps           StepRepository
-	config          RunnerConfig
-	sequence        int
-	modelCalls      int
-	toolCalls       int
+	mu         sync.Mutex
+	input      RunContext
+	sink       EventSink
+	steps      StepRepository
+	config     RunnerConfig
+	sequence   int
+	modelCalls int
+	toolCalls  int
+	// toolCallsMade counts the tool calls the MODEL issued, including ones a
+	// budget or progress rule answered without executing. A promise to search
+	// on a turn that issued none is an unfinished turn, not an answer.
+	toolCallsMade   int
 	lastFingerprint string
 	sources         []rag.Source
 	sourceKeys      map[string]struct{}
@@ -2350,6 +2381,13 @@ func (s *runState) appendStep(ctx context.Context, step *model.AgentStep) error 
 func (s *runState) toolMiddleware() compose.InvokableToolMiddleware {
 	return func(next compose.InvokableToolEndpoint) compose.InvokableToolEndpoint {
 		return func(ctx context.Context, input *compose.ToolInput) (*compose.ToolOutput, error) {
+			// Count the calls the MODEL issued, including the ones a budget or
+			// a progress rule answers without executing. A turn that issued no
+			// call at all did no retrieval, and an answer that only promises
+			// to retrieve is an unfinished turn, not an answer.
+			s.mu.Lock()
+			s.toolCallsMade++
+			s.mu.Unlock()
 			// A read-only memory call that cannot achieve anything new is
 			// answered before it is reserved, so it neither reaches storage nor
 			// spends budget. It is a normal observation rather than an error:
@@ -3049,6 +3087,95 @@ const CapabilityFreeEmptyAnswer = "这一轮我没能拿到可用的回答内容
 // conversation did not carry enough to answer - and keeps the learner in the
 // conversation they are already having.
 const LockedEvidenceIncompleteAnswer = "我按你选中的那次会话查了，但没有找到能回答这个问题的内容。你可以换个说法或补一条线索，我再从那次会话里找。"
+
+// UnfinishedRetrievalAnswer is what an unfinished cross-session turn says when
+// neither continuing the search nor asking the learner is possible.
+//
+// It says the query did not finish, rather than pretending the assistant did
+// not understand: the learner asked about an earlier conversation, and this
+// turn never reached it.
+const UnfinishedRetrievalAnswer = "这次查询没有完成：我还没能查到你指的那次会话。请告诉我更多线索，或从你的完整会话列表里选一次。"
+
+// promiseOnlyMarkers are the ways a reply says it is about to retrieve without
+// retrieving. They are markers, not the decision: the decision also requires
+// that the turn issued no tool call at all.
+var promiseOnlyMarkers = []string{
+	"i'll look", "i will look", "i'll search", "i'll check", "let me look", "let me check",
+	"让我查", "我去查", "我来查", "我查一下", "我找一下", "我去找", "我来找", "我去看看", "让我看看", "稍等",
+}
+
+// maxPromiseOnlyRunes bounds what still counts as a promise: one short
+// sentence. A long answer that happens to contain "让我查一下" is an answer.
+const maxPromiseOnlyRunes = 120
+
+// isPromiseOnlyAnswer says whether the reply is only a promise to retrieve.
+func isPromiseOnlyAnswer(answer string) bool {
+	trimmed := strings.TrimSpace(answer)
+	if trimmed == "" || len([]rune(trimmed)) > maxPromiseOnlyRunes {
+		return false
+	}
+	lowered := strings.ToLower(trimmed)
+	for _, marker := range promiseOnlyMarkers {
+		if strings.Contains(lowered, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// continueUnfinishedRetrieval makes ONE bounded attempt to finish a turn that
+// only promised to look.
+//
+// The prompt from the record ("I'll look for that earlier conversation.") is
+// not an answer: no tool ran, no conversation was read, and the learner is
+// left waiting for something that will not arrive. The continuation either
+// retrieves (structurally, so the read is executed and fed back), answers from
+// what it has, or asks which conversation was meant. If it still produces only
+// a promise, the caller asks the learner instead of publishing it.
+func (s *runState) continueUnfinishedRetrieval(ctx context.Context, bounded *boundedModel,
+	registered []tool.BaseTool, messages []*schema.Message) string {
+	if !s.canSpendModelCall() {
+		return ""
+	}
+	continuation := append([]*schema.Message{}, messages...)
+	continuation = append(continuation, schema.UserMessage(
+		"上一轮你只说了要去找，没有调用任何工具，也没有给出回答。现在请完成这次回合，二选一："+
+			"需要查就直接发出结构化的工具调用（可以读已经授权的更早会话）；已经能从已读内容回答就直接回答。"+
+			"如果学习者指的是哪一次还不明确，就调用 ask_which_conversation，或在正文里明确问学习者哪一次。"+
+			"不要只写一句“我去找/稍等”。"))
+	reactAgent, err := react.NewAgent(ctx, &react.AgentConfig{
+		ToolCallingModel: bounded,
+		ToolsConfig: compose.ToolsNodeConfig{
+			Tools:               registered,
+			ExecuteSequentially: true,
+			UnknownToolsHandler: s.unknownToolHandler,
+			ToolCallMiddlewares: []compose.ToolMiddleware{{Invokable: s.toolMiddleware()}},
+		},
+		MaxStep: 6,
+	})
+	if err != nil {
+		return ""
+	}
+	stream, err := reactAgent.Stream(ctx, continuation)
+	if err != nil {
+		return ""
+	}
+	defer stream.Close()
+	var answer strings.Builder
+	for {
+		message, recvErr := stream.Recv()
+		if errors.Is(recvErr, io.EOF) {
+			break
+		}
+		if recvErr != nil {
+			return ""
+		}
+		if message != nil && message.Content != "" {
+			answer.WriteString(message.Content)
+		}
+	}
+	return safeModelText(strings.TrimSpace(answer.String()))
+}
 
 // repairLockedAnswer makes ONE bounded attempt to finish a locked turn whose
 // first attempt produced no usable answer.
