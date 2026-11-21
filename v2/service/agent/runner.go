@@ -1122,6 +1122,15 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	}
 	if window.SessionLock != nil {
 		state.lockedSessionID = strings.TrimSpace(window.SessionLock.SessionID)
+		if strings.TrimSpace(window.SessionLock.Evidence) != "" {
+			state.conversationEvidenceDelivered = true
+		}
+	}
+	if window.Budget.Summary > 0 || window.Budget.Whiteboard > 0 ||
+		window.Budget.RetrievedSegments > 0 || window.Budget.ResidentSegments > 0 {
+		// The window already carries conversation evidence; an answer built on
+		// it is not an evidence-less answer.
+		state.conversationEvidenceDelivered = true
 	}
 	bounded := &boundedModel{inner: r.chatModel, state: state, thinkingDialect: r.config.ThinkingDialect, outputReserveTokens: r.config.OutputReserveTokens}
 
@@ -1276,6 +1285,32 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 		if window.SessionLock == nil {
 			if card := state.proseCandidateListHandoff(finalAnswer); card != nil {
 				return state.handOffToClarification(ctx, sink, card)
+			}
+		}
+		// A final-agreement question answered without conversation evidence is
+		// not answered: the card only located a conversation, and the summary
+		// or board still holds the old value. Read the confirmed conversation's
+		// own words once; if there is still no evidence, say what is missing.
+		state.mu.Lock()
+		evidenceDelivered := state.conversationEvidenceDelivered
+		alreadyAsked := state.clarification != nil
+		crossSessionStarted := state.crossSessionRetrievalStarted
+		state.mu.Unlock()
+		if !evidenceDelivered && !alreadyAsked && crossSessionStarted &&
+			pointerQuestion(input.Question) &&
+			questionAsksFinalValue(input.Question) && !polarPointerQuestion(input.Question) {
+			lockedID := ""
+			if window.SessionLock != nil {
+				lockedID = window.SessionLock.SessionID
+			}
+			continued := state.continueFinalValueRetrieval(ctx, bounded, registered, messages, lockedID)
+			state.mu.Lock()
+			evidenceDelivered = state.conversationEvidenceDelivered
+			state.mu.Unlock()
+			if !evidenceDelivered {
+				finalAnswer = InsufficientConversationEvidenceAnswer
+			} else if strings.TrimSpace(continued) != "" {
+				finalAnswer = continued
 			}
 		}
 		// A locked turn cannot hand the question back: the learner has
@@ -1691,6 +1726,10 @@ type runState struct {
 	// which case an answer would rest on whatever sessions the segment search
 	// happened to return.
 	segmentEvidenceSessions []string
+	// conversationEvidenceDelivered says a cross-session read delivered
+	// evidence this turn (the card search does not count: candidates are
+	// locations, not evidence).
+	conversationEvidenceDelivered bool
 	// crossSessionRetrievalStarted records that this turn actually looked in
 	// earlier conversations. The clarification rules below are for the
 	// cross-session recall path; a turn that stayed in this conversation
@@ -2155,6 +2194,12 @@ func (s *runState) observeCrossSessionResult(input *compose.ToolInput, output *c
 		Status string `json:"status"`
 	}
 	statusKnown := json.Unmarshal([]byte(output.Result), &status) == nil
+	if callErr == nil && capability != CapabilitySearchSessionCards &&
+		statusKnown && status.Status == "ok" && outputCarriesEvidence(output.Result) {
+		s.mu.Lock()
+		s.conversationEvidenceDelivered = true
+		s.mu.Unlock()
+	}
 	if statusKnown && status.Status == "unavailable" {
 		s.markRetrievalFailed()
 	}
@@ -2204,6 +2249,28 @@ func (s *runState) rememberSegmentEvidenceSession(sessionID string) {
 		}
 	}
 	s.segmentEvidenceSessions = append(s.segmentEvidenceSessions, sessionID)
+}
+
+// outputCarriesEvidence says whether a cross-session tool returned evidence
+// rather than only a location. The card search is excluded by the caller: its
+// candidates locate conversations, they are not the conversation's words.
+func outputCarriesEvidence(result string) bool {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(result), &payload); err != nil {
+		return false
+	}
+	for _, key := range []string{"segments", "matches", "messages", "later_messages",
+		"plan", "open_items", "constraints"} {
+		raw, ok := payload[key]
+		if !ok {
+			continue
+		}
+		var items []json.RawMessage
+		if err := json.Unmarshal(raw, &items); err == nil && len(items) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // rememberEvidenceSession records one earlier conversation the turn read.
@@ -3246,6 +3313,82 @@ func (s *runState) continueUnfinishedRetrieval(ctx context.Context, bounded *bou
 			"需要查就直接发出结构化的工具调用（可以读已经授权的更早会话）；已经能从已读内容回答就直接回答。"+
 			"如果学习者指的是哪一次还不明确，就调用 ask_which_conversation，或在正文里明确问学习者哪一次。"+
 			"不要只写一句“我去找/稍等”。"))
+	reactAgent, err := react.NewAgent(ctx, &react.AgentConfig{
+		ToolCallingModel: bounded,
+		ToolsConfig: compose.ToolsNodeConfig{
+			Tools:               registered,
+			ExecuteSequentially: true,
+			UnknownToolsHandler: s.unknownToolHandler,
+			ToolCallMiddlewares: []compose.ToolMiddleware{{Invokable: s.toolMiddleware()}},
+		},
+		MaxStep: 6,
+	})
+	if err != nil {
+		return ""
+	}
+	stream, err := reactAgent.Stream(ctx, continuation)
+	if err != nil {
+		return ""
+	}
+	defer stream.Close()
+	var answer strings.Builder
+	for {
+		message, recvErr := stream.Recv()
+		if errors.Is(recvErr, io.EOF) {
+			break
+		}
+		if recvErr != nil {
+			return ""
+		}
+		if message != nil && message.Content != "" {
+			answer.WriteString(message.Content)
+		}
+	}
+	return safeModelText(strings.TrimSpace(answer.String()))
+}
+
+// InsufficientConversationEvidenceAnswer is what a final-agreement question
+// says when the bounded re-query found no usable evidence. It names what is
+// missing instead of presenting the whiteboard's old value as the current one,
+// and it does not claim the conversation never discussed it.
+const InsufficientConversationEvidenceAnswer = "我查了你指的那次会话，但现有记录不足以确认最后是怎么定的；我不想把旧值当成现在的说法。"
+
+// questionAsksFinalValue says the learner is asking for the CURRENT/FINAL
+// agreement, where an older value in the summary or board is not the answer.
+func questionAsksFinalValue(question string) bool {
+	for _, marker := range []string{"最后", "最终", "现在", "改成", "定下来", "定下", "最新", "作废", "现在每次", "当前"} {
+		if strings.Contains(question, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// continueFinalValueRetrieval makes ONE bounded attempt to read the confirmed
+// conversation before a final-agreement question is answered.
+//
+// The answer was written without any conversation evidence: the model read the
+// card (a location) and was about to answer from the summary or the board,
+// where the old value still sits. The continuation is told to read the
+// conversation's own words for the latest value and not to treat the board's
+// old value as the current one.
+func (s *runState) continueFinalValueRetrieval(ctx context.Context, bounded *boundedModel,
+	registered []tool.BaseTool, messages []*schema.Message, lockedSessionID string) string {
+	if !s.canSpendModelCall() {
+		return ""
+	}
+	continuation := append([]*schema.Message{}, messages...)
+	target := ""
+	if lockedSessionID = strings.TrimSpace(lockedSessionID); lockedSessionID != "" {
+		target = "被锁定的会话 " + lockedSessionID
+	} else {
+		target = "你找到的那次会话"
+	}
+	continuation = append(continuation, schema.UserMessage(
+		"这个问题问的是最终/当前的约定，而你上一轮还没有读到那次会话的证据。"+
+			"现在先到"+target+"里核对：摘要不够就用 search_session_history 搜该会话的原话"+
+			"（一个会出现在目标句里的短关键词，不要整句）；以最新的一条更新为准，"+
+			"不要把白板或摘要里的旧值当现状。找不到就明确说缺什么，不要断言“上次没聊过/没定过”。"))
 	reactAgent, err := react.NewAgent(ctx, &react.AgentConfig{
 		ToolCallingModel: bounded,
 		ToolsConfig: compose.ToolsNodeConfig{
