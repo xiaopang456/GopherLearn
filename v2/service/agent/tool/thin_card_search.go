@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 	"unicode"
 
 	"GopherAI/common/rag"
@@ -58,7 +59,7 @@ const (
 // So the rule is stated here, where the model reads it, and the server keeps
 // the boundaries: whose history it may read, which conversation a read may
 // be taken in, which ids a read may cite, and how much of it may come back.
-const searchSessionCardsDescription = "Search your earlier conversations for the one a question is about. Prefer answering from THIS conversation: its current state, its summary segments and its recent words are already in front of you, and they are the answer to a question about this conversation. Call this tool only when the learner explicitly asks about another conversation, or when the previous turn settled which conversation is meant. Make ONE search and read what it returns: the thin cards locate the conversations, they do not carry their bodies. When the search returns ONE conversation that clearly matches, go straight into it - open it with browse_summary_segments or read_session_whiteboard and answer the question there. When it returns several that cannot be told apart, or none that is credible, ask the learner with ask_which_conversation straight away - do NOT open the candidates one by one to read their summaries first, because that spends a call per candidate on conversations the learner may not have meant. It returns candidates: the conversation id, its title, what it was about, when it was last talked in and the summary segments it points at. A date the learner named filters the candidates to that period."
+const searchSessionCardsDescription = "Search your earlier conversations for the one a question is about. Prefer answering from THIS conversation: its current state, its summary segments and its recent words are already in front of you, and they are the answer to a question about this conversation. Call this tool only when the learner explicitly asks about another conversation, or when the previous turn settled which conversation is meant. Make ONE search and read what it returns: the thin cards locate the conversations, they do not carry their bodies. When the search returns ONE conversation that clearly matches, go straight into it - open it with browse_summary_segments or read_session_whiteboard and answer the question there. When it returns several that cannot be told apart, or none that is credible, ask the learner with ask_which_conversation straight away - do NOT open the candidates one by one to read their summaries first, because that spends a call per candidate on conversations the learner may not have meant. It returns candidates: the conversation id, its title, what it was about, when it was last talked in and the summary segments it points at. A date the learner named filters the candidates to that period. When the learner says \"上次\" (last time) or \"那次\", they mean the MOST RECENT earlier conversation: the candidate marked most_recent is that one. A conversation that only mentions the same topic is a different conversation - if the most recent one does not mention it, say the last conversation was about something else instead of presenting the older one as the answer."
 
 // The states a search can report.
 const (
@@ -130,6 +131,14 @@ type ThinCardCandidateView struct {
 	SegmentSeqs []int `json:"segment_seqs"`
 	// LastTalkedAt is when the conversation was last talked in.
 	LastTalkedAt string `json:"last_talked_at,omitempty"`
+	// MostRecent marks the newest earlier conversation among the candidates.
+	//
+	// The learner's "上次" / "上一次" / "那次" means that one unless they say
+	// otherwise. A conversation that only mentions the same topic is a
+	// different conversation, and presenting the older one as the answer is
+	// what turns "did we discuss X last time?" into an answer about a
+	// conversation the learner was not referring to.
+	MostRecent bool `json:"most_recent,omitempty"`
 	// Score is the search's own score.
 	Score float64 `json:"score"`
 }
@@ -298,6 +307,7 @@ func (r *SearchSessionCardsRegistry) search(ctx context.Context, run serviceagen
 			}
 		}
 		out.ObservationTokens = tokens
+		markMostRecentCardCandidate(out.Candidates)
 		if len(out.Candidates) == 0 {
 			out.Status = cardsStatusNoEvidence
 			out.Reason = cardsReasonNoMatch
@@ -319,11 +329,42 @@ func (r *SearchSessionCardsRegistry) search(ctx context.Context, run serviceagen
 		r.openCandidate(run, candidate)
 	}
 	out.ObservationTokens = tokens
+	markMostRecentCardCandidate(out.Candidates)
 	if len(out.Candidates) == 0 {
 		out.Status = cardsStatusNoEvidence
 		out.Reason = cardsReasonNoMatch
 	}
 	return out, nil
+}
+
+// markMostRecentCardCandidate marks the newest earlier conversation among the
+// candidates.
+//
+// "上次" is a POINTER to a conversation, not a topic: it means the most recent
+// earlier conversation unless the learner named something else. The candidate
+// list is what tells a model which one that is; without the mark the model can
+// only match topics, and a topic match from three months ago is presented as
+// "last time" - the acceptance retest showed exactly that.
+func markMostRecentCardCandidate(candidates []ThinCardCandidateView) {
+	newest := -1
+	var newestAt time.Time
+	for index := range candidates {
+		stamp := strings.TrimSpace(candidates[index].LastTalkedAt)
+		if stamp == "" {
+			continue
+		}
+		parsed, err := time.Parse(time.RFC3339, stamp)
+		if err != nil {
+			continue
+		}
+		if newest < 0 || parsed.After(newestAt) {
+			newest = index
+			newestAt = parsed
+		}
+	}
+	if newest >= 0 {
+		candidates[newest].MostRecent = true
+	}
 }
 
 // openCandidate makes a candidate reachable for the rest of the turn.

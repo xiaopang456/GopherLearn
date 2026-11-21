@@ -1169,14 +1169,34 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	}
 	if !knowledgeTerminal {
 		finalAnswer = safeModelText(strings.TrimSpace(answer.String()))
+		// A locked turn cannot hand the question back: the learner has
+		// already said which conversation they meant. When its answer is
+		// unusable, one bounded repair pass is made - the model may call the
+		// history tools again (the tools can only read the locked
+		// conversation) or answer from what it has - and if that does not
+		// produce an answer either, the learner is told so. The fixed "could
+		// not call a tool, please retry" sentence is not an ending a locked
+		// turn is allowed to have: it says nothing about the conversation the
+		// learner chose.
+		if window.SessionLock != nil && (finalAnswer == "" || finalAnswer == malformedToolCallAnswer) {
+			repaired := state.repairLockedAnswer(ctx, bounded, registered, messages)
+			if repaired != "" {
+				finalAnswer = repaired
+			} else {
+				finalAnswer = LockedEvidenceIncompleteAnswer
+			}
+		}
 		// A turn that auto-retrieved conversations but cannot answer from
 		// them hands the choice back to the learner instead of publishing a
 		// retry sentence or a list of possibilities in its own words. The
 		// card carries the original question and the candidates this turn
 		// found; the learner may pick one, pick from their own list, or
 		// write a clue. It ends the turn with no model call.
-		if card := state.clarificationHandoff(finalAnswer); card != nil {
-			return state.handOffToClarification(ctx, sink, card)
+		// A locked turn is excluded: the learner has already chosen.
+		if window.SessionLock == nil {
+			if card := state.clarificationHandoff(finalAnswer); card != nil {
+				return state.handOffToClarification(ctx, sink, card)
+			}
 		}
 		if finalAnswer == "" && !policy.CarriesAnyCapability() {
 			// The learner switched this turn's capabilities off; they did not
@@ -2677,6 +2697,75 @@ func (m *boundedModel) WithTools(tools []*schema.ToolInfo) (modelcomponent.ToolC
 // the provider returned no text, and switching the library back on neither fixes
 // that nor is something this message should be nudging the learner toward.
 const CapabilityFreeEmptyAnswer = "这一轮我没能拿到可用的回答内容；请再说一次你的问题。"
+
+// LockedEvidenceIncompleteAnswer is what a locked turn says when neither the
+// locked evidence nor one bounded repair pass produced an answer.
+//
+// It is not "please retry": the learner did answer (they chose the
+// conversation), and a retry sentence hides that this turn already read the
+// conversation they chose. The sentence says what happened - that
+// conversation did not carry enough to answer - and keeps the learner in the
+// conversation they are already having.
+const LockedEvidenceIncompleteAnswer = "我按你选中的那次会话查了，但没有找到能回答这个问题的内容。你可以换个说法或补一条线索，我再从那次会话里找。"
+
+// repairLockedAnswer makes ONE bounded attempt to finish a locked turn whose
+// first attempt produced no usable answer.
+//
+// The model is given the same window (which carries the locked conversation)
+// plus a correction: the previous reply was malformed, so either call the
+// history tools again (they can only read the locked conversation) or answer
+// from the evidence already read - do not put a tool call in the answer text.
+// It returns "" when the turn has no generation left, or the repair produces
+// no usable answer; the caller then uses the honest fixed sentence.
+func (s *runState) repairLockedAnswer(ctx context.Context, bounded *boundedModel,
+	registered []tool.BaseTool, messages []*schema.Message) string {
+	if !s.canSpendModelCall() {
+		return ""
+	}
+	repairMessages := append([]*schema.Message{}, messages...)
+	repairMessages = append(repairMessages, schema.UserMessage(
+		"上一轮的回复不是可用的回答：你把工具调用写进了正文，系统无法执行。"+
+			"请重新回答这个问题。需要查资料就发出结构化的工具调用，本轮只能读被锁定的那个会话；"+
+			"不需要查就直接用已经读到的证据回答。不要把工具调用写进正文。"))
+	// The repair runs through the same ReAct loop, so a well-formed tool call
+	// made here is executed and fed back exactly like one in the first pass.
+	reactAgent, err := react.NewAgent(ctx, &react.AgentConfig{
+		ToolCallingModel: bounded,
+		ToolsConfig: compose.ToolsNodeConfig{
+			Tools:               registered,
+			ExecuteSequentially: true,
+			UnknownToolsHandler: s.unknownToolHandler,
+			ToolCallMiddlewares: []compose.ToolMiddleware{{Invokable: s.toolMiddleware()}},
+		},
+		MaxStep: 6,
+	})
+	if err != nil {
+		return ""
+	}
+	stream, err := reactAgent.Stream(ctx, repairMessages)
+	if err != nil {
+		return ""
+	}
+	defer stream.Close()
+	var answer strings.Builder
+	for {
+		message, recvErr := stream.Recv()
+		if errors.Is(recvErr, io.EOF) {
+			break
+		}
+		if recvErr != nil {
+			return ""
+		}
+		if message != nil && message.Content != "" {
+			answer.WriteString(message.Content)
+		}
+	}
+	repaired := safeModelText(strings.TrimSpace(answer.String()))
+	if repaired == "" || repaired == malformedToolCallAnswer {
+		return ""
+	}
+	return repaired
+}
 
 // answerPlainlyAfterToolCall is the recovery a capability-free turn makes when the
 // model reaches for a tool it was never given: one more generation, asked for the

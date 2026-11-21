@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	summarysegmentdao "GopherAI/dao/summarysegment"
 	"GopherAI/model"
@@ -504,6 +506,50 @@ func TestTheOnDemandToolsHaveTheirOwnCapabilities(t *testing.T) {
 			if got := serviceagent.CapabilityOf(name); got != capability {
 				t.Errorf("%s on %s is called %s, which reads back as %s", capability, surface, name, got)
 			}
+		}
+	}
+}
+
+// "上次" is a pointer to the MOST RECENT earlier conversation.
+//
+// The acceptance retest answered an "absent" question by presenting an older
+// conversation that merely matched the topic as the last one. The candidate
+// list is what can tell the model which conversation "last time" is; this test
+// pins that the newest candidate is the one marked.
+func TestSearchSessionCardsMarksTheMostRecentCandidate(t *testing.T) {
+	retriever := &fakeThinCardRetriever{candidates: []episode.ThinCardCandidate{
+		{SessionID: "p2c-13", CardID: "card-old", CardVersion: 1, Title: "Evaluation conversation",
+			LastTalkedAt: time.Date(2026, 4, 19, 6, 26, 0, 0, time.UTC)},
+		{SessionID: "p2c-25", CardID: "card-new", CardVersion: 1, Title: "Evaluation conversation",
+			LastTalkedAt: time.Date(2026, 5, 6, 6, 21, 0, 0, time.UTC)},
+	}}
+	registry, err := NewSearchSessionCardsRegistry(retriever)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := thinCardRun()
+	tools, err := registry.Tools(context.Background(), run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := callCards(t, tools[0], "", "数据库事务隔离级别")
+	marked := make([]string, 0, 1)
+	for _, candidate := range out.Candidates {
+		if candidate.MostRecent {
+			marked = append(marked, candidate.SessionID)
+		}
+	}
+	if len(marked) != 1 || marked[0] != "p2c-25" {
+		t.Fatalf("the most_recent candidate is %v, want only p2c-25", marked)
+	}
+}
+
+// The card search's own description says what "上次" means.
+func TestTheCardSearchSaysLastTimeMeansTheMostRecentConversation(t *testing.T) {
+	lowered := strings.ToLower(searchSessionCardsDescription)
+	for _, phrase := range []string{"most recent earlier conversation", "most_recent", "上次"} {
+		if !strings.Contains(lowered, strings.ToLower(phrase)) {
+			t.Fatalf("the card search description does not say %q: %s", phrase, searchSessionCardsDescription)
 		}
 	}
 }
