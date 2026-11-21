@@ -216,6 +216,16 @@ func TestAnUngrantedCitationIsStillRefused(t *testing.T) {
 	if len(result.GroundingRefusal.Citations) != 1 || result.GroundingRefusal.Citations[0] != 999 {
 		t.Fatalf("refused citations=%v", result.GroundingRefusal.Citations)
 	}
+	// The refusal record can locate the failing citation and its branch
+	// without the draft: which id, and that this turn had no authorisation for
+	// it. It must not claim the id belongs to another conversation.
+	if len(result.GroundingRefusal.CitationChecks) != 1 {
+		t.Fatalf("citation checks=%+v", result.GroundingRefusal.CitationChecks)
+	}
+	check := result.GroundingRefusal.CitationChecks[0]
+	if check.Citation != 999 || check.AuthorisedForThisTurn || check.InDocuments || check.Verdict != "unauthorized" {
+		t.Fatalf("the refusal does not locate the unauthorised citation: %+v", check)
+	}
 	if result.Answer != serviceagent.UnsupportedGroundingAnswer {
 		t.Fatalf("answer=%q", result.Answer)
 	}
@@ -237,6 +247,13 @@ func TestACitationFromOutsideTheLockedSessionIsStillRefused(t *testing.T) {
 	}
 	if result.GroundingRefusal.Rule != serviceagent.GroundingRuleInvalidCitation {
 		t.Fatalf("refusal rule=%q", result.GroundingRefusal.Rule)
+	}
+	// The id is authorised somewhere, but not for the locked conversation.
+	// The record says "unauthorized" and does not name another session.
+	checks := result.GroundingRefusal.CitationChecks
+	if len(checks) != 1 || checks[0].Citation != 407 || checks[0].AuthorisedForThisTurn ||
+		checks[0].Verdict != "unauthorized" {
+		t.Fatalf("the lock-scope refusal does not locate the citation: %+v", checks)
 	}
 	if !strings.Contains(result.Answer, "未能形成可验证的引用") {
 		t.Fatalf("answer=%q", result.Answer)

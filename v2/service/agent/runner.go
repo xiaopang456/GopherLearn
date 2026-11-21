@@ -716,6 +716,34 @@ type GroundingRefusal struct {
 	Citations []int `json:"citations"`
 	// Draft is the answer the model wrote before the refusal replaced it.
 	Draft string `json:"draft"`
+	// CitationChecks locates every citation the draft carried in the checks
+	// that ran: was it a document reference, was it authorised for this turn,
+	// and what does the record say about it.
+	//
+	// It exists so a refusal can be read back without the draft: the old
+	// record said only "invalid_citation", which could not tell an invented
+	// id from an id granted for a conversation the lock does not cover.
+	CitationChecks []GroundingCitationCheck `json:"citation_checks,omitempty"`
+}
+
+// GroundingCitationCheck is what the record can say about one refused
+// citation.
+//
+// It deliberately does NOT say which other conversation an unauthorised id
+// belongs to. The records can prove "not authorised for this turn"; they
+// cannot prove "this came from another conversation", and a diagnostic that
+// guessed would be read as evidence it is not.
+type GroundingCitationCheck struct {
+	Citation int `json:"citation"`
+	// InDocuments says the citation resolved to a document this turn showed.
+	InDocuments bool `json:"in_documents,omitempty"`
+	// AuthorisedForThisTurn says the citation resolved to something this run
+	// may point at: a document it showed, or (under a lock) a grant whose
+	// source is the locked conversation.
+	AuthorisedForThisTurn bool `json:"authorised,omitempty"`
+	// Verdict is the record's own word for the citation: "documents",
+	// "authorised" or "unauthorized". It never names another conversation.
+	Verdict string `json:"verdict"`
 }
 
 // runDeadline is the time budget of this turn.
@@ -3696,7 +3724,72 @@ func (s *runState) refuse(rule string, wanted map[int]struct{}, draft string) {
 		citations = append(citations, citation)
 	}
 	sort.Ints(citations)
-	s.groundingRefusal = &GroundingRefusal{Rule: rule, Citations: citations, Draft: draft}
+	checks := make([]GroundingCitationCheck, 0, len(citations))
+	documents := make(map[int]struct{}, len(s.documentSources()))
+	for _, source := range s.documentSources() {
+		documents[source.Citation] = struct{}{}
+	}
+	locked := strings.TrimSpace(s.lockedSessionID)
+	granted := make(map[int]struct{})
+	if s.grantSet != nil {
+		for _, reference := range s.grantSet.References() {
+			granted[reference] = struct{}{}
+		}
+	}
+	for _, citation := range citations {
+		check := GroundingCitationCheck{Citation: citation}
+		if _, ok := documents[citation]; ok {
+			check.InDocuments = true
+			check.AuthorisedForThisTurn = true
+			check.Verdict = "documents"
+			checks = append(checks, check)
+			continue
+		}
+		authorised := false
+		if _, ok := granted[citation]; ok {
+			if locked == "" {
+				authorised = true
+			} else {
+				// Under a lock only a grant whose source is the locked
+				// conversation authorises the citation. An id that exists
+				// somewhere else stays "unauthorized": the record does not
+				// claim to know where else it came from.
+				for _, grant := range s.grantSet.Grants(uint(citation)) {
+					if strings.TrimSpace(grant.SourceSessionID) == locked {
+						authorised = true
+						break
+					}
+				}
+			}
+		}
+		check.AuthorisedForThisTurn = authorised
+		if authorised {
+			check.Verdict = "authorised"
+		} else {
+			check.Verdict = "unauthorized"
+		}
+		checks = append(checks, check)
+	}
+	s.groundingRefusal = &GroundingRefusal{Rule: rule, Citations: citations, Draft: draft, CitationChecks: checks}
+	// The learner never sees the draft or the checks, so the product log is
+	// where a refusal has to be readable: which check, which citation ids and
+	// what the record could say about each. No draft text is logged.
+	log.Printf("[agent-grounding] rule=%s citations=%v checks=%s draft_runes=%d",
+		rule, citations, groundingChecksForLog(checks), len([]rune(draft)))
+}
+
+// groundingChecksForLog renders the citation checks for one log line.
+func groundingChecksForLog(checks []GroundingCitationCheck) string {
+	var b strings.Builder
+	for index, check := range checks {
+		if index > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(strconv.Itoa(check.Citation))
+		b.WriteString(":")
+		b.WriteString(check.Verdict)
+	}
+	return b.String()
 }
 
 // finalizeGroundedAnswer is the server-side evidence boundary. A returned
