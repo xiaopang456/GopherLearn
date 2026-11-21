@@ -772,7 +772,11 @@ type BudgetBreakdown struct {
 
 type ContextWindow struct {
 	Messages []*schema.Message
-	Budget   BudgetBreakdown
+	// OriginalQuestion is the question the learner asked before a
+	// clarification reply. On a continuation the request's Question is the
+	// reply ("p2c-07"); the retrieval tools read this instead.
+	OriginalQuestion string
+	Budget           BudgetBreakdown
 	// EpisodeIDs are internal diagnostics. They are deliberately absent from
 	// sync/SSE JSON; ordinary clients only receive numeric budget fields.
 	EpisodeIDs []string
@@ -1595,6 +1599,13 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	// the prompt is assembled before the budget is known - the block that
 	// reaches the model is fitted to the room later.
 	pending := pendingClarification(history)
+	originalQuestion := ""
+	if pending != nil {
+		// The continuation's Question is the learner's reply ("p2c-07").
+		// Retrieval has to read what the learner was actually asking, so the
+		// original question travels on the window.
+		originalQuestion = strings.TrimSpace(pending.Question)
+	}
 	clarificationText := ""
 	if pending != nil {
 		clarificationText = clarificationBlock(pending, input.Question)
@@ -2145,7 +2156,7 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	}
 	observability.Memory.Context(breakdown.ProjectedInput, breakdown.InputTarget, breakdown.EpisodeMemory, breakdown.GlobalUserMemory, breakdown.TopicUserMemory)
 	return ContextWindow{
-		Messages: messages, Budget: breakdown, EpisodeIDs: episodeIDs,
+		Messages: messages, OriginalQuestion: originalQuestion, Budget: breakdown, EpisodeIDs: episodeIDs,
 		SessionLock: lockResolution.Locked, ClarificationReask: reask,
 		EpisodeSources:       episodeSources,
 		EpisodeHistoryGrants: episodeGrants, SummaryHistoryGrants: summaryGrants,

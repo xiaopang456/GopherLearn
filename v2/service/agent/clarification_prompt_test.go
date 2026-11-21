@@ -210,3 +210,31 @@ func TestTheContinuationRuleDropsTheRawWordSearchWhenTheTurnDoesNotOfferIt(t *te
 		t.Fatalf("the continuation rule names a tool this turn does not offer: %s", prompt)
 	}
 }
+
+// The window keeps the question the learner asked before the clarification
+// reply: the continuation's own Question is only the session id.
+func TestTheContinuationWindowCarriesTheOriginalQuestion(t *testing.T) {
+	window := clarificationWindow(t, []string{"browse_summary_segments"})
+	const original = "上次你给我排的那三道题里，第二道练的是什么？"
+	if window.OriginalQuestion != original {
+		t.Fatalf("window original question = %q, want %q", window.OriginalQuestion, original)
+	}
+}
+
+// A normal turn has no clarification to recover a question from.
+func TestANormalWindowHasNoOriginalQuestion(t *testing.T) {
+	config := testContextConfig()
+	builder, err := NewContextBuilder(config, &fakeHistoryReader{}, staticTaskState("active learning task"),
+		nil, staticMemories{"prefers examples"}, staticSummary("earlier decision"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	window, err := builder.Build(context.Background(),
+		RunContext{UserID: 7, SessionID: "session", Question: "这次聊什么"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if window.OriginalQuestion != "" {
+		t.Fatalf("a normal turn carried an original question: %q", window.OriginalQuestion)
+	}
+}

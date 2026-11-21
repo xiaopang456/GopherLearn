@@ -32,11 +32,24 @@ const (
 )
 
 func histTailMessages() []model.Message {
-	out := make([]model.Message, 0, 80)
-	for id := uint(849); id <= 928; id++ {
+	out := make([]model.Message, 0, 144)
+	for id := uint(785); id <= 928; id++ {
 		message := model.Message{ID: id, SessionID: "p2c-07", IsUser: true,
 			Content: "这一段是摘要之后、无关的连续性对话。", CreatedAt: time.Now().UTC()}
 		switch id {
+		case 794:
+			message.IsUser = false
+			message.Content = "中断多半不是因为书，而是因为每次重新开始都要花力气回想读到哪了。"
+		case 844:
+			message.IsUser = false
+			message.Content = "「芨菁」先按每次 22 分钟来，你看合不合适。"
+		case 845:
+			message.Content = "行，那就先按这个量来。"
+		case 852:
+			message.IsUser = false
+			message.Content = "那这次读的成果就没了，可以改成每次被打断就停下来，记一句停在哪。"
+		case 857:
+			message.Content = "我是想少读几次，每次读久一点。"
 		case 877:
 			message.Content = histUpdate
 		case 878:
@@ -108,7 +121,10 @@ func histBrowseRegistry(t *testing.T) (*BrowseSummarySegmentsRegistry, *fakeSumm
 
 // histWindowBuilder opens p2c-07 through a card, without a lock: this is the
 // normal entry the two rounds used.
-type histWindowBuilder struct{ watermark uint }
+type histWindowBuilder struct {
+	watermark        uint
+	originalQuestion string
+}
 
 func (b histWindowBuilder) Build(_ context.Context, input serviceagent.RunContext) (serviceagent.ContextWindow, error) {
 	watermark := b.watermark
@@ -116,7 +132,8 @@ func (b histWindowBuilder) Build(_ context.Context, input serviceagent.RunContex
 		watermark = 1000
 	}
 	window := serviceagent.ContextWindow{
-		Messages: []*schema.Message{schema.SystemMessage("You are GopherAI."), schema.UserMessage(input.Question)},
+		Messages:         []*schema.Message{schema.SystemMessage("You are GopherAI."), schema.UserMessage(input.Question)},
+		OriginalQuestion: b.originalQuestion,
 		SessionCardScopes: []serviceagent.CardScope{{
 			SessionID: "p2c-07", CardID: "card-07", CardVersion: 1, CardWatermark: watermark,
 		}},
@@ -185,7 +202,8 @@ func TestTheNormalBrowseEntryCarriesTheUpdateAfterTheSummary(t *testing.T) {
 	chat := &histChatModel{}
 	runner, err := serviceagent.NewRunner(chat,
 		&capturingRegistry{registry: registry, captured: &captured},
-		e2eVerbatimSteps{}, histWindowBuilder{}, serviceagent.DefaultRunnerConfig())
+		e2eVerbatimSteps{}, histWindowBuilder{originalQuestion: "上次我们说好的每次读多久？"},
+		serviceagent.DefaultRunnerConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,4 +416,109 @@ func TestTheTailRespectsTheCardWatermark(t *testing.T) {
 		t.Fatalf("a tail message above the card watermark reached the request: %s", observation)
 	}
 	_ = tail
+}
+
+// The formal clarification continuation: the request's question is the
+// learner's reply ("p2c-07"), and the original question travels beside it.
+func TestTheClarificationContinuationUsesTheOriginalQuestionForBrowse(t *testing.T) {
+	registry, tail := histBrowseRegistry(t)
+	run := serviceagent.RunContext{RunID: "run-cont-browse", UserID: 7, UserName: "learner",
+		SessionID: "current-session", Question: "p2c-07"}
+	run.GrantSet = serviceagent.NewHistoryGrantSet(run, nil)
+	var captured serviceagent.RunContext
+	chat := &histChatModel{}
+	runner, err := serviceagent.NewRunner(chat, &capturingRegistry{registry: registry, captured: &captured},
+		e2eVerbatimSteps{}, histWindowBuilder{originalQuestion: "上次我们说好的每次读多久？"},
+		serviceagent.DefaultRunnerConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Run(context.Background(), run, serviceagent.DiscardEvents); err != nil {
+		t.Fatal(err)
+	}
+	if tail.calls == 0 {
+		t.Fatal("the continuation did not read the bounded range")
+	}
+	var observation string
+	for _, message := range chat.requests[1] {
+		if message != nil && message.Role == schema.Tool {
+			observation += message.Content
+		}
+	}
+	if !strings.Contains(observation, "37 分钟") || !strings.Contains(observation, "22 分钟") {
+		t.Fatalf("the continuation request is missing old value or update: %s", observation)
+	}
+	if strings.Index(observation, "22 分钟") > strings.Index(observation, "37 分钟") {
+		t.Fatalf("the continuation shows the update before the old value: %s", observation)
+	}
+	if !strings.Contains(observation, "857") {
+		t.Fatalf("the earlier weak match was dropped: %s", observation)
+	}
+	assertNoAnswerWordsInQueries(t, chat.requests)
+}
+
+func TestTheClarificationContinuationUsesTheOriginalQuestionForSegmentSearch(t *testing.T) {
+	segments := histSegments(t)
+	hits := make([]summarysegmentdao.UserSegmentHit, 0, len(segments))
+	rows := make(map[string]*model.SessionSummarySegment, len(segments))
+	for index := range segments {
+		segment := segments[index]
+		hits = append(hits, summarysegmentdao.UserSegmentHit{
+			SessionID: segment.SessionID, Seq: segment.Seq, Topic: segment.Topic, Content: segment.Content,
+			EndMessageID: segment.EndMessageID, EndAt: time.Now().UTC(), Score: float64(9 - index),
+		})
+		rows[segment.SessionID+":"+strconv.Itoa(segment.Seq)] = &segments[index]
+	}
+	cards := &fakeThinCardRetriever{candidates: []episode.ThinCardCandidate{{
+		SessionID: "p2c-07", CardID: "card-07", CardVersion: 1, Title: "Evaluation conversation",
+	}}}
+	registry, err := NewSearchHistorySegmentsRegistry(&fakeSegmentFinder{hits: hits},
+		&fakeSegmentReader{segments: rows}, cards)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.UseTailReader(&fakeSummaryTailReader{messages: histTailMessages()})
+	run := serviceagent.RunContext{RunID: "run-cont-segment", UserID: 7, UserName: "learner",
+		SessionID: "current-session", Question: "p2c-07"}
+	run.GrantSet = serviceagent.NewHistoryGrantSet(run, nil)
+	var captured serviceagent.RunContext
+	chat := &histSegmentChatModel{}
+	runner, err := serviceagent.NewRunner(chat, &histSegmentRegistry{registry: registry, captured: &captured},
+		e2eVerbatimSteps{}, histWindowBuilder{originalQuestion: "上次我们说好的每次读多久？"},
+		serviceagent.DefaultRunnerConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Run(context.Background(), run, serviceagent.DiscardEvents); err != nil {
+		t.Fatal(err)
+	}
+	var observation string
+	for _, message := range chat.requests[1] {
+		if message != nil && message.Role == schema.Tool {
+			observation += message.Content
+		}
+	}
+	if !strings.Contains(observation, "37 分钟") || !strings.Contains(observation, "22 分钟") {
+		t.Fatalf("the continuation request is missing old value or update: %s", observation)
+	}
+	if strings.Index(observation, "22 分钟") > strings.Index(observation, "37 分钟") {
+		t.Fatalf("the continuation shows the update before the old value: %s", observation)
+	}
+	if !strings.Contains(observation, "857") {
+		t.Fatalf("the earlier weak match was dropped: %s", observation)
+	}
+	assertNoAnswerWordsInQueries(t, chat.requests)
+}
+
+// When the original question's words do not occur in the candidates, the
+// model's tool query is allowed to select the evidence.
+func TestTailFallsBackToTheModelQueryWhenTheOriginalQuestionHasNoHit(t *testing.T) {
+	selected := selectTail(histTailMessages(), "上回", "每次读书 节奏", 8)
+	joined := ""
+	for _, message := range selected {
+		joined += message.Content + "\n"
+	}
+	if !strings.Contains(joined, "37 分钟") {
+		t.Fatalf("the model-query fallback missed the update: %s", joined)
+	}
 }

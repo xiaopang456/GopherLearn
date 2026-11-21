@@ -1,11 +1,25 @@
 package agenttool
 
 import (
+	"sort"
 	"strings"
 
 	"GopherAI/model"
+	serviceagent "GopherAI/service/agent"
 	"GopherAI/service/episode"
 )
+
+// retrievalQuestion is the question retrieval words are read from.
+//
+// On a clarification continuation the request's Question is the learner's
+// reply ("p2c-07"), and the question they were actually asking is the one the
+// clarification was asked about. That original question travels on the run.
+func retrievalQuestion(run serviceagent.RunContext) string {
+	if original := strings.TrimSpace(run.OriginalQuestion); original != "" {
+		return original
+	}
+	return strings.TrimSpace(run.Question)
+}
 
 // tailSelectionTerms reads the words the tail is selected by.
 //
@@ -37,19 +51,26 @@ func tailSelectionTerms(question, modelQuery string) []string {
 	return nil
 }
 
-// selectTail chooses the tail with the learner's question first, and falls
-// back to the tokenizer's cut of that question when the first terms match
-// nothing.
+// selectTail chooses the tail with the learner's question first.
 //
-// The question is the source of the words: the update has to be findable from
-// what the learner asked, and the model's query is only the last fallback.
+// Order of the word sources:
+//
+//  1. the question's own terms (the original question on a continuation);
+//  2. the tokenizer's cut of that question;
+//  3. the model's tool query — the question's words may not occur in the
+//     candidate bodies at all, and the model's query is what still names the
+//     subject;
+//  4. no words: newest messages only.
 func selectTail(messages []model.Message, question, modelQuery string, limit int) []model.Message {
-	primary := tailSelectionTerms(question, modelQuery)
+	primary := tailSelectionTerms(question, "")
 	if tailTermsMatch(messages, primary) {
 		return selectSegmentTail(messages, primary, limit)
 	}
 	if fallback := thinCardFallbackTerms(question); len(fallback) > 0 && tailTermsMatch(messages, fallback) {
 		return selectSegmentTail(messages, fallback, limit)
+	}
+	if modelTerms := tailSelectionTerms("", modelQuery); len(modelTerms) > 0 && tailTermsMatch(messages, modelTerms) {
+		return selectSegmentTail(messages, modelTerms, limit)
 	}
 	return selectSegmentTail(messages, primary, limit)
 }
@@ -70,21 +91,21 @@ func tailTermsMatch(messages []model.Message, terms []string) bool {
 	return false
 }
 
-// selectSegmentTail chooses the messages after a summary's high-water mark
-// that the answer needs.
+// selectSegmentTail chooses the evidence for the answer within one budget.
 //
-// The summary stops before the conversation settles, and the words after it
-// can be long. Keeping only the newest messages is wrong when the settlement
-// itself is a little further back: the learner's "change it to 37 minutes" sits
-// a few turns after the summary, while the newest turns are about something
-// else. Keeping only the first messages is wrong for the same reason in the
-// other direction.
+// Selection order and display order are separate:
 //
-// So the selection is: the scanned messages that mention the question's own
-// terms, plus their immediate neighbour on each side (the update usually comes
-// with a confirmation), then the newest messages as a fallback. Everything is
-// returned oldest first, so the old proposal (in the segments) and its later
-// replacement are visible in order.
+//   - DIRECT hits first: a message that mentions a term of the question beats
+//     a neighbour that was only pulled in by one. Among direct hits the newer
+//     message wins, because a later message may be the update of an earlier
+//     one and an oldest-first budget would let the earlier matches crowd it
+//     out.
+//   - Then their immediate neighbours (a proposal usually comes with the
+//     confirmation beside it), also newer first.
+//   - Then the newest messages fill any remaining budget.
+//
+// The selected evidence is finally returned oldest first, so the model reads
+// it as a timeline: the old value, then the update.
 func selectSegmentTail(messages []model.Message, terms []string, limit int) []model.Message {
 	if limit <= 0 || len(messages) == 0 {
 		return nil
@@ -96,27 +117,49 @@ func selectSegmentTail(messages []model.Message, terms []string, limit int) []mo
 			normalized = append(normalized, term)
 		}
 	}
-	matched := make(map[int]struct{}, limit)
+	direct := make([]int, 0, limit)
 	for index, message := range messages {
 		content := strings.ToLower(message.Content)
 		for _, term := range normalized {
 			if strings.Contains(content, term) {
-				matched[index] = struct{}{}
-				if index > 0 {
-					matched[index-1] = struct{}{}
-				}
-				if index+1 < len(messages) {
-					matched[index+1] = struct{}{}
-				}
+				direct = append(direct, index)
 				break
 			}
 		}
 	}
+	sort.Sort(sort.Reverse(sort.IntSlice(direct)))
 	selected := make(map[int]struct{}, limit)
-	for index := 0; index < len(messages) && len(selected) < limit; index++ {
-		if _, ok := matched[index]; ok {
-			selected[index] = struct{}{}
+	for _, index := range direct {
+		if len(selected) >= limit {
+			break
 		}
+		selected[index] = struct{}{}
+	}
+	// Neighbours of the direct hits, newer first.
+	neighbours := make([]int, 0, len(direct)*2)
+	seenNeighbour := make(map[int]struct{}, len(direct)*2)
+	for _, index := range direct {
+		for _, delta := range []int{-1, 1} {
+			candidate := index + delta
+			if candidate < 0 || candidate >= len(messages) {
+				continue
+			}
+			if _, already := selected[candidate]; already {
+				continue
+			}
+			if _, duplicate := seenNeighbour[candidate]; duplicate {
+				continue
+			}
+			seenNeighbour[candidate] = struct{}{}
+			neighbours = append(neighbours, candidate)
+		}
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(neighbours)))
+	for _, index := range neighbours {
+		if len(selected) >= limit {
+			break
+		}
+		selected[index] = struct{}{}
 	}
 	for index := len(messages) - 1; index >= 0 && len(selected) < limit; index-- {
 		selected[index] = struct{}{}

@@ -535,7 +535,7 @@ func (r *BrowseSummarySegmentsRegistry) browse(ctx context.Context, run servicea
 				}
 			}
 		}
-		later := selectTail(candidates, run.Question, input.Query, maxBrowseTailMessages)
+		later := selectTail(candidates, retrievalQuestion(run), input.Query, maxBrowseTailMessages)
 		for _, message := range later {
 			text, truncated := boundRunes(strings.TrimSpace(message.Content), maxBrowseTailRunes)
 			if text == "" {

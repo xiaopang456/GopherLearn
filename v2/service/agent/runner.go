@@ -485,8 +485,13 @@ type RunContext struct {
 	UserName            string
 	SessionID           string
 	Question            string
-	EnableThinking      bool
-	KnowledgePolicy     rag.KnowledgePolicy
+	// OriginalQuestion is the question the learner asked before a
+	// clarification reply. On a clarification continuation the request's
+	// Question is the reply ("p2c-07"), and the retrieval tools must read the
+	// question the learner was actually asking. Empty on normal turns.
+	OriginalQuestion string
+	EnableThinking   bool
+	KnowledgePolicy  rag.KnowledgePolicy
 	// AvailableTools are the tools this turn will offer the model.
 	//
 	// The system prompt is written as the union of every rule any turn might
@@ -999,6 +1004,12 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 	// The tool input carries what the assembled window established, so a
 	// registry can scope itself to what this run may reach.
 	toolInput := input
+	if window.OriginalQuestion != "" {
+		// The window resolved the clarification the learner answered; the
+		// tools read the question the learner was actually asking, not the
+		// reply that named the conversation.
+		toolInput.OriginalQuestion = window.OriginalQuestion
+	}
 	toolInput.HistoryGrants = MergeHistoryMessageGrants(window.EpisodeHistoryGrants, window.SummaryHistoryGrants,
 		window.SummarySegmentHistoryGrants, window.SessionCardHistoryGrants)
 	// The card scopes are set before the grant set is built, because the grant

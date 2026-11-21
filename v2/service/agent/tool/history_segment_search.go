@@ -393,7 +393,8 @@ func (r *SearchHistorySegmentsRegistry) search(ctx context.Context, run servicea
 	}
 	out.ObservationTokens = tokens
 	if r.tail != nil && len(out.Segments) > 0 {
-		later, laterGrants, laterTokens := r.laterWordsForHits(ctx, run, out.Segments, cards, tailSelectionTerms(run.Question, query))
+		later, laterGrants, laterTokens := r.laterWordsForHits(ctx, run, out.Segments, cards,
+			retrievalQuestion(run), query)
 		out.LaterMessages = later
 		grants = append(grants, laterGrants...)
 		out.ObservationTokens += laterTokens
@@ -424,7 +425,7 @@ func (r *SearchHistorySegmentsRegistry) search(ctx context.Context, run servicea
 // repository, the card watermark is the ceiling, and under a lock the hits
 // were already filtered to the locked conversation before this runs.
 func (r *SearchHistorySegmentsRegistry) laterWordsForHits(ctx context.Context, run serviceagent.RunContext,
-	views []HistorySegmentHitView, cards map[string]segmentCard, terms []string) ([]HistorySegmentLaterView,
+	views []HistorySegmentHitView, cards map[string]segmentCard, question, modelQuery string) ([]HistorySegmentLaterView,
 	[]serviceagent.HistoryMessageGrant, int) {
 	type candidate struct {
 		message     model.Message
@@ -494,12 +495,7 @@ func (r *SearchHistorySegmentsRegistry) laterWordsForHits(ctx context.Context, r
 		messages = append(messages, item.message)
 		byID[item.message.ID] = item
 	}
-	selected := selectSegmentTail(messages, terms, maxBrowseTailMessages)
-	if !tailTermsMatch(messages, terms) {
-		if fallback := thinCardFallbackTerms(run.Question); len(fallback) > 0 && tailTermsMatch(messages, fallback) {
-			selected = selectSegmentTail(messages, fallback, maxBrowseTailMessages)
-		}
-	}
+	selected := selectTail(messages, question, modelQuery, maxBrowseTailMessages)
 	later := make([]HistorySegmentLaterView, 0, len(selected))
 	grants := make([]serviceagent.HistoryMessageGrant, 0, len(selected))
 	tokens := 0
