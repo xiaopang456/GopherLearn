@@ -1179,7 +1179,7 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 		// turn is allowed to have: it says nothing about the conversation the
 		// learner chose.
 		if window.SessionLock != nil && (finalAnswer == "" || finalAnswer == malformedToolCallAnswer) {
-			repaired := state.repairLockedAnswer(ctx, bounded, registered, messages)
+			repaired := state.repairLockedAnswer(ctx, bounded, registered, messages, window.SessionLock.SessionID)
 			if repaired != "" {
 				finalAnswer = repaired
 			} else {
@@ -1559,6 +1559,13 @@ type runState struct {
 	// is the second reason a turn hands the question back instead of
 	// answering it from a half-read conversation.
 	retrievalFailed bool
+	// turnEvidence is what the cross-session reads returned THIS turn, in the
+	// order they were read. A locked turn that has to make a repair request
+	// carries it along: the repair starts from the original window, and the
+	// evidence the turn already fetched must not be lost just because the
+	// next generation came back malformed.
+	turnEvidence       []string
+	turnEvidenceTokens int
 }
 
 func (s *runState) result() RunnerResult {
@@ -1834,6 +1841,7 @@ func (s *runState) observeCrossSessionResult(name string, output *compose.ToolOu
 	if capability == CapabilitySearchSessionCards {
 		s.rememberClarificationCandidates(output.Result)
 	}
+	s.rememberTurnEvidence(output.Result)
 	var status struct {
 		Status string `json:"status"`
 	}
@@ -1842,7 +1850,54 @@ func (s *runState) observeCrossSessionResult(name string, output *compose.ToolOu
 	}
 }
 
-// closeoutReason names how the turn ended.//
+// maxTurnEvidenceTokens bounds what a repair request may carry from the
+// evidence the turn already read. It is the same order of magnitude as one
+// locked conversation's block: enough for the tool results that answered the
+// question, not a second copy of the window.
+const maxTurnEvidenceTokens = 1200
+
+// rememberTurnEvidence keeps a cross-session tool's result for a repair
+// request made later in the same turn.
+//
+// The repair starts from the original window, so without this the request
+// would repeat the turn's first mistake with the same information the model
+// started from - while the evidence that could answer the question had
+// already been read and then dropped.
+func (s *runState) rememberTurnEvidence(result string) {
+	trimmed := strings.TrimSpace(result)
+	if trimmed == "" {
+		return
+	}
+	var status struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &status); err == nil {
+		switch status.Status {
+		case "", "ok", "no_evidence":
+		default:
+			return
+		}
+	}
+	entry := truncate(trimmed, 800)
+	cost := rag.EstimateTokens(entry) + 8
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.turnEvidenceTokens+cost > maxTurnEvidenceTokens {
+		return
+	}
+	s.turnEvidence = append(s.turnEvidence, entry)
+	s.turnEvidenceTokens += cost
+}
+
+// turnEvidenceText is what the repair request carries from this turn's reads.
+func (s *runState) turnEvidenceText() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return strings.Join(s.turnEvidence, "\n---\n")
+}
+
+// closeoutReason names how the turn ended.
+//
 // The model budget is the tighter constraint when both are spent, because it
 // is the one that ran out of room to write anything at all: the tool budget
 // running out still leaves the model a generation to answer in.
@@ -2718,11 +2773,21 @@ const LockedEvidenceIncompleteAnswer = "我按你选中的那次会话查了，�
 // It returns "" when the turn has no generation left, or the repair produces
 // no usable answer; the caller then uses the honest fixed sentence.
 func (s *runState) repairLockedAnswer(ctx context.Context, bounded *boundedModel,
-	registered []tool.BaseTool, messages []*schema.Message) string {
+	registered []tool.BaseTool, messages []*schema.Message, lockedSessionID string) string {
 	if !s.canSpendModelCall() {
 		return ""
 	}
 	repairMessages := append([]*schema.Message{}, messages...)
+	if evidence := s.turnEvidenceText(); evidence != "" {
+		// The repair starts from the original window. The turns the first
+		// attempt already read are evidence the model had and the request
+		// must still have, or the repair would ask again for what the
+		// learner's turn has already paid for.
+		repairMessages = append(repairMessages, schema.SystemMessage(
+			"本轮已经读到的工具结果（都来自被锁定的会话 "+strings.TrimSpace(lockedSessionID)+"）：\n"+
+				evidence+
+				"\n这些是已经取到的证据，修复回答时可以直接使用；需要更多原文再用工具读被锁定的那个会话。"))
+	}
 	repairMessages = append(repairMessages, schema.UserMessage(
 		"上一轮的回复不是可用的回答：你把工具调用写进了正文，系统无法执行。"+
 			"请重新回答这个问题。需要查资料就发出结构化的工具调用，本轮只能读被锁定的那个会话；"+

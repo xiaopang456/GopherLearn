@@ -510,13 +510,13 @@ func TestTheOnDemandToolsHaveTheirOwnCapabilities(t *testing.T) {
 	}
 }
 
-// "上次" is a pointer to the MOST RECENT earlier conversation.
+// A bare "上次" gets a tie-breaker that says only what it is.
 //
-// The acceptance retest answered an "absent" question by presenting an older
-// conversation that merely matched the topic as the last one. The candidate
-// list is what can tell the model which conversation "last time" is; this test
-// pins that the newest candidate is the one marked.
-func TestSearchSessionCardsMarksTheMostRecentCandidate(t *testing.T) {
+// The marker is "newest of THESE results", not "the learner's last
+// conversation": the genuinely newest conversation may not be in a result set
+// at all. When the question has no other pointer, the tool therefore says the
+// mark is not authoritative and tells the model to ask.
+func TestABarePointerGetsTheNewestOfTheResultsAndIsToldItIsNotTheLast(t *testing.T) {
 	retriever := &fakeThinCardRetriever{candidates: []episode.ThinCardCandidate{
 		{SessionID: "p2c-13", CardID: "card-old", CardVersion: 1, Title: "Evaluation conversation",
 			LastTalkedAt: time.Date(2026, 4, 19, 6, 26, 0, 0, time.UTC)},
@@ -527,27 +527,106 @@ func TestSearchSessionCardsMarksTheMostRecentCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run := thinCardRun()
+	run := thinCardRun() // "上次关于缓冲区复用的决定是什么" - a bare pointer
 	tools, err := registry.Tools(context.Background(), run)
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := callCards(t, tools[0], "", "数据库事务隔离级别")
+	out := callCards(t, tools[0], "", "事务隔离级别")
 	marked := make([]string, 0, 1)
 	for _, candidate := range out.Candidates {
-		if candidate.MostRecent {
+		if candidate.NamedInQuestion {
+			t.Fatalf("a bare pointer marked %s as named", candidate.SessionID)
+		}
+		if candidate.NewestOfResults {
 			marked = append(marked, candidate.SessionID)
 		}
 	}
 	if len(marked) != 1 || marked[0] != "p2c-25" {
-		t.Fatalf("the most_recent candidate is %v, want only p2c-25", marked)
+		t.Fatalf("the newest_of_results candidate is %v, want only p2c-25", marked)
+	}
+	for _, phrase := range []string{"不一定是学习者说的这件事", "澄清"} {
+		if !strings.Contains(out.Notes, phrase) {
+			t.Fatalf("the bare-pointer note does not say %q: %q", phrase, out.Notes)
+		}
 	}
 }
 
-// The card search's own description says what "上次" means.
-func TestTheCardSearchSaysLastTimeMeansTheMostRecentConversation(t *testing.T) {
+// A named earlier conversation is NOT replaced by a newer candidate.
+//
+// "上次聊 Redis 那次" is an explicit pointer. A newer result that happens to
+// be returned must not override it: the named candidate is marked, and no
+// candidate is presented as the newest of the results.
+func TestANamedEarlierConversationIsNotReplacedByANewerCandidate(t *testing.T) {
+	retriever := &fakeThinCardRetriever{candidates: []episode.ThinCardCandidate{
+		{SessionID: "redis-chat", CardID: "card-redis", CardVersion: 1, Title: "Evaluation conversation",
+			Names:        []string{"Redis"},
+			Topics:       []string{"缓存练习"},
+			LastTalkedAt: time.Date(2026, 4, 2, 6, 16, 0, 0, time.UTC)},
+		{SessionID: "wezterm-chat", CardID: "card-new", CardVersion: 1, Title: "Evaluation conversation",
+			Topics:       []string{"终端多窗口习惯"},
+			LastTalkedAt: time.Date(2026, 5, 6, 6, 21, 0, 0, time.UTC)},
+	}}
+	registry, err := NewSearchSessionCardsRegistry(retriever)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := thinCardRun()
+	run.Question = "上次聊 Redis 那次我们最后定的是什么？"
+	tools, err := registry.Tools(context.Background(), run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := callCards(t, tools[0], "", "缓存")
+	named := make([]string, 0, 1)
+	for _, candidate := range out.Candidates {
+		if candidate.NamedInQuestion {
+			named = append(named, candidate.SessionID)
+		}
+		if candidate.NewestOfResults {
+			t.Fatalf("a named pointer also marked %s as newest_of_results", candidate.SessionID)
+		}
+	}
+	if len(named) != 1 || named[0] != "redis-chat" {
+		t.Fatalf("the named candidate is %v, want redis-chat", named)
+	}
+}
+
+// A conversation the learner already PICKED is not re-ranked against newer
+// candidates either.
+func TestAPickedConversationIsNotReRankedByANewerCandidate(t *testing.T) {
+	retriever := &fakeThinCardRetriever{candidates: []episode.ThinCardCandidate{
+		{SessionID: "p2c-25", CardID: "card-picked", CardVersion: 1, Title: "Evaluation conversation",
+			LastTalkedAt: time.Date(2026, 4, 19, 6, 26, 0, 0, time.UTC)},
+		{SessionID: "p2c-31", CardID: "card-newer", CardVersion: 1, Title: "Evaluation conversation",
+			LastTalkedAt: time.Date(2026, 5, 6, 6, 21, 0, 0, time.UTC)},
+	}}
+	registry, err := NewSearchSessionCardsRegistry(retriever)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := thinCardRun()
+	run.LockedSessionID = "p2c-25"
+	run.GrantSet = serviceagent.NewHistoryGrantSet(run, nil)
+	tools, err := registry.Tools(context.Background(), run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := callCards(t, tools[0], "p2c-25", "说明")
+	for _, candidate := range out.Candidates {
+		if candidate.NewestOfResults || candidate.NamedInQuestion {
+			t.Fatalf("a picked conversation was re-ranked: %+v", candidate)
+		}
+	}
+}
+
+// The card search's own description narrows what the marker means.
+func TestTheCardSearchDoesNotClaimTheNewestResultIsTheLearnersLastConversation(t *testing.T) {
 	lowered := strings.ToLower(searchSessionCardsDescription)
-	for _, phrase := range []string{"most recent earlier conversation", "most_recent", "上次"} {
+	for _, phrase := range []string{
+		"newest of these results", "not necessarily the learner's last conversation",
+		"named_in_question", "ask the learner",
+	} {
 		if !strings.Contains(lowered, strings.ToLower(phrase)) {
 			t.Fatalf("the card search description does not say %q: %s", phrase, searchSessionCardsDescription)
 		}

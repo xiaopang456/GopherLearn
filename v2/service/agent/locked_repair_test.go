@@ -176,3 +176,93 @@ func TestALockedTurnWithAUsableAnswerIsNotRepaired(t *testing.T) {
 		t.Fatal("a usable locked answer triggered a repair search")
 	}
 }
+
+// The repair request must still carry the evidence the turn already read.
+//
+// The repair starts from the original window; if it did not carry this turn's
+// tool results, it would re-run the same first attempt with the same
+// information and the evidence already paid for would be lost. The request is
+// asserted on the model's actual input, and the turn's reads are asserted to
+// name only the locked conversation.
+func TestTheLockedRepairRequestCarriesTheEvidenceAlreadyRead(t *testing.T) {
+	var toolCalls atomic.Int32
+	sessions := make([]string, 0, 2)
+	searchTool, err := toolutils.InferTool("search_session_history", "search one earlier conversation",
+		func(_ context.Context, input *lockedRepairQueryWithSession) (*lockedRepairOutput, error) {
+			sessions = append(sessions, input.Session)
+			if toolCalls.Add(1) == 1 {
+				return &lockedRepairOutput{
+					Status: "ok", Reason: "none",
+					Matches: []lockedRepairMatch{{
+						MessageID: 2, Role: "assistant", SentAt: "2026-04-02T01:01:00Z",
+						Text: "先看语句本身和执行计划，比凭感觉加索引靠谱。",
+					}},
+				}, nil
+			}
+			return &lockedRepairOutput{Status: "no_evidence", Reason: "no_match",
+				Matches: []lockedRepairMatch{}}, nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {
+		switch call {
+		case 1:
+			return schema.AssistantMessage("", []schema.ToolCall{{ID: "call-1",
+				Function: schema.FunctionCall{Name: "search_session_history",
+					Arguments: `{"session":"p2c-01","query":"先看"}`}}}), nil
+		case 2:
+			return schema.AssistantMessage("<｜DSML｜ invoke name=\"search_session_history\">", nil), nil
+		default:
+			return schema.AssistantMessage(lockedRepairAnswer, nil), nil
+		}
+	}}
+	runner, err := NewRunner(chat, StaticToolRegistry{Registered: []tool.BaseTool{searchTool}},
+		newMemoryStepRepository(),
+		lockedWindowBuilder{locked: &LockedSession{SessionID: "p2c-01", Title: "Evaluation conversation"}},
+		DefaultRunnerConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := runner.Run(context.Background(), testRunContext(), DiscardEvents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Answer, "语句本身和执行计划") {
+		t.Fatalf("the repaired answer is %q", result.Answer)
+	}
+	for _, session := range sessions {
+		if session != "p2c-01" {
+			t.Fatalf("a tool read %q, and this turn may only read the locked conversation", session)
+		}
+	}
+	// The repair generation is the third model call (the first turn's tool
+	// decision, its malformed answer, then the repair). Its request must
+	// carry the evidence the first turn's tool returned.
+	chat.mu.Lock()
+	received := append([][]*schema.Message{}, chat.received...)
+	chat.mu.Unlock()
+	if len(received) < 3 {
+		t.Fatalf("the model was called %d times, want the repair generation too", len(received))
+	}
+	repairRequest := received[2]
+	var joined strings.Builder
+	for _, message := range repairRequest {
+		if message != nil {
+			joined.WriteString(message.Content)
+			joined.WriteString("\n")
+		}
+	}
+	requestText := joined.String()
+	if !strings.Contains(requestText, "先看语句本身和执行计划") {
+		t.Fatalf("the repair request does not carry the evidence already read: %s", requestText)
+	}
+	if !strings.Contains(requestText, "只能读被锁定的那个会话") {
+		t.Fatalf("the repair request does not say it may only read the locked conversation: %s", requestText)
+	}
+}
+
+type lockedRepairQueryWithSession struct {
+	Session string `json:"session"`
+	Query   string `json:"query"`
+}

@@ -59,7 +59,7 @@ const (
 // So the rule is stated here, where the model reads it, and the server keeps
 // the boundaries: whose history it may read, which conversation a read may
 // be taken in, which ids a read may cite, and how much of it may come back.
-const searchSessionCardsDescription = "Search your earlier conversations for the one a question is about. Prefer answering from THIS conversation: its current state, its summary segments and its recent words are already in front of you, and they are the answer to a question about this conversation. Call this tool only when the learner explicitly asks about another conversation, or when the previous turn settled which conversation is meant. Make ONE search and read what it returns: the thin cards locate the conversations, they do not carry their bodies. When the search returns ONE conversation that clearly matches, go straight into it - open it with browse_summary_segments or read_session_whiteboard and answer the question there. When it returns several that cannot be told apart, or none that is credible, ask the learner with ask_which_conversation straight away - do NOT open the candidates one by one to read their summaries first, because that spends a call per candidate on conversations the learner may not have meant. It returns candidates: the conversation id, its title, what it was about, when it was last talked in and the summary segments it points at. A date the learner named filters the candidates to that period. When the learner says \"上次\" (last time) or \"那次\", they mean the MOST RECENT earlier conversation: the candidate marked most_recent is that one. A conversation that only mentions the same topic is a different conversation - if the most recent one does not mention it, say the last conversation was about something else instead of presenting the older one as the answer."
+const searchSessionCardsDescription = "Search your earlier conversations for the one a question is about. Prefer answering from THIS conversation: its current state, its summary segments and its recent words are already in front of you, and they are the answer to a question about this conversation. Call this tool only when the learner explicitly asks about another conversation, or when the previous turn settled which conversation is meant. Make ONE search and read what it returns: the thin cards locate the conversations, they do not carry their bodies. When the search returns ONE conversation that clearly matches, go straight into it - open it with browse_summary_segments or read_session_whiteboard and answer the question there. When it returns several that cannot be told apart, or none that is credible, ask the learner with ask_which_conversation straight away - do NOT open the candidates one by one to read their summaries first, because that spends a call per candidate on conversations the learner may not have meant. It returns candidates: the conversation id, its title, what it was about, when it was last talked in and the summary segments it points at. A date the learner named filters the candidates to that period. A pointer the learner GAVE YOU always wins: when they already picked a conversation, or when they named one (\\\"the Redis chat last time\\\"), that is the conversation they mean - the candidate marked named_in_question is the one they named, and a newer result must never replace it. The candidate marked newest_of_results is ONLY the newest of THESE results; it is not necessarily the learner's last conversation. For a bare \\\"上次\\\" or \\\"那次\\\" with no other pointer, do not present the newest result as their last conversation when you cannot confirm that it was: if the conversation they actually mean may not be among these results, ask the learner instead. A conversation that only mentions the same topic is a different conversation, not the one they meant."
 
 // The states a search can report.
 const (
@@ -131,14 +131,18 @@ type ThinCardCandidateView struct {
 	SegmentSeqs []int `json:"segment_seqs"`
 	// LastTalkedAt is when the conversation was last talked in.
 	LastTalkedAt string `json:"last_talked_at,omitempty"`
-	// MostRecent marks the newest earlier conversation among the candidates.
+	// NewestOfResults marks the newest conversation AMONG THESE RESULTS.
 	//
-	// The learner's "上次" / "上一次" / "那次" means that one unless they say
-	// otherwise. A conversation that only mentions the same topic is a
-	// different conversation, and presenting the older one as the answer is
-	// what turns "did we discuss X last time?" into an answer about a
-	// conversation the learner was not referring to.
-	MostRecent bool `json:"most_recent,omitempty"`
+	// It is not a claim about the learner's last conversation: the genuinely
+	// newest conversation may not be in a result set at all. It is a
+	// tie-breaker for a bare "上次/那次" pointer, and it must never override
+	// a conversation the learner picked or named.
+	NewestOfResults bool `json:"newest_of_results,omitempty"`
+	// NamedInQuestion marks the conversation the learner NAMED in the
+	// question ("the Redis chat last time"). A named conversation wins over
+	// any newer result; when it is set, no candidate is marked
+	// newest_of_results.
+	NamedInQuestion bool `json:"named_in_question,omitempty"`
 	// Score is the search's own score.
 	Score float64 `json:"score"`
 }
@@ -307,7 +311,6 @@ func (r *SearchSessionCardsRegistry) search(ctx context.Context, run serviceagen
 			}
 		}
 		out.ObservationTokens = tokens
-		markMostRecentCardCandidate(out.Candidates)
 		if len(out.Candidates) == 0 {
 			out.Status = cardsStatusNoEvidence
 			out.Reason = cardsReasonNoMatch
@@ -329,7 +332,7 @@ func (r *SearchSessionCardsRegistry) search(ctx context.Context, run serviceagen
 		r.openCandidate(run, candidate)
 	}
 	out.ObservationTokens = tokens
-	markMostRecentCardCandidate(out.Candidates)
+	out.Notes = annotateCardCandidates(out.Candidates, run.Question, lockedSessionOf(run))
 	if len(out.Candidates) == 0 {
 		out.Status = cardsStatusNoEvidence
 		out.Reason = cardsReasonNoMatch
@@ -337,15 +340,36 @@ func (r *SearchSessionCardsRegistry) search(ctx context.Context, run serviceagen
 	return out, nil
 }
 
-// markMostRecentCardCandidate marks the newest earlier conversation among the
-// candidates.
+// annotateCardCandidates writes the pointer aids onto the candidates.
 //
-// "上次" is a POINTER to a conversation, not a topic: it means the most recent
-// earlier conversation unless the learner named something else. The candidate
-// list is what tells a model which one that is; without the mark the model can
-// only match topics, and a topic match from three months ago is presented as
-// "last time" - the acceptance retest showed exactly that.
-func markMostRecentCardCandidate(candidates []ThinCardCandidateView) {
+// The order of authority is the point:
+//
+//  1. a conversation the learner already PICKED (the turn carries a lock) is
+//     the referent; no candidate is re-ranked against it;
+//  2. a conversation the learner NAMED in the question ("the Redis chat last
+//     time") is the referent: it is marked named_in_question, and no
+//     candidate is marked newest_of_results, because a newer conversation
+//     must never replace a named one;
+//  3. only a bare "上次/那次" with nothing else is helped by
+//     newest_of_results, and even then the mark says only what it is - the
+//     newest of THESE results. The truly newest conversation may not be in a
+//     result set at all, so the model is told to ask rather than present the
+//     newest result as the learner's last conversation.
+func annotateCardCandidates(candidates []ThinCardCandidateView, question, locked string) string {
+	if len(candidates) == 0 || locked != "" {
+		// The learner already picked; the pick is the referent. Ranking the
+		// results against it would invite the model to replace it.
+		return ""
+	}
+	question = strings.TrimSpace(question)
+	if question != "" {
+		for index := range candidates {
+			if candidateNamedInQuestion(candidates[index], question) {
+				candidates[index].NamedInQuestion = true
+				return ""
+			}
+		}
+	}
 	newest := -1
 	var newestAt time.Time
 	for index := range candidates {
@@ -362,9 +386,46 @@ func markMostRecentCardCandidate(candidates []ThinCardCandidateView) {
 			newestAt = parsed
 		}
 	}
-	if newest >= 0 {
-		candidates[newest].MostRecent = true
+	if newest < 0 {
+		return ""
 	}
+	candidates[newest].NewestOfResults = true
+	if bareTimingPointer(question) {
+		return "newest_of_results 只是本次结果里最新的那条，不一定是学习者说的这件事；" +
+			"如果真正最近的那次不在这些结果里，不要拿它冒充，先向学习者澄清。"
+	}
+	return ""
+}
+
+// candidateNamedInQuestion says whether the learner named this conversation.
+//
+// The card's own names and topics are the words a learner uses for it ("Redis
+// 那次"), so a question containing one of them is naming this conversation.
+// Terms of one rune are ignored: a single character occurs in ordinary
+// sentences and would mark the wrong conversation.
+func candidateNamedInQuestion(candidate ThinCardCandidateView, question string) bool {
+	terms := append(append([]string{}, candidate.Names...), candidate.Topics...)
+	for _, term := range terms {
+		term = strings.TrimSpace(term)
+		if len([]rune(term)) < 2 {
+			continue
+		}
+		if strings.Contains(question, term) {
+			return true
+		}
+	}
+	return false
+}
+
+// bareTimingPointer says whether the question uses "上次/那次" with no
+// explicit name or date to resolve it.
+func bareTimingPointer(question string) bool {
+	for _, marker := range []string{"上次", "上一次", "那次", "上回", "之前那次"} {
+		if strings.Contains(question, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // openCandidate makes a candidate reachable for the rest of the turn.
