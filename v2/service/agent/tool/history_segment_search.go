@@ -285,6 +285,13 @@ func (r *SearchHistorySegmentsRegistry) search(ctx context.Context, run servicea
 	// to the question, whatever its words say.
 	cardQuery := thinCardQuery(run.Question, query)
 	terms := cardQuery.Terms
+	// The LOCK decides the reach of both channels, before anything is
+	// assembled: when the learner said which conversation they meant, a
+	// segment from any other conversation is not evidence of it, however well
+	// it matches and however high it ranks. Filtering only at authorisation
+	// time would still hand the other conversation's body to the model (the
+	// unreachable hit keeps its text), which is the bug this closes.
+	locked := lockedSessionOf(run)
 	hits, err := r.finder.SearchUserSegmentsByText(ctx, run.UserID, terms, historySegmentCandidateLimit)
 	if err != nil {
 		if ctxErr := contextError(ctx); ctxErr != nil {
@@ -295,6 +302,7 @@ func (r *SearchHistorySegmentsRegistry) search(ctx context.Context, run servicea
 		out.Retryable = true
 		return out, nil
 	}
+	hits = onlyHitsInSession(hits, locked)
 	if cardQuery.HasPeriod() {
 		hits = filterHitsByPeriod(hits, cardQuery.From, cardQuery.To)
 	}
@@ -308,6 +316,8 @@ func (r *SearchHistorySegmentsRegistry) search(ctx context.Context, run servicea
 	// own embedding.
 	vectorHits, embeddingCalls, vectorErr := r.semanticHits(ctx, run, query)
 	if vectorErr == nil && len(vectorHits) > 0 {
+		// The semantic channel obeys the same reach as the lexical one.
+		vectorHits = onlyHitsInSession(vectorHits, locked)
 		hits = mergeSegmentHits(hits, vectorHits)
 		out.VectorChannel = true
 		out.EmbeddingCalls = embeddingCalls
@@ -333,6 +343,11 @@ func (r *SearchHistorySegmentsRegistry) search(ctx context.Context, run servicea
 			break
 		}
 		session := strings.TrimSpace(hit.SessionID)
+		// Source check before assembly, again: a channel that ignored the
+		// filter would be caught here rather than turned into output text.
+		if locked != "" && session != locked {
+			continue
+		}
 		if session == "" || session == strings.TrimSpace(run.SessionID) {
 			// The conversation being answered is in the window already, and
 			// a card about it is not a door to the past.
@@ -358,6 +373,24 @@ func (r *SearchHistorySegmentsRegistry) search(ctx context.Context, run servicea
 		out.Reason = segmentsReasonNoMatch
 	}
 	return out, nil
+}
+
+// onlyHitsInSession keeps the hits that belong to the named conversation.
+//
+// An empty session means no conversation is locked, and the search keeps every
+// hit it found - that is the normal retrieval path.
+func onlyHitsInSession(hits []summarysegmentdao.UserSegmentHit, session string) []summarysegmentdao.UserSegmentHit {
+	session = strings.TrimSpace(session)
+	if session == "" {
+		return hits
+	}
+	out := make([]summarysegmentdao.UserSegmentHit, 0, len(hits))
+	for _, hit := range hits {
+		if strings.TrimSpace(hit.SessionID) == session {
+			out = append(out, hit)
+		}
+	}
+	return out
 }
 
 // filterHitsByPeriod keeps the hits that fall inside the period the learner
