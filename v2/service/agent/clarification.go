@@ -180,6 +180,7 @@ const clarificationContinuationPrompt = `
 You are continuing a question the learner asked in an earlier turn, after they told you which conversation they meant.
 - Read that conversation's summary with browse_summary_segments, naming the conversation in its session parameter.
 - When that browse does not reach the answer, find the stretch of turns you are looking for with search_history_segments.
+- When neither the summary nor the segment search carries the detail, search the conversation's own words with search_session_history: a short keyword that would appear in the sentence you need, not a whole question sentence.
 - When a tool asks which conversation to read, pass the conversation ID exactly as the locked block writes it, not the conversation's title. A title is not a conversation id: a read that names the title is refused, and the answer then has to be guessed instead of read.`
 
 // The clarification block the next turn carries.

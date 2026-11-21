@@ -184,3 +184,29 @@ func TestTheBasePromptIsUnchangedByTheContinuationRule(t *testing.T) {
 		}
 	}
 }
+
+// The rule that reaches a detail neither the summary nor the segments kept.
+//
+// p2-acc-04-r1 answered from the locked summary and missed the message that
+// said "动作、提问、验收" - it was inside the summary's range but dropped by
+// compression. The continuation rule has to name the raw-word search for that
+// case, and must be dropped when this turn does not offer it.
+func TestTheContinuationRuleNamesTheRawWordSearch(t *testing.T) {
+	window := clarificationWindow(t, []string{
+		"browse_summary_segments", "search_history_segments", "search_session_history",
+	})
+	prompt := window.Messages[0].Content
+	for _, phrase := range []string{"search_session_history", "short keyword"} {
+		if !strings.Contains(prompt, phrase) {
+			t.Fatalf("the continuation rule does not say %q: %s", phrase, prompt)
+		}
+	}
+}
+
+func TestTheContinuationRuleDropsTheRawWordSearchWhenTheTurnDoesNotOfferIt(t *testing.T) {
+	window := clarificationWindow(t, []string{"browse_summary_segments", "search_history_segments"})
+	prompt := window.Messages[0].Content
+	if strings.Contains(prompt, "search_session_history") {
+		t.Fatalf("the continuation rule names a tool this turn does not offer: %s", prompt)
+	}
+}

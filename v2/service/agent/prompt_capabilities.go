@@ -102,6 +102,7 @@ var promptToolMarkers = []struct {
 	{"browse_summary_segments", CapabilityBrowseSummarySegments},
 	{"search_session_cards", CapabilitySearchSessionCards},
 	{"search_history_segments", CapabilitySearchHistorySegments},
+	{"search_session_history", CapabilitySearchSessionHistory},
 	{"read_session_whiteboard", CapabilityReadSessionWhiteboard},
 	{"ask_which_conversation", CapabilityAskWhichConversation},
 }
