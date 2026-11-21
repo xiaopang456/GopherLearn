@@ -424,6 +424,7 @@ func (r *BrowseSummarySegmentsRegistry) browse(ctx context.Context, run servicea
 	document := r.boardState(ctx, run, targetSession)
 	grants := make([]serviceagent.HistoryMessageGrant, 0, 8)
 	tokens := 0
+	renderedSegments := make([]browsedSegment, 0, len(segments))
 	for _, segment := range segments {
 		browsed, ok := r.render(segment, document, cardWatermark)
 		if !ok {
@@ -448,6 +449,7 @@ func (r *BrowseSummarySegmentsRegistry) browse(ctx context.Context, run servicea
 		}
 		tokens += cost
 		out.Segments = append(out.Segments, browsed.view)
+		renderedSegments = append(renderedSegments, browsed)
 		// The grants follow the trimming: an id of a point that was cut
 		// is an id the model never saw.
 		grants = append(grants, r.grantsForView(targetSession, segment, browsed, cardID, cardVersion, cardWatermark)...)
@@ -462,6 +464,60 @@ func (r *BrowseSummarySegmentsRegistry) browse(ctx context.Context, run servicea
 	// message ids - so the answer can see the old proposal, the later change
 	// and their order.
 	if r.tail != nil && targetSession != strings.TrimSpace(run.SessionID) && len(segments) > 0 {
+		candidates := make([]model.Message, 0, maxBrowseTailMessages*2)
+		seen := make(map[uint]struct{}, maxBrowseTailMessages*2)
+		appendCandidate := func(message model.Message) {
+			if _, duplicate := seen[message.ID]; duplicate {
+				return
+			}
+			seen[message.ID] = struct{}{}
+			candidates = append(candidates, message)
+		}
+		// The words inside a segment's range that its points did not keep.
+		//
+		// A segment covers a stretch of turns and its points are a summary of
+		// that stretch: an assistant conclusion can be inside the range and
+		// still be absent from the points. The live shape can have two
+		// segments, so a later update can sit inside the second segment's
+		// range rather than after the last covered turn; a read that starts at
+		// the last watermark would never see it.
+		for _, browsed := range renderedSegments {
+			start := browsed.view.StartMessageID
+			end := browsed.view.EndMessageID
+			if start <= 0 || end <= 0 || end < start {
+				continue
+			}
+			cited := make(map[uint]struct{}, len(browsed.points))
+			for _, point := range browsed.points {
+				for _, id := range point.EvidenceMessageIDs {
+					cited[id] = struct{}{}
+				}
+			}
+			after := uint(0)
+			if start > 1 {
+				after = uint(start - 1)
+			}
+			messages, tailErr := r.tail.ListOwnedWordsAfter(ctx, run.UserID, targetSession, after, maxBrowseTailScan)
+			if tailErr != nil {
+				continue
+			}
+			for _, message := range messages {
+				if message.ID < uint(start) {
+					continue
+				}
+				if message.ID > uint(end) {
+					break
+				}
+				if cardWatermark > 0 && message.ID > cardWatermark {
+					continue
+				}
+				if _, kept := cited[message.ID]; kept {
+					continue
+				}
+				appendCandidate(message)
+			}
+		}
+		// The words after the last covered turn.
 		lastEnd := uint(0)
 		for _, segment := range segments {
 			if segment.EndMessageID > lastEnd {
@@ -469,50 +525,45 @@ func (r *BrowseSummarySegmentsRegistry) browse(ctx context.Context, run servicea
 			}
 		}
 		if cardWatermark == 0 || lastEnd <= cardWatermark {
-			later, tailErr := r.tail.ListOwnedWordsAfter(ctx, run.UserID, targetSession, lastEnd, maxBrowseTailScan)
+			messages, tailErr := r.tail.ListOwnedWordsAfter(ctx, run.UserID, targetSession, lastEnd, maxBrowseTailScan)
 			if tailErr == nil {
-				// Keep the words that answer THIS question: the messages
-				// mentioning the question's terms (and their neighbours),
-				// then the newest as a fallback. Keeping only the newest cut
-				// the "change it to 37 minutes" message in p2-hist-01, which
-				// sits a little after the summary.
-				later = selectSegmentTail(later, thinCardQuery(run.Question, input.Query).Terms, maxBrowseTailMessages)
-				for _, message := range later {
-					// The card is the question-time ceiling: a word above it
-					// was not part of the conversation when the card was
-					// written, so the tail may not reach past it.
+				for _, message := range messages {
 					if cardWatermark > 0 && message.ID > cardWatermark {
 						continue
 					}
-					text, truncated := boundRunes(strings.TrimSpace(message.Content), maxBrowseTailRunes)
-					if text == "" {
-						continue
-					}
-					cost := rag.EstimateTokens(text) + 8
-					if tokens+cost > maxBrowseSummaryTokens*maxBrowseSummarySegments {
-						out.Truncated = true
-						break
-					}
-					role := "user"
-					if !message.IsUser {
-						role = "assistant"
-					}
-					out.LaterMessages = append(out.LaterMessages, BrowseLaterMessageView{
-						MessageID: int(message.ID), Role: role,
-						SentAt: message.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
-						Text:   text,
-					})
-					if truncated {
-						out.Truncated = true
-					}
-					tokens += cost
-					grants = append(grants, serviceagent.HistoryMessageGrant{
-						MessageID: message.ID, SourceKind: serviceagent.HistorySourceSessionSearch,
-						SourceSessionID: targetSession,
-						CardID:          cardID, CardVersion: cardVersion, CardWatermark: cardWatermark,
-					})
+					appendCandidate(message)
 				}
 			}
+		}
+		later := selectTail(candidates, run.Question, input.Query, maxBrowseTailMessages)
+		for _, message := range later {
+			text, truncated := boundRunes(strings.TrimSpace(message.Content), maxBrowseTailRunes)
+			if text == "" {
+				continue
+			}
+			cost := rag.EstimateTokens(text) + 8
+			if tokens+cost > maxBrowseSummaryTokens*maxBrowseSummarySegments {
+				out.Truncated = true
+				break
+			}
+			role := "user"
+			if !message.IsUser {
+				role = "assistant"
+			}
+			out.LaterMessages = append(out.LaterMessages, BrowseLaterMessageView{
+				MessageID: int(message.ID), Role: role,
+				SentAt: message.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+				Text:   text,
+			})
+			if truncated {
+				out.Truncated = true
+			}
+			tokens += cost
+			grants = append(grants, serviceagent.HistoryMessageGrant{
+				MessageID: message.ID, SourceKind: serviceagent.HistorySourceSessionSearch,
+				SourceSessionID: targetSession,
+				CardID:          cardID, CardVersion: cardVersion, CardWatermark: cardWatermark,
+			})
 		}
 	}
 	out.ObservationTokens = tokens

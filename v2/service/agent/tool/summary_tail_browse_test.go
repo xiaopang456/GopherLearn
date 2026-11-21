@@ -139,8 +139,9 @@ func TestABrowsedConversationCarriesTheWordsAfterItsSummaryInOrder(t *testing.T)
 	if _, err := runner.Run(context.Background(), run, serviceagent.DiscardEvents); err != nil {
 		t.Fatal(err)
 	}
-	if tail.calls != 1 || tail.afterID != 1422 {
-		t.Fatalf("the tail read ran %d times after id %d, want once after the summary's 1422", tail.calls, tail.afterID)
+	if tail.calls == 0 || tail.afterID != 1422 {
+		t.Fatalf("the bounded read-back ran %d times, last after id %d, want the tail after 1422",
+			tail.calls, tail.afterID)
 	}
 	if len(chat.requests) < 2 {
 		t.Fatalf("the model was called %d times, want the answer generation too", len(chat.requests))

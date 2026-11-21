@@ -393,7 +393,7 @@ func (r *SearchHistorySegmentsRegistry) search(ctx context.Context, run servicea
 	}
 	out.ObservationTokens = tokens
 	if r.tail != nil && len(out.Segments) > 0 {
-		later, laterGrants, laterTokens := r.laterWordsForHits(ctx, run, out.Segments, cards, terms)
+		later, laterGrants, laterTokens := r.laterWordsForHits(ctx, run, out.Segments, cards, tailSelectionTerms(run.Question, query))
 		out.LaterMessages = later
 		grants = append(grants, laterGrants...)
 		out.ObservationTokens += laterTokens
@@ -411,8 +411,14 @@ func (r *SearchHistorySegmentsRegistry) search(ctx context.Context, run servicea
 	return out, nil
 }
 
-// laterWordsForHits reads the words after each hit segment, keeping the
-// messages that mention the question (and their neighbours) plus the newest.
+// laterWordsForHits reads the words inside each hit segment's range that its
+// points did not keep, and the words after it, then keeps the ones that answer
+// this question.
+//
+// The live shape can have two segments: an update can sit inside the second
+// segment's range while that segment's points kept only the earlier part of
+// it. Reading only after the last covered turn would miss it, so the range is
+// read as well.
 //
 // The session scope is the hit's own: the tail read is owner-scoped by the
 // repository, the card watermark is the ceiling, and under a lock the hits
@@ -420,73 +426,107 @@ func (r *SearchHistorySegmentsRegistry) search(ctx context.Context, run servicea
 func (r *SearchHistorySegmentsRegistry) laterWordsForHits(ctx context.Context, run serviceagent.RunContext,
 	views []HistorySegmentHitView, cards map[string]segmentCard, terms []string) ([]HistorySegmentLaterView,
 	[]serviceagent.HistoryMessageGrant, int) {
-	ends := make(map[string]uint, len(views))
-	sessions := make([]string, 0, len(views))
+	type candidate struct {
+		message     model.Message
+		session     string
+		cardID      string
+		cardVersion uint64
+		watermark   uint
+	}
+	candidates := make([]candidate, 0, maxBrowseTailMessages*2)
+	seen := make(map[uint]struct{}, maxBrowseTailMessages*2)
+	appendMessage := func(message model.Message, session, cardID string, cardVersion uint64, watermark uint) {
+		if watermark > 0 && message.ID > watermark {
+			return
+		}
+		if _, duplicate := seen[message.ID]; duplicate {
+			return
+		}
+		seen[message.ID] = struct{}{}
+		candidates = append(candidates, candidate{message: message, session: session,
+			cardID: cardID, cardVersion: cardVersion, watermark: watermark})
+	}
 	for _, view := range views {
 		session := strings.TrimSpace(view.SessionID)
 		if !view.Reachable || session == "" || session == strings.TrimSpace(run.SessionID) {
 			continue
 		}
-		if _, seen := ends[session]; !seen {
-			sessions = append(sessions, session)
-			ends[session] = 0
-		}
-		if uint(view.EndMessageID) > ends[session] {
-			ends[session] = uint(view.EndMessageID)
-		}
-	}
-	later := make([]HistorySegmentLaterView, 0, maxBrowseTailMessages)
-	grants := make([]serviceagent.HistoryMessageGrant, 0, maxBrowseTailMessages)
-	tokens := 0
-	remaining := maxBrowseTailMessages
-	for _, session := range sessions {
-		if remaining <= 0 {
-			break
-		}
-		if r.tail == nil {
-			break
-		}
 		cardID, cardVersion, watermark, ok := r.authorise(run, session, cards)
 		if !ok {
 			continue
 		}
-		if watermark > 0 && ends[session] > watermark {
+		// The words inside the segment's own range that its points dropped.
+		if view.StartMessageID > 0 && view.EndMessageID >= view.StartMessageID {
+			after := uint(0)
+			if view.StartMessageID > 1 {
+				after = uint(view.StartMessageID - 1)
+			}
+			messages, err := r.tail.ListOwnedWordsAfter(ctx, run.UserID, session, after, maxBrowseTailScan)
+			if err == nil {
+				for _, message := range messages {
+					if int(message.ID) < view.StartMessageID {
+						continue
+					}
+					if int(message.ID) > view.EndMessageID {
+						break
+					}
+					appendMessage(message, session, cardID, cardVersion, watermark)
+				}
+			}
+		}
+		// The words after the hit.
+		if view.EndMessageID > 0 {
+			messages, err := r.tail.ListOwnedWordsAfter(ctx, run.UserID, session,
+				uint(view.EndMessageID), maxBrowseTailScan)
+			if err == nil {
+				for _, message := range messages {
+					appendMessage(message, session, cardID, cardVersion, watermark)
+				}
+			}
+		}
+	}
+	sort.SliceStable(candidates, func(left, right int) bool {
+		return candidates[left].message.ID < candidates[right].message.ID
+	})
+	messages := make([]model.Message, 0, len(candidates))
+	byID := make(map[uint]candidate, len(candidates))
+	for _, item := range candidates {
+		messages = append(messages, item.message)
+		byID[item.message.ID] = item
+	}
+	selected := selectSegmentTail(messages, terms, maxBrowseTailMessages)
+	if !tailTermsMatch(messages, terms) {
+		if fallback := thinCardFallbackTerms(run.Question); len(fallback) > 0 && tailTermsMatch(messages, fallback) {
+			selected = selectSegmentTail(messages, fallback, maxBrowseTailMessages)
+		}
+	}
+	later := make([]HistorySegmentLaterView, 0, len(selected))
+	grants := make([]serviceagent.HistoryMessageGrant, 0, len(selected))
+	tokens := 0
+	for _, message := range selected {
+		item, ok := byID[message.ID]
+		if !ok {
 			continue
 		}
-		messages, err := r.tail.ListOwnedWordsAfter(ctx, run.UserID, session, ends[session], maxBrowseTailScan)
-		if err != nil {
+		text, _ := boundRunes(strings.TrimSpace(message.Content), maxBrowseTailRunes)
+		if text == "" {
 			continue
 		}
-		selected := selectSegmentTail(messages, terms, remaining)
-		for _, message := range selected {
-			// The card watermark is the question-time ceiling.
-			if watermark > 0 && message.ID > watermark {
-				continue
-			}
-			text, _ := boundRunes(strings.TrimSpace(message.Content), maxBrowseTailRunes)
-			if text == "" {
-				continue
-			}
-			role := "user"
-			if !message.IsUser {
-				role = "assistant"
-			}
-			later = append(later, HistorySegmentLaterView{
-				SessionID: session, MessageID: int(message.ID), Role: role,
-				SentAt: message.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
-				Text:   text,
-			})
-			tokens += rag.EstimateTokens(text) + 8
-			grants = append(grants, serviceagent.HistoryMessageGrant{
-				MessageID: message.ID, SourceKind: serviceagent.HistorySourceSessionSearch,
-				SourceSessionID: session, CardID: cardID, CardVersion: cardVersion,
-				CardWatermark: watermark,
-			})
-			remaining--
-			if remaining <= 0 {
-				break
-			}
+		role := "user"
+		if !message.IsUser {
+			role = "assistant"
 		}
+		later = append(later, HistorySegmentLaterView{
+			SessionID: item.session, MessageID: int(message.ID), Role: role,
+			SentAt: message.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			Text:   text,
+		})
+		tokens += rag.EstimateTokens(text) + 8
+		grants = append(grants, serviceagent.HistoryMessageGrant{
+			MessageID: message.ID, SourceKind: serviceagent.HistorySourceSessionSearch,
+			SourceSessionID: item.session, CardID: item.cardID, CardVersion: item.cardVersion,
+			CardWatermark: item.watermark,
+		})
 	}
 	return later, grants, tokens
 }

@@ -4,7 +4,71 @@ import (
 	"strings"
 
 	"GopherAI/model"
+	"GopherAI/service/episode"
 )
+
+// tailSelectionTerms reads the words the tail is selected by.
+//
+// The LEARNER'S QUESTION comes first: the update has to be findable from the
+// words the learner used, not from the words the model chose to search with.
+// The model's query is the fallback, and the tokenizer's cut of each is the
+// last resort.
+func tailSelectionTerms(question, modelQuery string) []string {
+	question = strings.TrimSpace(question)
+	modelQuery = strings.TrimSpace(modelQuery)
+	if question != "" {
+		plan := episode.BuildReadPlan(episode.RouteRequest{Question: question})
+		if len(plan.TopicTerms) > 0 {
+			return plan.TopicTerms
+		}
+		if terms := thinCardFallbackTerms(question); len(terms) > 0 {
+			return terms
+		}
+	}
+	if modelQuery != "" {
+		plan := episode.BuildReadPlan(episode.RouteRequest{Question: modelQuery})
+		if len(plan.TopicTerms) > 0 {
+			return plan.TopicTerms
+		}
+		if terms := thinCardFallbackTerms(modelQuery); len(terms) > 0 {
+			return terms
+		}
+	}
+	return nil
+}
+
+// selectTail chooses the tail with the learner's question first, and falls
+// back to the tokenizer's cut of that question when the first terms match
+// nothing.
+//
+// The question is the source of the words: the update has to be findable from
+// what the learner asked, and the model's query is only the last fallback.
+func selectTail(messages []model.Message, question, modelQuery string, limit int) []model.Message {
+	primary := tailSelectionTerms(question, modelQuery)
+	if tailTermsMatch(messages, primary) {
+		return selectSegmentTail(messages, primary, limit)
+	}
+	if fallback := thinCardFallbackTerms(question); len(fallback) > 0 && tailTermsMatch(messages, fallback) {
+		return selectSegmentTail(messages, fallback, limit)
+	}
+	return selectSegmentTail(messages, primary, limit)
+}
+
+// tailTermsMatch reports whether any message mentions one of the terms.
+func tailTermsMatch(messages []model.Message, terms []string) bool {
+	for _, term := range terms {
+		term = strings.ToLower(strings.TrimSpace(term))
+		if len([]rune(term)) < 2 {
+			continue
+		}
+		for _, message := range messages {
+			if strings.Contains(strings.ToLower(message.Content), term) {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // selectSegmentTail chooses the messages after a summary's high-water mark
 // that the answer needs.

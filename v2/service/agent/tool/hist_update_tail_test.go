@@ -2,6 +2,7 @@ package agenttool
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -71,18 +72,31 @@ func TestSelectSegmentTailKeepsTheUpdateTheQuestionMentions(t *testing.T) {
 	}
 }
 
+func histSegments(t *testing.T) []model.SessionSummarySegment {
+	return []model.SessionSummarySegment{
+		{
+			UserID: 7, SessionID: "p2c-07", Seq: 1, StartMessageID: 785, EndMessageID: 848,
+			Topic: "读书习惯梳理与「芨菁」节奏定为每次22分钟",
+			Content: storedSegment(t, "读书习惯梳理与「芨菁」节奏定为每次22分钟",
+				[]model.SessionSummarySegmentPoint{{
+					Text: histOldValue + " [message_ids=844,845]", EvidenceMessageIDs: []uint{844, 845},
+				}}),
+		},
+		{
+			UserID: 7, SessionID: "p2c-07", Seq: 2, StartMessageID: 849, EndMessageID: 912,
+			Topic: "新节奏的落地",
+			Content: storedSegment(t, "新节奏的落地",
+				[]model.SessionSummarySegmentPoint{
+					{Text: "可我每次坐下来就超时。 [message_ids=849]", EvidenceMessageIDs: []uint{849}},
+					{Text: "超时的原因多半是中间被打断。 [message_ids=850]", EvidenceMessageIDs: []uint{850}},
+				}),
+		},
+	}
+}
+
 func histBrowseRegistry(t *testing.T) (*BrowseSummarySegmentsRegistry, *fakeSummaryTailReader) {
 	t.Helper()
-	segment := model.SessionSummarySegment{
-		UserID: 7, SessionID: "p2c-07", Seq: 1, StartMessageID: 785, EndMessageID: 848,
-		Topic: "读书习惯梳理与「芨菁」节奏定为每次22分钟",
-		Content: storedSegment(t, "读书习惯梳理与「芨菁」节奏定为每次22分钟",
-			[]model.SessionSummarySegmentPoint{{
-				Text: histOldValue + " [message_ids=844,845]", EvidenceMessageIDs: []uint{844, 845},
-			}}),
-	}
-	registry, err := NewBrowseSummarySegmentsRegistry(&fakeSegmentBrowser{
-		segments: []model.SessionSummarySegment{segment}})
+	registry, err := NewBrowseSummarySegmentsRegistry(&fakeSegmentBrowser{segments: histSegments(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +138,7 @@ func (m *histChatModel) next() (*schema.Message, error) {
 		return schema.AssistantMessage("", []schema.ToolCall{{
 			ID: "call-tool", Type: "function",
 			Function: schema.FunctionCall{Name: "browse_summary_segments",
-				Arguments: `{"session":"p2c-07","query":"每次读多久 22分钟 节奏"}`},
+				Arguments: `{"session":"p2c-07","query":"读书节奏 复习"}`},
 		}}), nil
 	}
 	return schema.AssistantMessage("上次定的是 22 分钟，后来改成了 37 分钟。", nil), nil
@@ -178,14 +192,8 @@ func TestTheNormalBrowseEntryCarriesTheUpdateAfterTheSummary(t *testing.T) {
 	if _, err := runner.Run(context.Background(), run, serviceagent.DiscardEvents); err != nil {
 		t.Fatal(err)
 	}
-	if tail.calls != 1 || tail.afterID != 848 {
-		var seen string
-		for _, message := range chat.requests[1] {
-			if message != nil && message.Role == schema.Tool {
-				seen += message.Content
-			}
-		}
-		t.Fatalf("the tail read ran %d times after id %d; observation=%s", tail.calls, tail.afterID, seen)
+	if tail.calls == 0 {
+		t.Fatal("the bounded read-back never ran")
 	}
 	if len(chat.requests) < 2 {
 		t.Fatalf("the model was called %d times", len(chat.requests))
@@ -208,26 +216,28 @@ func TestTheNormalBrowseEntryCarriesTheUpdateAfterTheSummary(t *testing.T) {
 	if !strings.Contains(toolObservation, "877") || !strings.Contains(toolObservation, "878") {
 		t.Fatalf("the update's message ids are missing: %s", toolObservation)
 	}
+	assertNoAnswerWordsInQueries(t, chat.requests)
 }
 
 // The other normal entry, search_history_segments, carries the same words.
 func TestTheNormalSegmentSearchEntryCarriesTheUpdate(t *testing.T) {
-	segment := model.SessionSummarySegment{
-		UserID: 7, SessionID: "p2c-07", Seq: 1, StartMessageID: 785, EndMessageID: 848,
-		Topic: "读书习惯梳理与「芨菁」节奏定为每次22分钟",
-		Content: storedSegment(t, "读书习惯梳理与「芨菁」节奏定为每次22分钟",
-			[]model.SessionSummarySegmentPoint{{
-				Text: histOldValue + " [message_ids=844,845]", EvidenceMessageIDs: []uint{844, 845},
-			}}),
+	segments := histSegments(t)
+	hits := make([]summarysegmentdao.UserSegmentHit, 0, len(segments))
+	rows := make(map[string]*model.SessionSummarySegment, len(segments))
+	for index := range segments {
+		segment := segments[index]
+		hits = append(hits, summarysegmentdao.UserSegmentHit{
+			SessionID: segment.SessionID, Seq: segment.Seq, Topic: segment.Topic, Content: segment.Content,
+			EndMessageID: segment.EndMessageID, EndAt: time.Now().UTC(), Score: float64(9 - index),
+		})
+		key := segment.SessionID + ":" + strconv.Itoa(segment.Seq)
+		rows[key] = &segments[index]
 	}
 	cards := &fakeThinCardRetriever{candidates: []episode.ThinCardCandidate{{
 		SessionID: "p2c-07", CardID: "card-07", CardVersion: 1, Title: "Evaluation conversation",
 	}}}
-	registry, err := NewSearchHistorySegmentsRegistry(&fakeSegmentFinder{
-		hits: []summarysegmentdao.UserSegmentHit{{
-			SessionID: "p2c-07", Seq: 1, Topic: segment.Topic, Content: segment.Content,
-			EndMessageID: 848, EndAt: time.Now().UTC(), Score: 9,
-		}}}, &fakeSegmentReader{segments: map[string]*model.SessionSummarySegment{"p2c-07:1": &segment}}, cards)
+	registry, err := NewSearchHistorySegmentsRegistry(&fakeSegmentFinder{hits: hits},
+		&fakeSegmentReader{segments: rows}, cards)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,6 +272,42 @@ func TestTheNormalSegmentSearchEntryCarriesTheUpdate(t *testing.T) {
 	if strings.Index(toolObservation, "22 分钟") > strings.Index(toolObservation, "37 分钟") {
 		t.Fatalf("the segment search shows the update before the old value: %s", toolObservation)
 	}
+	assertNoAnswerWordsInQueries(t, chat.requests)
+}
+
+// The original question alone (no model query, no answer words, no ids) must
+// select the update.
+func TestTheOriginalQuestionSelectsTheUpdate(t *testing.T) {
+	selected := selectTail(histTailMessages(), "上次我们说好的每次读多久？", "", 8)
+	joined := ""
+	ids := make([]int, 0, len(selected))
+	for _, message := range selected {
+		joined += message.Content + "\n"
+		ids = append(ids, int(message.ID))
+	}
+	if !strings.Contains(joined, "37 分钟") {
+		t.Fatalf("the question-only selection missed the update: %v", ids)
+	}
+}
+
+// The test queries must not carry the answer words or ids.
+func assertNoAnswerWordsInQueries(t *testing.T, requests [][]*schema.Message) {
+	t.Helper()
+	for _, request := range requests {
+		for _, message := range request {
+			if message == nil {
+				continue
+			}
+			for _, call := range message.ToolCalls {
+				args := call.Function.Arguments
+				for _, forbidden := range []string{"37 分钟", "877", "878"} {
+					if strings.Contains(args, forbidden) {
+						t.Fatalf("the test query carried %q: %s", forbidden, args)
+					}
+				}
+			}
+		}
+	}
 }
 
 type histSegmentChatModel struct {
@@ -275,7 +321,7 @@ func (m *histSegmentChatModel) next() (*schema.Message, error) {
 		return schema.AssistantMessage("", []schema.ToolCall{{
 			ID: "call-segments", Type: "function",
 			Function: schema.FunctionCall{Name: "search_history_segments",
-				Arguments: `{"query":"每次阅读时长 多久 阅读计划"}`},
+				Arguments: `{"query":"阅读节奏 复习"}`},
 		}}), nil
 	}
 	return schema.AssistantMessage("上次定的是 22 分钟，后来改成了 37 分钟。", nil), nil
