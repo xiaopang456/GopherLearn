@@ -1124,13 +1124,19 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 		state.lockedSessionID = strings.TrimSpace(window.SessionLock.SessionID)
 		if strings.TrimSpace(window.SessionLock.Evidence) != "" {
 			state.conversationEvidenceDelivered = true
+			state.finalValueEvidenceDelivered = true
 		}
 	}
 	if window.Budget.Summary > 0 || window.Budget.Whiteboard > 0 ||
 		window.Budget.RetrievedSegments > 0 || window.Budget.ResidentSegments > 0 {
 		// The window already carries conversation evidence; an answer built on
-		// it is not an evidence-less answer.
+		// it is not an evidence-less answer. The board is not included in the
+		// final-value flag: it only covers the old state.
 		state.conversationEvidenceDelivered = true
+		if window.Budget.Summary > 0 || window.Budget.RetrievedSegments > 0 ||
+			window.Budget.ResidentSegments > 0 {
+			state.finalValueEvidenceDelivered = true
+		}
 	}
 	bounded := &boundedModel{inner: r.chatModel, state: state, thinkingDialect: r.config.ThinkingDialect, outputReserveTokens: r.config.OutputReserveTokens}
 
@@ -1292,7 +1298,7 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 		// or board still holds the old value. Read the confirmed conversation's
 		// own words once; if there is still no evidence, say what is missing.
 		state.mu.Lock()
-		evidenceDelivered := state.conversationEvidenceDelivered
+		evidenceDelivered := state.finalValueEvidenceDelivered
 		alreadyAsked := state.clarification != nil
 		crossSessionStarted := state.crossSessionRetrievalStarted
 		state.mu.Unlock()
@@ -1305,7 +1311,7 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 			}
 			continued := state.continueFinalValueRetrieval(ctx, bounded, registered, messages, lockedID)
 			state.mu.Lock()
-			evidenceDelivered = state.conversationEvidenceDelivered
+			evidenceDelivered = state.finalValueEvidenceDelivered
 			state.mu.Unlock()
 			if !evidenceDelivered {
 				finalAnswer = InsufficientConversationEvidenceAnswer
@@ -1730,6 +1736,11 @@ type runState struct {
 	// evidence this turn (the card search does not count: candidates are
 	// locations, not evidence).
 	conversationEvidenceDelivered bool
+	// finalValueEvidenceDelivered says the evidence this turn is fresh enough
+	// for a final-agreement question: a whiteboard alone is not. The board is
+	// a material, but it only says what was true when it was written; a final
+	// agreement has to be checked against the conversation's own words.
+	finalValueEvidenceDelivered bool
 	// crossSessionRetrievalStarted records that this turn actually looked in
 	// earlier conversations. The clarification rules below are for the
 	// cross-session recall path; a turn that stayed in this conversation
@@ -2100,9 +2111,14 @@ func (s *runState) unconfirmedEvidenceHandoff() *model.SessionClarification {
 		return buildRetrievalClarification(s.input.Question, candidates, prompt)
 	}
 	segmentOnly := len(reads) == 0 && len(segmentSessions) > 0
-	if len(reads) < 2 && !outsideCandidates && !segmentOnly {
-		// One conversation, and it is one the card search offered: the
-		// target is confirmed enough to answer from directly.
+	// A turn that read one of several candidates, but not the best-ranked one,
+	// chose a similar conversation over the target the card search ranked
+	// first: the target is still ambiguous and the answer should ask.
+	readNotTop := len(candidates) >= 2 && len(reads) == 1 &&
+		reads[0] != candidates[0].SessionID
+	if len(reads) < 2 && !outsideCandidates && !segmentOnly && !readNotTop {
+		// One conversation, and it is the best-ranked candidate: the target is
+		// confirmed enough to answer from directly.
 		return nil
 	}
 	prompt := "这个问题指的是哪一次还没确认：这一轮读到的证据来自不同的会话。" +
@@ -2198,6 +2214,9 @@ func (s *runState) observeCrossSessionResult(input *compose.ToolInput, output *c
 		statusKnown && status.Status == "ok" && outputCarriesEvidence(output.Result) {
 		s.mu.Lock()
 		s.conversationEvidenceDelivered = true
+		if capability != CapabilityReadSessionWhiteboard {
+			s.finalValueEvidenceDelivered = true
+		}
 		s.mu.Unlock()
 	}
 	if statusKnown && status.Status == "unavailable" {
@@ -3356,7 +3375,7 @@ const InsufficientConversationEvidenceAnswer = "我查了你指的那次会话�
 // questionAsksFinalValue says the learner is asking for the CURRENT/FINAL
 // agreement, where an older value in the summary or board is not the answer.
 func questionAsksFinalValue(question string) bool {
-	for _, marker := range []string{"最后", "最终", "现在", "改成", "定下来", "定下", "最新", "作废", "现在每次", "当前"} {
+	for _, marker := range []string{"最后", "最终", "现在", "改成", "定下来", "定下", "最新", "作废", "现在每次", "当前", "说好的", "约定"} {
 		if strings.Contains(question, marker) {
 			return true
 		}

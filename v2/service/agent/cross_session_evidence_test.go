@@ -348,3 +348,84 @@ func TestACurrentConversationFollowUpWithPointerWordsIsAnsweredDirectly(t *testi
 		})
 	}
 }
+
+// The top candidate is the target; the model opened a similar candidate from
+// the same list and answered from it. The target is still ambiguous, so the
+// turn asks with a formal card.
+func TestReadingASimilarCandidateInsteadOfTheTopOneAsks(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		candidates []string
+		read       string
+	}{
+		{name: "p2-art-02-r2", candidates: []string{"p2c-03", "p2c-02"}, read: "p2c-02"},
+		{name: "p2-acc-02-r1", candidates: []string{"p2c-31", "p2c-30"}, read: "p2c-30"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var browseSessions []string
+			chat := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {
+				switch call {
+				case 1:
+					return evidenceControlCardCall(1), nil
+				case 2:
+					return evidenceControlBrowseCall(1, test.read), nil
+				default:
+					return schema.AssistantMessage("第二道练的是 Redis 持久化方式。", nil), nil
+				}
+			}}
+			runner, err := NewRunner(chat, StaticToolRegistry{Registered: []tool.BaseTool{
+				mustEvidenceControlCardTool(t, candidatesOfSessions(test.candidates...)),
+				mustEvidenceControlBrowseTool(t, &browseSessions),
+			}}, newMemoryStepRepository(), MinimalContextBuilder{}, DefaultRunnerConfig())
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := testRunContext()
+			input.Question = "上次那份练习单子，第二道练的是什么？"
+			result, err := runner.Run(context.Background(), input, DiscardEvents)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Clarification == nil {
+				t.Fatalf("a similar conversation was answered directly: %q", result.Answer)
+			}
+			if len(result.Clarification.Candidates) != 2 {
+				t.Fatalf("the card offers %d candidates", len(result.Clarification.Candidates))
+			}
+		})
+	}
+}
+
+// Reading the top candidate is the confirmed target: answer directly.
+func TestReadingTheTopCandidateStaysADirectAnswer(t *testing.T) {
+	var browseSessions []string
+	chat := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {
+		switch call {
+		case 1:
+			return evidenceControlCardCall(1), nil
+		case 2:
+			return evidenceControlBrowseCall(1, "p2c-03"), nil
+		default:
+			return schema.AssistantMessage("第二道练的是执行计划。", nil), nil
+		}
+	}}
+	runner, err := NewRunner(chat, StaticToolRegistry{Registered: []tool.BaseTool{
+		mustEvidenceControlCardTool(t, candidatesOfSessions("p2c-03", "p2c-02")),
+		mustEvidenceControlBrowseTool(t, &browseSessions),
+	}}, newMemoryStepRepository(), MinimalContextBuilder{}, DefaultRunnerConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := testRunContext()
+	input.Question = "上次那份练习单子，第二道练的是什么？"
+	result, err := runner.Run(context.Background(), input, DiscardEvents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Clarification != nil {
+		t.Fatalf("the top candidate was turned into a card: %+v", result.Clarification)
+	}
+	if result.Answer != "第二道练的是执行计划。" {
+		t.Fatalf("answer=%q", result.Answer)
+	}
+}
