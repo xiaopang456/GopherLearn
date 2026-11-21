@@ -242,6 +242,14 @@ type HistoryMessageRegistry struct {
 	// It is off by default. With it off, only the learner's own words are
 	// readable, and the tool says so.
 	assistantContent bool
+	// onDemandSearch says this deployment offers the conversation search in
+	// the same turn. The search registers the ids it shows the model as
+	// read-back grants, but the tool table is built BEFORE any tool runs: with
+	// an empty grant set the tool would be left out, and the model could never
+	// read the hit it just found. When this is on, the tool is registered even
+	// with no grants yet; the per-call grant check still refuses every id the
+	// search did not show.
+	onDemandSearch bool
 }
 
 func NewHistoryMessageRegistry(reader HistoryMessageReader) (*HistoryMessageRegistry, error) {
@@ -308,8 +316,35 @@ func (r *HistoryMessageRegistry) UseAssistantContent(enabled bool) {
 	r.assistantContent = enabled
 }
 
+// UseOnDemandSearchGrants keeps the read-back tool on the table when the same
+// turn offers the conversation search.
+//
+// The search adds a grant for every message id it returns, but tools are built
+// before the turn runs; without this the tool would be omitted for a run whose
+// grants are still empty, and a hit the search just showed the model could not
+// be read back in full. Registration is not authorisation: every call still
+// resolves the id against the run's grant set, and a search grant is still
+// re-checked against its session, the card behind it and the lock.
+func (r *HistoryMessageRegistry) UseOnDemandSearchGrants(enabled bool) {
+	if r == nil {
+		return
+	}
+	r.onDemandSearch = enabled
+}
+
+// readHistoryMessageOnDemandDescription is the extra sentence a run with the
+// conversation search adds: the search is what makes a message id readable in
+// the same turn, and the model has to know that before it searches.
+const readHistoryMessageOnDemandDescription = " A message id that a conversation search in this turn returned can be read back in full with this tool; an id nothing showed you is refused."
+
 // description is the contract the model reads for this run.
 func (r *HistoryMessageRegistry) description() string {
+	if r != nil && r.onDemandSearch {
+		if r.assistantContent {
+			return readHistoryMessageAssistantDescription + readHistoryMessageOnDemandDescription
+		}
+		return readHistoryMessageDescription + readHistoryMessageOnDemandDescription
+	}
 	if r != nil && r.assistantContent {
 		return readHistoryMessageAssistantDescription
 	}
@@ -360,8 +395,10 @@ func (r *HistoryMessageRegistry) Tools(ctx context.Context, run serviceagent.Run
 		grants = serviceagent.NewHistoryGrantSet(run, run.HistoryGrants)
 	}
 	// Nothing was recalled, so there is nothing this run may read. Offering the
-	// tool anyway would invite calls that can only be refused.
-	if grants.Len() == 0 {
+	// tool anyway would invite calls that can only be refused - except on the
+	// on-demand path, where the conversation search is what fills the grant set
+	// during the turn (see UseOnDemandSearchGrants).
+	if grants.Len() == 0 && !r.onDemandSearch {
 		return nil, nil
 	}
 	userID := run.UserID

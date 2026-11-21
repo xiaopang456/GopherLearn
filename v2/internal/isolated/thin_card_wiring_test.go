@@ -101,7 +101,7 @@ func TestTheThinCardPathOffersTheCrossSessionTools(t *testing.T) {
 		t.Fatalf("read the tool table: %v", err)
 	}
 	for _, wanted := range []string{"search_session_cards", "search_history_segments",
-		"read_session_whiteboard", "ask_which_conversation"} {
+		"read_session_whiteboard", "ask_which_conversation", "read_history_message"} {
 		found := false
 		for _, name := range names {
 			if name == wanted {

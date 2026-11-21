@@ -845,6 +845,13 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		// summary records them. The grant set still decides which ids exist
 		// for the run, so an assistant message nobody cited stays unreadable.
 		historyTools.UseAssistantContent(conf.AgentConfig.SummaryAssistantContentEnabled())
+		// Under the card path the same turn offers the conversation search,
+		// and the search grants read-back for every hit it returns. The tool
+		// table is built before any tool runs, so the read-back tool must stay
+		// on the table while the grant set is still empty - otherwise the hit
+		// the search just showed could not be read in full. The per-call grant
+		// check remains the authorisation boundary.
+		historyTools.UseOnDemandSearchGrants(sessionCardPathEnabled)
 		registries := []agentService.ToolRegistry{knowledgeTools, memoryDraftTools, historyTools}
 		if summarySegmentAssembly.Applies() {
 			// browse_summary_segments opens the session's older segments. It
