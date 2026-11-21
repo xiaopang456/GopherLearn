@@ -1064,6 +1064,9 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 		memorySearchAvailable: memorySearchAvailable,
 		availableTools:        availableTools,
 	}
+	if window.SessionLock != nil {
+		state.lockedSessionID = strings.TrimSpace(window.SessionLock.SessionID)
+	}
 	bounded := &boundedModel{inner: r.chatModel, state: state, thinkingDialect: r.config.ThinkingDialect, outputReserveTokens: r.config.OutputReserveTokens}
 
 	// The question the server asks again.
@@ -1559,13 +1562,31 @@ type runState struct {
 	// is the second reason a turn hands the question back instead of
 	// answering it from a half-read conversation.
 	retrievalFailed bool
-	// turnEvidence is what the cross-session reads returned THIS turn, in the
-	// order they were read. A locked turn that has to make a repair request
-	// carries it along: the repair starts from the original window, and the
-	// evidence the turn already fetched must not be lost just because the
-	// next generation came back malformed.
-	turnEvidence       []string
+	// lockedSessionID is the earlier conversation this turn locked, if any.
+	// It is what a tool result must name to count as evidence of the locked
+	// conversation: a tool may search this run's own conversation instead,
+	// and that result is not the past the learner pointed at.
+	lockedSessionID string
+	// turnEvidence is what the reads INSIDE the locked conversation returned
+	// this turn, in the order they were read. A locked turn that has to make
+	// a repair request carries it along: the repair starts from the original
+	// window, and the evidence the turn already fetched must not be lost just
+	// because the next generation came back malformed.
+	turnEvidence       []turnEvidenceEntry
 	turnEvidenceTokens int
+}
+
+// turnEvidenceEntry is one tool result carried into a locked repair request,
+// with the identity that says which tool produced it and where it was read.
+//
+// The identity is kept rather than flattened into prose: the repair request
+// rebuilds the assistant tool call and its tool result, so the model reads
+// the evidence as data from a read it already made, not as instructions.
+type turnEvidenceEntry struct {
+	toolCallID string
+	toolName   string
+	arguments  string
+	result     string
 }
 
 func (s *runState) result() RunnerResult {
@@ -1826,7 +1847,8 @@ func isCrossSessionRetrievalCapability(capability MemoryToolCapability) bool {
 // find. The candidates become the card a stranded turn hands over; a storage
 // failure or a spent retrieval budget is the other reason the turn stops
 // guessing and asks.
-func (s *runState) observeCrossSessionResult(name string, output *compose.ToolOutput, callErr error) {
+func (s *runState) observeCrossSessionResult(input *compose.ToolInput, output *compose.ToolOutput, callErr error) {
+	name := input.Name
 	capability := CapabilityOf(name)
 	if !isCrossSessionRetrievalCapability(capability) {
 		return
@@ -1841,7 +1863,7 @@ func (s *runState) observeCrossSessionResult(name string, output *compose.ToolOu
 	if capability == CapabilitySearchSessionCards {
 		s.rememberClarificationCandidates(output.Result)
 	}
-	s.rememberTurnEvidence(output.Result)
+	s.rememberTurnEvidence(input, output.Result)
 	var status struct {
 		Status string `json:"status"`
 	}
@@ -1856,14 +1878,61 @@ func (s *runState) observeCrossSessionResult(name string, output *compose.ToolOu
 // question, not a second copy of the window.
 const maxTurnEvidenceTokens = 1200
 
-// rememberTurnEvidence keeps a cross-session tool's result for a repair
+// sessionScopedEvidenceCapability says whether a tool reads ONE named
+// conversation, so its arguments can prove where its result came from.
+//
+// The card search and the segment search are deliberately absent: they read
+// across conversations, and a cross-conversation result cannot be attributed
+// to the locked conversation from its own arguments.
+func sessionScopedEvidenceCapability(capability MemoryToolCapability) bool {
+	switch capability {
+	case CapabilitySearchSessionHistory, CapabilityBrowseSummarySegments,
+		CapabilityReadSessionWhiteboard:
+		return true
+	default:
+		return false
+	}
+}
+
+// rememberTurnEvidence keeps a locked conversation's tool result for a repair
 // request made later in the same turn.
 //
-// The repair starts from the original window, so without this the request
-// would repeat the turn's first mistake with the same information the model
-// started from - while the evidence that could answer the question had
-// already been read and then dropped.
-func (s *runState) rememberTurnEvidence(result string) {
+// Two things are checked before a result is kept, because the repair request
+// will say it is evidence OF THE LOCKED CONVERSATION:
+//
+//  1. the tool names a session in its arguments and that session is the
+//     locked one. search_session_history may omit the session and then reads
+//     THIS conversation; that result is the present, not the past the learner
+//     pointed at, and it must not be relabelled as the locked conversation's;
+//  2. the call actually returned evidence (status ok).
+//
+// The tool name, call id and arguments are kept with the result so the repair
+// request can rebuild the pair as data: an assistant tool call and its tool
+// message, not prose inside a system message.
+func (s *runState) rememberTurnEvidence(input *compose.ToolInput, result string) {
+	if input == nil {
+		return
+	}
+	if !sessionScopedEvidenceCapability(CapabilityOf(input.Name)) {
+		return
+	}
+	s.mu.Lock()
+	locked := s.lockedSessionID
+	s.mu.Unlock()
+	if locked == "" {
+		return
+	}
+	var arguments struct {
+		Session string `json:"session"`
+	}
+	if err := json.Unmarshal([]byte(input.Arguments), &arguments); err != nil {
+		return
+	}
+	if strings.TrimSpace(arguments.Session) != locked {
+		// No session, or another session: the result's source is not the
+		// locked conversation, so it is not evidence of it.
+		return
+	}
 	trimmed := strings.TrimSpace(result)
 	if trimmed == "" {
 		return
@@ -1871,15 +1940,16 @@ func (s *runState) rememberTurnEvidence(result string) {
 	var status struct {
 		Status string `json:"status"`
 	}
-	if err := json.Unmarshal([]byte(trimmed), &status); err == nil {
-		switch status.Status {
-		case "", "ok", "no_evidence":
-		default:
-			return
-		}
+	if err := json.Unmarshal([]byte(trimmed), &status); err == nil && status.Status != "ok" {
+		return
 	}
-	entry := truncate(trimmed, 800)
-	cost := rag.EstimateTokens(entry) + 8
+	entry := turnEvidenceEntry{
+		toolCallID: strings.TrimSpace(input.CallID),
+		toolName:   input.Name,
+		arguments:  input.Arguments,
+		result:     truncate(trimmed, 800),
+	}
+	cost := rag.EstimateTokens(entry.result) + 8
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.turnEvidenceTokens+cost > maxTurnEvidenceTokens {
@@ -1889,11 +1959,12 @@ func (s *runState) rememberTurnEvidence(result string) {
 	s.turnEvidenceTokens += cost
 }
 
-// turnEvidenceText is what the repair request carries from this turn's reads.
-func (s *runState) turnEvidenceText() string {
+// turnEvidenceForRepair is what the repair request carries from this turn's
+// reads, as (assistant tool call, tool result) pairs.
+func (s *runState) turnEvidenceForRepair() []turnEvidenceEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return strings.Join(s.turnEvidence, "\n---\n")
+	return append([]turnEvidenceEntry{}, s.turnEvidence...)
 }
 
 // closeoutReason names how the turn ended.
@@ -2191,7 +2262,7 @@ func (s *runState) toolMiddleware() compose.InvokableToolMiddleware {
 			}
 			// Keep what the cross-session read found, or that it failed: a
 			// turn that cannot answer needs them to hand the question back.
-			s.observeCrossSessionResult(input.Name, output, err)
+			s.observeCrossSessionResult(input, output, err)
 			if persistErr := s.appendStep(ctx, step); persistErr != nil {
 				return nil, persistErr
 			}
@@ -2778,20 +2849,32 @@ func (s *runState) repairLockedAnswer(ctx context.Context, bounded *boundedModel
 		return ""
 	}
 	repairMessages := append([]*schema.Message{}, messages...)
-	if evidence := s.turnEvidenceText(); evidence != "" {
-		// The repair starts from the original window. The turns the first
-		// attempt already read are evidence the model had and the request
-		// must still have, or the repair would ask again for what the
-		// learner's turn has already paid for.
-		repairMessages = append(repairMessages, schema.SystemMessage(
-			"本轮已经读到的工具结果（都来自被锁定的会话 "+strings.TrimSpace(lockedSessionID)+"）：\n"+
-				evidence+
-				"\n这些是已经取到的证据，修复回答时可以直接使用；需要更多原文再用工具读被锁定的那个会话。"))
+	// Rebuild the turn's reads that provably came from the locked
+	// conversation as DATA: the assistant tool call and its tool result.
+	// Flattening them into a system message would both lose the identity of
+	// the tool data and let a result from this conversation be relabelled as
+	// the locked conversation's.
+	for _, evidence := range s.turnEvidenceForRepair() {
+		if evidence.toolCallID == "" {
+			continue
+		}
+		repairMessages = append(repairMessages,
+			schema.AssistantMessage("", []schema.ToolCall{{
+				ID:   evidence.toolCallID,
+				Type: "function",
+				Function: schema.FunctionCall{
+					Name:      evidence.toolName,
+					Arguments: evidence.arguments,
+				},
+			}}),
+			schema.ToolMessage(evidence.result, evidence.toolCallID),
+		)
 	}
 	repairMessages = append(repairMessages, schema.UserMessage(
 		"上一轮的回复不是可用的回答：你把工具调用写进了正文，系统无法执行。"+
 			"请重新回答这个问题。需要查资料就发出结构化的工具调用，本轮只能读被锁定的那个会话；"+
-			"不需要查就直接用已经读到的证据回答。不要把工具调用写进正文。"))
+			"不需要查就直接用已经读到的证据回答。上面附带的工具结果都来自被锁定的会话 "+
+			strings.TrimSpace(lockedSessionID)+"；不要把工具调用写进正文。"))
 	// The repair runs through the same ReAct loop, so a well-formed tool call
 	// made here is executed and fed back exactly like one in the first pass.
 	reactAgent, err := react.NewAgent(ctx, &react.AgentConfig{

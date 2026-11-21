@@ -363,11 +363,29 @@ func annotateCardCandidates(candidates []ThinCardCandidateView, question, locked
 	}
 	question = strings.TrimSpace(question)
 	if question != "" {
+		matched := make([]int, 0, 2)
 		for index := range candidates {
 			if candidateNamedInQuestion(candidates[index], question) {
-				candidates[index].NamedInQuestion = true
-				return ""
+				matched = append(matched, index)
 			}
+		}
+		switch len(matched) {
+		case 1:
+			// Exactly one conversation carries the words the learner used:
+			// that is the one they named.
+			candidates[matched[0]].NamedInQuestion = true
+			return ""
+		case 0:
+			// No conversation carries the learner's words; fall through to
+			// the bare-pointer help, if the pointer is bare.
+		default:
+			// Two or more conversations carry the same words ("the Redis
+			// chat" when two chats are about Redis). The name does not
+			// identify one conversation, so nothing is marked: picking the
+			// first candidate would silently answer about the wrong one.
+			// This is the learner's question to settle.
+			return "有不止一个候选都匹配学习者点名的主题；这不能唯一确定是哪一个，" +
+				"不要把其中任何一条当成学习者说的那次，先向学习者澄清。"
 		}
 	}
 	newest := -1

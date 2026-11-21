@@ -592,6 +592,49 @@ func TestANamedEarlierConversationIsNotReplacedByANewerCandidate(t *testing.T) {
 	}
 }
 
+// Two candidates carrying the same named topic stay ambiguous.
+//
+// "上次聊 Redis 那次" does not identify one conversation when two chats are
+// about Redis. The tool must not silently pick the first (or the newest) of
+// them: nothing is marked as the named conversation, and the note tells the
+// model to ask instead of answering about one of them.
+func TestTwoCandidatesSharingTheNamedTopicStayAmbiguous(t *testing.T) {
+	retriever := &fakeThinCardRetriever{candidates: []episode.ThinCardCandidate{
+		{SessionID: "redis-chat-a", CardID: "card-a", CardVersion: 1, Title: "Evaluation conversation",
+			Names:        []string{"Redis"},
+			Topics:       []string{"缓存练习"},
+			LastTalkedAt: time.Date(2026, 4, 2, 6, 16, 0, 0, time.UTC)},
+		{SessionID: "redis-chat-b", CardID: "card-b", CardVersion: 1, Title: "Evaluation conversation",
+			Names:        []string{"Redis"},
+			Topics:       []string{"缓存练习"},
+			LastTalkedAt: time.Date(2026, 4, 9, 6, 16, 0, 0, time.UTC)},
+	}}
+	registry, err := NewSearchSessionCardsRegistry(retriever)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := thinCardRun()
+	run.Question = "上次聊 Redis 那次我们最后定的是什么？"
+	tools, err := registry.Tools(context.Background(), run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := callCards(t, tools[0], "", "缓存")
+	for _, candidate := range out.Candidates {
+		if candidate.NamedInQuestion {
+			t.Fatalf("a shared topic marked %s as the named conversation", candidate.SessionID)
+		}
+		if candidate.NewestOfResults {
+			t.Fatalf("a shared topic let %s be presented as the newest result", candidate.SessionID)
+		}
+	}
+	for _, phrase := range []string{"不止一个候选", "澄清"} {
+		if !strings.Contains(out.Notes, phrase) {
+			t.Fatalf("the ambiguity note does not say %q: %q", phrase, out.Notes)
+		}
+	}
+}
+
 // A conversation the learner already PICKED is not re-ranked against newer
 // candidates either.
 func TestAPickedConversationIsNotReRankedByANewerCandidate(t *testing.T) {

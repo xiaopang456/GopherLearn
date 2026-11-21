@@ -260,6 +260,120 @@ func TestTheLockedRepairRequestCarriesTheEvidenceAlreadyRead(t *testing.T) {
 	if !strings.Contains(requestText, "只能读被锁定的那个会话") {
 		t.Fatalf("the repair request does not say it may only read the locked conversation: %s", requestText)
 	}
+	// The evidence keeps its tool-data identity: the assistant tool call and
+	// its tool result, not prose folded into a system message.
+	toolCallFound, toolResultFound := false, false
+	for _, message := range repairRequest {
+		if message == nil {
+			continue
+		}
+		if message.Role == schema.Assistant {
+			for _, call := range message.ToolCalls {
+				if call.Function.Name == "search_session_history" {
+					toolCallFound = true
+				}
+			}
+		}
+		if message.Role == schema.Tool && strings.Contains(message.Content, "先看语句本身和执行计划") {
+			toolResultFound = true
+		}
+	}
+	if !toolCallFound || !toolResultFound {
+		t.Fatalf("the repair request lost the tool-data identity (call=%v result=%v): %s",
+			toolCallFound, toolResultFound, requestText)
+	}
+}
+
+// Only results that provably came from the locked conversation are carried.
+//
+// search_session_history may omit the session and then search THIS
+// conversation. That result is not the past the learner pointed at, and it
+// must not be relabelled as the locked conversation's evidence in the repair
+// request.
+func TestTheLockedRepairRequestKeepsOnlyEvidenceFromTheLockedSession(t *testing.T) {
+	const currentSessionText = "当前会话的旧话：我们昨晚还在改终端配置。"
+	const lockedSessionText = "先看语句本身和执行计划，比凭感觉加索引靠谱。"
+	searchTool, err := toolutils.InferTool("search_session_history", "search one earlier conversation",
+		func(_ context.Context, input *lockedRepairQueryWithSession) (*lockedRepairOutput, error) {
+			if strings.TrimSpace(input.Session) == "" {
+				return &lockedRepairOutput{Status: "ok", Reason: "none",
+					Matches: []lockedRepairMatch{{MessageID: 900, Role: "assistant",
+						SentAt: "2026-05-01T00:00:00Z", Text: currentSessionText}}}, nil
+			}
+			return &lockedRepairOutput{Status: "ok", Reason: "none",
+				Matches: []lockedRepairMatch{{MessageID: 2, Role: "assistant",
+					SentAt: "2026-04-02T01:01:00Z", Text: lockedSessionText}}}, nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {
+		switch call {
+		case 1:
+			return schema.AssistantMessage("", []schema.ToolCall{{ID: "call-current",
+				Function: schema.FunctionCall{Name: "search_session_history",
+					Arguments: `{"query":"终端"}`}}}), nil
+		case 2:
+			return schema.AssistantMessage("", []schema.ToolCall{{ID: "call-locked",
+				Function: schema.FunctionCall{Name: "search_session_history",
+					Arguments: `{"session":"p2c-01","query":"先看"}`}}}), nil
+		case 3:
+			return schema.AssistantMessage("<｜DSML｜ invoke name=\"search_session_history\">", nil), nil
+		default:
+			return schema.AssistantMessage(lockedRepairAnswer, nil), nil
+		}
+	}}
+	runner, err := NewRunner(chat, StaticToolRegistry{Registered: []tool.BaseTool{searchTool}},
+		newMemoryStepRepository(),
+		lockedWindowBuilder{locked: &LockedSession{SessionID: "p2c-01", Title: "Evaluation conversation"}},
+		DefaultRunnerConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := runner.Run(context.Background(), testRunContext(), DiscardEvents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Answer, "语句本身和执行计划") {
+		t.Fatalf("the repaired answer is %q", result.Answer)
+	}
+	chat.mu.Lock()
+	received := append([][]*schema.Message{}, chat.received...)
+	chat.mu.Unlock()
+	if len(received) < 4 {
+		t.Fatalf("the model was called %d times, want the repair generation too", len(received))
+	}
+	repairRequest := received[3]
+	var joined strings.Builder
+	lockedPairs := 0
+	for _, message := range repairRequest {
+		if message == nil {
+			continue
+		}
+		joined.WriteString(message.Content)
+		joined.WriteString("\n")
+		if message.Role == schema.Assistant {
+			for _, call := range message.ToolCalls {
+				if call.Function.Name == "search_session_history" &&
+					strings.Contains(call.Function.Arguments, "p2c-01") {
+					lockedPairs++
+				}
+			}
+		}
+	}
+	requestText := joined.String()
+	if !strings.Contains(requestText, "语句本身和执行计划") {
+		t.Fatalf("the repair request dropped the locked conversation's evidence: %s", requestText)
+	}
+	if strings.Contains(requestText, currentSessionText) {
+		t.Fatalf("the repair request carried this conversation's result as the locked one: %s", requestText)
+	}
+	if lockedPairs != 1 {
+		t.Fatalf("the repair request carries %d locked tool calls, want exactly one", lockedPairs)
+	}
+	if !strings.Contains(requestText, "只能读被锁定的那个会话") {
+		t.Fatalf("the repair request does not say it may only read the locked conversation: %s", requestText)
+	}
 }
 
 type lockedRepairQueryWithSession struct {
