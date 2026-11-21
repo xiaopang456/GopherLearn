@@ -351,3 +351,71 @@ func TestTheHandoffCardCarriesTheQuestionTheModelWasAnswering(t *testing.T) {
 		t.Fatalf("the synthesized card is not valid: %v", err)
 	}
 }
+
+// A prose list of candidates is not an answer: the model found several
+// exercise lists, wrote them into its answer, and never called the ask tool.
+// The product has to hand the learner the same formal card anyway.
+func TestAProseCandidateListBecomesAFormalCard(t *testing.T) {
+	var executions atomic.Int32
+	chat := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {
+		if call == 1 {
+			return handoffCardSearchCallWithArgs("练习单子 清单 分组"), nil
+		}
+		return schema.AssistantMessage("“上次那份练习单”我这边对不上唯一的一份：\n\n"+
+			"| 会话 | 练习清单 |\n|---|---|\n"+
+			"| p2c-27 | goose 迁移流程 |\n| p2c-28 | zoxide 入门说明 |\n\n"+
+			"这两份都可能是你说的，而分开列的维度大概率不一样，我不想替你猜。", nil), nil
+	}}
+	runner := mustRunner(t, chat, StaticToolRegistry{Registered: []tool.BaseTool{
+		mustHandoffCardTool(t, &executions, "", twoCandidates)}},
+		newMemoryStepRepository(), DefaultRunnerConfig())
+	input := testRunContext()
+	input.Question = "上次那份练习单子，你当时按哪几样东西分开列的？"
+	result, err := runner.Run(context.Background(), input, DiscardEvents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Clarification == nil {
+		t.Fatalf("a prose candidate list was published as the answer: %q", result.Answer)
+	}
+	if result.Answer != WaitingChoiceAnswer {
+		t.Fatalf("answer=%q, want the waiting sentence", result.Answer)
+	}
+	card := result.Clarification
+	if card.Question != input.Question {
+		t.Fatalf("the card lost the original question: %q", card.Question)
+	}
+	if len(card.Candidates) != 2 {
+		t.Fatalf("the card offers %d candidates", len(card.Candidates))
+	}
+	if !card.AllowHistoryBrowse || !card.AllowFreeText {
+		t.Fatal("the card does not offer the learner's own list and words")
+	}
+}
+
+// A direct answer that names no candidates is not turned into a card, even
+// when the card search offered several conversations.
+func TestADirectAnswerWithSeveralCandidatesIsNotACard(t *testing.T) {
+	var executions atomic.Int32
+	chat := &scriptedChatModel{respond: func(_ context.Context, call int) (*schema.Message, error) {
+		if call == 1 {
+			return handoffCardSearchCallWithArgs("练习单子 清单 分组"), nil
+		}
+		return schema.AssistantMessage("答案是动作、提问、验收。", nil), nil
+	}}
+	runner := mustRunner(t, chat, StaticToolRegistry{Registered: []tool.BaseTool{
+		mustHandoffCardTool(t, &executions, "", twoCandidates)}},
+		newMemoryStepRepository(), DefaultRunnerConfig())
+	input := testRunContext()
+	input.Question = "上次那份练习单子，你当时按哪几样东西分开列的？"
+	result, err := runner.Run(context.Background(), input, DiscardEvents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Clarification != nil {
+		t.Fatalf("a direct answer was turned into a card: %+v", result.Clarification)
+	}
+	if result.Answer != "答案是动作、提问、验收。" {
+		t.Fatalf("answer=%q", result.Answer)
+	}
+}

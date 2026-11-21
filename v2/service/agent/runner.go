@@ -1269,6 +1269,15 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 				finalAnswer = UnfinishedRetrievalAnswer
 			}
 		}
+		// A prose list of possibilities is not an answer either: the learner
+		// gets a table to read instead of a choice to click. The model found
+		// several candidates; name two or more of them and the turn becomes
+		// the same formal card the ask tool would have produced.
+		if window.SessionLock == nil {
+			if card := state.proseCandidateListHandoff(finalAnswer); card != nil {
+				return state.handOffToClarification(ctx, sink, card)
+			}
+		}
 		// A locked turn cannot hand the question back: the learner has
 		// already said which conversation they meant. When its answer is
 		// unusable, one bounded repair pass is made - the model may call the
@@ -1954,10 +1963,48 @@ func polarPointerQuestion(question string) bool {
 	return false
 }
 
+// proseCandidateListHandoff turns a prose list of possibilities into a formal
+// clarification card.
+//
+// The p2-acc-04-r2 record has the shape: the card search found several
+// exercise lists, the model wrote them into its answer as a table ("p2c-32 /
+// p2c-30 / p2c-29 ... I do not want to guess") and ended the turn. The model
+// did not call ask_which_conversation, so no card was issued: the learner got
+// text to read instead of a choice to make, and the original question was
+// buried in the prose.
+//
+// When the turn found several candidates and the answer names two or more of
+// them, the product hands the learner the same formal card the ask tool would
+// have produced: original question, candidates, the full conversation list and
+// the free-text entry.
+func (s *runState) proseCandidateListHandoff(answer string) *model.SessionClarification {
+	s.mu.Lock()
+	candidates := append([]model.SessionClarificationCandidate{}, s.clarificationCandidates...)
+	started := s.crossSessionRetrievalStarted
+	asked := s.clarification != nil
+	s.mu.Unlock()
+	if asked || !started || len(candidates) < 2 || !pointerQuestion(s.input.Question) {
+		return nil
+	}
+	mentioned := 0
+	lowered := strings.ToLower(answer)
+	for _, candidate := range candidates {
+		session := strings.ToLower(strings.TrimSpace(candidate.SessionID))
+		if session != "" && strings.Contains(lowered, session) {
+			mentioned++
+		}
+	}
+	if mentioned < 2 {
+		return nil
+	}
+	prompt := "我这边对不上唯一的一份：有几场都可能符合。" +
+		"请选一次，或者从你的完整会话列表里选，也可以给我一句线索（哪个项目、大概哪天）。"
+	return buildRetrievalClarification(s.input.Question, candidates, prompt)
+}
+
 // unconfirmedEvidenceHandoff turns a pointer question into a formal
 // clarification when the evidence the turn used does not settle ONE
 // conversation.
-//
 // The acceptance runs kept producing the same failure: the learner said "the
 // last time", the card search returned a few conversations, the model opened
 // one of them (or a conversation the search never offered), read a stretch of
