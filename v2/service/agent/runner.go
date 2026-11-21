@@ -1195,8 +1195,14 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 		// card carries the original question and the candidates this turn
 		// found; the learner may pick one, pick from their own list, or
 		// write a clue. It ends the turn with no model call.
-		// A locked turn is excluded: the learner has already chosen.
+		// A locked turn is excluded: the learner has already chosen. A turn
+		// that read evidence from more than one unconfirmed conversation is
+		// asked about BEFORE publishing an answer that may be about the wrong
+		// one.
 		if window.SessionLock == nil {
+			if card := state.unconfirmedEvidenceHandoff(); card != nil {
+				return state.handOffToClarification(ctx, sink, card)
+			}
 			if card := state.clarificationHandoff(finalAnswer); card != nil {
 				return state.handOffToClarification(ctx, sink, card)
 			}
@@ -1567,6 +1573,13 @@ type runState struct {
 	// conversation: a tool may search this run's own conversation instead,
 	// and that result is not the past the learner pointed at.
 	lockedSessionID string
+	// evidenceSessions are the earlier conversations this turn actually read
+	// evidence from (session-scoped tools that returned ok, by the session
+	// they were told to read). A pointer question that mixed evidence from
+	// more than one of them, or from one the card search never offered, has
+	// not settled which conversation the learner meant - that is a question
+	// for the learner, not an answer.
+	evidenceSessions []string
 	// turnEvidence is what the reads INSIDE the locked conversation returned
 	// this turn, in the order they were read. A locked turn that has to make
 	// a repair request carries it along: the repair starts from the original
@@ -1776,9 +1789,16 @@ func (s *runState) clarificationHandoff(answer string) *model.SessionClarificati
 	if len(candidates) == 0 {
 		prompt = "我没能确认你指的是哪一次。请从你的完整会话列表里选一次，或者直接给我一句线索（哪个项目、大概哪天）。"
 	}
+	return buildRetrievalClarification(s.input.Question, candidates, prompt)
+}
+
+// buildRetrievalClarification builds the card a turn hands over when it cannot
+// settle which conversation the learner meant.
+func buildRetrievalClarification(question string, candidates []model.SessionClarificationCandidate,
+	prompt string) *model.SessionClarification {
 	card := &model.SessionClarification{
 		ClarificationID:    NewClarificationID(),
-		Question:           strings.TrimSpace(s.input.Question),
+		Question:           strings.TrimSpace(question),
 		Prompt:             prompt,
 		AllowFreeText:      true,
 		AllowHistoryBrowse: true,
@@ -1789,6 +1809,105 @@ func (s *runState) clarificationHandoff(answer string) *model.SessionClarificati
 		return nil
 	}
 	return card
+}
+
+// pointerMarkers are the words with which the learner points at an earlier
+// conversation instead of naming it ("上次", "那次", ...).
+var pointerMarkers = []string{"上次", "上一次", "那次", "那份", "那套", "那一", "之前", "上回"}
+
+// pointerQuestion says whether the learner pointed at an earlier conversation
+// rather than naming one.
+func pointerQuestion(question string) bool {
+	for _, marker := range pointerMarkers {
+		if strings.Contains(question, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// polarPointerQuestion says whether the learner is asking a yes/no question
+// about a pointed-at conversation ("did we discuss X last time?", "was it
+// settled?").
+//
+// These questions have a different bar from a fact question: "last time" can
+// only be answered "no" after the target conversation is confirmed AND its
+// record was read. Until then, the honest outcome is to ask, not to conclude
+// absence from the wrong conversation.
+func polarPointerQuestion(question string) bool {
+	if !pointerQuestion(question) {
+		return false
+	}
+	for _, marker := range []string{"吗", "有没有", "是否", "是不是", "讨论过", "定下来", "定过"} {
+		if strings.Contains(question, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// unconfirmedEvidenceHandoff turns a pointer question into a formal
+// clarification when the evidence the turn used does not settle ONE
+// conversation.
+//
+// The acceptance runs kept producing the same failure: the learner said "the
+// last time", the card search returned a few conversations, the model opened
+// one of them (or a conversation the search never offered), read a stretch of
+// it, and answered. The answer sounds plausible and is about the wrong
+// conversation. The location results the turn already has decide this:
+//
+//   - the learner already picked (a lock): not this turn's question;
+//   - exactly one candidate was offered and the turn read only that one: the
+//     target is confirmed, keep the direct path;
+//   - the turn read evidence from more than one earlier conversation, or from
+//     one the card search never offered: the pointer is not settled. Ask.
+//
+// The evidence sessions are the session-scoped reads only. A segment search
+// that merely listed other conversations did not read them, and a result
+// taken from this conversation is not evidence of an earlier one.
+func (s *runState) unconfirmedEvidenceHandoff() *model.SessionClarification {
+	s.mu.Lock()
+	candidates := append([]model.SessionClarificationCandidate{}, s.clarificationCandidates...)
+	reads := append([]string{}, s.evidenceSessions...)
+	asked := s.clarification != nil
+	s.mu.Unlock()
+	if asked || !pointerQuestion(s.input.Question) {
+		return nil
+	}
+	knownCandidate := func(session string) bool {
+		for _, candidate := range candidates {
+			if candidate.SessionID == session {
+				return true
+			}
+		}
+		return false
+	}
+	outsideCandidates := false
+	for _, session := range reads {
+		if !knownCandidate(session) {
+			outsideCandidates = true
+			break
+		}
+	}
+	confirmedTarget := len(candidates) == 1 && len(reads) == 1 &&
+		reads[0] == candidates[0].SessionID
+	if polarPointerQuestion(s.input.Question) && !confirmedTarget {
+		// "Did we discuss this last time?" cannot be answered "no" until the
+		// conversation it refers to is confirmed and its record was read.
+		// Concluding absence from a different (or an unread) conversation is
+		// exactly the failure the acceptance run kept showing.
+		prompt := "这个问题要确认的是哪一次会话，但目标还没有确认。" +
+			"请选一次，或者从你的完整会话列表里选，也可以给我一句线索（哪个项目、大概哪天）。"
+		return buildRetrievalClarification(s.input.Question, candidates, prompt)
+	}
+	if len(reads) < 2 && !outsideCandidates {
+		// One conversation, and it is one the card search offered: the
+		// target is confirmed enough to answer from directly.
+		return nil
+	}
+	prompt := "这个问题指的是哪一次还没确认：这一轮读到的证据来自不同的会话。" +
+		"请选一次，或者从你的完整会话列表里选，也可以给我一句线索。"
+	return buildRetrievalClarification(s.input.Question, candidates, prompt)
 }
 
 // isProseClarificationAsk says whether a short answer is the model asking the
@@ -1867,9 +1986,39 @@ func (s *runState) observeCrossSessionResult(input *compose.ToolInput, output *c
 	var status struct {
 		Status string `json:"status"`
 	}
-	if err := json.Unmarshal([]byte(output.Result), &status); err == nil && status.Status == "unavailable" {
+	statusKnown := json.Unmarshal([]byte(output.Result), &status) == nil
+	if statusKnown && status.Status == "unavailable" {
 		s.markRetrievalFailed()
 	}
+	if sessionScopedEvidenceCapability(capability) && statusKnown && status.Status == "ok" {
+		var arguments struct {
+			Session string `json:"session"`
+		}
+		if err := json.Unmarshal([]byte(input.Arguments), &arguments); err == nil {
+			session := strings.TrimSpace(arguments.Session)
+			// A result taken from THIS conversation is not evidence of an
+			// earlier one; it cannot make the pointer ambiguous.
+			if session != "" && session != strings.TrimSpace(s.input.SessionID) {
+				s.rememberEvidenceSession(session)
+			}
+		}
+	}
+}
+
+// rememberEvidenceSession records one earlier conversation the turn read.
+func (s *runState) rememberEvidenceSession(sessionID string) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, held := range s.evidenceSessions {
+		if held == sessionID {
+			return
+		}
+	}
+	s.evidenceSessions = append(s.evidenceSessions, sessionID)
 }
 
 // maxTurnEvidenceTokens bounds what a repair request may carry from the
