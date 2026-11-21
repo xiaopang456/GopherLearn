@@ -37,6 +37,21 @@ const BrowseSummarySegmentsName = "browse_summary_segments"
 const (
 	maxBrowseSummarySegments = 5
 	maxBrowseSummaryTokens   = 300
+	// maxBrowseTailMessages and maxBrowseTailRunes bound the words a browse
+	// call may add from AFTER the summary: the stretch the summary has not
+	// covered yet. It is the same kind of read as the lock's evidence tail:
+	// the newest words are where a conversation settles what it had only
+	// proposed earlier, and a summary that stops before them would answer
+	// with the old proposal.
+	maxBrowseTailMessages = 8
+	maxBrowseTailRunes    = 200
+	// maxBrowseTailScan is how far after the summary the tail read looks
+	// before keeping the newest messages. The words that settle a
+	// conversation are at its end, and a read that stopped at the first few
+	// messages after the summary would show the old proposal again and never
+	// reach the decision. It is the store page maximum (100), so the scan is
+	// one bounded query.
+	maxBrowseTailScan = 100
 	// browseSummaryCandidateLimit bounds how many segments the browse tool
 	// looks at when it searches. A session with more segments than this has
 	// a tail the browse tool does not reach by search; the model can still
@@ -58,7 +73,7 @@ const browseSummarySegmentsDescription = "Browse this session's earlier summary 
 // The promise it adds is the one the card path needs: an earlier
 // conversation may be browsed, but only one a session card in this turn
 // pointed at.
-const browseSummarySegmentsSessionDescription = "Browse this session's earlier summary segments. Use it when the segments already in front of you do not cover what the learner is asking about, or when they are too compressed to answer from. A segment is a compressed record of earlier turns, not a transcript: the words the learner used are read back with read_history_message. Segment numbers are counted from 1 within this session. Pass session when a session card pointed at another conversation and you need that conversation's summary; a session no card pointed at cannot be opened."
+const browseSummarySegmentsSessionDescription = "Browse this session's earlier summary segments. Use it when the segments already in front of you do not cover what the learner is asking about, or when they are too compressed to answer from. A segment is a compressed record of earlier turns, not a transcript: the words the learner used are read back with read_history_message. Segment numbers are counted from 1 within this session. Pass session when a session card pointed at another conversation and you need that conversation's summary; a session no card pointed at cannot be opened. When an earlier conversation is browsed, its words AFTER the summary are included as later_messages: they are newer than the summary, so the last one wins and the order matters."
 
 // The states a browse call can report.
 const (
@@ -127,11 +142,26 @@ type BrowseSummarySegmentsOutput struct {
 	Reason string `json:"reason"`
 	// Segments are the segments that were found, oldest first.
 	Segments []SummarySegmentView `json:"segments"`
+	// LaterMessages are the older conversation's words after its summary,
+	// oldest first. They are newer than every segment above, so the last one
+	// is the latest thing the conversation said. A segment that records an
+	// old proposal and a later message that changes it are both here, in
+	// order, which is what "what was finally agreed" needs.
+	LaterMessages []BrowseLaterMessageView `json:"later_messages,omitempty"`
 	// ObservationTokens is what the answer has to spend on this observation.
 	ObservationTokens int    `json:"observation_tokens"`
 	Truncated         bool   `json:"truncated,omitempty"`
 	Retryable         bool   `json:"retryable,omitempty"`
 	NextStep          string `json:"next_step,omitempty"`
+}
+
+// BrowseLaterMessageView is one message after the summary, as the model sees
+// it.
+type BrowseLaterMessageView struct {
+	MessageID int    `json:"message_id"`
+	Role      string `json:"role"`
+	SentAt    string `json:"sent_at,omitempty"`
+	Text      string `json:"text"`
 }
 
 // SummarySegmentBrowser reads the segments of one session.
@@ -144,6 +174,17 @@ type SummarySegmentBrowser interface {
 	GetSummarySegment(ctx context.Context, userID int64, sessionID string, seq int) (*model.SessionSummarySegment, error)
 	ListSummarySegments(ctx context.Context, userID int64, sessionID string, limit int) ([]model.SessionSummarySegment, error)
 	GetWhiteboard(ctx context.Context, userID int64, sessionID string) (*model.SessionWhiteboard, error)
+}
+
+// SummaryTailReader reads the conversation's words after the summary's
+// high-water mark.
+//
+// It is the same owner-scoped read the lock's evidence tail uses: the summary
+// covered only part of the conversation, and the words after it exist only as
+// words. A proposal can be changed later, and a summary that stops before the
+// change would answer with the old proposal.
+type SummaryTailReader interface {
+	ListOwnedWordsAfter(ctx context.Context, userID int64, sessionID string, afterID uint, limit int) ([]model.Message, error)
 }
 
 // SummarySegmentStore is the storage the segment verifier reads.
@@ -199,6 +240,10 @@ type BrowseSummarySegmentsRegistry struct {
 	// the tool still works, and the learner simply does not get the segment
 	// they opened kept in front of them.
 	recent serviceagent.SummarySegmentRecentUse
+	// tail reads the words after the summary. It is optional and only used
+	// when the call names an earlier conversation: a browse of THIS
+	// conversation would duplicate what the window already holds.
+	tail SummaryTailReader
 }
 
 // NewBrowseSummarySegmentsRegistry builds the registry.
@@ -223,6 +268,18 @@ func (r *BrowseSummarySegmentsRegistry) UseRecentUse(recent serviceagent.Summary
 		return
 	}
 	r.recent = recent
+}
+
+// UseTailReader attaches the read of the words after the summary.
+//
+// It is a setter because the reader is optional and its storage is a
+// deployment's business; without it the browse tool shows the summary alone,
+// exactly as before.
+func (r *BrowseSummarySegmentsRegistry) UseTailReader(reader SummaryTailReader) {
+	if r == nil {
+		return
+	}
+	r.tail = reader
 }
 
 // UseSessionParameter lets the tool open an earlier conversation.
@@ -390,6 +447,61 @@ func (r *BrowseSummarySegmentsRegistry) browse(ctx context.Context, run servicea
 		// is an id the model never saw.
 		grants = append(grants, r.grantsForView(targetSession, segment, browsed, cardID, cardVersion, cardWatermark)...)
 		r.recordRecentUse(ctx, run, segment.Seq)
+	}
+	// The words AFTER the summary.
+	//
+	// A summary can stop before the conversation settles: the segment keeps
+	// the early proposal, and the later decision exists only as words after
+	// the summary's high-water mark. Browsing a named earlier conversation
+	// therefore carries that stretch too - bounded, oldest first, with the
+	// message ids - so the answer can see the old proposal, the later change
+	// and their order.
+	if r.tail != nil && targetSession != strings.TrimSpace(run.SessionID) && len(segments) > 0 {
+		lastEnd := uint(0)
+		for _, segment := range segments {
+			if segment.EndMessageID > lastEnd {
+				lastEnd = segment.EndMessageID
+			}
+		}
+		if cardWatermark == 0 || lastEnd <= cardWatermark {
+			later, tailErr := r.tail.ListOwnedWordsAfter(ctx, run.UserID, targetSession, lastEnd, maxBrowseTailScan)
+			if tailErr == nil {
+				// Keep the NEWEST words, oldest first: the end of the
+				// conversation is where a proposal is changed.
+				if len(later) > maxBrowseTailMessages {
+					later = later[len(later)-maxBrowseTailMessages:]
+				}
+				for _, message := range later {
+					text, truncated := boundRunes(strings.TrimSpace(message.Content), maxBrowseTailRunes)
+					if text == "" {
+						continue
+					}
+					cost := rag.EstimateTokens(text) + 8
+					if tokens+cost > maxBrowseSummaryTokens*maxBrowseSummarySegments {
+						out.Truncated = true
+						break
+					}
+					role := "user"
+					if !message.IsUser {
+						role = "assistant"
+					}
+					out.LaterMessages = append(out.LaterMessages, BrowseLaterMessageView{
+						MessageID: int(message.ID), Role: role,
+						SentAt: message.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+						Text:   text,
+					})
+					if truncated {
+						out.Truncated = true
+					}
+					tokens += cost
+					grants = append(grants, serviceagent.HistoryMessageGrant{
+						MessageID: message.ID, SourceKind: serviceagent.HistorySourceSessionSearch,
+						SourceSessionID: targetSession,
+						CardID:          cardID, CardVersion: cardVersion, CardWatermark: cardWatermark,
+					})
+				}
+			}
+		}
 	}
 	out.ObservationTokens = tokens
 	// The ids the browse tool just showed the model are now readable, and the

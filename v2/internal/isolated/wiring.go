@@ -873,6 +873,11 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 			// modes whose measurements were published must keep the schema
 			// they were measured with.
 			browseTools.UseSessionParameter(sessionCardPathEnabled)
+			// A named earlier conversation's summary can stop before the
+			// conversation settles. The words after the summary are the only
+			// place the later decision lives, and the browse tool carries
+			// them when it opens such a conversation.
+			browseTools.UseTailReader(message.DefaultRepository())
 			registries = append(registries, browseTools)
 		}
 		if sessionCardPathEnabled {
