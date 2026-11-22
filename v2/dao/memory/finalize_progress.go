@@ -82,9 +82,17 @@ func (r *Repository) ListDueFinalizeSessions(ctx context.Context, idleBefore tim
 		return nil, fmt.Errorf("invalid finalize sweep query")
 	}
 	rows := []DueFinalizeSession{}
+	// The progress column is pulled through an aggregate and referenced by
+	// its select alias: MySQL 8 rejects a bare joined column inside HAVING
+	// (Unknown column 'p.covered_message_id'), which made every sweep fail
+	// until the entry-point acceptance ran this query for real. The left
+	// join yields at most one progress row per session - the (user, session)
+	// pair is unique - so MAX over it is the value itself, NULL when the
+	// session was never finalized.
 	err := r.db.WithContext(ctx).Raw(`
 		SELECT m.session_id AS session_id, s.user_id AS user_id,
-		       MAX(m.id) AS newest_message_id, MAX(m.created_at) AS latest_activity_at
+		       MAX(m.id) AS newest_message_id, MAX(m.created_at) AS latest_activity_at,
+		       MAX(p.covered_message_id) AS covered_message_id
 		FROM messages m
 		JOIN sessions s ON s.id = m.session_id AND s.deleted_at IS NULL
 		LEFT JOIN session_finalize_progresses p
@@ -92,7 +100,7 @@ func (r *Repository) ListDueFinalizeSessions(ctx context.Context, idleBefore tim
 		WHERE m.created_at >= ? AND m.created_at < ?
 		GROUP BY m.session_id, s.user_id
 		HAVING MAX(m.created_at) < ?
-		   AND (p.covered_message_id IS NULL OR p.covered_message_id < MAX(m.id))
+		   AND (covered_message_id IS NULL OR covered_message_id < MAX(m.id))
 		ORDER BY latest_activity_at DESC
 		LIMIT ?`, lookback, time.Now(), idleBefore, batch).Scan(&rows).Error
 	if err != nil {
