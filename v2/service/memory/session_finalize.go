@@ -115,6 +115,12 @@ const (
 	// FinalizeSkipDuplicateRun says one extraction produced the same
 	// candidate twice; the first wins.
 	FinalizeSkipDuplicateRun = "duplicate_run"
+	// FinalizeSkipSemanticDuplicate says the relation judgement found the
+	// same meaning already covered by an active entry of the range: the
+	// candidate is skipped outright and the existing entry stands, which is
+	// the plan's "同一意思" row. The learner never sees a card for it, and
+	// nothing is written.
+	FinalizeSkipSemanticDuplicate = "semantic_duplicate"
 )
 
 // FinalizeCursor is the progress of one session's finalize work: the newest
@@ -147,6 +153,11 @@ type SessionEvidenceRef struct {
 	MessageID uint      `json:"message_id"`
 	Role      string    `json:"role"`
 	At        time.Time `json:"at"`
+	// Statement marks the reference the statement time follows: the message
+	// that directly supports the candidate's current value. The other
+	// references remain as context, which is what the confirmation page
+	// shows them as.
+	Statement bool `json:"statement,omitempty"`
 }
 
 // SessionExtractionInput is what one extraction run hands the proposer.
@@ -185,6 +196,15 @@ type SessionRawProposal struct {
 	Durability  model.MemoryDurability
 	ValidUntil  *time.Time
 	EvidenceIDs []uint // the learner's own words the candidate rests on
+	// StatementEvidenceID names the evidence message that directly supports
+	// the candidate's current value, and it has to be one of the
+	// EvidenceIDs. The statement time follows it: a candidate that cites
+	// both the value it replaces and the value that replaced it must carry
+	// the newer utterance's time, not the older one. Zero means the proposer
+	// did not distinguish, and the newest evidence message stands in - the
+	// safe default, because the failure it avoids is stamping an updated
+	// value with a superseded utterance's time.
+	StatementEvidenceID uint
 	// AssistantIDs are the assistant's messages that proposed what the
 	// learner took on. They are recorded apart from the evidence, never in
 	// its place.
@@ -342,9 +362,11 @@ type SessionMemoryCandidate struct {
 	// AssistantUtterances is the proposal the learner accepted, when there
 	// was one. It is never a substitute for Evidence.
 	AssistantUtterances []SessionEvidenceRef
-	// StatementTime is the time of the earliest evidence message: the
-	// 原话发生时间 every later新旧 comparison uses, as the plan's time rule
-	// requires.
+	// StatementTime is the 原话发生时间 every later新旧 comparison uses, as
+	// the plan's time rule requires. It is the time of the evidence message
+	// that directly supports the candidate's current value - not of the
+	// older utterances the candidate also cites as context, so a value that
+	// replaced an earlier one never carries the earlier utterance's time.
 	StatementTime time.Time
 	// Fingerprint identifies the candidate across triggers of the same
 	// session: the same content from the same session is one candidate,
@@ -399,12 +421,22 @@ func FinalizeRunID(cursor FinalizeCursor) string {
 
 // EvidenceJSON renders the message-level references the confirmation page
 // expands into the original words. The draft table has no column for it yet;
-// this is the structure the integration note asks the draft to carry.
+// this is the structure the integration note asks the draft to carry. The
+// statement reference is named apart, so the page can show which words the
+// candidate's value rests on and which are context.
 func (c SessionMemoryCandidate) EvidenceJSON() (string, error) {
+	statementID := uint(0)
+	for _, ref := range c.Evidence {
+		if ref.Statement {
+			statementID = ref.MessageID
+			break
+		}
+	}
 	payload := map[string]any{
 		"scope": c.Scope, "class": c.Class, "kind": c.Kind,
-		"statement_time": c.StatementTime.Format(time.RFC3339),
-		"evidence":       c.Evidence, "assistant_utterances": c.AssistantUtterances,
+		"statement_time":       c.StatementTime.Format(time.RFC3339),
+		"statement_message_id": statementID,
+		"evidence":             c.Evidence, "assistant_utterances": c.AssistantUtterances,
 		"fingerprint": c.Fingerprint,
 	}
 	encoded, err := json.Marshal(payload)
@@ -417,10 +449,11 @@ func (c SessionMemoryCandidate) EvidenceJSON() (string, error) {
 // FinalizeResult is what one trigger produced.
 type FinalizeResult struct {
 	SessionID string
-	// Cursor is the progress the caller stores. It advances only when every
-	// candidate either proposed cleanly or was refused; a candidate waiting
-	// for a relation judgement holds the cursor where it was, so the next
-	// trigger re-runs the same progress.
+	// Cursor is the progress this run reached. Extract advances it when
+	// nothing is waiting for a judgement; the watermark rule itself - the
+	// cursor moves only once every candidate is persisted or explicitly
+	// skipped - is Handoff's, which is the call the integration trigger
+	// makes.
 	Cursor FinalizeCursor
 	// Proposals are the validated candidates, in the order the proposer
 	// returned them.
@@ -531,6 +564,15 @@ func (s *SessionFinalizeService) Extract(ctx context.Context, request FinalizeRe
 		if retry {
 			candidate.Relation, candidate.RelatedOld = relation, related
 			result.RetryPending = append(result.RetryPending, candidate)
+			continue
+		}
+		if relation.Relation == GlobalRelationDuplicate {
+			// The same meaning is already covered by an active entry of the
+			// range: the plan's "同一意思" row. The candidate is skipped
+			// outright and the existing entry stands - the learner never sees
+			// a card for it, and nothing is written. The judgement itself is
+			// the record of why.
+			result.Skipped = append(result.Skipped, FinalizeSkip{Reason: FinalizeSkipSemanticDuplicate, Subject: candidate.Subject, EvidenceIDs: proposal.EvidenceIDs, AssistantIDs: proposal.AssistantIDs})
 			continue
 		}
 		candidate.Relation, candidate.RelatedOld = relation, related
@@ -819,6 +861,34 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 			return nil, nil, FinalizeSkipAdoptionUnproven
 		}
 	}
+	// The statement reference is the one the 原话时间 follows. A proposal
+	// that names a message outside its own evidence set is incoherent about
+	// where its value came from, which is a shape failure. Unnamed, the
+	// newest evidence message stands in: the ids' order is the order the
+	// messages were written in, and the newest is the only safe single
+	// choice, because the failure to avoid is stamping a value with the
+	// time of an utterance it replaced.
+	if proposal.StatementEvidenceID != 0 {
+		found := false
+		for i := range evidence {
+			if evidence[i].MessageID == proposal.StatementEvidenceID {
+				evidence[i].Statement = true
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, nil, FinalizeSkipInvalidShape
+		}
+	} else {
+		latest := 0
+		for i := range evidence {
+			if evidence[i].MessageID > evidence[latest].MessageID {
+				latest = i
+			}
+		}
+		evidence[latest].Statement = true
+	}
 	return evidence, assistant, ""
 }
 
@@ -867,10 +937,23 @@ func (s *SessionFinalizeService) buildCandidate(userID int64, coverage FinalizeC
 		}
 	}
 	tags := GenerateQueryTags(subject+"\n"+content, topicKey)
+	// The statement time comes from the reference marked as the value's
+	// direct support. The earliest-time fallback only exists for a candidate
+	// that arrived without any marked reference, which the validation above
+	// no longer produces - it is kept because the caller may pass evidence
+	// refs of its own making.
 	statement := time.Time{}
 	for _, ref := range evidence {
-		if statement.IsZero() || ref.At.Before(statement) {
+		if ref.Statement {
 			statement = ref.At
+			break
+		}
+	}
+	if statement.IsZero() {
+		for _, ref := range evidence {
+			if statement.IsZero() || ref.At.Before(statement) {
+				statement = ref.At
+			}
 		}
 	}
 	candidate := SessionMemoryCandidate{
@@ -896,4 +979,77 @@ func CandidateFingerprint(userID int64, sessionID string, scope model.MemoryScop
 	h := sha256.New()
 	_, _ = fmt.Fprintf(h, "%d\x00%s\x00%s\x00%s\x00%s\x00%s", userID, sessionID, scope, topicKey, subject, content)
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// DraftProposer is the narrow face of the draft entry the handoff calls.
+// *GovernanceService satisfies it as-is; the integration wires it directly.
+type DraftProposer interface {
+	ProposeDraft(ctx context.Context, request DraftRequest) (*model.MemoryDraft, bool, error)
+}
+
+// FailedProposal is a candidate whose draft write did not complete.
+type FailedProposal struct {
+	CandidateID string
+	Err         error
+}
+
+// HandoffResult is what one finalize trigger left behind, including the
+// draft-entry side of the handoff.
+type HandoffResult struct {
+	FinalizeResult
+	// Persisted carries the draft id each accepted proposal produced, in
+	// proposal order. A proposal the draft entry merged into an existing
+	// card reports that card's id - persistence, not creation, is what
+	// counts.
+	Persisted []string
+	// Failed are the candidates whose draft write errored. They are not
+	// terminal: nothing decided their fate yet.
+	Failed []FailedProposal
+	// Advanced says the watermark moved. Cursor is safe to store either
+	// way: it is held at the progress the trigger handed in unless every
+	// candidate reached a terminal state, so storing it unconditionally is
+	// always correct.
+	Advanced bool
+}
+
+// Handoff extracts one finished session and hands every accepted candidate
+// to the draft entry, and it owns the watermark rule: the progress advances
+// only when every candidate reached a terminal state - persisted at the
+// draft entry, or explicitly skipped with a reason here.
+//
+// A failed draft write does not stop the handoff: the rest of the run still
+// persists, and the cursor simply stays where it was. The next trigger
+// re-runs the same progress, the fingerprint keeps what already persisted
+// from proposing twice, and the failed candidate gets its second try. That
+// is the same recoverable failure the repeated-trigger rule exists for: a
+// candidate whose fate is undecided is never silently advanced past.
+func (s *SessionFinalizeService) Handoff(ctx context.Context, request FinalizeRequest, drafts DraftProposer) (HandoffResult, error) {
+	if drafts == nil {
+		return HandoffResult{}, fmt.Errorf("handoff requires the draft entry")
+	}
+	result, err := s.Extract(ctx, request)
+	if err != nil {
+		return HandoffResult{}, err
+	}
+	outcome := HandoffResult{FinalizeResult: result}
+	for _, candidate := range result.Proposals {
+		draft, _, err := drafts.ProposeDraft(ctx, candidate.DraftRequest())
+		if err != nil {
+			outcome.Failed = append(outcome.Failed, FailedProposal{CandidateID: candidate.ID, Err: err})
+			continue
+		}
+		id := ""
+		if draft != nil {
+			id = draft.ID
+		}
+		outcome.Persisted = append(outcome.Persisted, id)
+	}
+	outcome.Advanced = len(outcome.Failed) == 0 && len(result.RetryPending) == 0 && !result.NoNewContent
+	if !outcome.Advanced {
+		// Hold the watermark at the progress the trigger handed in: the
+		// cursor the caller stores must never run past a candidate whose
+		// fate is still undecided.
+		outcome.Cursor = FinalizeCursor{SessionID: request.Cursor.SessionID, CoveredMessageID: request.Cursor.CoveredMessageID}
+	}
+	return outcome, nil
 }

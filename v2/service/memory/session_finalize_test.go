@@ -1,8 +1,10 @@
 package memory
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -681,7 +683,7 @@ func TestFinalizeSelfReportKeepsItsLimit(t *testing.T) {
 			Scope: model.MemoryScopeTopic, Kind: FinalizeKindSelfReport, TopicKey: "go-concurrency", Subject: "select 自述",
 			Durability:  model.MemoryDurabilityStable,
 			Content:     "我自述已掌握 select 多路复用，但仍会因粗心看错题目条件出错。",
-			EvidenceIDs: []uint{1, 3},
+			EvidenceIDs: []uint{1, 3}, StatementEvidenceID: 1,
 		},
 		{
 			Scope: model.MemoryScopeGlobal, Class: FinalizeClassConstraint, Subject: "学习时间",
@@ -708,6 +710,11 @@ func TestFinalizeSelfReportKeepsItsLimit(t *testing.T) {
 	}
 	if result.Proposals[1].Class != FinalizeClassConstraint {
 		t.Fatalf("constraint=%+v", result.Proposals[1])
+	}
+	// The self-report names the message that carries the claim: the statement
+	// time is m01's, while m03 stays as the qualification's context.
+	if !result.Proposals[0].StatementTime.Equal(finalizeAt(1)) {
+		t.Fatalf("self-report statement time=%v, want m01's time", result.Proposals[0].StatementTime)
 	}
 	// The mastery numbers live in the learning records and nowhere here: the
 	// module's stores are the board, the messages, the catalogue, the draft
@@ -856,5 +863,216 @@ func TestFinalizeWithoutBoardExtractsFromWindow(t *testing.T) {
 	}
 	if !result.BoardMissing || len(result.Proposals) != 1 {
 		t.Fatalf("board missing=%v proposals=%d", result.BoardMissing, len(result.Proposals))
+	}
+}
+
+// TestFinalizeStatementTimeFollowsValueEvidence is the statement-time rule:
+// the 原话时间 is the time of the message that directly supports the
+// candidate's current value. A candidate that cites both the value it
+// replaces and the value that replaced it must not carry the older
+// utterance's time.
+func TestFinalizeStatementTimeFollowsValueEvidence(t *testing.T) {
+	messages := []SessionMessage{
+		{ID: 3, IsUser: true, Content: "先定成每天背 22 个单词。", CreatedAt: finalizeAt(6)},
+		{ID: 6, IsUser: true, Content: "后来改成 37 个，按 37 来。", CreatedAt: finalizeAt(18)},
+	}
+	valueProposal := func(statement uint) SessionRawProposal {
+		return SessionRawProposal{
+			Scope: model.MemoryScopeGlobal, Class: FinalizeClassGoal, Subject: "背诵目标",
+			Durability: model.MemoryDurabilityStable,
+			Content:    "每天背 37 个单词。", EvidenceIDs: []uint{3, 6}, StatementEvidenceID: statement,
+		}
+	}
+	request := FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-goal"}}
+
+	// The proposer names the message that carries the value: the statement
+	// time is that message's time, and the older citation stays context.
+	named := &scriptedProposer{proposals: []SessionRawProposal{valueProposal(6)}}
+	service := newFinalizeService(t, fakeFinalizeBoards{}, fakeFinalizeMessages{messages: messages},
+		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil, named,
+		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "new"}}, 50)
+	result, err := service.Extract(context.Background(), request)
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(result.Proposals) != 1 {
+		t.Fatalf("proposals=%d want 1", len(result.Proposals))
+	}
+	candidate := result.Proposals[0]
+	if !candidate.StatementTime.Equal(finalizeAt(18)) {
+		t.Fatalf("statement time=%v, want the value-bearing message's time %v, not the replaced value's %v",
+			candidate.StatementTime, finalizeAt(18), finalizeAt(6))
+	}
+	marked := 0
+	for _, ref := range candidate.Evidence {
+		if ref.Statement {
+			marked++
+			if ref.MessageID != 6 {
+				t.Fatalf("statement marked on m%d, want m06", ref.MessageID)
+			}
+		}
+	}
+	if marked != 1 {
+		t.Fatalf("statement marks=%d, want exactly one", marked)
+	}
+	encoded, err := candidate.EvidenceJSON()
+	if err != nil || !bytes.Contains([]byte(encoded), []byte(`"statement_message_id":6`)) {
+		t.Fatalf("evidence json=%q err=%v, want the statement message named", encoded, err)
+	}
+
+	// Unnamed, the newest evidence message stands in: the failure this
+	// default avoids is stamping an updated value with a superseded
+	// utterance's time.
+	unnamed := &scriptedProposer{proposals: []SessionRawProposal{valueProposal(0)}}
+	fallbackService := newFinalizeService(t, fakeFinalizeBoards{}, fakeFinalizeMessages{messages: messages},
+		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil, unnamed,
+		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "new"}}, 50)
+	fallback, err := fallbackService.Extract(context.Background(), request)
+	if err != nil {
+		t.Fatalf("fallback extract: %v", err)
+	}
+	if len(fallback.Proposals) != 1 || !fallback.Proposals[0].StatementTime.Equal(finalizeAt(18)) {
+		t.Fatalf("fallback=%+v, want the newest evidence message's time", fallback.Proposals)
+	}
+
+	// Naming a message outside the proposal's own evidence set is
+	// incoherent about where the value came from: shape failure.
+	incoherent := &scriptedProposer{proposals: []SessionRawProposal{valueProposal(9)}}
+	incoherentService := newFinalizeService(t, fakeFinalizeBoards{}, fakeFinalizeMessages{messages: messages},
+		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil, incoherent,
+		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "x"}}, 50)
+	refused, err := incoherentService.Extract(context.Background(), request)
+	if err != nil {
+		t.Fatalf("incoherent extract: %v", err)
+	}
+	if len(refused.Proposals) != 0 || len(refused.Skipped) != 1 || refused.Skipped[0].Reason != FinalizeSkipInvalidShape {
+		t.Fatalf("refused=%+v skipped=%+v", refused.Proposals, refused.Skipped)
+	}
+}
+
+// TestFinalizeSemanticDuplicateSkipped: the plan's "同一意思" row - a
+// candidate the relation judgement finds already covered is skipped outright,
+// the existing entry stands, and the learner never sees a card for it.
+func TestFinalizeSemanticDuplicateSkipped(t *testing.T) {
+	board := ext01BoardWithPreference(t)
+	existing := globalEntry("P-02", "出题后先等用户自己说完思路，再对答案")
+	relations := &scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationDuplicate, TargetMemoryID: "P-02", Reason: "same meaning"}}
+	service := newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: ext01Messages()},
+		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{entries: []model.LongTermMemory{existing}}, nil,
+		&scriptedProposer{proposals: []SessionRawProposal{preferenceProposal([]uint{3}, nil)}}, relations, 0)
+
+	result, err := service.Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-dev-EXT-01"}})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(result.Proposals) != 0 {
+		t.Fatalf("proposals=%d, want the duplicate skipped, not proposed", len(result.Proposals))
+	}
+	if len(result.Skipped) != 1 || result.Skipped[0].Reason != FinalizeSkipSemanticDuplicate {
+		t.Fatalf("skipped=%+v, want semantic_duplicate", result.Skipped)
+	}
+	if relations.calls != 1 {
+		t.Fatalf("relation calls=%d, want the judgement that decided the skip", relations.calls)
+	}
+	// The skip is terminal: the watermark advances past it.
+	if result.Cursor.CoveredMessageID != 11 {
+		t.Fatalf("cursor=%+v, want advanced - a skip is a decided state", result.Cursor)
+	}
+	if existing.Status != model.LongTermMemoryActive {
+		t.Fatalf("existing entry status=%s, want untouched", existing.Status)
+	}
+}
+
+// fakeFinalizeDrafts is the draft entry stand-in: it records the requests it
+// received and can fail selected calls.
+type fakeFinalizeDrafts struct {
+	calls  int
+	ids    []string
+	failOn map[int]error
+}
+
+func (f *fakeFinalizeDrafts) ProposeDraft(ctx context.Context, request DraftRequest) (*model.MemoryDraft, bool, error) {
+	f.calls++
+	if err, ok := f.failOn[f.calls]; ok {
+		return nil, false, err
+	}
+	id := fmt.Sprintf("draft-%d", f.calls)
+	f.ids = append(f.ids, id)
+	return &model.MemoryDraft{ID: id, UserID: request.UserID, SessionID: request.SessionID, RunID: request.RunID}, true, nil
+}
+
+// TestFinalizeHandoffWatermarkRules: the processing watermark advances only
+// when every candidate reached a terminal state - persisted at the draft
+// entry, or explicitly skipped. A failed draft write or a relation judgement
+// that never completed holds the watermark; extraction-layer skips do not.
+func TestFinalizeHandoffWatermarkRules(t *testing.T) {
+	board := ext01BoardWithPreference(t)
+	newService := func(relations GlobalRelationResolver, proposer SessionCandidateProposer) *SessionFinalizeService {
+		return newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: ext01Messages()},
+			nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}},
+			fakeFinalizeGlobalMind{entries: []model.LongTermMemory{globalEntry("P-02", "出题后先等用户自己说完思路，再对答案")}}, nil,
+			proposer, relations, 0)
+	}
+	handoff := func(relations GlobalRelationResolver, proposer SessionCandidateProposer, drafts *fakeFinalizeDrafts) HandoffResult {
+		t.Helper()
+		outcome, err := newService(relations, proposer).Handoff(
+			context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-dev-EXT-01"}}, drafts)
+		if err != nil {
+			t.Fatalf("handoff: %v", err)
+		}
+		return outcome
+	}
+
+	// Every candidate persisted: the watermark advances.
+	persisted := &fakeFinalizeDrafts{}
+	happy := handoff(&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "new"}},
+		&scriptedProposer{proposals: []SessionRawProposal{preferenceProposal([]uint{3}, nil)}}, persisted)
+	if len(happy.Persisted) != 1 || len(happy.Failed) != 0 || !happy.Advanced || happy.Cursor.CoveredMessageID != 11 {
+		t.Fatalf("happy=%+v advanced=%v", happy, happy.Advanced)
+	}
+	if persisted.calls != 1 || persisted.ids[0] == "" {
+		t.Fatalf("draft calls=%d ids=%v", persisted.calls, persisted.ids)
+	}
+
+	// The draft write fails: the candidate is undecided, the watermark holds,
+	// and the next trigger retries the same progress with the same key.
+	failing := &fakeFinalizeDrafts{failOn: map[int]error{1: errors.New("draft store unavailable")}}
+	held := handoff(&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "new"}},
+		&scriptedProposer{proposals: []SessionRawProposal{preferenceProposal([]uint{3}, nil)}}, failing)
+	if len(held.Failed) != 1 || held.Advanced || held.Cursor.CoveredMessageID != 0 {
+		t.Fatalf("held=%+v, want the failure to hold the watermark", held)
+	}
+
+	// A relation judgement that never completed is undecided too.
+	retryHeld := handoff(&scriptedRelations{err: errors.New("judge unavailable")},
+		&scriptedProposer{proposals: []SessionRawProposal{preferenceProposal([]uint{3}, nil)}}, &fakeFinalizeDrafts{})
+	if len(retryHeld.RetryPending) != 1 || retryHeld.Advanced || retryHeld.Cursor.CoveredMessageID != 0 {
+		t.Fatalf("retry=%+v, want the unfinished judgement to hold the watermark", retryHeld)
+	}
+
+	// Extraction-layer skips are decided states: they do not block the
+	// watermark, and the decided candidate beside them still persists.
+	rogue := &scriptedProposer{proposals: []SessionRawProposal{
+		{Scope: model.MemoryScopeGlobal, Class: FinalizeClassTeachingPreference, Subject: "讲解偏好",
+			Durability: model.MemoryDurabilityStable, Content: "讲新概念先举例再讲定义。", EvidenceIDs: []uint{99}},
+		preferenceProposal([]uint{3}, nil),
+	}}
+	mixedDrafts := &fakeFinalizeDrafts{}
+	mixed := handoff(&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "new"}}, rogue, mixedDrafts)
+	if len(mixed.Skipped) != 1 || len(mixed.Persisted) != 1 || !mixed.Advanced {
+		t.Fatalf("mixed=%+v, want the skip decided and the watermark advanced", mixed)
+	}
+
+	// A session with nothing new never advances, and never calls the draft
+	// entry again.
+	emptyDrafts := &fakeFinalizeDrafts{}
+	idle, err := newService(&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "new"}},
+		&scriptedProposer{}).Handoff(
+		context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-dev-EXT-01", CoveredMessageID: 11}}, emptyDrafts)
+	if err != nil {
+		t.Fatalf("idle handoff: %v", err)
+	}
+	if !idle.NoNewContent || idle.Advanced || emptyDrafts.calls != 0 {
+		t.Fatalf("idle=%+v draft calls=%d, want nothing new and no draft call", idle, emptyDrafts.calls)
 	}
 }
