@@ -69,7 +69,13 @@ func (f *fakeCrossStore) ListWordsAfter(_ context.Context, _ int64, sessionID st
 	f.afterSession = sessionID
 	f.afterID = afterID
 	f.afterLimit = limit
-	return f.wordsAfter[sessionID], nil
+	words := make([]model.Message, 0, len(f.wordsAfter[sessionID]))
+	for _, word := range f.wordsAfter[sessionID] {
+		if word.ID > afterID {
+			words = append(words, word)
+		}
+	}
+	return words, nil
 }
 
 // A conversation of somebody else is refused, and nothing of it is read.
@@ -267,7 +273,7 @@ func TestTheReaderMergesTheWordsTheSummaryNeverCovered(t *testing.T) {
 		t.Fatalf("the evidence is not summary-then-tail in message order: %q", locked.Evidence)
 	}
 	// The read is bounded and starts at the summary's watermark.
-	if store.afterReads != 1 || store.afterSession != "p2c-06" || store.afterID != 718 {
+	if store.afterReads != 2 || store.afterSession != "p2c-06" || store.afterID != 718 {
 		t.Fatalf("the tail read was %+v", store)
 	}
 	if store.afterLimit != maxLockedTailMessages {

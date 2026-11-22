@@ -120,7 +120,8 @@ Boundary 3 above is amended because topic_memory_read can cheaply inspect the le
 - complete only means every eligible card for the server-held topic is already visible in this run. It does not mean the cards answer the question. If complete is false, or the cards do not support the requested detail, call memory_search with kinds=["semantic"].
 - Past events remain separate. Anything asking what happened, was decided, tried, completed, agreed or corrected in an earlier session requires memory_search with kinds=["episodic"]. Topic cards cannot prove history.
 - A mixed question may call both tools once. Use only evidence that supports the sentence you write, and say plainly when no memory supports a claimed past event.
-- Both tools use [S#]/[E#] evidence labels and never issue the same record version twice.`
+- Both tools use [S#]/[E#] evidence labels and never issue the same record version twice.
+- When the waiting question asks what you recommended at the time ("what did you say to look at first", "which two things", "what should the note include"), lead with the sentence that directly answers it and put finer check steps in the explanation; do not replace the main conclusion with the details.`
 
 // agentMemoryUserConfirmedV1SystemPrompt is the system prompt of
 // agent_memory_user_confirmed_v1.

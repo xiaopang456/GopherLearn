@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"GopherAI/model"
 )
@@ -65,6 +66,11 @@ type LockedSession struct {
 	// Messages is how many of the conversation's own words the evidence
 	// carries. It is zero when the evidence came from the summary.
 	Messages int
+	// Gaps are words inside a summary segment's range, with the point text
+	// that cited them (empty when no point did). They are bounded by the
+	// reader; the block keeps the ones whose words the waiting question
+	// mentions.
+	Gaps []LockedGapWord
 }
 
 // CrossSessionLocator finds the earlier conversations a clue names.
@@ -304,7 +310,9 @@ const lockedSessionEvidenceHeader = "Here is that conversation's own record " +
 const lockedSessionAnswerRule = "Answer the waiting question from this conversation. " +
 	"Do not open another conversation, and do not ask the learner again: they have already answered. " +
 	"If the record below does not settle the question, say what is missing; " +
-	"do not claim the conversation never discussed it unless the record shows that."
+	"do not claim the conversation never discussed it unless the record shows that. " +
+	"If the record carries only the setup or a general description of the asked detail, " +
+	"name the specific detail that is missing; do not fill it with general practice."
 
 // renderLockedSessionLead is what the model reads before the evidence.
 func renderLockedSessionLead(locked *LockedSession, question string) string {
@@ -317,6 +325,81 @@ func renderLockedSessionLead(locked *LockedSession, question string) string {
 			strings.TrimSpace(question)))
 	}
 	return b.String()
+}
+
+// LockedGapWord is one word inside a summary segment's range and the point
+// text that cited it, if any. A point can be a rewrite that drops the asked
+// detail (for example the three column names); the cited word still has them.
+type LockedGapWord struct {
+	Message   model.Message
+	PointText string
+}
+
+// sharesQuestionWord says whether a message and the waiting question share a
+// two-character word. It is a shape test for "which gap words does this
+// question need", not a semantic reader.
+func sharesQuestionWord(content, question string) bool {
+	content = strings.ToLower(strings.TrimSpace(content))
+	question = strings.ToLower(strings.TrimSpace(question))
+	if content == "" || question == "" {
+		return false
+	}
+	runes := []rune(content)
+	for index := 0; index+1 < len(runes); index++ {
+		if !unicode.Is(unicode.Han, runes[index]) || !unicode.Is(unicode.Han, runes[index+1]) {
+			continue
+		}
+		if strings.Contains(question, string(runes[index:index+2])) {
+			return true
+		}
+	}
+	return false
+}
+
+// lockedGapLines renders the gap words the waiting question mentions.
+func lockedGapLines(locked *LockedSession, question string) []string {
+	if locked == nil || len(locked.Gaps) == 0 {
+		return nil
+	}
+	lines := make([]string, 0, len(locked.Gaps))
+	for _, gap := range locked.Gaps {
+		content := strings.TrimSpace(gap.Message.Content)
+		if content == "" {
+			continue
+		}
+		if !sharesQuestionWord(content, question) && !sharesQuestionWord(gap.PointText, question) {
+			continue
+		}
+		who := "learner"
+		if !gap.Message.IsUser {
+			who = "assistant"
+		}
+		lines = append(lines, who+": "+boundRunes(content, maxLockedMessageRunes))
+	}
+	return lines
+}
+
+// lockedEvidenceWithGaps puts the question-relevant gap words between the
+// summary and the tail. The summary still comes first; the gaps are the part
+// of the covered range the points dropped; the tail is after the watermark.
+func lockedEvidenceWithGaps(locked *LockedSession, question string) string {
+	if locked == nil {
+		return ""
+	}
+	gaps := lockedGapLines(locked, question)
+	if len(gaps) == 0 {
+		return locked.Evidence
+	}
+	if strings.TrimSpace(locked.Summary) == "" {
+		// No summary: the evidence is the conversation's words, already whole.
+		return locked.Evidence
+	}
+	parts := []string{strings.TrimSpace(locked.Summary)}
+	parts = append(parts, gaps...)
+	if tail := strings.TrimSpace(locked.Tail); tail != "" {
+		parts = append(parts, tail)
+	}
+	return strings.Join(parts, "\n")
 }
 
 // composeLockedSessionBlock assembles the model-facing block from its parts.
@@ -349,7 +432,7 @@ func renderLockedSessionBlock(locked *LockedSession, question string) string {
 	if locked == nil {
 		return ""
 	}
-	return composeLockedSessionBlock(locked, question, locked.Evidence)
+	return composeLockedSessionBlock(locked, question, lockedEvidenceWithGaps(locked, question))
 }
 
 // renderLockedSessionBlockWithinBudget renders the locked block so that its
@@ -371,7 +454,7 @@ func renderLockedSessionBlockWithinBudget(locked *LockedSession, question string
 	if budget <= 0 {
 		budget = maxLockedSessionTokens
 	}
-	full := composeLockedSessionBlock(locked, question, locked.Evidence)
+	full := composeLockedSessionBlock(locked, question, lockedEvidenceWithGaps(locked, question))
 	if messageTokenCost(full) <= budget {
 		return full
 	}
@@ -384,6 +467,24 @@ func renderLockedSessionBlockWithinBudget(locked *LockedSession, question string
 	block := composeLockedSessionBlock(locked, question, summary)
 	if messageTokenCost(block) > budget {
 		return ""
+	}
+	// The question-relevant words inside the covered range come before the
+	// tail: they are part of what the summary compressed, and the tail is the
+	// stretch the summary never reached.
+	if gaps := lockedGapLines(locked, question); len(gaps) > 0 {
+		kept := make([]string, 0, len(gaps))
+		for _, gap := range gaps {
+			next := append(append([]string{}, kept...), gap)
+			candidate := composeLockedSessionBlock(locked, question, summary+"\n"+strings.Join(next, "\n"))
+			if messageTokenCost(candidate) > budget {
+				break
+			}
+			kept = next
+		}
+		if len(kept) > 0 {
+			summary = summary + "\n" + strings.Join(kept, "\n")
+			block = composeLockedSessionBlock(locked, question, summary)
+		}
 	}
 	tail := strings.TrimSpace(locked.Tail)
 	if tail == "" {

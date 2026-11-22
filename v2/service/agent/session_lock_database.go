@@ -46,6 +46,11 @@ const (
 	maxLockedSegmentRunes = 400
 	// maxLockedMessageRunes bounds one rendered message.
 	maxLockedMessageRunes = 300
+	// maxLockedGapWords bounds the words kept from inside segment ranges that
+	// the segment's points did not retain.
+	maxLockedGapWords = 24
+	// maxLockedGapScan bounds one segment-range read.
+	maxLockedGapScan = 100
 )
 
 // ErrCrossSessionNotFound is a conversation that is not there.
@@ -204,6 +209,11 @@ func (r *DatabaseCrossSessionReader) LockSession(ctx context.Context, userID int
 	if rendered, count := renderLockedSegments(segments); rendered != "" {
 		locked.Summary, locked.Segments = rendered, count
 		locked.Evidence = rendered
+		// A summary segment covers a stretch of turns and keeps only its
+		// points. Words inside that stretch that no point kept are still the
+		// conversation's own record; the block keeps the ones the waiting
+		// question mentions.
+		locked.Gaps = collectLockedGapWords(ctx, r.store, userID, sessionID, segments)
 		// The summary ends where the compressor stopped, and the conversation
 		// can go on after it. The words after the last covered message are
 		// the stretch no summary carries; they are read only from THIS
@@ -230,6 +240,60 @@ func (r *DatabaseCrossSessionReader) LockSession(ctx context.Context, userID int
 	}
 	locked.Evidence, locked.Messages = renderLockedWords(words), len(words)
 	return locked, nil
+}
+
+// collectLockedGapWords reads the words inside each summary segment's range
+// that the segment's points did not keep.
+//
+// A segment covers a stretch of turns and keeps only its points; a detail the
+// learner later asks about can be in that stretch and absent from the points.
+// The block's own rule is that such a detail is the conversation's record too,
+// so it is read here (bounded) and filtered by the waiting question when the
+// block is rendered.
+func collectLockedGapWords(ctx context.Context, store CrossSessionStore, userID int64,
+	sessionID string, segments []model.SessionSummarySegment) []LockedGapWord {
+	out := make([]LockedGapWord, 0, maxLockedGapWords)
+	seen := make(map[uint]struct{}, maxLockedGapWords)
+	for _, segment := range segments {
+		start, end := segment.StartMessageID, segment.EndMessageID
+		if start == 0 || end < start {
+			continue
+		}
+		cited := make(map[uint]string, 8)
+		if content, err := model.DecodeSessionSummarySegmentContent(segment.Content); err == nil {
+			for _, point := range content.Points {
+				text := strings.TrimSpace(point.Text)
+				for _, id := range point.EvidenceMessageIDs {
+					cited[id] = text
+				}
+			}
+		}
+		after := uint(0)
+		if start > 1 {
+			after = start - 1
+		}
+		words, err := store.ListWordsAfter(ctx, userID, sessionID, after, maxLockedGapScan)
+		if err != nil {
+			continue
+		}
+		for _, word := range words {
+			if word.ID < start {
+				continue
+			}
+			if word.ID > end {
+				break
+			}
+			if _, duplicate := seen[word.ID]; duplicate {
+				continue
+			}
+			seen[word.ID] = struct{}{}
+			out = append(out, LockedGapWord{Message: word, PointText: cited[word.ID]})
+			if len(out) >= maxLockedGapWords {
+				return out
+			}
+		}
+	}
+	return out
 }
 
 // summaryWatermark is the last message the conversation's summary covers.
