@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -159,7 +160,7 @@ func uniqueFinalizeUserID() int64 {
 // finalizeFixtureSessionIDs lists the session ids this acceptance reuses
 // across runs; the cleanup keys on them because messages carry no user id.
 func finalizeFixtureSessionIDs() []string {
-	return []string{"fin-acc-0001", "fin-acc-missed", "fin-acc-long", "fin-acc-crossclass"}
+	return []string{"fin-acc-0001", "fin-acc-missed", "fin-acc-long", "fin-acc-crossclass", "fin-acc-topic"}
 }
 
 // seedSession inserts one session of the learner with its messages and its
@@ -775,4 +776,177 @@ func TestFinalizeAcceptanceCrossClassExactDuplicateStillConflicts(t *testing.T) 
 	if got := acc.progress(ctx, sessionID); got != stored[len(stored)-1].ID {
 		t.Fatalf("watermark=%d, want the session tail", got)
 	}
+}
+
+// TestFinalizeAcceptanceTopicAttributionJudgement is the topic-scope
+// judgement acceptance: one resolver serves both the finalize extraction and
+// the draft edit path, and it only ever sees the active notes of the topic
+// the note finally belongs to. Three behaviors: a same-meaning candidate in
+// an attributed topic is skipped outright; a different matter on the same
+// topic coexists; a pending-topic candidate is judged only after the learner
+// picks its topic - where a duplicate closes itself and an independent
+// proposal survives to confirmation.
+func TestFinalizeAcceptanceTopicAttributionJudgement(t *testing.T) {
+	acc := newFinalizeAcceptance(t)
+	ctx := context.Background()
+	sessionID := "fin-acc-topic"
+
+	noteContent := "GORM 的 DeletedAt 软删除会让默认查询自动过滤掉已删记录，要查已删数据必须用 Unscoped"
+	if _, err := acc.repo.CreateUserMemory(ctx, memorydao.ExplicitWriteParams{
+		Memory: model.LongTermMemory{
+			UserID: acc.userID, Scope: model.MemoryScopeTopic, TopicKey: "gorm", Subject: "软删除", Content: noteContent,
+			StructuredJSON: `{}`, Tags: model.StringList{"learning"}, Durability: model.MemoryDurabilityStable,
+			SourceRefs: model.StringList{"user_api:seed-topic"}, Confidence: 1, Importance: 8,
+			Status: model.LongTermMemoryActive, UserConfirmed: true,
+		},
+		RequestKey: "finalize-acc-seed-topic", Reason: "验收种子", Now: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed topic note: %v", err)
+	}
+
+	at := func(minute int) time.Time {
+		return time.Date(2026, 11, 22, 21, minute, 0, 0, time.FixedZone("CST", 8*3600))
+	}
+	// 每轮只追加当轮的原话：水位语义下，一次触发只处理新到的消息。
+	stored := acc.seedSession(t, ctx, sessionID, nil, []SessionMessage{
+		{IsUser: true, Content: "我老忘记 GORM 查询会过滤软删除记录，要用 Unscoped 才能看到。", CreatedAt: at(1)},
+	})
+
+	acc.topic.inner = NewDeterministicTopicRelationResolver([]DeterministicTopicRule{
+		{Contains: "Unscoped", Relation: TopicRelationDuplicate, TargetHint: "软删除"},
+		{Contains: "时序图", Relation: TopicRelationIndependent},
+		{Contains: "零值", Relation: TopicRelationDuplicate, TargetHint: "软删除"},
+		{Contains: "官方文档", Relation: TopicRelationIndependent},
+	})
+	topicProposal := func(content string, evidence uint, topicKey string) SessionRawProposal {
+		return SessionRawProposal{
+			Scope: model.MemoryScopeTopic, Kind: FinalizeKindUnderstanding, TopicKey: topicKey,
+			Subject: "我的理解", Durability: model.MemoryDurabilityStable,
+			Content: content, EvidenceIDs: []uint{evidence}, StatementEvidenceID: evidence,
+		}
+	}
+
+	// ① 同义候选跳过：已归属主题下的同义候选被判定为重复，直接跳过，零卡片。
+	acc.proposer.proposals = []SessionRawProposal{topicProposal(
+		"我老忘记 GORM 查询会过滤软删除记录，要用 Unscoped 才能看到。", stored[0].ID, "gorm")}
+	first, err := acc.runner.RunSession(ctx, acc.userID, sessionID)
+	if err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	if len(first.Skipped) != 1 || first.Skipped[0].Reason != FinalizeSkipSemanticDuplicate {
+		t.Fatalf("first skipped=%+v, want the same-meaning candidate skipped", first.Skipped)
+	}
+	if len(first.Persisted) != 0 || len(acc.pendingDrafts(ctx)) != 0 {
+		t.Fatalf("first=%+v, want no card for the duplicate", first)
+	}
+
+	// ② 同主题不同事项仍可并存：独立判定 → 出卡，与已有笔记并存。
+	next := acc.seedMessages(t, ctx, sessionID, []SessionMessage{
+		{IsUser: true, Content: "学 GORM 事务时我喜欢先画一张时序图再动手。", CreatedAt: at(6)},
+	})
+	acc.proposer.proposals = []SessionRawProposal{topicProposal(
+		"学 GORM 事务时我喜欢先画一张时序图再动手。", next[0].ID, "gorm")}
+	second, err := acc.runner.RunSession(ctx, acc.userID, sessionID)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if len(second.Persisted) != 1 || len(acc.pendingDrafts(ctx)) != 1 {
+		t.Fatalf("second=%+v pending=%d, want the different matter proposed", second, len(acc.pendingDrafts(ctx)))
+	}
+
+	// ③ 待归属候选：主题在目录里没有唯一归属，提取期不做判定；选定主题后
+	// 编辑归属触发同一套判定，判重 → 草稿自动关闭，零正式写入。
+	callsBefore := len(acc.topic.saw)
+	thirdNew := acc.seedMessages(t, ctx, sessionID, []SessionMessage{
+		{IsUser: true, Content: "学 GORM 零值更新时我老忘记 Save 要传指针。", CreatedAt: at(10)},
+	})
+	acc.proposer.proposals = []SessionRawProposal{topicProposal(
+		"学 GORM 零值更新时我老忘记 Save 要传指针。", thirdNew[0].ID, "切片")}
+	third, err := acc.runner.RunSession(ctx, acc.userID, sessionID)
+	if err != nil {
+		t.Fatalf("third run: %v", err)
+	}
+	if len(third.Persisted) != 1 {
+		t.Fatalf("third=%+v, want the pending-topic candidate proposed", third)
+	}
+	pending := acc.pendingDrafts(ctx)
+	if len(pending) != 2 || pending[0].TopicKey != "" || !strings.Contains(pending[0].Content, "零值") {
+		t.Fatalf("pending=%+v, want the unattributed card", pending)
+	}
+	if len(acc.topic.saw) != callsBefore {
+		t.Fatalf("resolver calls grew %d -> %d during extraction, want no judgement before attribution",
+			callsBefore, len(acc.topic.saw))
+	}
+	memoriesBefore := countActiveMemories(t, acc.db, acc.userID)
+	attributed, err := acc.governance.EditDraft(ctx, EditDraftRequest{
+		UserID: acc.userID, DraftID: pending[0].ID, TopicKey: &[]string{"gorm"}[0],
+	})
+	if err != nil {
+		t.Fatalf("attribute: %v", err)
+	}
+	if attributed.Draft == nil || attributed.Draft.Status != model.MemoryDraftCancelled || attributed.Draft.CancelReason != model.CancelReasonSemanticDuplicate {
+		t.Fatalf("attributed draft=%+v, want the duplicate closed as semantic duplicate", attributed.Draft)
+	}
+	if countActiveMemories(t, acc.db, acc.userID) != memoriesBefore {
+		t.Fatalf("the duplicate close wrote memory, want zero writes")
+	}
+
+	// ④ 待归属 + 独立：归属后判定为不同事项，草稿保留待确认，确认后并存。
+	fourthNew := acc.seedMessages(t, ctx, sessionID, []SessionMessage{
+		{IsUser: true, Content: "学 GORM 时我喜欢先看官方文档再动手。", CreatedAt: at(14)},
+	})
+	acc.proposer.proposals = []SessionRawProposal{topicProposal(
+		"学 GORM 时我喜欢先看官方文档再动手。", fourthNew[0].ID, "切片")}
+	fourth, err := acc.runner.RunSession(ctx, acc.userID, sessionID)
+	if err != nil {
+		t.Fatalf("fourth run: %v", err)
+	}
+	if len(fourth.Persisted) != 1 {
+		t.Fatalf("fourth=%+v", fourth)
+	}
+	pending2 := acc.pendingDrafts(ctx)
+	var unattributed *model.MemoryDraft
+	for i := range pending2 {
+		if strings.Contains(pending2[i].Content, "官方文档") {
+			unattributed = &pending2[i]
+		}
+	}
+	if unattributed == nil {
+		t.Fatalf("pending=%+v, want the second unattributed card", pending2)
+	}
+	kept, err := acc.governance.EditDraft(ctx, EditDraftRequest{
+		UserID: acc.userID, DraftID: unattributed.ID, TopicKey: &[]string{"gorm"}[0],
+	})
+	if err != nil {
+		t.Fatalf("attribute independent: %v", err)
+	}
+	if kept.Draft == nil || kept.Draft.Status != model.MemoryDraftPending || kept.Draft.TopicKey != "gorm" {
+		t.Fatalf("kept draft=%+v, want it pending under the chosen topic", kept.Draft)
+	}
+	confirmed, err := acc.governance.ConfirmDraft(ctx, ConfirmDraftRequest{
+		UserID: acc.userID, DraftID: kept.Draft.ID, Action: "add", Reason: "验收确认",
+	})
+	if err != nil || confirmed.Memory == nil {
+		t.Fatalf("confirm=%+v err=%v", confirmed, err)
+	}
+
+	// 判定器只见过最终主题下的有效条目。
+	for i, saw := range acc.topic.saw {
+		for _, row := range saw {
+			if row.TopicKey != "gorm" || row.Status != model.LongTermMemoryActive {
+				t.Fatalf("judgement %d saw an out-of-scope row %+v", i, row)
+			}
+		}
+	}
+}
+
+func countActiveMemories(t *testing.T, db *gorm.DB, userID int64) int64 {
+	t.Helper()
+	var count int64
+	if err := db.Model(&model.LongTermMemory{}).
+		Where("user_id = ? AND status = ?", userID, model.LongTermMemoryActive).
+		Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	return count
 }

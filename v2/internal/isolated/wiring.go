@@ -658,6 +658,18 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	if err := memoryGovernance.UseGlobalRelations(memoryRepository, globalRelations); err != nil {
 		return nil, fmt.Errorf("configure global memory relation classifier: %v", err)
 	}
+	// The topic-scope semantic judgement is one resolver shared by two
+	// callers: the draft edit path (an attribution or an edit re-judges the
+	// note in its final topic) and the finalize extraction (a candidate that
+	// already resolves to a topic is judged before it proposes). Both see
+	// only the active notes of the topic the note finally belongs to.
+	topicRelations, err := memoryService.NewTopicRelationClassifier(agentModel)
+	if err != nil {
+		return nil, fmt.Errorf("initialize topic relation classifier: %v", err)
+	}
+	if err := memoryGovernance.UseTopicRelations(topicRelations); err != nil {
+		return nil, fmt.Errorf("configure topic relation classifier: %v", err)
+	}
 	if err := memoryService.SetDefaultGovernanceService(memoryGovernance); err != nil {
 		return nil, fmt.Errorf("configure memory governance: %v", err)
 	}
@@ -679,7 +691,7 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		}
 		finalizeService, finalizeErr := memoryService.BuildSessionFinalizeService(
 			sessionDAO.DefaultRepository(), message.DefaultRepository(), memoryRepository,
-			finalizeCatalogue, finalizeProposer, globalRelations, nil)
+			finalizeCatalogue, finalizeProposer, globalRelations, topicRelations)
 		if finalizeErr != nil {
 			return nil, fmt.Errorf("initialize session finalize service: %v", finalizeErr)
 		}
