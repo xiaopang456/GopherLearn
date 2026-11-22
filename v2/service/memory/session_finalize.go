@@ -121,6 +121,13 @@ const (
 	// the plan's "同一意思" row. The learner never sees a card for it, and
 	// nothing is written.
 	FinalizeSkipSemanticDuplicate = "semantic_duplicate"
+	// FinalizeSkipStatementEvidenceRequired says a proposal citing several
+	// messages did not name the one that supports its current value. With
+	// more than one utterance in play the program cannot know which one the
+	// value came from, and guessing is what stamped an updated value with a
+	// replaced utterance's time - so the proposal is refused and the model
+	// is asked to name its primary evidence.
+	FinalizeSkipStatementEvidenceRequired = "statement_evidence_required"
 )
 
 // FinalizeCursor is the progress of one session's finalize work: the newest
@@ -198,12 +205,13 @@ type SessionRawProposal struct {
 	EvidenceIDs []uint // the learner's own words the candidate rests on
 	// StatementEvidenceID names the evidence message that directly supports
 	// the candidate's current value, and it has to be one of the
-	// EvidenceIDs. The statement time follows it: a candidate that cites
-	// both the value it replaces and the value that replaced it must carry
-	// the newer utterance's time, not the older one. Zero means the proposer
-	// did not distinguish, and the newest evidence message stands in - the
-	// safe default, because the failure it avoids is stamping an updated
-	// value with a superseded utterance's time.
+	// EvidenceIDs. A proposal that cites several messages must name it: with
+	// more than one utterance in play, the 原话时间 has to come from the
+	// message that carries the value, and a proposal that leaves the choice
+	// to the program is refused rather than guessed - that guess is what
+	// stamped an updated value with a replaced utterance's time. A
+	// proposal citing exactly one message may leave it unset, because there
+	// is only one message the time could come from.
 	StatementEvidenceID uint
 	// AssistantIDs are the assistant's messages that proposed what the
 	// learner took on. They are recorded apart from the evidence, never in
@@ -863,11 +871,11 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 	}
 	// The statement reference is the one the 原话时间 follows. A proposal
 	// that names a message outside its own evidence set is incoherent about
-	// where its value came from, which is a shape failure. Unnamed, the
-	// newest evidence message stands in: the ids' order is the order the
-	// messages were written in, and the newest is the only safe single
-	// choice, because the failure to avoid is stamping a value with the
-	// time of an utterance it replaced.
+	// where its value came from, which is a shape failure. A proposal that
+	// cites several messages must name one: the program cannot know which
+	// utterance the value came from, and guessing is exactly the failure
+	// the statement-time rule exists to remove. A single-evidence proposal
+	// needs no name - there is only one message the time could come from.
 	if proposal.StatementEvidenceID != 0 {
 		found := false
 		for i := range evidence {
@@ -880,14 +888,10 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 		if !found {
 			return nil, nil, FinalizeSkipInvalidShape
 		}
+	} else if len(evidence) > 1 {
+		return nil, nil, FinalizeSkipStatementEvidenceRequired
 	} else {
-		latest := 0
-		for i := range evidence {
-			if evidence[i].MessageID > evidence[latest].MessageID {
-				latest = i
-			}
-		}
-		evidence[latest].Statement = true
+		evidence[0].Statement = true
 	}
 	return evidence, assistant, ""
 }

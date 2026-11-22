@@ -294,7 +294,7 @@ func TestFinalizeExtractTopicUnderstandingPrefill(t *testing.T) {
 		Scope: model.MemoryScopeTopic, Kind: FinalizeKindUnderstanding, TopicKey: "go-basics",
 		Subject: "切片易错点", Durability: model.MemoryDurabilityStable,
 		Content:     "我容易混淆切片共享底层数组和拷贝：append 未扩容时改的是共享底层数组，扩容后才指向新数组。",
-		EvidenceIDs: []uint{8, 3},
+		EvidenceIDs: []uint{8, 3}, StatementEvidenceID: 8,
 	}}}
 	relations := &scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "different matter than TM-GB-01"}}
 	topics := fakeFinalizeCatalogue{topics: []Topic{
@@ -326,6 +326,11 @@ func TestFinalizeExtractTopicUnderstandingPrefill(t *testing.T) {
 	}
 	if candidate.StatementTime.Equal(finalizeClock) {
 		t.Fatalf("statement time must be the message time, not the extraction time")
+	}
+	// The named primary evidence carries the statement: m08 is the learner's
+	// final wording, m03 the earlier understanding kept as context.
+	if !candidate.StatementTime.Equal(finalizeAt(58)) {
+		t.Fatalf("statement time=%v, want the primary evidence m08's time", candidate.StatementTime)
 	}
 }
 
@@ -920,19 +925,42 @@ func TestFinalizeStatementTimeFollowsValueEvidence(t *testing.T) {
 		t.Fatalf("evidence json=%q err=%v, want the statement message named", encoded, err)
 	}
 
-	// Unnamed, the newest evidence message stands in: the failure this
-	// default avoids is stamping an updated value with a superseded
-	// utterance's time.
+	// Several messages and no primary named: the program cannot know which
+	// utterance the value came from, and guessing is what stamped an
+	// updated value with a replaced utterance's time. The proposal is
+	// refused instead of guessed.
 	unnamed := &scriptedProposer{proposals: []SessionRawProposal{valueProposal(0)}}
-	fallbackService := newFinalizeService(t, fakeFinalizeBoards{}, fakeFinalizeMessages{messages: messages},
+	unnamedService := newFinalizeService(t, fakeFinalizeBoards{}, fakeFinalizeMessages{messages: messages},
 		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil, unnamed,
-		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "new"}}, 50)
-	fallback, err := fallbackService.Extract(context.Background(), request)
+		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "x"}}, 50)
+	refusedUnnamed, err := unnamedService.Extract(context.Background(), request)
 	if err != nil {
-		t.Fatalf("fallback extract: %v", err)
+		t.Fatalf("unnamed extract: %v", err)
 	}
-	if len(fallback.Proposals) != 1 || !fallback.Proposals[0].StatementTime.Equal(finalizeAt(18)) {
-		t.Fatalf("fallback=%+v, want the newest evidence message's time", fallback.Proposals)
+	if len(refusedUnnamed.Proposals) != 0 || len(refusedUnnamed.Skipped) != 1 ||
+		refusedUnnamed.Skipped[0].Reason != FinalizeSkipStatementEvidenceRequired {
+		t.Fatalf("unnamed=%+v skipped=%+v, want statement_evidence_required", refusedUnnamed.Proposals, refusedUnnamed.Skipped)
+	}
+
+	// A single-evidence proposal needs no name: there is only one message
+	// the time could come from.
+	single := &scriptedProposer{proposals: []SessionRawProposal{{
+		Scope: model.MemoryScopeGlobal, Class: FinalizeClassGoal, Subject: "背诵目标",
+		Durability: model.MemoryDurabilityStable,
+		Content:    "每天背 37 个单词。", EvidenceIDs: []uint{6},
+	}}}
+	singleService := newFinalizeService(t, fakeFinalizeBoards{}, fakeFinalizeMessages{messages: messages},
+		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil, single,
+		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "new"}}, 50)
+	singleResult, err := singleService.Extract(context.Background(), request)
+	if err != nil {
+		t.Fatalf("single extract: %v", err)
+	}
+	if len(singleResult.Proposals) != 1 || !singleResult.Proposals[0].StatementTime.Equal(finalizeAt(18)) {
+		t.Fatalf("single=%+v, want the only evidence message's time", singleResult.Proposals)
+	}
+	if len(singleResult.Proposals[0].Evidence) != 1 || !singleResult.Proposals[0].Evidence[0].Statement {
+		t.Fatalf("single evidence=%+v, want the only reference marked as the statement", singleResult.Proposals[0].Evidence)
 	}
 
 	// Naming a message outside the proposal's own evidence set is
