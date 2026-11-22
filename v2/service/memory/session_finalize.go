@@ -1,0 +1,899 @@
+package memory
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"GopherAI/model"
+
+	"github.com/google/uuid"
+)
+
+// Session-finalize candidate extraction.
+//
+// When a session is finished - the learner closed it, or the server's idle
+// fallback fired - this module reads the session one last time and proposes
+// long-term memory candidates for the learner to confirm on the memory page.
+// It is the write entry the third phase adds alongside manual input and the
+// in-conversation "please remember" tool.
+//
+// The session whiteboard is the clue, not the evidence. The board says which
+// parts of the conversation already held up as current facts during the
+// session, and every entry carries the message ids it came from. The evidence
+// itself is always the raw messages: this module reads them back by those
+// references, and a candidate is only as good as the references it survives.
+// What the program checks is what it can check as a fact about the messages -
+// that a cited message exists, belongs to this session, has the role the
+// candidate needs, and that an adopted proposal of the assistant's rests on a
+// learner's message that accepted it after the proposal was made. Whether a
+// sentence is a lasting preference or a one-turn request is the model's
+// judgement, and the program does not try to read it out of a string.
+//
+// The output is a proposal, never a memory. Candidates are handed to the
+// draft entry (GovernanceService.ProposeDraft) and stay pending until the
+// learner confirms them; nothing here writes active memory, touches quiz
+// mastery, or decides an entry's fate alone.
+
+// The scope a candidate can land in, and the fixed vocabularies that come
+// with each. The global profile is one fact about the learner across topics;
+// the topic note is the learner's own understanding of one topic. The classes
+// and kinds are the words the memory page shows, so they are fixed here and
+// not free model output.
+const (
+	// FinalizeClassGoal is a study goal, 目标.
+	FinalizeClassGoal = "目标"
+	// FinalizeClassBackground is the learner's background, 背景.
+	FinalizeClassBackground = "背景"
+	// FinalizeClassTeachingPreference is how the learner wants to be taught, 教学偏好.
+	FinalizeClassTeachingPreference = "教学偏好"
+	// FinalizeClassConstraint is a standing constraint on schedule or load, 长期约束.
+	FinalizeClassConstraint = "长期约束"
+
+	// FinalizeKindUnderstanding is the learner's own understanding of a topic,
+	// including confusions, analogies and pitfalls (我的理解).
+	FinalizeKindUnderstanding = "understanding"
+	// FinalizeKindSelfReport is what the learner says they know, kept apart
+	// from graded mastery, which is computed from scored attempts only.
+	FinalizeKindSelfReport = "self_report"
+)
+
+func ValidFinalizeClass(class string) bool {
+	switch class {
+	case FinalizeClassGoal, FinalizeClassBackground, FinalizeClassTeachingPreference, FinalizeClassConstraint:
+		return true
+	}
+	return false
+}
+
+func ValidFinalizeKind(kind string) bool {
+	switch kind {
+	case FinalizeKindUnderstanding, FinalizeKindSelfReport:
+		return true
+	}
+	return false
+}
+
+// Skip reasons. They are a fixed set so a report can count them, and they
+// separate the two ways a candidate fails: the source did not hold up
+// (validation), and the matter was already covered (duplicate).
+const (
+	// FinalizeSkipEvidenceMissing says a cited message is not part of what
+	// this extraction could see: it does not exist in the session, or it was
+	// never in the extraction's input. This is the discovery boundary of the
+	// plan's §6.1 replay pair.
+	FinalizeSkipEvidenceMissing = "evidence_not_visible"
+	// FinalizeSkipEvidenceRole says the cited message exists but is not the
+	// role the candidate needs: an evidence id that is not the learner's
+	// message, or an assistant id that is not the assistant's.
+	FinalizeSkipEvidenceRole = "evidence_role_invalid"
+	// FinalizeSkipAdoptionUnproven says the candidate credits an assistant
+	// proposal the learner never explicitly took on: assistant words with no
+	// learner's message after them. A proposal nobody agreed to is not a
+	// fact about the learner.
+	FinalizeSkipAdoptionUnproven = "adoption_unproven"
+	// FinalizeSkipInvalidShape says the proposal failed the field rules the
+	// program owns: empty text, over the length limits, an unknown class or
+	// kind, or an impossible validity.
+	FinalizeSkipInvalidShape = "invalid_shape"
+	// FinalizeSkipDuplicateExisting says the same content is already an
+	// active memory in the range the candidate belongs to. Checked by hash,
+	// so it costs no model call.
+	FinalizeSkipDuplicateExisting = "duplicate_existing"
+	// FinalizeSkipDuplicateKnown says this fingerprint is already known from
+	// an earlier trigger of the same session: the draft is pending, confirmed
+	// or ignored, and a repeat must not propose it twice.
+	FinalizeSkipDuplicateKnown = "duplicate_known"
+	// FinalizeSkipDuplicateRun says one extraction produced the same
+	// candidate twice; the first wins.
+	FinalizeSkipDuplicateRun = "duplicate_run"
+)
+
+// FinalizeCursor is the progress of one session's finalize work: the newest
+// message id the extraction has processed.
+//
+// The trigger keeps one cursor per session and passes it back on every run.
+// A run whose cursor already covers the session's newest message has nothing
+// new to process and proposes nothing, which is what makes a repeated trigger
+// of the same progress harmless. A run that ends with candidates whose
+// relation judgement failed returns the cursor unchanged, so the next trigger
+// re-runs the same progress and the fingerprint keeps one candidate.
+type FinalizeCursor struct {
+	SessionID        string
+	CoveredMessageID uint
+}
+
+// SessionMessage is one raw message of the session, with the facts the
+// program validates against: its id, its role, and when it was said.
+type SessionMessage struct {
+	ID        uint
+	IsUser    bool
+	Content   string
+	CreatedAt time.Time
+}
+
+// SessionEvidenceRef is one source reference the program has validated. The
+// time is the message's own time - the 原话时间 every later comparison uses -
+// read from the stored message and never taken from the model.
+type SessionEvidenceRef struct {
+	MessageID uint      `json:"message_id"`
+	Role      string    `json:"role"`
+	At        time.Time `json:"at"`
+}
+
+// SessionExtractionInput is what one extraction run hands the proposer.
+//
+// Visible is the only set a citation may name. It is the union of the board's
+// own references (the clue) and a bounded window of the learner's recent
+// messages, which is the plan §6.1 read-back: a fact the board missed is not
+// lost while its message is still recent. A message outside Visible was never
+// in front of the proposer, so a proposal citing it is refused rather than
+// believed.
+type SessionExtractionInput struct {
+	UserID    int64
+	SessionID string
+	// Board is the decoded session whiteboard. It may be empty: a session
+	// without a board still extracts from the recent window.
+	Board model.SessionWhiteboardDocument
+	// Visible maps every message id the proposer may cite to the message.
+	Visible map[uint]SessionMessage
+	// RecentUserIDs are the learner's messages the window covers, oldest
+	// first. They are a subset of Visible.
+	RecentUserIDs []uint
+	// Topics is the learner's topic catalogue, for the proposer to reuse a
+	// key from. It carries no memory content and no scores.
+	Topics []Topic
+}
+
+// SessionRawProposal is one candidate as the proposer returned it, before
+// the program has believed any of it.
+type SessionRawProposal struct {
+	Scope       model.MemoryScope
+	Class       string // global scope only
+	Kind        string // topic scope only
+	TopicKey    string // topic scope: the proposed topic, resolved or pending
+	Subject     string
+	Content     string
+	Durability  model.MemoryDurability
+	ValidUntil  *time.Time
+	EvidenceIDs []uint // the learner's own words the candidate rests on
+	// AssistantIDs are the assistant's messages that proposed what the
+	// learner took on. They are recorded apart from the evidence, never in
+	// its place.
+	AssistantIDs []uint
+}
+
+// SessionCandidateProposer is the model seam of the extraction.
+//
+// The production implementation calls the structured extraction model and
+// arrives with the real-model verification of the plan's batch 3. Local
+// validation runs against deterministic stand-ins, which is how this round
+// stays zero-cost.
+type SessionCandidateProposer interface {
+	Propose(ctx context.Context, input *SessionExtractionInput) ([]SessionRawProposal, error)
+}
+
+// SessionFinalizeService runs one finalize extraction.
+//
+// Every store behind it is a narrow interface, so the module carries no
+// database and no queue of its own: the finalize trigger wires the real
+// repositories when this is integrated, and the stand-in tests wire fakes.
+type SessionFinalizeService struct {
+	boards     FinalizeBoardSource
+	messages   FinalizeMessageSource
+	catalogue  FinalizeTopicCatalogue
+	known      FinalizeFingerprintSource
+	globalMind GlobalMemorySnapshotSource
+	topicMind  FinalizeTopicEntrySource
+	proposer   SessionCandidateProposer
+	relations  GlobalRelationResolver
+	now        func() time.Time
+
+	// RecentMessageWindow is how many of the session's most recent messages
+	// - the learner's and the assistant's alike - one extraction keeps
+	// visible beyond the board's own references. It is the bounded read-back
+	// of plan §6.1: large enough to cover a preference the board missed, and
+	// to keep an adopted proposal's two sides together; small enough that
+	// the input stays a bounded cost. The number is an implementation
+	// parameter of this round and is recorded in the batch report.
+	RecentMessageWindow int
+	// RelationTargets is how many in-range active entries one relation
+	// judgement may be given. Only entries related to the candidate should
+	// travel to the real model; until that filter exists the range is the
+	// bound, and the number is recorded in the batch report.
+	RelationTargets int
+}
+
+// FinalizeBoardSource reads one session's whiteboard, scoped to its owner.
+// v2/dao/session.Repository satisfies it as-is.
+type FinalizeBoardSource interface {
+	GetWhiteboard(ctx context.Context, userID int64, sessionID string) (*model.SessionWhiteboard, error)
+}
+
+// FinalizeMessageSource loads the raw messages of one session.
+//
+// The production adapter wraps the message DAO and must resolve the session
+// through its owner: the finalize trigger passes a (user, session) pair it
+// has already checked, and the adapter keeps that check by never returning
+// messages for a session the user does not own.
+type FinalizeMessageSource interface {
+	LoadSessionMessages(ctx context.Context, userID int64, sessionID string) ([]SessionMessage, error)
+}
+
+// FinalizeTopicCatalogue lists the learner's topics, derived from quiz
+// progress and existing topic notes the same way the memory page derives
+// them. v2 TopicCatalogue.List satisfies it.
+type FinalizeTopicCatalogue interface {
+	ListTopics(ctx context.Context, userID int64) ([]Topic, error)
+}
+
+// FinalizeFingerprintSource reports the candidate fingerprints already known
+// for one session, from any draft state. The production adapter answers from
+// the drafts the session produced (pending, confirmed and ignored alike), so
+// a repeated trigger of the same source proposes nothing twice.
+type FinalizeFingerprintSource interface {
+	KnownCandidateFingerprints(ctx context.Context, userID int64, sessionID string) (map[string]struct{}, error)
+}
+
+// FinalizeTopicEntrySource lists the active topic notes of one topic. The
+// production adapter wraps the explicit repository the same way the global
+// snapshot source wraps its own queries.
+type FinalizeTopicEntrySource interface {
+	ListActiveTopicEntries(ctx context.Context, userID int64, topicKey string, limit int) ([]model.LongTermMemory, error)
+}
+
+func NewSessionFinalizeService(
+	boards FinalizeBoardSource,
+	messages FinalizeMessageSource,
+	catalogue FinalizeTopicCatalogue,
+	known FinalizeFingerprintSource,
+	globalMind GlobalMemorySnapshotSource,
+	topicMind FinalizeTopicEntrySource,
+	proposer SessionCandidateProposer,
+	relations GlobalRelationResolver,
+) (*SessionFinalizeService, error) {
+	if boards == nil || messages == nil || proposer == nil {
+		return nil, fmt.Errorf("session finalize service requires board and message sources and a proposer")
+	}
+	if known == nil {
+		return nil, fmt.Errorf("session finalize service requires a fingerprint source")
+	}
+	return &SessionFinalizeService{
+		boards: boards, messages: messages, catalogue: catalogue, known: known,
+		globalMind: globalMind, topicMind: topicMind,
+		proposer: proposer, relations: relations,
+		now:                 func() time.Time { return time.Now() },
+		RecentMessageWindow: 50,
+		RelationTargets:     10,
+	}, nil
+}
+
+// FinalizeRequest is one trigger of the finalize extraction.
+type FinalizeRequest struct {
+	UserID int64
+	Cursor FinalizeCursor
+}
+
+// FinalizeSkip is a proposal the program refused, with the reason it refused
+// it. Refusals are reported, not swallowed: the plan's acceptance asks for
+// the boundary each failure sits at, and a reason is that boundary.
+type FinalizeSkip struct {
+	Reason       string
+	Subject      string
+	EvidenceIDs  []uint
+	AssistantIDs []uint
+}
+
+// SessionMemoryCandidate is one validated candidate, ready for the draft
+// entry and for the learner's confirmation page.
+//
+// Every field the learner will see is here: the title and body, the range it
+// belongs to, the source session, the message ids and the time of the words
+// it came from, and - when the candidate rests on a proposal of the
+// assistant's that the learner took on - the assistant's own words, recorded
+// apart from the learner's.
+type SessionMemoryCandidate struct {
+	ID       string
+	UserID   int64
+	Scope    model.MemoryScope
+	Class    string // global scope: one of the four fixed classes
+	Kind     string // topic scope: understanding or self_report
+	TopicKey string
+	// TopicPending says the topic could not be uniquely resolved: several
+	// topics could fit, or none could. The candidate still proposes, and the
+	// confirmation flow asks the learner where it belongs.
+	TopicPending bool
+	Subject      string
+	Content      string
+	Tags         []string
+	Durability   model.MemoryDurability
+	ValidUntil   *time.Time
+	// Evidence is the learner's own words the candidate rests on. When the
+	// candidate is an adopted proposal, this is the learner's acceptance.
+	Evidence []SessionEvidenceRef
+	// AssistantUtterances is the proposal the learner accepted, when there
+	// was one. It is never a substitute for Evidence.
+	AssistantUtterances []SessionEvidenceRef
+	// StatementTime is the time of the earliest evidence message: the
+	// 原话发生时间 every later新旧 comparison uses, as the plan's time rule
+	// requires.
+	StatementTime time.Time
+	// Fingerprint identifies the candidate across triggers of the same
+	// session: the same content from the same session is one candidate,
+	// whatever the trigger that produced it.
+	Fingerprint string
+	// Relation is the semantic judgement against the in-range active
+	// entries, and RelatedOld are the entries the judgement saw.
+	Relation   GlobalRelationResult
+	RelatedOld []model.LongTermMemory
+	// Cursor is the progress this candidate was extracted at.
+	Cursor FinalizeCursor
+}
+
+// IdempotencyKey is the draft-entry key of the candidate. It is content
+// addressed, not trigger addressed: re-running the same session proposes the
+// same key, so the draft upsert keeps one card instead of one card per
+// trigger.
+func (c SessionMemoryCandidate) IdempotencyKey() string {
+	return "finalize:" + c.Fingerprint
+}
+
+// DraftInput maps the candidate onto the draft entry's input shape. Fields
+// that the draft table does not carry yet - the message-level references and
+// the class - stay on the candidate and are listed in the integration notes;
+// the mapping here is everything the current ProposeDraft accepts.
+func (c SessionMemoryCandidate) DraftInput() ExplicitMemoryInput {
+	return ExplicitMemoryInput{
+		Scope: c.Scope, Subject: c.Subject, Content: c.Content, Tags: c.Tags,
+		TopicKey: c.TopicKey, Durability: c.Durability, ValidUntil: c.ValidUntil,
+		IdempotencyKey: c.IdempotencyKey(),
+	}
+}
+
+// DraftRequest is the full call the finalize handoff makes into the draft
+// entry. The run id is derived from the cursor, not invented per trigger, so
+// a repeated trigger of the same progress stays one proposal end to end.
+func (c SessionMemoryCandidate) DraftRequest() DraftRequest {
+	return DraftRequest{
+		UserID: c.UserID, SessionID: c.Cursor.SessionID,
+		RunID: FinalizeRunID(c.Cursor), Input: c.DraftInput(),
+	}
+}
+
+// FinalizeRunID is the run id finalize work uses at the draft entry.
+func FinalizeRunID(cursor FinalizeCursor) string {
+	id := "fin-" + strconv.FormatUint(uint64(cursor.CoveredMessageID), 10)
+	if utf8.RuneCountInString(id) > 36 {
+		id = id[:36]
+	}
+	return id
+}
+
+// EvidenceJSON renders the message-level references the confirmation page
+// expands into the original words. The draft table has no column for it yet;
+// this is the structure the integration note asks the draft to carry.
+func (c SessionMemoryCandidate) EvidenceJSON() (string, error) {
+	payload := map[string]any{
+		"scope": c.Scope, "class": c.Class, "kind": c.Kind,
+		"statement_time": c.StatementTime.Format(time.RFC3339),
+		"evidence":       c.Evidence, "assistant_utterances": c.AssistantUtterances,
+		"fingerprint": c.Fingerprint,
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+// FinalizeResult is what one trigger produced.
+type FinalizeResult struct {
+	SessionID string
+	// Cursor is the progress the caller stores. It advances only when every
+	// candidate either proposed cleanly or was refused; a candidate waiting
+	// for a relation judgement holds the cursor where it was, so the next
+	// trigger re-runs the same progress.
+	Cursor FinalizeCursor
+	// Proposals are the validated candidates, in the order the proposer
+	// returned them.
+	Proposals []SessionMemoryCandidate
+	// Skipped are the refusals, with reasons.
+	Skipped []FinalizeSkip
+	// RetryPending are the candidates whose relation judgement could not be
+	// completed. They are kept for the next trigger, not proposed.
+	RetryPending []SessionMemoryCandidate
+	// NoNewContent says the cursor already covered the session's newest
+	// message: nothing was proposed and the proposer was not called.
+	NoNewContent bool
+	// BoardMissing says the session has no whiteboard yet. Extraction ran
+	// from the recent window alone.
+	BoardMissing bool
+}
+
+// Extract runs one finalize extraction over a finished session.
+func (s *SessionFinalizeService) Extract(ctx context.Context, request FinalizeRequest) (FinalizeResult, error) {
+	if s == nil || s.proposer == nil || s.known == nil {
+		return FinalizeResult{}, fmt.Errorf("session finalize service is not initialized")
+	}
+	if request.UserID <= 0 || strings.TrimSpace(request.Cursor.SessionID) == "" {
+		return FinalizeResult{}, fmt.Errorf("invalid finalize request")
+	}
+	sessionID := strings.TrimSpace(request.Cursor.SessionID)
+	result := FinalizeResult{SessionID: sessionID, Cursor: FinalizeCursor{SessionID: sessionID, CoveredMessageID: request.Cursor.CoveredMessageID}}
+
+	messages, err := s.messages.LoadSessionMessages(ctx, request.UserID, sessionID)
+	if err != nil {
+		return FinalizeResult{}, fmt.Errorf("load session messages: %w", err)
+	}
+	byID := make(map[uint]SessionMessage, len(messages))
+	newest := uint(0)
+	for _, message := range messages {
+		byID[message.ID] = message
+		if message.ID > newest {
+			newest = message.ID
+		}
+	}
+	// Nothing new since the last trigger: no proposer call, no proposals,
+	// the cursor stays where it was. This is the "no new content" branch the
+	// plan's repeated-trigger rule rests on.
+	if newest == 0 || newest <= request.Cursor.CoveredMessageID {
+		result.NoNewContent = true
+		return result, nil
+	}
+
+	board, boardMissing, err := s.loadBoard(ctx, request.UserID, sessionID)
+	if err != nil {
+		return FinalizeResult{}, err
+	}
+	result.BoardMissing = boardMissing
+
+	input := &SessionExtractionInput{
+		UserID: request.UserID, SessionID: sessionID,
+		Visible: visibleMessages(board, byID, s.RecentMessageWindow),
+		Topics:  s.loadTopics(ctx, request.UserID),
+	}
+
+	known, err := s.known.KnownCandidateFingerprints(ctx, request.UserID, sessionID)
+	if err != nil {
+		return FinalizeResult{}, fmt.Errorf("load known candidate fingerprints: %w", err)
+	}
+
+	raw, err := s.proposer.Propose(ctx, input)
+	if err != nil {
+		// The proposer failed before returning anything: the run fails, the
+		// cursor stays, and the next trigger retries the same progress.
+		return FinalizeResult{}, fmt.Errorf("propose finalize candidates: %w", err)
+	}
+
+	ranges := s.loadRanges(ctx, request.UserID)
+	// The coverage this run reports to every candidate it accepts: the
+	// session's newest message, not the progress the trigger handed in.
+	coverage := FinalizeCursor{SessionID: sessionID, CoveredMessageID: newest}
+	accepted := make(map[string]struct{}, len(raw))
+	for _, proposal := range raw {
+		skip := s.validateShape(proposal)
+		if skip != "" {
+			result.Skipped = append(result.Skipped, FinalizeSkip{Reason: skip, Subject: proposal.Subject, EvidenceIDs: proposal.EvidenceIDs, AssistantIDs: proposal.AssistantIDs})
+			continue
+		}
+		evidence, assistant, skip := validateEvidence(proposal, input.Visible)
+		if skip != "" {
+			result.Skipped = append(result.Skipped, FinalizeSkip{Reason: skip, Subject: proposal.Subject, EvidenceIDs: proposal.EvidenceIDs, AssistantIDs: proposal.AssistantIDs})
+			continue
+		}
+		candidate := s.buildCandidate(request.UserID, coverage, proposal, evidence, assistant, input.Topics)
+		fingerprint := candidate.Fingerprint
+		if _, seen := known[fingerprint]; seen {
+			result.Skipped = append(result.Skipped, FinalizeSkip{Reason: FinalizeSkipDuplicateKnown, Subject: candidate.Subject, EvidenceIDs: proposal.EvidenceIDs, AssistantIDs: proposal.AssistantIDs})
+			continue
+		}
+		if _, seen := accepted[fingerprint]; seen {
+			result.Skipped = append(result.Skipped, FinalizeSkip{Reason: FinalizeSkipDuplicateRun, Subject: candidate.Subject, EvidenceIDs: proposal.EvidenceIDs, AssistantIDs: proposal.AssistantIDs})
+			continue
+		}
+		entries, hashSkip := s.inRangeEntries(ctx, request.UserID, candidate, ranges)
+		if hashSkip == FinalizeSkipDuplicateExisting {
+			result.Skipped = append(result.Skipped, FinalizeSkip{Reason: FinalizeSkipDuplicateExisting, Subject: candidate.Subject, EvidenceIDs: proposal.EvidenceIDs, AssistantIDs: proposal.AssistantIDs})
+			continue
+		}
+		relation, related, retry, err := s.reviewRelation(ctx, candidate, entries)
+		if err != nil {
+			return FinalizeResult{}, fmt.Errorf("review finalize relation: %w", err)
+		}
+		if retry {
+			candidate.Relation, candidate.RelatedOld = relation, related
+			result.RetryPending = append(result.RetryPending, candidate)
+			continue
+		}
+		candidate.Relation, candidate.RelatedOld = relation, related
+		accepted[fingerprint] = struct{}{}
+		result.Proposals = append(result.Proposals, candidate)
+	}
+
+	// The cursor advances only when nothing is waiting for a judgement. A
+	// run with retry-pending candidates leaves the cursor where it was, so
+	// the next trigger re-processes the same messages and the fingerprint
+	// keeps the retry from proposing twice.
+	if len(result.RetryPending) == 0 {
+		result.Cursor.CoveredMessageID = newest
+	}
+	return result, nil
+}
+
+func (s *SessionFinalizeService) loadBoard(ctx context.Context, userID int64, sessionID string) (model.SessionWhiteboardDocument, bool, error) {
+	stored, err := s.boards.GetWhiteboard(ctx, userID, sessionID)
+	if err != nil {
+		if errors.Is(err, model.ErrWhiteboardNotFound) {
+			return model.SessionWhiteboardDocument{}, true, nil
+		}
+		return model.SessionWhiteboardDocument{}, false, fmt.Errorf("load session whiteboard: %w", err)
+	}
+	document, err := model.DecodeSessionWhiteboardDocument(stored.Content)
+	if err != nil {
+		// A board that cannot be decoded is not a clue, but the messages are
+		// still there. Extraction continues from the window alone rather
+		// than losing the session's candidates to an unreadable board.
+		return model.SessionWhiteboardDocument{}, true, nil
+	}
+	return document, false, nil
+}
+
+func (s *SessionFinalizeService) loadTopics(ctx context.Context, userID int64) []Topic {
+	if s.catalogue == nil {
+		return nil
+	}
+	topics, err := s.catalogue.ListTopics(ctx, userID)
+	if err != nil {
+		// A catalogue failure does not fail the extraction: the candidates
+		// simply propose without a prefill, and the confirmation flow asks
+		// where each belongs. It is the same fallback the draft tool uses.
+		return nil
+	}
+	return topics
+}
+
+// finalizeRanges holds the active entries of the ranges one run compares
+// against, loaded once for the whole run.
+type finalizeRanges struct {
+	global    []model.LongTermMemory
+	globalErr bool
+	topic     map[string][]model.LongTermMemory
+}
+
+func (s *SessionFinalizeService) loadRanges(ctx context.Context, userID int64) finalizeRanges {
+	ranges := finalizeRanges{topic: make(map[string][]model.LongTermMemory)}
+	if s.globalMind != nil {
+		entries, err := s.globalMind.ListAllActive(ctx, userID, model.MemoryScopeGlobal, 0, GlobalMemoryHardLimit+1)
+		if err != nil {
+			ranges.globalErr = true
+		} else {
+			ranges.global = entries
+		}
+	}
+	return ranges
+}
+
+// inRangeEntries returns the active entries the candidate is compared
+// against: the global profile for a global candidate, the active notes of
+// its own topic for a topic candidate. It also runs the free duplicate check:
+// content that is already an active memory of the range is skipped without a
+// model call.
+func (s *SessionFinalizeService) inRangeEntries(ctx context.Context, userID int64, candidate SessionMemoryCandidate, ranges finalizeRanges) ([]model.LongTermMemory, string) {
+	var entries []model.LongTermMemory
+	if candidate.Scope == model.MemoryScopeGlobal {
+		if ranges.globalErr {
+			return nil, ""
+		}
+		entries = boundedEntries(ranges.global, s.RelationTargets)
+	} else {
+		if candidate.TopicKey == "" {
+			// A pending-topic candidate has no range yet. The duplicate check
+			// and the relation judgement both happen after the learner places
+			// it, which is the plan's rule: a topic-undetermined candidate is
+			// checked in its final home.
+			return nil, ""
+		}
+		if s.topicMind == nil {
+			return nil, ""
+		}
+		loaded, err := s.topicMind.ListActiveTopicEntries(ctx, userID, candidate.TopicKey, s.RelationTargets)
+		if err != nil {
+			// The comparison is best-effort the same way the conflict
+			// snapshot is: a failed listing must not lose the candidate, and
+			// the draft entry re-checks conflicts when the learner confirms.
+			return nil, ""
+		}
+		entries = loaded
+	}
+	contentHash := model.MemoryContentHash(candidate.Content)
+	for _, entry := range entries {
+		if entry.ContentHash == contentHash {
+			return entries, FinalizeSkipDuplicateExisting
+		}
+	}
+	return entries, ""
+}
+
+// reviewRelation judges the candidate against its range. With no related
+// entries there is nothing to judge and the candidate proposes as new; with
+// entries the resolver decides. A resolver failure keeps the candidate
+// retryable instead of proposing it unjudged.
+func (s *SessionFinalizeService) reviewRelation(ctx context.Context, candidate SessionMemoryCandidate, entries []model.LongTermMemory) (GlobalRelationResult, []model.LongTermMemory, bool, error) {
+	if len(entries) == 0 {
+		return GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "no related entries in range"}, nil, false, nil
+	}
+	if s.relations == nil {
+		return GlobalRelationResult{}, entries, true, nil
+	}
+	relation, err := s.relations.Classify(ctx, candidate.DraftInput(), entries)
+	if err != nil {
+		return GlobalRelationResult{}, entries, true, nil
+	}
+	return relation, entries, false, nil
+}
+
+func boundedEntries(entries []model.LongTermMemory, limit int) []model.LongTermMemory {
+	if len(entries) <= limit {
+		return entries
+	}
+	return entries[:limit]
+}
+
+// visibleMessages assembles the set the proposer may cite: every message the
+// board cites, plus a bounded window of the session's most recent messages on
+// both sides. The window is what keeps a fact the board missed extractable
+// while its message is still recent - the plan §6.1 read-back - and what
+// keeps an adopted proposal's two sides in one input when the board did not
+// carry the acceptance.
+func visibleMessages(board model.SessionWhiteboardDocument, byID map[uint]SessionMessage, window int) map[uint]SessionMessage {
+	visible := make(map[uint]SessionMessage)
+	for _, id := range board.EvidenceMessageIDs() {
+		if message, ok := byID[id]; ok {
+			visible[id] = message
+		}
+	}
+	if window > 0 {
+		ids := make([]uint, 0, len(byID))
+		for id := range byID {
+			ids = append(ids, id)
+		}
+		sort.Slice(ids, func(left, right int) bool { return ids[left] < ids[right] })
+		if len(ids) > window {
+			ids = ids[len(ids)-window:]
+		}
+		for _, id := range ids {
+			visible[id] = byID[id]
+		}
+	}
+	return visible
+}
+
+// validateShape checks the fields the program owns, before any source is
+// believed. The class and kind vocabularies are fixed here because they are
+// the words the memory page shows; the length limits are the memory's own;
+// the durability rules are the memory shape rules the draft entry enforces
+// again when the learner confirms.
+func (s *SessionFinalizeService) validateShape(proposal SessionRawProposal) string {
+	proposal.Scope = model.MemoryScope(strings.ToLower(strings.TrimSpace(string(proposal.Scope))))
+	proposal.Subject = strings.TrimSpace(proposal.Subject)
+	proposal.Content = strings.TrimSpace(proposal.Content)
+	switch proposal.Scope {
+	case model.MemoryScopeGlobal:
+		if strings.TrimSpace(proposal.Class) == "" || !ValidFinalizeClass(proposal.Class) {
+			return FinalizeSkipInvalidShape
+		}
+	case model.MemoryScopeTopic:
+		if strings.TrimSpace(proposal.Kind) == "" || !ValidFinalizeKind(proposal.Kind) {
+			return FinalizeSkipInvalidShape
+		}
+	default:
+		return FinalizeSkipInvalidShape
+	}
+	if proposal.Subject == "" || proposal.Content == "" ||
+		utf8.RuneCountInString(proposal.Subject) > model.MemorySubjectMaxRunes ||
+		utf8.RuneCountInString(proposal.Content) > model.MemoryContentMaxRunes {
+		return FinalizeSkipInvalidShape
+	}
+	durability := model.MemoryDurability(strings.ToLower(strings.TrimSpace(string(proposal.Durability))))
+	if !durability.Valid() {
+		return FinalizeSkipInvalidShape
+	}
+	if proposal.ValidUntil != nil {
+		local := proposal.ValidUntil.In(time.Local)
+		proposal.ValidUntil = &local
+	}
+	// The same shape probe the explicit-write path uses, so a candidate that
+	// passes here cannot fail there on scope, durability or validity. A
+	// topic-scope proposal without a resolved key is probed under a
+	// placeholder key: the one rule being deferred is the topic's presence,
+	// which the pending-draft relaxation at the draft entry covers - every
+	// other rule still applies here.
+	topicKey := strings.TrimSpace(proposal.TopicKey)
+	if proposal.Scope == model.MemoryScopeTopic && topicKey == "" {
+		topicKey = "pending-validation"
+	}
+	probe := model.LongTermMemory{
+		ID: "validation", UserID: 1, Scope: proposal.Scope, Subject: proposal.Subject, Content: proposal.Content,
+		ContentHash: model.MemoryContentHash(proposal.Content), StructuredJSON: `{}`, Tags: model.StringList{"learning"},
+		TopicKey: topicKey, Durability: durability, ValidUntil: proposal.ValidUntil,
+		SourceRefs: model.StringList{"validation"}, Confidence: 1, Importance: 8, Status: model.LongTermMemoryActive,
+		UserConfirmed: true, CreatedAt: s.now(),
+	}
+	if err := probe.Validate(); err != nil {
+		return FinalizeSkipInvalidShape
+	}
+	return ""
+}
+
+// validateEvidence checks the source of one proposal against the messages
+// this extraction could see. It is the provenance boundary: the model says
+// what the candidate is about, and the program says whether the words it
+// rests on exist, belong to the learner, and - for an adopted proposal -
+// include an acceptance that came after the proposal.
+func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessage) ([]SessionEvidenceRef, []SessionEvidenceRef, string) {
+	if len(proposal.EvidenceIDs) == 0 {
+		return nil, nil, FinalizeSkipEvidenceMissing
+	}
+	// A candidate citing more messages than an entry may cite is describing
+	// a stretch of history rather than one matter, which is a shape failure
+	// - the same limit the whiteboard applies to an entry's evidence.
+	if len(proposal.EvidenceIDs) > model.SessionWhiteboardEvidenceLimit {
+		return nil, nil, FinalizeSkipInvalidShape
+	}
+	evidenceIDs, ok := dedupeIDs(proposal.EvidenceIDs, model.SessionWhiteboardEvidenceLimit)
+	if !ok || len(evidenceIDs) == 0 {
+		return nil, nil, FinalizeSkipEvidenceMissing
+	}
+	evidence := make([]SessionEvidenceRef, 0, len(evidenceIDs))
+	for _, id := range evidenceIDs {
+		message, found := visible[id]
+		if !found {
+			return nil, nil, FinalizeSkipEvidenceMissing
+		}
+		if !message.IsUser {
+			return nil, nil, FinalizeSkipEvidenceRole
+		}
+		if strings.TrimSpace(message.Content) == "" {
+			return nil, nil, FinalizeSkipEvidenceMissing
+		}
+		evidence = append(evidence, SessionEvidenceRef{MessageID: id, Role: model.SessionWhiteboardOriginUser, At: message.CreatedAt})
+	}
+	assistantIDs, _ := dedupeIDs(proposal.AssistantIDs, model.SessionWhiteboardEvidenceLimit)
+	assistant := make([]SessionEvidenceRef, 0, len(assistantIDs))
+	for _, id := range assistantIDs {
+		message, found := visible[id]
+		if !found {
+			return nil, nil, FinalizeSkipEvidenceMissing
+		}
+		if message.IsUser {
+			return nil, nil, FinalizeSkipEvidenceRole
+		}
+		assistant = append(assistant, SessionEvidenceRef{MessageID: id, Role: model.SessionWhiteboardOriginAssistant, At: message.CreatedAt})
+	}
+	if len(assistant) > 0 {
+		// The acceptance rule is the whiteboard engine's, restated for
+		// candidates: the learner's message must come after the assistant's
+		// proposal. The ids' order is the order the messages were written in.
+		latest := uint(0)
+		for _, ref := range assistant {
+			if ref.MessageID > latest {
+				latest = ref.MessageID
+			}
+		}
+		accepted := false
+		for _, ref := range evidence {
+			if ref.MessageID > latest {
+				accepted = true
+				break
+			}
+		}
+		if !accepted {
+			return nil, nil, FinalizeSkipAdoptionUnproven
+		}
+	}
+	return evidence, assistant, ""
+}
+
+func dedupeIDs(ids []uint, limit int) ([]uint, bool) {
+	if len(ids) == 0 || len(ids) > limit {
+		return nil, false
+	}
+	seen := make(map[uint]struct{}, len(ids))
+	result := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		if id == 0 {
+			return nil, false
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		result = append(result, id)
+	}
+	sort.Slice(result, func(left, right int) bool { return result[left] < result[right] })
+	return result, true
+}
+
+// buildCandidate assembles the validated proposal into the candidate the
+// draft entry and the confirmation page receive. The topic is resolved here:
+// an exact catalogue match prefills, everything else stays pending for the
+// learner to place, because a topic the program guessed wrong is harder to
+// fix after saving than before.
+func (s *SessionFinalizeService) buildCandidate(userID int64, coverage FinalizeCursor, proposal SessionRawProposal,
+	evidence, assistant []SessionEvidenceRef, topics []Topic) SessionMemoryCandidate {
+	scope := model.MemoryScope(strings.ToLower(strings.TrimSpace(string(proposal.Scope))))
+	subject := strings.TrimSpace(proposal.Subject)
+	content := strings.TrimSpace(proposal.Content)
+	durability := model.MemoryDurability(strings.ToLower(strings.TrimSpace(string(proposal.Durability))))
+	topicKey := ""
+	topicPending := false
+	if scope == model.MemoryScopeTopic {
+		key, matched := Resolve(topics, proposal.TopicKey)
+		if matched {
+			topicKey = key
+		} else {
+			// No unique home in the catalogue. The candidate still proposes;
+			// the confirmation flow asks the learner where it belongs.
+			topicKey = ""
+			topicPending = true
+		}
+	}
+	tags := GenerateQueryTags(subject+"\n"+content, topicKey)
+	statement := time.Time{}
+	for _, ref := range evidence {
+		if statement.IsZero() || ref.At.Before(statement) {
+			statement = ref.At
+		}
+	}
+	candidate := SessionMemoryCandidate{
+		ID: uuid.NewString(), UserID: userID, Scope: scope,
+		Class: strings.TrimSpace(proposal.Class), Kind: strings.TrimSpace(proposal.Kind),
+		TopicKey: topicKey, TopicPending: topicPending,
+		Subject: subject, Content: content, Tags: tags,
+		Durability: durability, ValidUntil: proposal.ValidUntil,
+		Evidence: evidence, AssistantUtterances: assistant,
+		StatementTime: statement, Cursor: coverage,
+	}
+	candidate.Fingerprint = CandidateFingerprint(candidate.UserID, coverage.SessionID, candidate.Scope, candidate.TopicKey, candidate.Subject, candidate.Content)
+	return candidate
+}
+
+// CandidateFingerprint identifies one candidate within one session: the same
+// matter from the same session is the same candidate, whatever trigger
+// produced it. The session is part of the key on purpose - the same sentence
+// said again in a later session is a new expression for the learner to
+// decide on, and suppressing it there is the draft entry's rule, not this
+// module's.
+func CandidateFingerprint(userID int64, sessionID string, scope model.MemoryScope, topicKey, subject, content string) string {
+	h := sha256.New()
+	_, _ = fmt.Fprintf(h, "%d\x00%s\x00%s\x00%s\x00%s\x00%s", userID, sessionID, scope, topicKey, subject, content)
+	return hex.EncodeToString(h.Sum(nil))
+}
