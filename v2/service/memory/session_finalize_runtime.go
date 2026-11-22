@@ -481,6 +481,10 @@ Body rules, checked at the confirmation page and by evaluation:
 - Keep the preference's stated scope in the body: the situations it applies to (for example 讲新概念时, 复习时, 排查报错时) are part of what the learner said and stay in the content.
 - A one-turn request never enters the body. It may have shaped the session - it may have picked this session's example or set this session's range - but it is not a standing rule, and its wording must not appear in the content as one. The example the learner chose for this session stays out; the preference's own scope stays in.
 
+Candidate boundaries, checked by evaluation:
+- A reminder inside one sentence belongs to that sentence's subject. When the learner says 记下来 or 记住 while describing a difficulty on a topic (for example "我老忘记 Save 传指针，这个坑记下来，属于 GORM 这个主题"), the difficulty and the request are ONE topic note - do not emit a second candidate for the reminder.
+- A preference the learner expresses on its own and that applies across topics (for example how they want new modules taught) is still its own global candidate, even in the same session.
+
 remember_profile is a fact about the learner across topics: a study goal (class goal), background (background), a teaching preference (teaching_preference), or a standing constraint (constraint).
 remember_topic_note is the learner's own understanding of one technical topic: an analogy, a confusion, a pitfall, or their personal wording (kind understanding), or what they say they know (kind self_report). Reuse a topic key from the catalogue when one fits; leave topic_key empty when none does and the learner will place it.
 reject_extraction for one-turn requests, session logistics, unaccepted assistant proposals, quiz scores, and anything without the learner's own words behind it.`

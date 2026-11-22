@@ -1268,3 +1268,81 @@ func TestFinalizeBodyKeepsLearnerLanguageScopeAndExcludesTemporary(t *testing.T)
 		t.Fatalf("statement time=%v, want m03's time", candidate.StatementTime)
 	}
 }
+
+// TestFinalizeCandidateBoundariesReminderInsideTopicAndIndependentPreference
+// is the DED-04 boundary contrast: a reminder inside one sentence that only
+// serves remembering a topic difficulty stays IN that topic's card - one
+// candidate, not a second "please remember" card - while an independent
+// preference expressed on its own still proposes separately.
+func TestFinalizeCandidateBoundariesReminderInsideTopicAndIndependentPreference(t *testing.T) {
+	at := func(minute int) time.Time {
+		return time.Date(2026, 11, 23, 20, minute, 0, 0, time.FixedZone("CST", 8*3600))
+	}
+	pitfall := SessionMessage{ID: 3, IsUser: true,
+		Content:   "我发现我老忘记 Save 传指针这回事，零值字段根本不更新——这个坑记下来，属于 GORM 这个主题。",
+		CreatedAt: at(35)}
+	preference := SessionMessage{ID: 5, IsUser: true,
+		Content:   "另外记个习惯：我每次学完一个模块喜欢自己画一张时序图，你之后讲新模块的时候，也可以先让我自己画。",
+		CreatedAt: at(44)}
+	pitfallProposal := SessionRawProposal{
+		Scope: model.MemoryScopeTopic, Kind: FinalizeKindUnderstanding, TopicKey: "gorm",
+		Subject: "Save 传指针", Durability: model.MemoryDurabilityStable,
+		Content:     "我老忘记 GORM 的 Save 要传指针：值传递时零值字段不会更新。",
+		EvidenceIDs: []uint{pitfall.ID}, StatementEvidenceID: pitfall.ID,
+	}
+	preferenceProposal := SessionRawProposal{
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassTeachingPreference, Subject: "学习习惯",
+		Durability:  model.MemoryDurabilityStable,
+		Content:     "我学完一个模块喜欢自己画一张时序图；讲新模块时先让我自己画。",
+		EvidenceIDs: []uint{preference.ID}, StatementEvidenceID: preference.ID,
+	}
+	topics := fakeFinalizeCatalogue{topics: []Topic{{Key: "gorm", Name: "GORM"}}}
+	relations := &scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "new"}}
+	newService := func(messages []SessionMessage, proposals []SessionRawProposal) *SessionFinalizeService {
+		return newFinalizeService(t, fakeFinalizeBoards{}, fakeFinalizeMessages{messages: messages},
+			topics, &fakeFinalizeFingerprints{known: map[string]struct{}{}},
+			fakeFinalizeGlobalMind{}, fakeFinalizeTopicMind{byTopic: map[string][]model.LongTermMemory{}},
+			&scriptedProposer{proposals: proposals}, relations, 50)
+	}
+
+	// 正例：只有那句难点+提醒 → 一张主题卡。提醒不单独成卡。
+	merged, err := newService([]SessionMessage{pitfall}, []SessionRawProposal{pitfallProposal}).
+		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-ded04-merge"}})
+	if err != nil {
+		t.Fatalf("merged extract: %v", err)
+	}
+	if len(merged.Proposals) != 1 || merged.Proposals[0].Scope != model.MemoryScopeTopic {
+		t.Fatalf("merged=%+v, want one topic card carrying the reminder", merged.Proposals)
+	}
+	if merged.Proposals[0].TopicKey != "gorm" || merged.Proposals[0].Evidence[0].MessageID != pitfall.ID {
+		t.Fatalf("merged candidate=%+v", merged.Proposals[0])
+	}
+
+	// 反例（对照）：同一会话里另有独立、可跨主题使用的偏好 → 分别提议。
+	split, err := newService([]SessionMessage{pitfall, preference}, []SessionRawProposal{pitfallProposal, preferenceProposal}).
+		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-ded04-split"}})
+	if err != nil {
+		t.Fatalf("split extract: %v", err)
+	}
+	if len(split.Proposals) != 2 {
+		t.Fatalf("split=%+v, want the topic note and the independent preference", split.Proposals)
+	}
+	scopes := map[model.MemoryScope]int{}
+	for _, candidate := range split.Proposals {
+		scopes[candidate.Scope]++
+	}
+	if scopes[model.MemoryScopeTopic] != 1 || scopes[model.MemoryScopeGlobal] != 1 {
+		t.Fatalf("scopes=%v, want one topic and one global", scopes)
+	}
+
+	// 规则锁定：提示词写明这两条候选边界。
+	for _, fragment := range []string{
+		"belongs to that sentence's subject",
+		"the difficulty and the request are ONE topic note",
+		"is still its own global candidate",
+	} {
+		if !strings.Contains(finalizeProposerPrompt, fragment) {
+			t.Fatalf("extraction prompt missing boundary rule %q", fragment)
+		}
+	}
+}
