@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -87,7 +88,7 @@ type CrossSessionLocator interface {
 // It owns the ownership boundary: a conversation that is not the learner's is
 // not locked, and nothing of it is read.
 type CrossSessionReader interface {
-	LockSession(ctx context.Context, userID int64, sessionID string) (*LockedSession, error)
+	LockSession(ctx context.Context, userID int64, sessionID, question string) (*LockedSession, error)
 }
 
 // CrossSessionLocatorFunc adapts a function to the locator.
@@ -102,14 +103,14 @@ func (f CrossSessionLocatorFunc) Locate(ctx context.Context, userID int64, curre
 }
 
 // CrossSessionReaderFunc adapts a function to the reader.
-type CrossSessionReaderFunc func(ctx context.Context, userID int64, sessionID string) (*LockedSession, error)
+type CrossSessionReaderFunc func(ctx context.Context, userID int64, sessionID, question string) (*LockedSession, error)
 
 // LockSession runs the function.
-func (f CrossSessionReaderFunc) LockSession(ctx context.Context, userID int64, sessionID string) (*LockedSession, error) {
+func (f CrossSessionReaderFunc) LockSession(ctx context.Context, userID int64, sessionID, question string) (*LockedSession, error) {
 	if f == nil {
 		return nil, fmt.Errorf("cross session reader is not set")
 	}
-	return f(ctx, userID, sessionID)
+	return f(ctx, userID, sessionID, question)
 }
 
 // The reasons a resolution ended where it did.
@@ -190,10 +191,10 @@ func ResolveSessionLock(ctx context.Context, locator CrossSessionLocator, reader
 		return SessionLockResolution{Reason: lockReasonNone}
 	}
 	if chosen, matched := clarification.Resolve(reply); matched && chosen != nil {
-		return lockSession(ctx, reader, userID, chosen.SessionID, lockReasonCandidate)
+		return lockSession(ctx, reader, userID, chosen.SessionID, clarification.Question, lockReasonCandidate)
 	}
 	if looksLikeSessionID(reply) {
-		resolution := lockSession(ctx, reader, userID, reply, lockReasonSessionID)
+		resolution := lockSession(ctx, reader, userID, reply, clarification.Question, lockReasonSessionID)
 		switch resolution.Reason {
 		case lockReasonNotOwned:
 			// Refused, and it stays refused: this is not a clue to search
@@ -214,14 +215,14 @@ func ResolveSessionLock(ctx context.Context, locator CrossSessionLocator, reader
 	case 0:
 		return SessionLockResolution{Reason: lockReasonNoCandidate}
 	case 1:
-		return lockSession(ctx, reader, userID, candidates[0].SessionID, lockReasonClue)
+		return lockSession(ctx, reader, userID, candidates[0].SessionID, clarification.Question, lockReasonClue)
 	default:
 		return SessionLockResolution{Candidates: candidates, Ambiguous: true, Reason: lockReasonAmbiguous}
 	}
 }
 
 // lockSession locks one conversation and says why it did not, when it did not.
-func lockSession(ctx context.Context, reader CrossSessionReader, userID int64, sessionID, reason string) SessionLockResolution {
+func lockSession(ctx context.Context, reader CrossSessionReader, userID int64, sessionID, question, reason string) SessionLockResolution {
 	if reader == nil {
 		return SessionLockResolution{Reason: lockReasonUnavailable}
 	}
@@ -229,7 +230,7 @@ func lockSession(ctx context.Context, reader CrossSessionReader, userID int64, s
 	if sessionID == "" {
 		return SessionLockResolution{Reason: lockReasonNoCandidate}
 	}
-	locked, err := reader.LockSession(ctx, userID, sessionID)
+	locked, err := reader.LockSession(ctx, userID, sessionID, question)
 	if err != nil {
 		if errors.Is(err, ErrSessionNotOwned) {
 			return SessionLockResolution{Reason: lockReasonNotOwned}
@@ -312,7 +313,9 @@ const lockedSessionAnswerRule = "Answer the waiting question from this conversat
 	"If the record below does not settle the question, say what is missing; " +
 	"do not claim the conversation never discussed it unless the record shows that. " +
 	"If the record carries only the setup or a general description of the asked detail, " +
-	"name the specific detail that is missing; do not fill it with general practice."
+	"name the specific detail that is missing; do not fill it with general practice. " +
+	"When the learner asks what you recommended at the time, lead with the original " +
+	"recommendation that directly answers the question, then explain the finer check steps."
 
 // renderLockedSessionLead is what the model reads before the evidence.
 func renderLockedSessionLead(locked *LockedSession, question string) string {
@@ -374,7 +377,8 @@ func lockedGapLines(locked *LockedSession, question string) []string {
 		if !gap.Message.IsUser {
 			who = "assistant"
 		}
-		lines = append(lines, who+": "+boundRunes(content, maxLockedMessageRunes))
+		lines = append(lines, who+" (message_id="+strconv.FormatUint(uint64(gap.Message.ID), 10)+"): "+
+			boundRunes(content, maxLockedMessageRunes))
 	}
 	return lines
 }

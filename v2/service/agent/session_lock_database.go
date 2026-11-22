@@ -176,7 +176,7 @@ func NewDatabaseCrossSessionReader(store CrossSessionStore) (*DatabaseCrossSessi
 // somebody else are told apart, because only the second one says that
 // somebody reached for it.
 func (r *DatabaseCrossSessionReader) LockSession(ctx context.Context, userID int64,
-	sessionID string) (*LockedSession, error) {
+	sessionID, question string) (*LockedSession, error) {
 	if r == nil || r.store == nil {
 		return nil, fmt.Errorf("cross session reader is not initialized")
 	}
@@ -213,7 +213,7 @@ func (r *DatabaseCrossSessionReader) LockSession(ctx context.Context, userID int
 		// points. Words inside that stretch that no point kept are still the
 		// conversation's own record; the block keeps the ones the waiting
 		// question mentions.
-		locked.Gaps = collectLockedGapWords(ctx, r.store, userID, sessionID, segments)
+		locked.Gaps = collectLockedGapWords(ctx, r.store, userID, sessionID, segments, question)
 		// The summary ends where the compressor stopped, and the conversation
 		// can go on after it. The words after the last covered message are
 		// the stretch no summary carries; they are read only from THIS
@@ -251,7 +251,7 @@ func (r *DatabaseCrossSessionReader) LockSession(ctx context.Context, userID int
 // so it is read here (bounded) and filtered by the waiting question when the
 // block is rendered.
 func collectLockedGapWords(ctx context.Context, store CrossSessionStore, userID int64,
-	sessionID string, segments []model.SessionSummarySegment) []LockedGapWord {
+	sessionID string, segments []model.SessionSummarySegment, question string) []LockedGapWord {
 	out := make([]LockedGapWord, 0, maxLockedGapWords)
 	seen := make(map[uint]struct{}, maxLockedGapWords)
 	for _, segment := range segments {
@@ -284,6 +284,13 @@ func collectLockedGapWords(ctx context.Context, store CrossSessionStore, userID 
 				break
 			}
 			if _, duplicate := seen[word.ID]; duplicate {
+				continue
+			}
+			// The question decides which words are relevant BEFORE the
+			// bound is applied: twenty-four unrelated words must not be able
+			// to push the asked sentence out of the window.
+			if !sharesQuestionWord(word.Content, question) &&
+				!sharesQuestionWord(cited[word.ID], question) {
 				continue
 			}
 			seen[word.ID] = struct{}{}

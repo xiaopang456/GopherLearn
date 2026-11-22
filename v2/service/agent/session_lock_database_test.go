@@ -95,7 +95,7 @@ func TestTheReaderRefusesAConversationOfSomebodyElse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	locked, err := reader.LockSession(context.Background(), 7, "session-x")
+	locked, err := reader.LockSession(context.Background(), 7, "session-x", "说明 目录 练习 动作 提问 验收 加索引 先看 构建")
 	if err == nil {
 		t.Fatalf("a conversation of somebody else was locked: %+v", locked)
 	}
@@ -118,7 +118,7 @@ func TestTheReaderTellsAMissingConversationFromSomebodyElses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = reader.LockSession(context.Background(), 7, "session-missing")
+	_, err = reader.LockSession(context.Background(), 7, "session-missing", "说明 目录 练习 动作 提问 验收 加索引 先看 构建")
 	if err == nil {
 		t.Fatal("a missing conversation was locked")
 	}
@@ -154,7 +154,7 @@ func TestTheReaderBringsTheSummaryOfTheLockedConversation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	locked, err := reader.LockSession(context.Background(), 7, "session-a")
+	locked, err := reader.LockSession(context.Background(), 7, "session-a", "说明 目录 练习 动作 提问 验收 加索引 先看 构建")
 	if err != nil {
 		t.Fatalf("lock the conversation: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestTheReaderFallsBackToTheConversationsOwnWords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	locked, err := reader.LockSession(context.Background(), 7, "session-b")
+	locked, err := reader.LockSession(context.Background(), 7, "session-b", "说明 目录 练习 动作 提问 验收 加索引 先看 构建")
 	if err != nil {
 		t.Fatalf("lock the conversation: %v", err)
 	}
@@ -252,7 +252,7 @@ func TestTheReaderMergesTheWordsTheSummaryNeverCovered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	locked, err := reader.LockSession(context.Background(), 7, "p2c-06")
+	locked, err := reader.LockSession(context.Background(), 7, "p2c-06", "说明 目录 练习 动作 提问 验收 加索引 先看 构建")
 	if err != nil {
 		t.Fatalf("lock the conversation: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestTheTailReadStartsAtTheLastCoveredMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reader.LockSession(context.Background(), 7, "session-c"); err != nil {
+	if _, err := reader.LockSession(context.Background(), 7, "session-c", "说明 目录 练习 动作 提问 验收 加索引 先看 构建"); err != nil {
 		t.Fatalf("lock the conversation: %v", err)
 	}
 	if store.afterID != 718 {
@@ -323,7 +323,7 @@ func TestTheReaderReadsNoTailOfSomebodyElsesConversation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reader.LockSession(context.Background(), 7, "session-x"); !errors.Is(err, ErrSessionNotOwned) {
+	if _, err := reader.LockSession(context.Background(), 7, "session-x", "说明 目录 练习 动作 提问 验收 加索引 先看 构建"); !errors.Is(err, ErrSessionNotOwned) {
 		t.Fatalf("the refusal is %v", err)
 	}
 	if store.afterReads != 0 {

@@ -39,7 +39,7 @@ type fakeCrossReader struct {
 	asked    []string
 }
 
-func (f *fakeCrossReader) LockSession(_ context.Context, _ int64, sessionID string) (*LockedSession, error) {
+func (f *fakeCrossReader) LockSession(_ context.Context, _ int64, sessionID, _ string) (*LockedSession, error) {
 	f.asked = append(f.asked, sessionID)
 	if f.err != nil {
 		return nil, f.err
