@@ -189,6 +189,7 @@ type memoryView struct {
 	EvidenceMessages  model.StringList           `json:"evidence_messages,omitempty"`
 	AssistantMessages model.StringList           `json:"assistant_messages,omitempty"`
 	StatementTime     *time.Time                 `json:"statement_time,omitempty"`
+	SourceSession     string                     `json:"source_session,omitempty"`
 	Durability        model.MemoryDurability     `json:"durability"`
 	ValidUntil        *time.Time                 `json:"valid_until,omitempty"`
 	Source            string                     `json:"source"`
@@ -462,7 +463,8 @@ func toMemoryView(memory *model.LongTermMemory) *memoryView {
 		Tags:        memory.Tags, TopicKey: memory.TopicKey, Source: memorySourceLabel(memory.SourceRefs),
 		ProfileClass: memory.ProfileClass, EvidenceMessages: memory.EvidenceMessages,
 		AssistantMessages: memory.AssistantMessages, StatementTime: memory.StatementTime,
-		Durability: memory.Durability, ValidUntil: memory.ValidUntil,
+		SourceSession: memory.SourceSession,
+		Durability:    memory.Durability, ValidUntil: memory.ValidUntil,
 		Confidence: memory.Confidence, Importance: memory.Importance, Status: memory.Status, UserConfirmed: memory.UserConfirmed,
 		LastUsedAt: memory.LastUsedAt, UsageCount: memory.UsageCount, CreatedAt: memory.CreatedAt, UpdatedAt: memory.UpdatedAt,
 	}

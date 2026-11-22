@@ -29,10 +29,14 @@ const session = await createSession({ mode: 'learning_agent', title: '治理测�
 // draft may only record what the learner's own message says: the server
 // refuses a draft built from anything else, and a refused draft is not a
 // failed turn but it is not a card either.
-async function run(key) { return request(`/api/v1/sessions/${session.id}/messages`, { method: 'POST', body: { requestId: key, content: '请记住我用队列理解 Redis，我计划练习 Redis 队列' } }) }
+async function run(key) { return request(`/api/v1/sessions/${session.id}/messages`, { method: 'POST', body: { requestId: key, content: '请记住我用队列理解 Redis，我计划练习 Redis 队列，我想吃透 Redis 的过期策略' } }) }
 const result = await run('send-memory-ui-001')
 assert.equal(typeof result.memoryDraft.draftId, 'string')
 assert.ok(result.memoryDraft.conflictIds.includes(originalID))
+// Dedup rule: a candidate byte-identical to an active entry skips outright -
+// no draft record, no card, and the confirmation list stays duplicate-free.
+const duplicateProbe = await run('send-memory-ui-001-dup')
+assert.equal(duplicateProbe.memoryDraft, undefined)
 const current = ref(result.memoryDraft), runID = ref(result.runId)
 const card = useV2MemoryDraft(() => current.value, () => runID.value)
 assert.equal(await card.decide('replace', '没有明确选目标'), null)

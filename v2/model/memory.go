@@ -484,12 +484,14 @@ type LongTermMemory struct {
 	// 自动候选来源契约（第三阶段批次 1）：候选字段随草稿确认保留到正式记忆。
 	// ProfileClass 是全局画像类别（仅 global）；EvidenceMessages 是用户证据
 	// 原话的消息 ID；AssistantMessages 是被采纳的助手原话的消息 ID（采纳须
-	// 同时记录两类原话）；StatementTime 是支撑当前值的原话发生时间。手动录入
-	// 与存量行留空，行为不变。
+	// 同时记录两类原话）；StatementTime 是支撑当前值的原话发生时间；
+	// SourceSession 是来源会话（确认时从草稿带入，支持用户归属下的回查）。
+	// 手动录入与存量行留空，行为不变。
 	ProfileClass      MemoryProfileClass `gorm:"column:profile_class;type:varchar(32)" json:"profile_class,omitempty"`
 	EvidenceMessages  StringList         `gorm:"type:json" json:"evidence_messages,omitempty"`
 	AssistantMessages StringList         `gorm:"type:json" json:"assistant_messages,omitempty"`
 	StatementTime     *time.Time         `gorm:"column:statement_time" json:"statement_time,omitempty"`
+	SourceSession     string             `gorm:"column:source_session;type:varchar(36);index" json:"source_session,omitempty"`
 	TombstoneHash     string             `gorm:"type:char(64);index:idx_long_memories_hash,priority:2" json:"tombstone_hash,omitempty"`
 	LastUsedAt        *time.Time         `gorm:"index" json:"last_used_at,omitempty"`
 	UsageCount        uint64             `gorm:"not null;default:0" json:"usage_count"`
@@ -520,6 +522,9 @@ func (m *LongTermMemory) Validate() error {
 	}
 	if err := validateCandidateProvenance(m.Scope, m.ProfileClass, m.EvidenceMessages, m.AssistantMessages); err != nil {
 		return err
+	}
+	if sessionErr := validateSourceSession(m.SourceSession); sessionErr != nil {
+		return sessionErr
 	}
 	if !json.Valid([]byte(m.StructuredJSON)) {
 		return fmt.Errorf("invalid long-term memory state")
@@ -743,7 +748,9 @@ func MemoryContentHash(content string) string {
 // validateCandidateProvenance guards the auto-candidate provenance fields:
 // the profile class exists only for global memories and must name a known
 // slot; the evidence/assistant message lists are bounded and each reference
-// must be a non-empty message id.
+// must be a non-empty message id. An adoption is only sound with both halves
+// of the pair, so assistant references without user evidence reject the
+// candidate; empty provenance stays legal for manual rows and legacy records.
 func validateCandidateProvenance(scope MemoryScope, profileClass MemoryProfileClass, evidence, assistant StringList) error {
 	class := MemoryProfileClass(strings.TrimSpace(string(profileClass)))
 	if utf8.RuneCountInString(string(class)) > profileClassMaxRunes || (class != "" && !class.Valid()) {
@@ -755,6 +762,9 @@ func validateCandidateProvenance(scope MemoryScope, profileClass MemoryProfileCl
 	if len(evidence) > evidenceMaxEntries || len(assistant) > assistantMaxEntries {
 		return fmt.Errorf("memory provenance list exceeds its bound")
 	}
+	if len(assistant) > 0 && len(evidence) == 0 {
+		return fmt.Errorf("assistant message references require user evidence")
+	}
 	for _, list := range [][]string{evidence, assistant} {
 		for _, ref := range list {
 			trimmed := strings.TrimSpace(ref)
@@ -762,6 +772,16 @@ func validateCandidateProvenance(scope MemoryScope, profileClass MemoryProfileCl
 				return fmt.Errorf("invalid memory provenance message reference")
 			}
 		}
+	}
+	return nil
+}
+
+// validateSourceSession bounds the source session reference carried from a
+// candidate draft to its confirmed memory. Empty is legal: manual writes and
+// legacy rows have no session.
+func validateSourceSession(sourceSession string) error {
+	if utf8.RuneCountInString(strings.TrimSpace(sourceSession)) > 36 {
+		return fmt.Errorf("memory source session exceeds the column limit")
 	}
 	return nil
 }

@@ -56,6 +56,7 @@ type ExplicitRepository interface {
 	GetExplicitWrite(context.Context, int64, string) (*memorydao.ExplicitWriteResult, error)
 	GetActiveByID(context.Context, int64, string) (*model.LongTermMemory, error)
 	FindActiveByIDs(context.Context, int64, []string) ([]model.LongTermMemory, error)
+	FindBySourceSession(context.Context, int64, string) ([]model.LongTermMemory, error)
 }
 
 type LearningProgressReader interface {

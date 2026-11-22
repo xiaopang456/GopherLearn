@@ -73,6 +73,9 @@ func (*globalExplicitStub) GetActiveByID(context.Context, int64, string) (*model
 func (*globalExplicitStub) FindActiveByIDs(context.Context, int64, []string) ([]model.LongTermMemory, error) {
 	return nil, nil
 }
+func (*globalExplicitStub) FindBySourceSession(context.Context, int64, string) ([]model.LongTermMemory, error) {
+	return nil, nil
+}
 
 type globalSourceStub struct {
 	rows []model.LongTermMemory

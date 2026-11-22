@@ -411,6 +411,21 @@ func (r *Repository) FindActiveByIDs(ctx context.Context, userID int64, ids []st
 	return rows, err
 }
 
+// FindBySourceSession returns every memory one user's confirmed candidates
+// produced from a source session, newest first. The user id is part of the
+// query, so the trace-back stays inside the owner's data; superseded rows are
+// included because a session trail is history, not just the current values.
+func (r *Repository) FindBySourceSession(ctx context.Context, userID int64, sessionID string) ([]model.LongTermMemory, error) {
+	if r == nil || r.db == nil || userID <= 0 || strings.TrimSpace(sessionID) == "" {
+		return nil, fmt.Errorf("invalid memory source session query")
+	}
+	var rows []model.LongTermMemory
+	err := r.db.WithContext(ctx).
+		Where("user_id = ? AND source_session = ?", userID, strings.TrimSpace(sessionID)).
+		Order("created_at DESC, id DESC").Find(&rows).Error
+	return rows, err
+}
+
 type ResolveDraftParams struct {
 	UserID             int64
 	DraftID            string
@@ -488,6 +503,7 @@ func resolveDraftTx(ctx context.Context, db *gorm.DB, params ResolveDraftParams)
 			// 自动候选来源契约：确认时把候选上的来源字段随正式记忆保留。
 			ProfileClass: resolved.ProfileClass, EvidenceMessages: append(model.StringList(nil), resolved.EvidenceMessages...),
 			AssistantMessages: append(model.StringList(nil), resolved.AssistantMessages...), StatementTime: resolved.StatementTime,
+			SourceSession: resolved.SessionID,
 		}
 		target := ""
 		expectedHash := ""

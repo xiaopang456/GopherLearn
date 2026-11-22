@@ -47,6 +47,7 @@ type ExplicitMemoryInput struct {
 	EvidenceMessages  []string
 	AssistantMessages []string
 	StatementTime     *time.Time
+	SourceSession     string
 }
 
 type CreateRequest struct {
@@ -106,6 +107,7 @@ func (s *GovernanceService) Create(ctx context.Context, request CreateRequest) (
 		// 零值（兼容不变），API 直写的调用方可以选择性携带。
 		ProfileClass: input.ProfileClass, EvidenceMessages: model.StringList(input.EvidenceMessages),
 		AssistantMessages: model.StringList(input.AssistantMessages), StatementTime: input.StatementTime,
+		SourceSession: input.SourceSession,
 	}
 	written, err := s.explicit.CreateUserMemory(ctx, memorydao.ExplicitWriteParams{
 		Memory: memory, TargetMemoryID: target, RequestKey: input.IdempotencyKey, Reason: strings.TrimSpace(request.Reason), Now: s.now(), GlobalSnapshotHash: snapshotHash,
@@ -249,6 +251,17 @@ func (s *GovernanceService) ActiveMemoriesByIDs(ctx context.Context, userID int6
 		return nil, ErrDreamNotConfigured
 	}
 	return s.explicit.FindActiveByIDs(ctx, userID, ids)
+}
+
+// MemoriesBySession is the user-scoped trace-back path of the provenance
+// contract: given the source session a confirmed memory came from, return the
+// memories it produced. Ownership is enforced by the user id, so one learner
+// can never read another learner's session trail.
+func (s *GovernanceService) MemoriesBySession(ctx context.Context, userID int64, sessionID string) ([]model.LongTermMemory, error) {
+	if s == nil || s.explicit == nil {
+		return nil, ErrDreamNotConfigured
+	}
+	return s.explicit.FindBySourceSession(ctx, userID, sessionID)
 }
 
 // EditDraftRequest carries the learner's changes to a pending draft. Pointer

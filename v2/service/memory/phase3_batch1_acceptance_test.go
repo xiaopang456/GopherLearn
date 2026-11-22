@@ -986,3 +986,102 @@ func TestPhase3Batch1CandidateProvenanceContract(t *testing.T) {
 		t.Fatal("evidence list overflow must be rejected")
 	}
 }
+
+// 来源契约补两处（批次 1）：确认后的正式记忆带来源会话，并可在用户归属校验
+// 下回查；自动候选只有助手消息引用而缺用户证据时被拒绝。手动与存量留空兼容。
+func TestPhase3Batch1SessionTracebackAndAssistantEvidenceRule(t *testing.T) {
+	f := newAcceptanceFixture(t, nil, nil)
+	ctx := context.Background()
+	foreignUserID := f.userID + 999
+
+	// 1) 确认写入保留来源会话；用户归属下的回查命中，他人回查为空。
+	draft, created, skip, proposeErr := f.svc.ProposeDraft(ctx, DraftRequest{
+		UserID: f.userID, SessionID: "S-trace", RunID: "run-1",
+		Input: ExplicitMemoryInput{
+			Scope: model.MemoryScopeGlobal, Subject: "教学偏好",
+			Content:    "讲新概念先举用户熟悉的例子，再讲正式定义",
+			Durability: model.MemoryDurabilityStable, IdempotencyKey: "trace:global",
+			ProfileClass:     model.ProfileClassTeachingPreference,
+			EvidenceMessages: []string{"m03"}, AssistantMessages: []string{"m02"},
+		},
+	})
+	if proposeErr != nil || draft == nil || !created || skip != "" {
+		t.Fatalf("propose err=%v created=%v skip=%q", proposeErr, created, skip)
+	}
+	confirmed, confirmErr := f.confirm(t, draft.ID, "add", "", "用户确认")
+	if confirmErr != nil || confirmed.Memory == nil {
+		t.Fatalf("confirm err=%v", confirmErr)
+	}
+	memory := f.memoryByID(t, confirmed.Memory.ID)
+	if memory.SourceSession != "S-trace" {
+		t.Fatalf("source session=%q", memory.SourceSession)
+	}
+	owned, ownedErr := f.svc.MemoriesBySession(ctx, f.userID, "S-trace")
+	if ownedErr != nil || len(owned) != 1 || owned[0].ID != memory.ID {
+		t.Fatalf("owner trace-back rows=%d err=%v", len(owned), ownedErr)
+	}
+	foreign, foreignErr := f.svc.MemoriesBySession(ctx, foreignUserID, "S-trace")
+	if foreignErr != nil || len(foreign) != 0 {
+		t.Fatalf("foreign trace-back rows=%d err=%v", len(foreign), foreignErr)
+	}
+
+	// 2) 助手消息引用缺用户证据：自动候选被拒绝，无草稿无写入。
+	beforeDrafts, _ := f.svc.PendingDrafts(ctx, f.userID)
+	_, _, _, assistantOnlyErr := f.svc.ProposeDraft(ctx, DraftRequest{
+		UserID: f.userID, SessionID: "S-trace", RunID: "run-2",
+		Input: ExplicitMemoryInput{
+			Scope: model.MemoryScopeGlobal, Subject: "教学偏好",
+			Content:    "学新章节前先画一张知识地图",
+			Durability: model.MemoryDurabilityStable, IdempotencyKey: "trace:assistant-only",
+			AssistantMessages: []string{"m09"},
+		},
+	})
+	if assistantOnlyErr == nil {
+		t.Fatal("assistant-only provenance must be rejected")
+	}
+	afterDrafts, _ := f.svc.PendingDrafts(ctx, f.userID)
+	if len(afterDrafts) != len(beforeDrafts) {
+		t.Fatalf("rejected candidate leaked a draft: before=%d after=%d", len(beforeDrafts), len(afterDrafts))
+	}
+	var memoryCount int64
+	f.db.Model(&model.LongTermMemory{}).Where("user_id = ?", f.userID).Count(&memoryCount)
+	if memoryCount != 1 {
+		t.Fatalf("rejected candidate wrote memory: %d", memoryCount)
+	}
+
+	// 3) 手动录入不带来源字段：正式记忆来源为空，兼容不变。
+	manual, manualErr := f.svc.Create(ctx, CreateRequest{
+		UserID: f.userID,
+		Input: ExplicitMemoryInput{
+			Scope: model.MemoryScopeGlobal, Subject: "教学偏好", Content: "出题后先等用户说完思路再对答案",
+			Durability: model.MemoryDurabilityStable, IdempotencyKey: "trace:manual",
+		},
+		Reason: "用户手动录入",
+	})
+	if manualErr != nil || manual.Memory == nil {
+		t.Fatalf("manual create err=%v", manualErr)
+	}
+	manualRow := f.loadMemoryAny(t, manual.Memory.ID)
+	if manualRow.SourceSession != "" {
+		t.Fatalf("manual source session=%q", manualRow.SourceSession)
+	}
+	// 4) 存量形态（零来源字段）草稿确认不受新规则影响。
+	legacyDraft := model.MemoryDraft{
+		ID: "legacy-trace", UserID: f.userID, SessionID: "S-legacy", RunID: "run-legacy",
+		IdempotencyKey: "trace:legacy", Scope: model.MemoryScopeGlobal, Subject: "背景", Content: "当前项目使用 Go 1.24",
+		ContentHash: model.MemoryContentHash("当前项目使用 Go 1.24"), Tags: model.StringList{"go"},
+		Durability: model.MemoryDurabilityStable, ConflictIDs: model.StringList{}, Status: model.MemoryDraftPending,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := f.db.Create(&legacyDraft).Error; err != nil {
+		t.Fatal(err)
+	}
+	legacyConfirmed, legacyErr := f.confirm(t, legacyDraft.ID, "add", "", "存量草稿确认")
+	if legacyErr != nil || legacyConfirmed.Memory == nil {
+		t.Fatalf("legacy confirm err=%v", legacyErr)
+	}
+	if got := f.loadMemoryAny(t, legacyConfirmed.Memory.ID); got.SourceSession != "S-legacy" {
+		// 存量草稿也有 session：确认带入是契约的自然结果，不破坏兼容。
+		t.Fatalf("legacy source session=%q", got.SourceSession)
+	}
+}
