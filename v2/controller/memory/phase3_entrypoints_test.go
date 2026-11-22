@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -357,6 +358,73 @@ func TestFinalizeAcceptanceHTTPEntry(t *testing.T) {
 	}
 	if pendingCount != 2 {
 		t.Fatalf("pending rows=%d in the database", pendingCount)
+	}
+}
+
+// TestFinalizeAcceptanceLongSession: 长会话（150 条消息，候选分居头尾）——
+// 收尾入口经读窗口覆盖全量落库消息，两个候选各出一张卡，水位落最新消息；
+// 重复通知不重复出卡。
+func TestFinalizeAcceptanceLongSession(t *testing.T) {
+	probe := newEntryProbe(t)
+	ctx := context.Background()
+	sessionID := "fin-entry-long"
+	base := time.Now().Add(-90 * time.Minute)
+	rows := make([]SessionSeedMessage, 0, 150)
+	for i := 0; i < 150; i++ {
+		isUser := i%2 == 0
+		content := fmt.Sprintf("流水消息 %d（不构成候选）。", i)
+		if i == 30 {
+			isUser, content = true, "以后讲新概念先举一个我熟悉的例子再讲定义，比如讲缓冲就用排队打比方。"
+		}
+		if i == 148 {
+			isUser, content = true, "我老是搞混 select 里 default 的作用：default 是非阻塞的兜底分支。"
+		}
+		rows = append(rows, SessionSeedMessage{IsUser: isUser, Content: content, CreatedAt: base.Add(time.Duration(i) * time.Minute)})
+	}
+	// 先落一行占位白板（updateBoard 需要既有行才能改写内容）。
+	stored := probe.seedSession(t, ctx, sessionID, entryBoardAt(1), rows)
+	probe.updateBoard(t, ctx, sessionID, entryBoardAt(stored[30].ID))
+
+	probe.proposer.proposals = []memoryservice.SessionRawProposal{
+		{
+			Scope: model.MemoryScopeGlobal, Class: model.ProfileClassTeachingPreference, Subject: "讲解偏好",
+			Durability:  model.MemoryDurabilityStable,
+			Content:     "讲新概念时先举一个我熟悉的例子，再讲正式定义，例如讲缓冲就用排队打比方。",
+			EvidenceIDs: []uint{stored[30].ID}, StatementEvidenceID: stored[30].ID,
+		},
+		{
+			Scope: model.MemoryScopeTopic, Kind: "understanding", TopicKey: "go-basics",
+			Subject: "select 易错点", Durability: model.MemoryDurabilityStable,
+			Content:     "我老是搞混 select 里 default 的作用：default 是非阻塞的兜底分支。",
+			EvidenceIDs: []uint{stored[148].ID}, StatementEvidenceID: stored[148].ID,
+		},
+	}
+
+	first := probe.postFinalize(t, sessionID)
+	probe.expectCount(t, first, "__persisted", 2)
+	probe.expectCount(t, first, "__failed", 0)
+	if first["__advanced"] != true {
+		t.Fatalf("long-session finalize=%v, want advanced", first)
+	}
+	if got := probe.watermark(ctx, sessionID); got != stored[len(stored)-1].ID {
+		t.Fatalf("watermark=%d, want %d (长会话水位落最新消息)", got, stored[len(stored)-1].ID)
+	}
+	drafts := probe.pendingViaList(t)
+	if len(drafts) != 2 {
+		t.Fatalf("pending=%d, want two cards from the long session", len(drafts))
+	}
+	for _, d := range drafts {
+		if d["session_id"] != sessionID || d["source"] != "对话提议" {
+			t.Fatalf("long-session draft=%v", d)
+		}
+	}
+	retry := probe.postFinalize(t, sessionID)
+	probe.expectCount(t, retry, "__persisted", 0)
+	if retry["__no_new_content"] != true {
+		t.Fatalf("retry=%v, want no-new-content", retry)
+	}
+	if cards := probe.pendingViaList(t); len(cards) != 2 {
+		t.Fatalf("pending after retry=%d, want exactly the two cards", len(cards))
 	}
 }
 
