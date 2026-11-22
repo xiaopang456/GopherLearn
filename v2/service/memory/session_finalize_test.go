@@ -201,7 +201,7 @@ func newFinalizeService(t *testing.T, boards FinalizeBoardSource, messages Final
 }
 
 func preferenceProposal(evidence []uint, assistant []uint) SessionRawProposal {
-	scope, class := model.MemoryScopeGlobal, FinalizeClassTeachingPreference
+	scope, class := model.MemoryScopeGlobal, model.ProfileClassTeachingPreference
 	return SessionRawProposal{
 		Scope: scope, Class: class, Subject: "讲解偏好", Durability: model.MemoryDurabilityStable,
 		Content:     "讲新概念时先举一个我熟悉的例子，再讲正式定义，例如讲缓冲就用排队打比方。",
@@ -229,7 +229,7 @@ func TestFinalizeExtractLongTermPreference(t *testing.T) {
 		t.Fatalf("proposals=%d, want 1: %+v", len(result.Proposals), result.Proposals)
 	}
 	candidate := result.Proposals[0]
-	if candidate.Scope != model.MemoryScopeGlobal || candidate.Class != FinalizeClassTeachingPreference {
+	if candidate.Scope != model.MemoryScopeGlobal || candidate.Class != model.ProfileClassTeachingPreference {
 		t.Fatalf("scope=%s class=%s", candidate.Scope, candidate.Class)
 	}
 	if len(candidate.Evidence) != 1 || candidate.Evidence[0].MessageID != 3 {
@@ -375,17 +375,17 @@ func TestFinalizeTemporaryRequestsAndAssistantSuggestionsStayOut(t *testing.T) {
 	// learner's own words can be the evidence of a fact about the learner.
 	adoptionBoard := ext01BoardWithAdoption(t)
 	assistantOnly := SessionRawProposal{
-		Scope: model.MemoryScopeGlobal, Class: FinalizeClassTeachingPreference, Subject: "讲解偏好",
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassTeachingPreference, Subject: "讲解偏好",
 		Durability: model.MemoryDurabilityStable,
 		Content:    "讲新概念先举例再讲定义。", EvidenceIDs: []uint{8},
 	}
 	unaccepted := SessionRawProposal{
-		Scope: model.MemoryScopeGlobal, Class: FinalizeClassTeachingPreference, Subject: "讲解偏好",
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassTeachingPreference, Subject: "讲解偏好",
 		Durability: model.MemoryDurabilityStable,
 		Content:    "讲新概念先举例再讲定义。", EvidenceIDs: []uint{3}, AssistantIDs: []uint{8},
 	}
 	hallucinated := SessionRawProposal{
-		Scope: model.MemoryScopeGlobal, Class: FinalizeClassTeachingPreference, Subject: "讲解偏好",
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassTeachingPreference, Subject: "讲解偏好",
 		Durability: model.MemoryDurabilityStable,
 		Content:    "讲新概念先举例再讲定义。", EvidenceIDs: []uint{99},
 	}
@@ -422,7 +422,7 @@ func TestFinalizeAdoptedProposalRecordsBothUtterances(t *testing.T) {
 		{ID: 7, IsUser: true, Content: "这个先不用。", CreatedAt: finalizeAt(101)},
 	}
 	proposer := &scriptedProposer{proposals: []SessionRawProposal{{
-		Scope: model.MemoryScopeGlobal, Class: FinalizeClassTeachingPreference, Subject: "复习偏好",
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassTeachingPreference, Subject: "复习偏好",
 		Durability:  model.MemoryDurabilityStable,
 		Content:     "每次复习开始先用两道旧题热身，之后再讲新内容。",
 		EvidenceIDs: []uint{3}, AssistantIDs: []uint{2},
@@ -691,7 +691,7 @@ func TestFinalizeSelfReportKeepsItsLimit(t *testing.T) {
 			EvidenceIDs: []uint{1, 3}, StatementEvidenceID: 1,
 		},
 		{
-			Scope: model.MemoryScopeGlobal, Class: FinalizeClassConstraint, Subject: "学习时间",
+			Scope: model.MemoryScopeGlobal, Class: model.ProfileClassConstraint, Subject: "学习时间",
 			Durability:  model.MemoryDurabilityStable,
 			Content:     "每天仅在 21:00-22:00 学习，22:00 后不安排内容，出题量也按此安排。",
 			EvidenceIDs: []uint{4},
@@ -713,7 +713,7 @@ func TestFinalizeSelfReportKeepsItsLimit(t *testing.T) {
 	if result.Proposals[0].Kind != FinalizeKindSelfReport || result.Proposals[0].TopicKey != "go-concurrency" {
 		t.Fatalf("self-report=%+v", result.Proposals[0])
 	}
-	if result.Proposals[1].Class != FinalizeClassConstraint {
+	if result.Proposals[1].Class != model.ProfileClassConstraint {
 		t.Fatalf("constraint=%+v", result.Proposals[1])
 	}
 	// The self-report names the message that carries the claim: the statement
@@ -809,16 +809,16 @@ func TestFinalizeInvalidShapesRefused(t *testing.T) {
 	}{
 		{"unknown class", SessionRawProposal{Scope: model.MemoryScopeGlobal, Class: "心情", Subject: "s", Content: "c", Durability: model.MemoryDurabilityStable, EvidenceIDs: []uint{3}}, FinalizeSkipInvalidShape},
 		{"unknown kind", SessionRawProposal{Scope: model.MemoryScopeTopic, Kind: "quiz_score", Subject: "s", Content: "c", Durability: model.MemoryDurabilityStable, TopicKey: "go-basics", EvidenceIDs: []uint{3}}, FinalizeSkipInvalidShape},
-		{"over-long content", SessionRawProposal{Scope: model.MemoryScopeGlobal, Class: FinalizeClassGoal, Subject: "s", Durability: model.MemoryDurabilityStable, Content: string(make([]rune, 401)), EvidenceIDs: []uint{3}}, FinalizeSkipInvalidShape},
-		{"global with topic", SessionRawProposal{Scope: model.MemoryScopeGlobal, Class: FinalizeClassGoal, Subject: "s", Content: "c", TopicKey: "go-basics", Durability: model.MemoryDurabilityStable, EvidenceIDs: []uint{3}}, FinalizeSkipInvalidShape},
-		{"time bound without expiry", SessionRawProposal{Scope: model.MemoryScopeGlobal, Class: FinalizeClassGoal, Subject: "s", Content: "c", Durability: model.MemoryDurabilityTimeBound, EvidenceIDs: []uint{3}}, FinalizeSkipInvalidShape},
-		{"empty evidence", SessionRawProposal{Scope: model.MemoryScopeGlobal, Class: FinalizeClassGoal, Subject: "s", Content: "c", Durability: model.MemoryDurabilityStable}, FinalizeSkipEvidenceMissing},
+		{"over-long content", SessionRawProposal{Scope: model.MemoryScopeGlobal, Class: model.ProfileClassGoal, Subject: "s", Durability: model.MemoryDurabilityStable, Content: string(make([]rune, 401)), EvidenceIDs: []uint{3}}, FinalizeSkipInvalidShape},
+		{"global with topic", SessionRawProposal{Scope: model.MemoryScopeGlobal, Class: model.ProfileClassGoal, Subject: "s", Content: "c", TopicKey: "go-basics", Durability: model.MemoryDurabilityStable, EvidenceIDs: []uint{3}}, FinalizeSkipInvalidShape},
+		{"time bound without expiry", SessionRawProposal{Scope: model.MemoryScopeGlobal, Class: model.ProfileClassGoal, Subject: "s", Content: "c", Durability: model.MemoryDurabilityTimeBound, EvidenceIDs: []uint{3}}, FinalizeSkipInvalidShape},
+		{"empty evidence", SessionRawProposal{Scope: model.MemoryScopeGlobal, Class: model.ProfileClassGoal, Subject: "s", Content: "c", Durability: model.MemoryDurabilityStable}, FinalizeSkipEvidenceMissing},
 		{"too many evidence ids", func() SessionRawProposal {
 			ids := make([]uint, 0, 9)
 			for id := uint(1); id <= 9; id++ {
 				ids = append(ids, id)
 			}
-			return SessionRawProposal{Scope: model.MemoryScopeGlobal, Class: FinalizeClassGoal, Subject: "s", Content: "c", Durability: model.MemoryDurabilityStable, EvidenceIDs: ids}
+			return SessionRawProposal{Scope: model.MemoryScopeGlobal, Class: model.ProfileClassGoal, Subject: "s", Content: "c", Durability: model.MemoryDurabilityStable, EvidenceIDs: ids}
 		}(), FinalizeSkipInvalidShape},
 	}
 	for _, testCase := range cases {
@@ -883,7 +883,7 @@ func TestFinalizeStatementTimeFollowsValueEvidence(t *testing.T) {
 	}
 	valueProposal := func(statement uint) SessionRawProposal {
 		return SessionRawProposal{
-			Scope: model.MemoryScopeGlobal, Class: FinalizeClassGoal, Subject: "背诵目标",
+			Scope: model.MemoryScopeGlobal, Class: model.ProfileClassGoal, Subject: "背诵目标",
 			Durability: model.MemoryDurabilityStable,
 			Content:    "每天背 37 个单词。", EvidenceIDs: []uint{3, 6}, StatementEvidenceID: statement,
 		}
@@ -945,7 +945,7 @@ func TestFinalizeStatementTimeFollowsValueEvidence(t *testing.T) {
 	// A single-evidence proposal needs no name: there is only one message
 	// the time could come from.
 	single := &scriptedProposer{proposals: []SessionRawProposal{{
-		Scope: model.MemoryScopeGlobal, Class: FinalizeClassGoal, Subject: "背诵目标",
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassGoal, Subject: "背诵目标",
 		Durability: model.MemoryDurabilityStable,
 		Content:    "每天背 37 个单词。", EvidenceIDs: []uint{6},
 	}}}
@@ -1017,16 +1017,20 @@ type fakeFinalizeDrafts struct {
 	calls  int
 	ids    []string
 	failOn map[int]error
+	skipOn map[int]string
 }
 
-func (f *fakeFinalizeDrafts) ProposeDraft(ctx context.Context, request DraftRequest) (*model.MemoryDraft, bool, error) {
+func (f *fakeFinalizeDrafts) ProposeDraft(ctx context.Context, request DraftRequest) (*model.MemoryDraft, bool, string, error) {
 	f.calls++
 	if err, ok := f.failOn[f.calls]; ok {
-		return nil, false, err
+		return nil, false, "", err
+	}
+	if skip, ok := f.skipOn[f.calls]; ok {
+		return nil, false, skip, nil
 	}
 	id := fmt.Sprintf("draft-%d", f.calls)
 	f.ids = append(f.ids, id)
-	return &model.MemoryDraft{ID: id, UserID: request.UserID, SessionID: request.SessionID, RunID: request.RunID}, true, nil
+	return &model.MemoryDraft{ID: id, UserID: request.UserID, SessionID: request.SessionID, RunID: request.RunID}, true, "", nil
 }
 
 // TestFinalizeHandoffWatermarkRules: the processing watermark advances only
@@ -1081,7 +1085,7 @@ func TestFinalizeHandoffWatermarkRules(t *testing.T) {
 	// Extraction-layer skips are decided states: they do not block the
 	// watermark, and the decided candidate beside them still persists.
 	rogue := &scriptedProposer{proposals: []SessionRawProposal{
-		{Scope: model.MemoryScopeGlobal, Class: FinalizeClassTeachingPreference, Subject: "讲解偏好",
+		{Scope: model.MemoryScopeGlobal, Class: model.ProfileClassTeachingPreference, Subject: "讲解偏好",
 			Durability: model.MemoryDurabilityStable, Content: "讲新概念先举例再讲定义。", EvidenceIDs: []uint{99}},
 		preferenceProposal([]uint{3}, nil),
 	}}
@@ -1089,6 +1093,19 @@ func TestFinalizeHandoffWatermarkRules(t *testing.T) {
 	mixed := handoff(&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "new"}}, rogue, mixedDrafts)
 	if len(mixed.Skipped) != 1 || len(mixed.Persisted) != 1 || !mixed.Advanced {
 		t.Fatalf("mixed=%+v, want the skip decided and the watermark advanced", mixed)
+	}
+
+	// The draft entry's own skip decisions are terminal too: the candidate
+	// that lost to the same dedup and conflict rules the other write paths
+	// obey is recorded as an explicit skip, and the watermark moves past it.
+	entrySkip := &fakeFinalizeDrafts{skipOn: map[int]string{1: SkipDuplicateExisting}}
+	skipped := handoff(&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "new"}},
+		&scriptedProposer{proposals: []SessionRawProposal{preferenceProposal([]uint{3}, nil)}}, entrySkip)
+	if len(skipped.Persisted) != 0 || len(skipped.Skipped) != 1 || skipped.Skipped[0].Reason != FinalizeSkipDraftDuplicateExisting {
+		t.Fatalf("entry skip=%+v, want the draft-entry decision recorded", skipped)
+	}
+	if !skipped.Advanced || skipped.Cursor.CoveredMessageID != 11 {
+		t.Fatalf("advanced=%v cursor=%+v, want the watermark to move past the skip", skipped.Advanced, skipped.Cursor)
 	}
 
 	// A session with nothing new never advances, and never calls the draft

@@ -43,21 +43,12 @@ import (
 // learner confirms them; nothing here writes active memory, touches quiz
 // mastery, or decides an entry's fate alone.
 
-// The scope a candidate can land in, and the fixed vocabularies that come
-// with each. The global profile is one fact about the learner across topics;
-// the topic note is the learner's own understanding of one topic. The classes
-// and kinds are the words the memory page shows, so they are fixed here and
-// not free model output.
+// The scope a candidate can land in, and the vocabularies that come with
+// each. The global profile class is the model package's own enum - the one the
+// drafts and the confirmed memories already carry - so a candidate and the row
+// it becomes share one vocabulary end to end. The topic kind is fixed here:
+// the two kinds are the words the memory page shows, not free model output.
 const (
-	// FinalizeClassGoal is a study goal, 目标.
-	FinalizeClassGoal = "目标"
-	// FinalizeClassBackground is the learner's background, 背景.
-	FinalizeClassBackground = "背景"
-	// FinalizeClassTeachingPreference is how the learner wants to be taught, 教学偏好.
-	FinalizeClassTeachingPreference = "教学偏好"
-	// FinalizeClassConstraint is a standing constraint on schedule or load, 长期约束.
-	FinalizeClassConstraint = "长期约束"
-
 	// FinalizeKindUnderstanding is the learner's own understanding of a topic,
 	// including confusions, analogies and pitfalls (我的理解).
 	FinalizeKindUnderstanding = "understanding"
@@ -65,14 +56,6 @@ const (
 	// from graded mastery, which is computed from scored attempts only.
 	FinalizeKindSelfReport = "self_report"
 )
-
-func ValidFinalizeClass(class string) bool {
-	switch class {
-	case FinalizeClassGoal, FinalizeClassBackground, FinalizeClassTeachingPreference, FinalizeClassConstraint:
-		return true
-	}
-	return false
-}
 
 func ValidFinalizeKind(kind string) bool {
 	switch kind {
@@ -128,6 +111,13 @@ const (
 	// replaced utterance's time - so the proposal is refused and the model
 	// is asked to name its primary evidence.
 	FinalizeSkipStatementEvidenceRequired = "statement_evidence_required"
+	// The draft entry's own skip reasons, passed through when Handoff hands a
+	// candidate to the real ProposeDraft and the entry decides against
+	// creating a card. They are terminal decisions made by the same rules the
+	// manual and "please remember" paths obey, which is what makes the
+	// extraction and those paths share one dedup boundary.
+	FinalizeSkipDraftDuplicateExisting = "draft_duplicate_existing"
+	FinalizeSkipDraftIgnoredSource     = "draft_ignored_source"
 )
 
 // FinalizeCursor is the progress of one session's finalize work: the newest
@@ -195,9 +185,9 @@ type SessionExtractionInput struct {
 // the program has believed any of it.
 type SessionRawProposal struct {
 	Scope       model.MemoryScope
-	Class       string // global scope only
-	Kind        string // topic scope only
-	TopicKey    string // topic scope: the proposed topic, resolved or pending
+	Class       model.MemoryProfileClass // global scope only; the profile slot
+	Kind        string                   // topic scope only
+	TopicKey    string                   // topic scope: the proposed topic, resolved or pending
 	Subject     string
 	Content     string
 	Durability  model.MemoryDurability
@@ -243,7 +233,12 @@ type SessionFinalizeService struct {
 	topicMind  FinalizeTopicEntrySource
 	proposer   SessionCandidateProposer
 	relations  GlobalRelationResolver
-	now        func() time.Time
+	// topicRelations judges a topic-scope candidate against the active notes
+	// of its own topic - the same resolver the draft edit path uses, so the
+	// extraction and the edit share one judgement. Optional: without it the
+	// topic conflict query alone decides at the draft entry.
+	topicRelations TopicRelationResolver
+	now            func() time.Time
 
 	// RecentMessageWindow is how many of the session's most recent messages
 	// - the learner's and the assistant's alike - one extraction keeps
@@ -324,6 +319,19 @@ func NewSessionFinalizeService(
 	}, nil
 }
 
+// UseTopicRelations attaches the topic-scope semantic judgement. It is the
+// same resolver type the draft edit path uses, so extraction and edit share
+// one judgement per topic. Optional: without it, topic candidates propose
+// without an extraction-time judgement and the draft entry's conflict query
+// plus the edit-time judgement decide.
+func (s *SessionFinalizeService) UseTopicRelations(resolver TopicRelationResolver) error {
+	if resolver == nil {
+		return fmt.Errorf("topic relation resolver is required")
+	}
+	s.topicRelations = resolver
+	return nil
+}
+
 // FinalizeRequest is one trigger of the finalize extraction.
 type FinalizeRequest struct {
 	UserID int64
@@ -352,8 +360,8 @@ type SessionMemoryCandidate struct {
 	ID       string
 	UserID   int64
 	Scope    model.MemoryScope
-	Class    string // global scope: one of the four fixed classes
-	Kind     string // topic scope: understanding or self_report
+	Class    model.MemoryProfileClass // global scope: the profile slot the fact belongs to
+	Kind     string                   // topic scope: understanding or self_report
 	TopicKey string
 	// TopicPending says the topic could not be uniquely resolved: several
 	// topics could fit, or none could. The candidate still proposes, and the
@@ -396,16 +404,56 @@ func (c SessionMemoryCandidate) IdempotencyKey() string {
 	return "finalize:" + c.Fingerprint
 }
 
-// DraftInput maps the candidate onto the draft entry's input shape. Fields
-// that the draft table does not carry yet - the message-level references and
-// the class - stay on the candidate and are listed in the integration notes;
-// the mapping here is everything the current ProposeDraft accepts.
+// DraftInput maps the candidate onto the draft entry's input shape, provenance
+// included: the profile class, the message references, the statement time and
+// the source session ride with the candidate into the draft, and batch 1's
+// confirmation carries them onto the confirmed memory. This is the full 来源
+// contract the draft table now holds.
 func (c SessionMemoryCandidate) DraftInput() ExplicitMemoryInput {
+	var statementTime *time.Time
+	if !c.StatementTime.IsZero() {
+		local := c.StatementTime.In(time.Local)
+		statementTime = &local
+	}
 	return ExplicitMemoryInput{
 		Scope: c.Scope, Subject: c.Subject, Content: c.Content, Tags: c.Tags,
 		TopicKey: c.TopicKey, Durability: c.Durability, ValidUntil: c.ValidUntil,
 		IdempotencyKey: c.IdempotencyKey(),
+		ProfileClass:      c.Class,
+		EvidenceMessages:  EvidenceRefStrings(c.Evidence),
+		AssistantMessages: EvidenceRefStrings(c.AssistantUtterances),
+		StatementTime:     statementTime,
+		SourceSession:     c.Cursor.SessionID,
 	}
+}
+
+// EvidenceRefStrings renders validated message references the way the draft
+// and memory provenance columns carry them: "m<id>" per message, the format
+// the fixed-candidate contract fixed.
+func EvidenceRefStrings(refs []SessionEvidenceRef) []string {
+	if len(refs) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		result = append(result, fmt.Sprintf("m%d", ref.MessageID))
+	}
+	return result
+}
+
+func evidenceRefIDs(refs []SessionEvidenceRef) []uint {
+	if len(refs) == 0 {
+		return nil
+	}
+	result := make([]uint, 0, len(refs))
+	for _, ref := range refs {
+		result = append(result, ref.MessageID)
+	}
+	return result
+}
+
+func assistantRefIDs(refs []SessionEvidenceRef) []uint {
+	return evidenceRefIDs(refs)
 }
 
 // DraftRequest is the full call the finalize handoff makes into the draft
@@ -662,7 +710,7 @@ func (s *SessionFinalizeService) inRangeEntries(ctx context.Context, userID int6
 		if ranges.globalErr {
 			return nil, ""
 		}
-		entries = boundedEntries(ranges.global, s.RelationTargets)
+		entries = boundedEntries(classScopedEntries(ranges.global, candidate.Class), s.RelationTargets)
 	} else {
 		if candidate.TopicKey == "" {
 			// A pending-topic candidate has no range yet. The duplicate check
@@ -694,11 +742,28 @@ func (s *SessionFinalizeService) inRangeEntries(ctx context.Context, userID int6
 
 // reviewRelation judges the candidate against its range. With no related
 // entries there is nothing to judge and the candidate proposes as new; with
-// entries the resolver decides. A resolver failure keeps the candidate
-// retryable instead of proposing it unjudged.
+// entries the scope's resolver decides - the global classifier for the
+// profile, the topic resolver for a topic note, which is the same resolver
+// the draft edit path uses. A resolver failure keeps the candidate retryable
+// instead of proposing it unjudged; a scope whose resolver is not wired
+// proposes without a judgement and lets the draft entry's conflict rules
+// decide.
 func (s *SessionFinalizeService) reviewRelation(ctx context.Context, candidate SessionMemoryCandidate, entries []model.LongTermMemory) (GlobalRelationResult, []model.LongTermMemory, bool, error) {
 	if len(entries) == 0 {
 		return GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "no related entries in range"}, nil, false, nil
+	}
+	if candidate.Scope == model.MemoryScopeTopic {
+		if s.topicRelations == nil {
+			return GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "topic relation resolver not configured"}, entries, false, nil
+		}
+		relation, err := s.topicRelations.Classify(ctx, candidate.DraftInput(), entries)
+		if err != nil {
+			return GlobalRelationResult{}, entries, true, nil
+		}
+		// The two scopes share one relation vocabulary: the topic enum's
+		// values are the global enum's values, so the candidate carries one
+		// result shape regardless of where it lands.
+		return GlobalRelationResult{Relation: GlobalRelation(relation.Relation), TargetMemoryID: relation.TargetMemoryID, Reason: relation.Reason}, entries, false, nil
 	}
 	if s.relations == nil {
 		return GlobalRelationResult{}, entries, true, nil
@@ -715,6 +780,24 @@ func boundedEntries(entries []model.LongTermMemory, limit int) []model.LongTermM
 		return entries
 	}
 	return entries[:limit]
+}
+
+// classScopedEntries narrows the global snapshot to the candidate's own
+// profile slot (同类画像对比). Entries without a class stay in: a manually
+// written row that predates the class column cannot name its slot, and
+// leaving it out would hide a real conflict from the judgement - the filter
+// narrows who is compared, and the resolver still decides what duplicates.
+func classScopedEntries(entries []model.LongTermMemory, class model.MemoryProfileClass) []model.LongTermMemory {
+	if class == "" {
+		return entries
+	}
+	result := make([]model.LongTermMemory, 0, len(entries))
+	for _, entry := range entries {
+		if entry.ProfileClass == class || entry.ProfileClass == "" {
+			result = append(result, entry)
+		}
+	}
+	return result
 }
 
 // visibleMessages assembles the set the proposer may cite: every message the
@@ -757,10 +840,19 @@ func (s *SessionFinalizeService) validateShape(proposal SessionRawProposal) stri
 	proposal.Content = strings.TrimSpace(proposal.Content)
 	switch proposal.Scope {
 	case model.MemoryScopeGlobal:
-		if strings.TrimSpace(proposal.Class) == "" || !ValidFinalizeClass(proposal.Class) {
+		// The profile class is the model package's enum, the same one the
+		// draft and memory rows carry, and a global candidate must name its
+		// slot - the class-scoped comparison has nothing to compare without
+		// it.
+		if !proposal.Class.Valid() {
 			return FinalizeSkipInvalidShape
 		}
 	case model.MemoryScopeTopic:
+		if proposal.Class != "" {
+			// The provenance rule the model package enforces again at the
+			// draft entry: a topic note has no profile slot.
+			return FinalizeSkipInvalidShape
+		}
 		if strings.TrimSpace(proposal.Kind) == "" || !ValidFinalizeKind(proposal.Kind) {
 			return FinalizeSkipInvalidShape
 		}
@@ -794,7 +886,8 @@ func (s *SessionFinalizeService) validateShape(proposal SessionRawProposal) stri
 		ID: "validation", UserID: 1, Scope: proposal.Scope, Subject: proposal.Subject, Content: proposal.Content,
 		ContentHash: model.MemoryContentHash(proposal.Content), StructuredJSON: `{}`, Tags: model.StringList{"learning"},
 		TopicKey: topicKey, Durability: durability, ValidUntil: proposal.ValidUntil,
-		SourceRefs: model.StringList{"validation"}, Confidence: 1, Importance: 8, Status: model.LongTermMemoryActive,
+		ProfileClass: proposal.Class,
+		SourceRefs:   model.StringList{"validation"}, Confidence: 1, Importance: 8, Status: model.LongTermMemoryActive,
 		UserConfirmed: true, CreatedAt: s.now(),
 	}
 	if err := probe.Validate(); err != nil {
@@ -962,7 +1055,7 @@ func (s *SessionFinalizeService) buildCandidate(userID int64, coverage FinalizeC
 	}
 	candidate := SessionMemoryCandidate{
 		ID: uuid.NewString(), UserID: userID, Scope: scope,
-		Class: strings.TrimSpace(proposal.Class), Kind: strings.TrimSpace(proposal.Kind),
+		Class: proposal.Class, Kind: strings.TrimSpace(proposal.Kind),
 		TopicKey: topicKey, TopicPending: topicPending,
 		Subject: subject, Content: content, Tags: tags,
 		Durability: durability, ValidUntil: proposal.ValidUntil,
@@ -987,8 +1080,11 @@ func CandidateFingerprint(userID int64, sessionID string, scope model.MemoryScop
 
 // DraftProposer is the narrow face of the draft entry the handoff calls.
 // *GovernanceService satisfies it as-is; the integration wires it directly.
+// The skip reason is the entry's own decision - a pending card the candidate
+// coalesces into, a source-ignored retry, or content the active memory or a
+// semantic judgement already covers.
 type DraftProposer interface {
-	ProposeDraft(ctx context.Context, request DraftRequest) (*model.MemoryDraft, bool, error)
+	ProposeDraft(ctx context.Context, request DraftRequest) (*model.MemoryDraft, bool, string, error)
 }
 
 // FailedProposal is a candidate whose draft write did not complete.
@@ -1037,15 +1133,31 @@ func (s *SessionFinalizeService) Handoff(ctx context.Context, request FinalizeRe
 	}
 	outcome := HandoffResult{FinalizeResult: result}
 	for _, candidate := range result.Proposals {
-		draft, _, err := drafts.ProposeDraft(ctx, candidate.DraftRequest())
+		draft, created, skipReason, err := drafts.ProposeDraft(ctx, candidate.DraftRequest())
 		if err != nil {
 			outcome.Failed = append(outcome.Failed, FailedProposal{CandidateID: candidate.ID, Err: err})
+			continue
+		}
+		// A non-empty skip reason is the draft entry's own decision - the
+		// same dedup and conflict rules the manual and "please remember"
+		// paths obey. The candidate reached a terminal state without a card:
+		// recorded as an explicit skip, the watermark moves past it.
+		if skipReason != "" {
+			reason := FinalizeSkipDraftDuplicateExisting
+			if skipReason == SkipIgnoredSource {
+				reason = FinalizeSkipDraftIgnoredSource
+			}
+			outcome.Skipped = append(outcome.Skipped, FinalizeSkip{
+				Reason: reason, Subject: candidate.Subject,
+				EvidenceIDs: evidenceRefIDs(candidate.Evidence), AssistantIDs: assistantRefIDs(candidate.AssistantUtterances),
+			})
 			continue
 		}
 		id := ""
 		if draft != nil {
 			id = draft.ID
 		}
+		_ = created
 		outcome.Persisted = append(outcome.Persisted, id)
 	}
 	outcome.Advanced = len(outcome.Failed) == 0 && len(result.RetryPending) == 0 && !result.NoNewContent
