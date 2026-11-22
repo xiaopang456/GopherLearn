@@ -126,7 +126,27 @@
     }
   },
   {
-    "description": "Browse this session's earlier summary segments. Use it when the segments already in front of you do not cover what the learner is asking about, or when they are too compressed to answer from. A segment is a compressed record of earlier turns, not a transcript: the words the learner used are read back with read_history_message. Segment numbers are counted from 1 within this session.",
+    "description": "Read back the learner's own words for a message an episode cites, and the assistant's own words for a message a summary segment or the board cites. Use it when the learner asks what they actually said, or when an episode entry is too compressed to answer from. Only ids listed in an injected episode's message_ids, a summary segment's message_ids or the board's message_ids can be read. A message that comes back with role assistant is what the assistant said at the time: it cannot prove what the learner said. A message id that a conversation search in this turn returned can be read back in full with this tool; an id nothing showed you is refused. When a search hit is read back, the messages immediately before and after it in the same conversation are included as adjacent=true, so a sentence the search cut in half can be read whole.",
+    "name": "read_history_message",
+    "schema": {
+      "properties": {
+        "message_ids": {
+          "items": {
+            "type": "integer"
+          },
+          "description": "Message ids taken verbatim from the message_ids field of an episode entry. At most five.",
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "message_ids"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Browse this session's earlier summary segments. Use it when the segments already in front of you do not cover what the learner is asking about, or when they are too compressed to answer from. A segment is a compressed record of earlier turns, not a transcript: the words the learner used are read back with read_history_message. Segment numbers are counted from 1 within this session. Pass session when a session card pointed at another conversation and you need that conversation's summary; a session no card pointed at cannot be opened. When an earlier conversation is browsed, its words AFTER the summary are included as later_messages: they are newer than the summary, so the last one wins and the order matters.",
     "name": "browse_summary_segments",
     "schema": {
       "properties": {
@@ -144,11 +164,131 @@
         "max_results": {
           "description": "How many segments to return",
           "type": "integer"
+        },
+        "session": {
+          "description": "The conversation to browse. Leave empty for this conversation. Name an earlier one only when a session card in this turn pointed at it.",
+          "type": "string"
         }
       },
       "additionalProperties": false,
       "required": [
         "query"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Search one earlier conversation for a word or phrase, when a session card or its summary did not keep the detail you need. Name the session exactly as the card showed it. Returns the matching lines with their message ids, newest first - a conversation settles its arrangements at its end, so the newest match is the one that answers \"what did we finally agree on\". A message id can then be read back in full with read_history_message.",
+    "name": "search_session_history",
+    "schema": {
+      "properties": {
+        "session": {
+          "description": "The conversation to search",
+          "type": "string"
+        },
+        "query": {
+          "description": "The word or phrase to look for in that conversation's messages.",
+          "type": "string"
+        },
+        "max_results": {
+          "description": "How many matching messages to return",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Search your earlier conversations for the one a question is about. Prefer answering from THIS conversation: its current state, its summary segments and its recent words are already in front of you, and they are the answer to a question about this conversation. Call this tool only when the learner explicitly asks about another conversation, or when the previous turn settled which conversation is meant. Make ONE search and read what it returns: the thin cards locate the conversations, they do not carry their bodies. When the search returns ONE conversation that clearly matches, go straight into it - open it with browse_summary_segments or read_session_whiteboard and answer the question there. When it returns several that cannot be told apart, or none that is credible, ask the learner with ask_which_conversation straight away - do NOT open the candidates one by one to read their summaries first, because that spends a call per candidate on conversations the learner may not have meant. It returns candidates: the conversation id, its title, what it was about, when it was last talked in and the summary segments it points at. A date the learner named filters the candidates to that period. A pointer the learner GAVE YOU always wins: when they already picked a conversation, or when they named one (\\\"the Redis chat last time\\\"), that is the conversation they mean - the candidate marked named_in_question is the one they named, and a newer result must never replace it. The candidate marked newest_of_results is ONLY the newest of THESE results; it is not necessarily the learner's last conversation. For a bare \\\"上次\\\" or \\\"那次\\\" with no other pointer, do not present the newest result as their last conversation when you cannot confirm that it was: if the conversation they actually mean may not be among these results, ask the learner instead. A conversation that only mentions the same topic is a different conversation, not the one they meant.",
+    "name": "find_session_cards",
+    "schema": {
+      "properties": {
+        "session": {
+          "description": "Limit the search to one conversation id. Leave empty to search all of them.",
+          "type": "string"
+        },
+        "query": {
+          "description": "The clue to look for: the subject",
+          "type": "string"
+        },
+        "max_results": {
+          "description": "How many candidates to return",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Search your earlier conversations' summary segments for a clue. Use it when the card search did not find the conversation you are looking for, or when the learner names something the cards do not carry. Prefer answering from THIS conversation: its current state, its summary segments and its recent words are already in front of you. Call this tool only when the learner explicitly asks about another conversation, or when the previous turn settled which conversation is meant. If the reference is still ambiguous, ask the learner which conversation they mean instead of searching. A segment is a compressed record of earlier turns, not a transcript: it returns the segment with the conversation it belongs to, and the conversation is opened only when a card describes it. A date the learner named filters the segments to that period.",
+    "name": "find_history_segments",
+    "schema": {
+      "properties": {
+        "query": {
+          "description": "The clue to look for: the subject",
+          "type": "string"
+        },
+        "max_results": {
+          "description": "How many segments to return",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Read one earlier conversation's whiteboard: the goal, the constraints, the plan and the open items that conversation had settled on. Use it when the learner asks what was finally arranged or decided in a conversation. It reads the conversation's current state only, not its messages, and it reads only a conversation this turn's cards pointed at.",
+    "name": "show_session_whiteboard",
+    "schema": {
+      "properties": {
+        "session": {
+          "description": "The conversation to read",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "session"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Ask the learner which conversation they mean, when the candidates you found cannot be told apart, or when no candidate is credible. Use it when the question is about an earlier conversation and the search returned several equally plausible ones - several conversations of the same family, each with a similar title - or returned nothing at all. Carry the question the learner asked, because the next turn answers THAT question in the conversation they pick; carry the conversation ids you found, and carry none when the search found none. The learner may pick one of them, pick one from their own conversation list, or write their own clue, and their own clue may reach conversations you did not offer. Do not use it to ask a question you could answer from this conversation, and do not open the candidates one by one to read their summaries first - ask, and let the learner decide.",
+    "name": "choose_conversation",
+    "schema": {
+      "properties": {
+        "question": {
+          "description": "The question you are asking about",
+          "type": "string"
+        },
+        "candidates": {
+          "items": {
+            "type": "string"
+          },
+          "description": "The conversation ids you found and are offering",
+          "type": "array"
+        },
+        "prompt": {
+          "description": "What the learner may answer: they can pick one of the candidates",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "question"
       ],
       "type": "object"
     }

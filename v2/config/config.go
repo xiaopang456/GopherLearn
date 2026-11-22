@@ -476,15 +476,14 @@ type AgentConfig struct {
 	// SessionCardMode selects the session-card path: "disabled", "enabled" or
 	// "thin".
 	//
-	// The default is disabled, and that is the point of the switch. The
-	// production read path stays what it was, the old Episode documents stay
-	// where they are, and the candidate card path is something a deployment
-	// turns on deliberately to compare the two.
+	// The default is "thin": the card path runs, with the card the program
+	// derives. The switch is still the switch - a deployment that wants the
+	// old Episode path writes "disabled" and gets it.
 	//
-	// Enabling it replaces the Episode path rather than running beside it.
-	// One session gets one card, written from that session's own summary, and
-	// two generation models would mean two answers to the same question about
-	// the same conversation.
+	// Turning the card path on replaces the Episode path rather than running
+	// beside it. One session gets one card, written from that session's own
+	// summary, and two generation models would mean two answers to the same
+	// question about the same conversation.
 	//
 	// "thin" is the same path with a cheaper card: the card is derived by the
 	// program from what the session already compressed - its title, the topic
@@ -494,6 +493,9 @@ type AgentConfig struct {
 	// session's summary, whiteboard and own words when a question needs them.
 	// What it keeps is the card's job: finding the session a question is
 	// about.
+	//
+	// "enabled" is the full card, which the model writes into a tool call and
+	// which costs a model call per session.
 	SessionCardMode string `toml:"sessionCardMode"`
 	// SessionCardMaxOutputTokens is how many tokens the card writer may use.
 	//
@@ -817,7 +819,7 @@ func (c AgentConfig) SessionCardEnabled() bool {
 //
 // The thin card is derived by the program from what the session already
 // compressed, and it costs no model call. It is the same path with a
-// cheaper card, and it is off unless a deployment says "thin" explicitly.
+// cheaper card, and it is what a deployment gets unless it says otherwise.
 func (c AgentConfig) SessionCardThin() bool {
 	return strings.TrimSpace(c.SessionCardMode) == "thin"
 }
@@ -917,10 +919,14 @@ func defaultConfig() *Config {
 		EpisodeTaskTimeoutSeconds: 30, EpisodeLeaseSeconds: 60, EpisodeRetryDelaySeconds: 15,
 		EpisodeRecoveryIntervalSeconds: 30, EpisodeQuietWindowSeconds: 600,
 		EpisodeMaxAttempts: 3, EpisodeMaxInputTokens: 12000, EpisodeMaxOutputTokens: 1800, EpisodeMaxMessages: 4096,
-		// The session-card path is off until a deployment asks for it. The
-		// namespace is the card index's own, so the two arms of an experiment do
-		// not read each other's rows.
-		SessionCardMode:            "disabled",
+		// The session-card path runs by default, with the card the program
+		// derives: the thin card costs no model call and finds the session a
+		// question is about. A deployment that wants the old Episode path
+		// writes sessionCardMode = "disabled".
+		//
+		// The namespace is the card index's own, so two arms of an experiment
+		// do not read each other's rows.
+		SessionCardMode:            "thin",
 		SessionCardMaxOutputTokens: 4000,
 		SessionCardIndexName:       "gopherai_session_card_v1_idx",
 		SessionCardIndexKeyPrefix:  "gopherai:session_card:vec:",

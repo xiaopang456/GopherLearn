@@ -96,7 +96,7 @@ func seedHistoryEpisode(t *testing.T, db *gorm.DB, session string, id uint, syno
 func TestHistoryCapabilityRequiresVisibleUsableSummaryGrantThroughHTTP(t *testing.T) {
 	for _, kind := range []string{"trimmed", "undecodable", "past-watermark", "zero-version", "legacy-no-summary-grants"} {
 		t.Run(kind, func(t *testing.T) {
-			s := testSettings(t)
+			s := oldPathSettings(t)
 			// The layered summary is off here on purpose. This test is about
 			// the rolling summary's grant: whether an unreadable one keeps
 			// the learner's own words out of reach. The layered summary
@@ -160,7 +160,7 @@ func TestHistoryCapabilityRequiresVisibleUsableSummaryGrantThroughHTTP(t *testin
 func TestUnavailableEpisodeGrantDoesNotExposeHistoryThroughHTTP(t *testing.T) {
 	for _, kind := range []string{"trimmed", "archived", "zero-version"} {
 		t.Run(kind, func(t *testing.T) {
-			s := testSettings(t)
+			s := oldPathSettings(t)
 			s.Config.AgentConfig.EpisodeRecallMode = "inject_enabled"
 			app, db, chat, token := newFixture(t, s, func(context.Context, int) (*schema.Message, error) {
 				return schema.AssistantMessage("没有可用原句", nil), nil
@@ -201,7 +201,7 @@ func TestUnavailableEpisodeGrantDoesNotExposeHistoryThroughHTTP(t *testing.T) {
 func TestHistoryExecutionRevalidatesOriginalRulesThroughHTTP(t *testing.T) {
 	for _, fault := range []string{"version-change", "episode-owner-change", "source-session-owner-change", "ungranted-id", "ungranted-owned-id", "message-role-change"} {
 		t.Run(fault, func(t *testing.T) {
-			s := testSettings(t)
+			s := oldPathSettings(t)
 			s.Config.AgentConfig.EpisodeRecallMode = "inject_enabled"
 			var db *gorm.DB
 			var chat *captureModel

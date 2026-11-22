@@ -335,7 +335,10 @@ func (s *httpSurface) sessionItem(w http.ResponseWriter, r *http.Request, uid in
 	if len(ids) > 0 {
 		// SQL deletion is authoritative. A derived-index failure is reported rather
 		// than pretending SQL rolled back, or silently discarding the cleanup seam.
-		if s.agent.EpisodeIndex == nil || s.agent.EpisodeIndex.Delete(r.Context(), uid, ids) != nil {
+		//
+		// The index cleaned here is the one this assembly writes: the Episode
+		// index on the old path, the thin card index under the card path.
+		if s.agent.DerivedIndex == nil || s.agent.DerivedIndex.Delete(r.Context(), uid, ids) != nil {
 			apiError(w, 503, "derived_cleanup_failed", "session deleted; derived index cleanup is incomplete")
 			return
 		}

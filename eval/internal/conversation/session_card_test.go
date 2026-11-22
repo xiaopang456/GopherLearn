@@ -136,6 +136,10 @@ func TestTheOldArmReadsItsRecallFromTheMessageProvenance(t *testing.T) {
 // The switch goes into the product's own configuration, and the quiet window
 // is left alone: the harness's long window is what keeps the product's own
 // publications out of the attempt.
+//
+// The product's own default is the thin card: a deployment that says nothing
+// gets the card path. The old Episode path is still there, and a deployment
+// that wants it says "disabled" - the switch is a switch, not a one-way door.
 func TestApplyCardArmPutsTheSwitchIntoTheProductConfiguration(t *testing.T) {
 	repository := filepath.Join("..", "..", "..")
 	storage := t.TempDir()
@@ -143,9 +147,22 @@ func TestApplyCardArmPutsTheSwitchIntoTheProductConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if settings.Config.AgentConfig.SessionCardMode != CardArmModeOff {
-		t.Fatal("the product's default is not the old path")
+	if settings.Config.AgentConfig.SessionCardMode != CardArmModeThin {
+		t.Fatalf("the product's default is not the thin card path: %q", settings.Config.AgentConfig.SessionCardMode)
 	}
+	if !settings.Config.AgentConfig.SessionCardThin() {
+		t.Fatal("the default does not run the thin card")
+	}
+	// The way back is still open: the old path is a value the product knows
+	// and a deployment may still choose.
+	settings.Config.AgentConfig.SessionCardMode = CardArmModeOff
+	if err = settings.Validate(); err != nil {
+		t.Fatalf("the old path is not accepted any more: %v", err)
+	}
+	if settings.Config.AgentConfig.SessionCardPathEnabled() {
+		t.Fatal("the old path still runs the card tools")
+	}
+	settings.Config.AgentConfig.SessionCardMode = CardArmModeThin
 	quiet := settings.Config.AgentConfig.EpisodeQuietWindowSeconds
 	arm := &CardArm{Mode: CardArmModeOn, IndexName: "gopherai_session_card_arm_idx", KeyPrefix: "gopherai:session_card:arm:"}
 	if err = ApplyCardArm(settings, arm); err != nil {

@@ -52,15 +52,18 @@ rerankEnabled = false
 # [agentConfig]
 # summaryAssistantContent = "off"
 
-# The session-card path is off by default: the cross-session memory is written
-# and read as Episodes, which is what the shipped deployment does. A
-# deployment that writes session cards instead writes sessionCardMode =
-# "enabled" and restarts.
+# The session-card path is on by default: the cross-session memory is written
+# and read as session cards, and the card the program derives (the "thin" card)
+# costs no model call at all. A deployment that wants the old Episode path
+# writes sessionCardMode = "disabled" and restarts.
 #
-# Enabling it replaces the Episode path rather than running beside it: one
-# session gets one card, written from that session's own summary, and the two
-# generation models would otherwise answer the same question about the same
-# conversation twice. The cards live in their own index namespace, so the two
-# arms of a comparison do not read each other's rows.
+# Turning the card path on replaces the Episode path rather than running beside
+# it: one session gets one card, written from that session's own summary, and
+# the two generation models would otherwise answer the same question about the
+# same conversation twice. The cards live in their own index namespace, so the
+# two arms of a comparison do not read each other's rows.
+#
+# A deployment that wants the full card - the one the model writes, with a body
+# of its own - writes sessionCardMode = "enabled".
 # [agentConfig]
-# sessionCardMode = "enabled"
+# sessionCardMode = "disabled"

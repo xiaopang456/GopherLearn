@@ -32,6 +32,37 @@ func thinCardSettings(t *testing.T) *Settings {
 	return s
 }
 
+// The shipped default is the thin card path.
+//
+// The example configuration a deployment starts from does not name the card
+// mode, so the product's own default decides - and the default is "thin". A
+// deployment that wants the old Episode path writes "disabled"; this test
+// says that the door is still there, and that the default really is the card.
+func TestTheShippedDefaultRunsTheThinCardAndKeepsTheOldPathAvailable(t *testing.T) {
+	s := testSettings(t)
+	c := &s.Config.AgentConfig
+	if c.SessionCardMode != "thin" {
+		t.Fatalf("the shipped default is %q, want the thin card", c.SessionCardMode)
+	}
+	if !c.SessionCardThin() || !c.SessionCardPathEnabled() {
+		t.Fatalf("the default does not run the card path: %+v", c)
+	}
+	// The namespace the cards are written into is the shipped one: a
+	// deployment that never configured it must not end up writing into a
+	// namespace that only the tests know.
+	if c.SessionCardThinIndexName == "" || c.SessionCardThinIndexKeyPrefix == "" {
+		t.Fatalf("the thin card has no namespace of its own: %+v", c)
+	}
+	// The way back is still open, and it is the old path.
+	c.SessionCardMode = "disabled"
+	if err := s.Validate(); err != nil {
+		t.Fatalf("the old path is not accepted any more: %v", err)
+	}
+	if c.SessionCardPathEnabled() {
+		t.Fatal("the old path still runs the card tools")
+	}
+}
+
 // The current conversation's own state still reaches the window under the
 // thin card.
 //

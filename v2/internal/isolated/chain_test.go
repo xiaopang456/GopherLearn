@@ -41,7 +41,7 @@ func readAnswer(chat *captureModel) (*schema.Message, error) {
 	return schema.AssistantMessage("没有获准的历史证据", nil), nil
 }
 func TestHistoryCapabilityAbsentWithoutGrantThroughHTTP(t *testing.T) {
-	s := testSettings(t)
+	s := oldPathSettings(t)
 	app, _, chat, token := newFixture(t, s, func(context.Context, int) (*schema.Message, error) {
 		return schema.AssistantMessage("你好", nil), nil
 	})
@@ -67,7 +67,7 @@ func toolMode(s *Settings) {
 }
 
 func TestSummaryGrantGeneratedByOriginalContextAndReadThroughHTTP(t *testing.T) {
-	s := testSettings(t)
+	s := oldPathSettings(t)
 	toolMode(s)
 	var chat *captureModel
 	var messageID uint
@@ -101,7 +101,7 @@ func TestSummaryGrantGeneratedByOriginalContextAndReadThroughHTTP(t *testing.T) 
 func TestEpisodeInjectAndShadowUseOriginalRecallAndEvidence(t *testing.T) {
 	for _, recall := range []string{"shadow_only", "inject_enabled"} {
 		t.Run(recall, func(t *testing.T) {
-			s := testSettings(t)
+			s := oldPathSettings(t)
 			s.Config.AgentConfig.EpisodeRecallMode = recall
 			var chat *captureModel
 			var id uint

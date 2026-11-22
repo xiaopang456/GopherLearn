@@ -735,6 +735,15 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	var thinCards *episodeService.ThinCardService
 	var thinCardRetriever *episodeService.ThinCardRetriever
 	var thinCardProjectionRunner episodeService.ProjectionRunner
+	// thinCardIndex is the index the thin cards live in. It is kept here
+	// because it is also the index a deleted conversation's card has to be
+	// removed from: the card must not outlive the session it describes.
+	var thinCardIndex *episodeDAO.RedisThinCardIndex
+	// deletionDerivedIndex is the index the session deletion cleans. It is
+	// the Episode index on the old path and the thin card index under the
+	// card path - the index this assembly actually writes is the index the
+	// deletion has to clean.
+	var deletionDerivedIndex episodeService.DerivedIndexDeleter
 	if sessionCardThin {
 		thinLoader, thinLoaderErr := episodeService.NewDatabaseThinCardSourceLoader(mysql.DB)
 		if thinLoaderErr != nil {
@@ -762,6 +771,7 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		if thinIndexerErr != nil {
 			return nil, fmt.Errorf("initialize thin card indexer: %v", thinIndexerErr)
 		}
+		thinCardIndex = thinIndex
 		thinService, thinServiceErr := episodeService.NewThinCardService(thinProjector, thinIndexer)
 		if thinServiceErr != nil {
 			return nil, fmt.Errorf("initialize thin card service: %v", thinServiceErr)
@@ -1509,7 +1519,6 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	// path. It is checked after this block, because the block degrades on a
 	// Redis outage and that degradation is acceptable for every other mode.
 	plannedMemoryWired := false
-	var deletionEpisodeIndex episodeService.EpisodeIndex
 	// episodeRetriever is declared out here because the card path reads it
 	// from outside the index block: the card path is attached whether or not
 	// the index was built, and a retriever that could not be built is
@@ -1545,9 +1554,13 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		// and the thin card's index has no vector field at all - so the
 		// Episode index is not created, and the worker is not given an
 		// indexer that would write the thin card's row into it.
+		//
+		// The thin card's own index is the one the session deletion cleans:
+		// a card must not outlive the conversation it describes.
+		deletionDerivedIndex = thinCardIndex
 		log.Printf("thin card path: the episode index is not written")
 	} else {
-		deletionEpisodeIndex = episodeIndex
+		deletionDerivedIndex = episodeIndex
 		if indexErr = episodeIndex.EnsureIndex(appCtx); indexErr != nil {
 			log.Printf("episode index writer disabled: ensure index: %v", indexErr)
 		} else if episodeIndexer, buildErr := episodeService.NewIndexer(episodeIndex, indexSource, runtime.embedder, redis.EpisodeVectorDimension); buildErr != nil {
@@ -1699,7 +1712,7 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		}
 	}
 	handler := buildRouter(runtime.documents, conf, registration)
-	return &Application{Lifecycle: l, Handler: handler, Agent: configuredAgentService, Runner: agentRunner, Context: contextBuilder, Documents: runtime.documents, EpisodeIndex: deletionEpisodeIndex}, nil
+	return &Application{Lifecycle: l, Handler: handler, Agent: configuredAgentService, Runner: agentRunner, Context: contextBuilder, Documents: runtime.documents, DerivedIndex: deletionDerivedIndex}, nil
 }
 
 // cardOutputTokens is how many tokens the card writer may use.
