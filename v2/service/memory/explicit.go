@@ -219,6 +219,12 @@ func (s *GovernanceService) explicitConflicts(ctx context.Context, userID int64,
 	if len(exact) > 0 {
 		return exact, snapshotHash, len(existing), false, nil
 	}
+	// 全局画像只在同类内对比：一个自动候选带着自己的画像类别而来，判定
+	// 就只看同一槽位（或未标类别的存量行）。快照指纹与容量上限仍覆盖全部
+	// 生效条目，收窄的只是谁参与语义判定。
+	if input.ProfileClass != "" {
+		existing = classScopedEntries(existing, input.ProfileClass)
+	}
 	relation, err := s.globalRelations.Classify(ctx, input, existing)
 	if err != nil {
 		return nil, "", len(existing), false, fmt.Errorf("classify global memory conflict: %w", err)

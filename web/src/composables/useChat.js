@@ -11,7 +11,7 @@ import {
 } from '../api/sessions.js'
 import { streamMessage as apiStreamMessage } from '../api/stream.js'
 import { listSessionRuns as apiListSessionRuns } from '../api/agentRuns.js'
-import { GENERIC_ERROR, isAbort, safeErrorMessage } from '../api/http.js'
+import { buildUrl, currentToken, GENERIC_ERROR, isAbort, safeErrorMessage } from '../api/http.js'
 import {
   abortRun,
   createRunState,
@@ -533,6 +533,7 @@ export function useChat() {
   }
 
   async function openSession(id) {
+    if (activeId.value && activeId.value !== id) notifyFinalize(activeId.value)
     if (!id) return
     const alreadyShown = id === activeId.value && messages.value.length > 0
     if (streaming.value) cancel()
@@ -548,9 +549,25 @@ export function useChat() {
     await loadHistory(id)
   }
 
+  // 会话收尾通知：切换或关闭会话时知会后台做一次候选提取。发后即忘——
+  // 水位让重复通知无害，页面关闭前没发出去也有服务端空闲兜底，失败
+  // 不打扰学习者。
+  function notifyFinalize(sessionId) {
+    if (!sessionId) return
+    try {
+      const token = currentToken()
+      fetch(buildUrl(`/api/v1/AI/agent/sessions/${encodeURIComponent(String(sessionId))}/finalize`), {
+        method: 'POST',
+        headers: { accept: 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+        keepalive: true,
+      }).catch(() => {})
+    } catch { /* 通知失败由空闲兜底覆盖 */ }
+  }
+
   function closeSession() {
     if (streaming.value) cancel()
     cancelPendingHistory()
+    notifyFinalize(activeId.value)
     resetAgentState()
     activeId.value = ''
     messages.value = []

@@ -366,6 +366,13 @@ type AgentConfig struct {
 	// switch, and the default is legacy_v2 until a brand-new blind set says
 	// otherwise. A development gate that did not pass is not a reason to ship.
 	MemoryReadMode string `toml:"memoryReadMode"`
+	// MemoryFinalizeEnabled turns the session-finalize candidate extraction
+	// on: the session-close notification and the idle fallback both start
+	// proposing long-term memory candidates into the confirmation list.
+	// It is off by default on purpose - the structured extraction model is
+	// wired but unverified against real sessions, and the plan's next batch
+	// verifies it with independent samples before the default flips.
+	MemoryFinalizeEnabled bool `toml:"memoryFinalizeEnabled"`
 	// MemoryTopicStandout and MemoryTopicMargin are the semantic topic gate.
 	//
 	// They have no production default on purpose. Enabling
@@ -885,8 +892,9 @@ func defaultConfig() *Config {
 		// Thinking is off until a deployment turns it on: a provider that reads
 		// the switch may charge for it, and a default that costs money is a
 		// default nobody agreed to.
-		AgentThinkingEnabled: false,
-		KnowledgeDefaultTopK: 5, KnowledgeMaxTopK: 8, KnowledgeMaxResultTokens: 700,
+		AgentThinkingEnabled:  false,
+		MemoryFinalizeEnabled: false,
+		KnowledgeDefaultTopK:  5, KnowledgeMaxTopK: 8, KnowledgeMaxResultTokens: 700,
 		// The pre-retrieval hands over the passages that answer the question and
 		// leaves the rest alone. 0.80 is the score the reranker's own
 		// calibration put between the two.

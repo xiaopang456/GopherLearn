@@ -130,6 +130,11 @@ func migrate(db *gorm.DB) error {
 		new(model.MemoryDreamRun),
 		new(model.MemoryRevision),
 		new(model.MemoryDraft),
+		// The finalize watermark is the write side's own progress: one row
+		// per session, written after an extraction whose candidates all
+		// reached a terminal state. It is additive and carries nothing the
+		// read path needs.
+		new(model.SessionFinalizeProgress),
 	); err != nil {
 		return err
 	}

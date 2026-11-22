@@ -33,6 +33,11 @@ func AgentRouter(r *gin.RouterGroup) {
 	r.POST("/agent/memories/:id/archive", controllermemory.Archive)
 	r.DELETE("/agent/memories/:id", controllermemory.Delete)
 	r.POST("/agent/memory-drafts/:id/resolve", controllermemory.ResolveDraft)
+	// The session-close notification. The learner switching away from a
+	// conversation or closing it fires this once; the watermark inside makes
+	// a repeated fire harmless, and the idle fallback covers a page that
+	// closed without firing at all.
+	r.POST("/agent/sessions/:id/finalize", controllermemory.FinalizeSession)
 	r.PATCH("/agent/memory-drafts/:id", controllermemory.EditDraft)
 	r.GET("/agent/memory-topics", controllermemory.Topics)
 }

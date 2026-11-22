@@ -351,6 +351,7 @@ func BuildSessionFinalizeService(
 	catalogue *TopicCatalogue,
 	proposer SessionCandidateProposer,
 	relations GlobalRelationResolver,
+	topicRelations TopicRelationResolver,
 ) (*SessionFinalizeService, error) {
 	boards, err := NewSessionBoardSource(sessionRepository)
 	if err != nil {
@@ -376,10 +377,9 @@ func BuildSessionFinalizeService(
 	if err != nil {
 		return nil, err
 	}
-	if topicRelations, ok := relations.(TopicRelationResolver); ok && topicRelations != nil {
-		// A stand-in or a model that judges both scopes serves the topic
-		// range from the same seam; a production deployment wires the topic
-		// resolver through UseTopicRelations when it judges topics alone.
+	if topicRelations != nil {
+		// The same resolver type the draft edit path uses, so extraction and
+		// edit share one judgement per topic.
 		if err := service.UseTopicRelations(topicRelations); err != nil {
 			return nil, err
 		}

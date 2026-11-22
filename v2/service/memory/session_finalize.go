@@ -418,7 +418,7 @@ func (c SessionMemoryCandidate) DraftInput() ExplicitMemoryInput {
 	return ExplicitMemoryInput{
 		Scope: c.Scope, Subject: c.Subject, Content: c.Content, Tags: c.Tags,
 		TopicKey: c.TopicKey, Durability: c.Durability, ValidUntil: c.ValidUntil,
-		IdempotencyKey: c.IdempotencyKey(),
+		IdempotencyKey:    c.IdempotencyKey(),
 		ProfileClass:      c.Class,
 		EvidenceMessages:  EvidenceRefStrings(c.Evidence),
 		AssistantMessages: EvidenceRefStrings(c.AssistantUtterances),
