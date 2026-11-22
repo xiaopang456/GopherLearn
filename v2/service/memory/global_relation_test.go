@@ -1,6 +1,9 @@
 package memory
 
 import (
+	"encoding/json"
+	"strings"
+
 	memorydao "GopherAI/dao/memory"
 	"GopherAI/model"
 	"context"
@@ -141,5 +144,77 @@ func TestExplicitGlobalExactDuplicateSkipsClassifierButBindsSnapshot(t *testing.
 	conflicts, snapshot, _, _, err := service.explicitConflicts(context.Background(), 7, ExplicitMemoryInput{Scope: model.MemoryScopeGlobal, Subject: "回答", Content: active.Content})
 	if err != nil || len(conflicts) != 1 || snapshot == "" || resolver.calls != 0 {
 		t.Fatalf("conflicts=%+v snapshot=%q calls=%d err=%v", conflicts, snapshot, resolver.calls, err)
+	}
+}
+
+// TestGlobalRelationClassifierCarriesClassAndScopeRules is the DED-02 input
+// audit: what the trial run handed the classifier was a payload with no
+// profile class and rules with no scope definition, so a same-scope
+// paraphrase could drift to independent. This locks the fixed contract: the
+// candidate and every old row travel with their profile_class, and the rules
+// define duplicate scope-first - same scope plus same instruction is a
+// duplicate whatever the wording or the example.
+func TestGlobalRelationClassifierCarriesClassAndScopeRules(t *testing.T) {
+	chat := &memoryChat{response: toolMessage(globalIndependentTool, `{"reason":"different scope"}`)}
+	classifier, _ := NewGlobalRelationClassifier(chat)
+	incoming := ExplicitMemoryInput{
+		Scope: model.MemoryScopeGlobal, Subject: "讲解偏好",
+		Content:      "讲新概念时先举一个我熟悉的例子，再讲正式定义。",
+		ProfileClass: model.ProfileClassTeachingPreference,
+	}
+	existing := []model.LongTermMemory{
+		{ID: "m-teach", Scope: model.MemoryScopeGlobal, Subject: "讲解偏好", Content: "讲新东西先用熟悉的例子再给定义。", ProfileClass: model.ProfileClassTeachingPreference, Status: model.LongTermMemoryActive},
+		{ID: "m-goal", Scope: model.MemoryScopeGlobal, Subject: "目标", Content: "2027 年春招目标岗位：Go 后端开发", ProfileClass: model.ProfileClassGoal, Status: model.LongTermMemoryActive},
+	}
+	if _, err := classifier.Classify(context.Background(), incoming, existing); err != nil {
+		t.Fatalf("classify: %v", err)
+	}
+	if len(chat.messages) != 2 {
+		t.Fatalf("messages=%d, want system plus user", len(chat.messages))
+	}
+	var payload struct {
+		ProposedMemory struct {
+			Subject      string `json:"subject"`
+			Content      string `json:"content"`
+			ProfileClass string `json:"profile_class"`
+		} `json:"proposed_memory"`
+		ActiveMemories []struct {
+			ID           string `json:"id"`
+			Subject      string `json:"subject"`
+			Content      string `json:"content"`
+			ProfileClass string `json:"profile_class"`
+		} `json:"active_memories"`
+	}
+	if err := json.Unmarshal([]byte(chat.messages[1].Content), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if payload.ProposedMemory.Content != incoming.Content || payload.ProposedMemory.ProfileClass != string(model.ProfileClassTeachingPreference) {
+		t.Fatalf("proposed=%+v, want the candidate with its class", payload.ProposedMemory)
+	}
+	if len(payload.ActiveMemories) != 2 {
+		t.Fatalf("active=%d, want both rows as supplied", len(payload.ActiveMemories))
+	}
+	classes := map[string]string{}
+	for _, row := range payload.ActiveMemories {
+		classes[row.ID] = row.ProfileClass
+		if row.ProfileClass == "" {
+			t.Fatalf("row %s carries no profile class", row.ID)
+		}
+	}
+	if classes["m-teach"] != string(model.ProfileClassTeachingPreference) || classes["m-goal"] != string(model.ProfileClassGoal) {
+		t.Fatalf("classes=%v, want each row's own slot", classes)
+	}
+	// The rules themselves: duplicate is scope-first, independence is
+	// different-scope-first, and neither collapses into the other.
+	rules := chat.messages[0].Content
+	for _, fragment := range []string{
+		"same applicability scope",
+		"Different wording, a different example or a different order never makes it distinct",
+		"genuinely different scope",
+		"a shared scope alone does not make a duplicate",
+	} {
+		if !strings.Contains(rules, fragment) {
+			t.Fatalf("prompt rules missing %q", fragment)
+		}
 	}
 }
