@@ -1011,7 +1011,8 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 		toolInput.OriginalQuestion = window.OriginalQuestion
 	}
 	toolInput.HistoryGrants = MergeHistoryMessageGrants(window.EpisodeHistoryGrants, window.SummaryHistoryGrants,
-		window.SummarySegmentHistoryGrants, window.SessionCardHistoryGrants)
+		window.SummarySegmentHistoryGrants, window.SessionCardHistoryGrants,
+		window.LockedSessionHistoryGrants)
 	// The card scopes are set before the grant set is built, because the grant
 	// set reads them: they are what says which earlier conversations this turn
 	// opened, and a tool that browses one of them asks the set rather than the

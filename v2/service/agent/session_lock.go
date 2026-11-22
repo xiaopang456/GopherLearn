@@ -334,8 +334,9 @@ func renderLockedSessionLead(locked *LockedSession, question string) string {
 // text that cited it, if any. A point can be a rewrite that drops the asked
 // detail (for example the three column names); the cited word still has them.
 type LockedGapWord struct {
-	Message   model.Message
-	PointText string
+	Message             model.Message
+	PointText           string
+	SegmentEndMessageID uint
 }
 
 // sharesQuestionWord says whether a message and the waiting question share a
@@ -359,12 +360,13 @@ func sharesQuestionWord(content, question string) bool {
 	return false
 }
 
-// lockedGapLines renders the gap words the waiting question mentions.
-func lockedGapLines(locked *LockedSession, question string) []string {
+// lockedGapEntries returns the gap words the waiting question mentions, with
+// the segment end that bounds each one.
+func lockedGapEntries(locked *LockedSession, question string) []LockedGapWord {
 	if locked == nil || len(locked.Gaps) == 0 {
 		return nil
 	}
-	lines := make([]string, 0, len(locked.Gaps))
+	entries := make([]LockedGapWord, 0, len(locked.Gaps))
 	for _, gap := range locked.Gaps {
 		content := strings.TrimSpace(gap.Message.Content)
 		if content == "" {
@@ -373,14 +375,32 @@ func lockedGapLines(locked *LockedSession, question string) []string {
 		if !sharesQuestionWord(content, question) && !sharesQuestionWord(gap.PointText, question) {
 			continue
 		}
-		who := "learner"
-		if !gap.Message.IsUser {
-			who = "assistant"
-		}
-		lines = append(lines, who+" (message_id="+strconv.FormatUint(uint64(gap.Message.ID), 10)+"): "+
-			boundRunes(content, maxLockedMessageRunes))
+		entries = append(entries, gap)
+	}
+	return entries
+}
+
+// lockedGapLines renders the gap words the waiting question mentions.
+func lockedGapLines(locked *LockedSession, question string) []string {
+	entries := lockedGapEntries(locked, question)
+	if len(entries) == 0 {
+		return nil
+	}
+	lines := make([]string, 0, len(entries))
+	for _, gap := range entries {
+		lines = append(lines, lockedGapLine(gap))
 	}
 	return lines
+}
+
+// lockedGapLine renders one gap word with the id the model may read back.
+func lockedGapLine(gap LockedGapWord) string {
+	who := "learner"
+	if !gap.Message.IsUser {
+		who = "assistant"
+	}
+	return who + " (message_id=" + strconv.FormatUint(uint64(gap.Message.ID), 10) + "): " +
+		boundRunes(strings.TrimSpace(gap.Message.Content), maxLockedMessageRunes)
 }
 
 // lockedEvidenceWithGaps puts the question-relevant gap words between the
@@ -439,60 +459,63 @@ func renderLockedSessionBlock(locked *LockedSession, question string) string {
 	return composeLockedSessionBlock(locked, question, lockedEvidenceWithGaps(locked, question))
 }
 
-// renderLockedSessionBlockWithinBudget renders the locked block so that its
-// measured cost stays within budget.
+// renderLockedSessionBlockWithGrants renders the block and returns the ids of
+// the gap words that survived every cut and are therefore IN the block.
 //
-// The summary and the words after it share ONE cap, and the order is fixed:
-// the summary goes in first because it is the conversation's compressed body,
-// and the tail - the stretch no summary covers - is what gets cut when the two
-// do not fit. A tail that does not fit must never cost the summary its place:
-// that would trade evidence the conversation HAS for evidence it MIGHT have.
-//
-// The empty string means the block cannot be carried at all: a summary that
-// does not fit even alone leaves the turn as it was before the lock, with the
-// clarification block and the tools.
-func renderLockedSessionBlockWithinBudget(locked *LockedSession, question string, budget int) string {
+// The grant follows the bytes: an id trimmed out of the evidence by the token
+// budget is not shown, and must not be readable back either.
+func renderLockedSessionBlockWithGrants(locked *LockedSession, question string,
+	budget int) (string, []LockedGapWord) {
 	if locked == nil {
-		return ""
+		return "", nil
 	}
 	if budget <= 0 {
 		budget = maxLockedSessionTokens
 	}
+	gapEntries := lockedGapEntries(locked, question)
 	full := composeLockedSessionBlock(locked, question, lockedEvidenceWithGaps(locked, question))
 	if messageTokenCost(full) <= budget {
-		return full
+		return full, gapEntries
 	}
 	summary := strings.TrimSpace(locked.Summary)
 	if summary == "" {
-		// No summary: the evidence is the fallback words, and there is no
-		// tail to cut, so the block is over budget as a whole.
-		return ""
+		return "", nil
 	}
 	block := composeLockedSessionBlock(locked, question, summary)
 	if messageTokenCost(block) > budget {
-		return ""
+		return "", nil
 	}
 	// The question-relevant words inside the covered range come before the
 	// tail: they are part of what the summary compressed, and the tail is the
 	// stretch the summary never reached.
-	if gaps := lockedGapLines(locked, question); len(gaps) > 0 {
-		kept := make([]string, 0, len(gaps))
-		for _, gap := range gaps {
-			next := append(append([]string{}, kept...), gap)
-			candidate := composeLockedSessionBlock(locked, question, summary+"\n"+strings.Join(next, "\n"))
+	keptEntries := make([]LockedGapWord, 0, len(gapEntries))
+	if len(gapEntries) > 0 {
+		for _, gap := range gapEntries {
+			next := append(append([]LockedGapWord{}, keptEntries...), gap)
+			lines := make([]string, 0, len(next))
+			for _, entry := range next {
+				lines = append(lines, lockedGapLine(entry))
+			}
+			candidate := composeLockedSessionBlock(locked, question,
+				summary+"\n"+strings.Join(lines, "\n"))
 			if messageTokenCost(candidate) > budget {
 				break
 			}
-			kept = next
+			keptEntries = next
 		}
-		if len(kept) > 0 {
-			summary = summary + "\n" + strings.Join(kept, "\n")
+		if len(keptEntries) > 0 {
+			lines := make([]string, 0, len(keptEntries))
+			for _, entry := range keptEntries {
+				lines = append(lines, lockedGapLine(entry))
+			}
+			summary = summary + "\n" + strings.Join(lines, "\n")
 			block = composeLockedSessionBlock(locked, question, summary)
 		}
 	}
+	ids := keptEntries
 	tail := strings.TrimSpace(locked.Tail)
 	if tail == "" {
-		return block
+		return block, ids
 	}
 	kept := make([]string, 0, 8)
 	for _, line := range strings.Split(tail, "\n") {
@@ -507,9 +530,26 @@ func renderLockedSessionBlockWithinBudget(locked *LockedSession, question string
 		kept = next
 	}
 	if len(kept) == 0 {
-		return block
+		return block, ids
 	}
-	return composeLockedSessionBlock(locked, question, summary+"\n"+strings.Join(kept, "\n"))
+	return composeLockedSessionBlock(locked, question, summary+"\n"+strings.Join(kept, "\n")), ids
+}
+
+// renderLockedSessionBlockWithinBudget renders the locked block so that its
+// measured cost stays within budget.
+//
+// The summary and the words after it share ONE cap, and the order is fixed:
+// the summary goes in first because it is the conversation's compressed body,
+// and the tail - the stretch no summary covers - is what gets cut when the two
+// do not fit. A tail that does not fit must never cost the summary its place:
+// that would trade evidence the conversation HAS for evidence it MIGHT have.
+//
+// The empty string means the block cannot be carried at all: a summary that
+// does not fit even alone leaves the turn as it was before the lock, with the
+// clarification block and the tools.
+func renderLockedSessionBlockWithinBudget(locked *LockedSession, question string, budget int) string {
+	block, _ := renderLockedSessionBlockWithGrants(locked, question, budget)
+	return block
 }
 
 // renderReaskBlock is what the model sees when the learner's clue did not

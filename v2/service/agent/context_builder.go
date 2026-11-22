@@ -850,11 +850,14 @@ type ContextWindow struct {
 	// stretch of turns it covers and a board entry by the message that
 	// changed it - the same id has different provenances under each.
 	SummarySegmentHistoryGrants []HistoryMessageGrant
-	WhiteboardEntryMessageIDs   []uint
-	WhiteboardEntryKeys         []string
-	WhiteboardDisplayedEntries  []WhiteboardDisplayEntry
-	WhiteboardDisplayedAnchors  []WhiteboardDisplayAnchor
-	WhiteboardAnchorMessageIDs  []uint
+	// LockedSessionHistoryGrants are the read-back authorisations for the
+	// original words the locked block actually carries after its budget cut.
+	LockedSessionHistoryGrants []HistoryMessageGrant
+	WhiteboardEntryMessageIDs  []uint
+	WhiteboardEntryKeys        []string
+	WhiteboardDisplayedEntries []WhiteboardDisplayEntry
+	WhiteboardDisplayedAnchors []WhiteboardDisplayAnchor
+	WhiteboardAnchorMessageIDs []uint
 	// SessionLock is the conversation the learner's reply to a
 	// clarification pointed at, and the evidence that was read out of it.
 	//
@@ -1633,6 +1636,7 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	//     into a candidate list is still reachable through it.
 	var lockResolution SessionLockResolution
 	var lockedBlock string
+	var lockedGapEntries []LockedGapWord
 	var reask *model.SessionClarification
 	if pending != nil && (b.crossLocator != nil || b.crossReader != nil) {
 		lockResolution = ResolveSessionLock(ctx, b.crossLocator, b.crossReader,
@@ -1641,7 +1645,7 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		case lockResolution.Locked != nil:
 			// The summary and the unsummarized tail share the block's cap; the
 			// tail is what gets cut if the two do not fit.
-			lockedBlock = renderLockedSessionBlockWithinBudget(lockResolution.Locked,
+			lockedBlock, lockedGapEntries = renderLockedSessionBlockWithGrants(lockResolution.Locked,
 				pending.Question, maxLockedSessionTokens)
 			observability.Memory.ClarificationSession("session_locked", true, 1)
 			if strings.TrimSpace(lockResolution.Locked.Evidence) != "" {
@@ -1813,6 +1817,7 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		cost := messageTokenCost(lockedBlock)
 		if cost > minInt(remaining-4, maxLockedSessionTokens) {
 			lockedBlock = ""
+			lockedGapEntries = nil
 		} else {
 			breakdown.LockedSession = cost
 			remaining -= cost
@@ -2164,6 +2169,7 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		SessionCardHistoryGrants: cardGrants, SessionCardIDs: cardIDs,
 		SessionCardScopes:           cardScopes,
 		SummarySegmentHistoryGrants: segmentGrants,
+		LockedSessionHistoryGrants:  lockedSessionHistoryGrants(lockResolution.Locked, lockedGapEntries),
 		WhiteboardEntryMessageIDs:   whiteboardEntryIDs, WhiteboardAnchorMessageIDs: whiteboardAnchorIDs,
 		WhiteboardEntryKeys: whiteboardEntryKeys, WhiteboardDisplayedEntries: whiteboardDisplayedEntries, WhiteboardDisplayedAnchors: whiteboardDisplayedAnchors,
 		RecallEmbeddingCalls: cycle.EmbeddingCalls(), ResolvedTopicKeys: input.ProposedTopicKeys,
@@ -2911,4 +2917,24 @@ func appendTopicKeys(existing []string, extra []string) []string {
 	out = append(out, existing...)
 	out = append(out, extra...)
 	return out
+}
+
+// lockedSessionHistoryGrants authorises reading back the words the locked block
+// actually carries. Only the entries that survived the block's cuts are here;
+// an id that was trimmed out is not shown and is not readable.
+func lockedSessionHistoryGrants(locked *LockedSession, entries []LockedGapWord) []HistoryMessageGrant {
+	if locked == nil {
+		return nil
+	}
+	grants := make([]HistoryMessageGrant, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Message.ID == 0 {
+			continue
+		}
+		grants = append(grants, HistoryMessageGrant{
+			MessageID: entry.Message.ID, SourceKind: HistorySourceLockedSession,
+			SourceSessionID: locked.SessionID, SegmentEndMessageID: entry.SegmentEndMessageID,
+		})
+	}
+	return grants
 }

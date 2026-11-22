@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -293,4 +294,78 @@ func TestTheLockedContinuationRequestCarriesTheAnswerRule(t *testing.T) {
 		}
 	}
 	t.Fatal("the answer rule did not reach the model request")
+}
+
+// The ids returned for grants are exactly the ones that survived the block's
+// final cut and are therefore in the request.
+func TestTheGapGrantsFollowTheFinalBlockCut(t *testing.T) {
+	locked := &LockedSession{
+		SessionID: "p2c-13", Summary: "摘要", Evidence: "摘要",
+		Gaps: []LockedGapWord{
+			{Message: model.Message{ID: 1662, Content: "慢查询清单和事务记录能看出哪些语句"}, SegmentEndMessageID: 1696},
+			{Message: model.Message{ID: 1663, Content: "清单和事务边界对不上号"}, SegmentEndMessageID: 1696},
+			{Message: model.Message{ID: 1664, Content: "清单和事务的记录要看"}, SegmentEndMessageID: 1696},
+		},
+	}
+	question := "上次你说怎么看出哪些语句被包在同一个事务里跑得久，是看哪两样东西？"
+	block, entries := renderLockedSessionBlockWithGrants(locked, question, 500)
+	if len(entries) == 0 || len(entries) >= len(locked.Gaps) {
+		t.Fatalf("the cut kept %d of %d gap entries", len(entries), len(locked.Gaps))
+	}
+	for _, entry := range entries {
+		needle := "message_id=" + strconv.FormatUint(uint64(entry.Message.ID), 10)
+		if !strings.Contains(block, needle) {
+			t.Fatalf("a grant was issued for an id not in the block: %s", needle)
+		}
+	}
+	for _, gap := range locked.Gaps {
+		shown := strings.Contains(block, "message_id="+strconv.FormatUint(uint64(gap.Message.ID), 10))
+		granted := false
+		for _, entry := range entries {
+			if entry.Message.ID == gap.Message.ID {
+				granted = true
+			}
+		}
+		if shown != granted {
+			t.Fatalf("id %d shown=%v granted=%v", gap.Message.ID, shown, granted)
+		}
+	}
+}
+
+// The drill-01 locked continuation's request shows the original sentence and
+// the id the model may read back.
+func TestTheDrillLockedRequestShowsTheGapWordAndItsID(t *testing.T) {
+	locked := &LockedSession{
+		SessionID: "p2c-13", Title: "Evaluation conversation",
+		Summary: "摘要", Evidence: "摘要",
+		Gaps: []LockedGapWord{{Message: model.Message{ID: 1662, IsUser: false,
+			Content: "慢查询清单和事务记录能看出哪些语句被包在同一个事务里跑得久。"}, SegmentEndMessageID: 1696}},
+	}
+	const question = "上次你说怎么看出哪些语句被包在同一个事务里跑得久，是看哪两样东西？"
+	chat := &scriptedChatModel{respond: func(_ context.Context, _ int) (*schema.Message, error) {
+		return schema.AssistantMessage("看慢查询清单和事务记录。", nil), nil
+	}}
+	runner, err := NewRunner(chat, StaticToolRegistry{}, newMemoryStepRepository(),
+		gapWindowBuilder{locked: locked, question: question}, DefaultRunnerConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := testRunContext()
+	input.Question = "p2c-13"
+	if _, err := runner.Run(context.Background(), input, DiscardEvents); err != nil {
+		t.Fatal(err)
+	}
+	for _, request := range chat.received {
+		for _, message := range request {
+			if message != nil && strings.Contains(message.Content, "message_id=1662") &&
+				strings.Contains(message.Content, "慢查询清单和事务记录") {
+				grants := lockedSessionHistoryGrants(locked, lockedGapEntries(locked, question))
+				if len(grants) != 1 || grants[0].MessageID != 1662 {
+					t.Fatalf("the shown word got %d grants", len(grants))
+				}
+				return
+			}
+		}
+	}
+	t.Fatal("the model request did not show message 1662 and its words")
 }

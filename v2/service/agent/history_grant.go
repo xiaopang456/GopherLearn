@@ -15,6 +15,10 @@ const (
 	// HistorySourceSummarySegment marks a grant that came from a summary
 	// segment injected into this run's window.
 	HistorySourceSummarySegment = "summary_segment"
+	// HistorySourceLockedSession marks a grant that came from the locked
+	// conversation's own record. Its bound is the segment end it was read
+	// inside; the lock already restricts the session.
+	HistorySourceLockedSession = "locked_session"
 	// HistorySourceWhiteboard marks a grant that came from the session board
 	// injected into this run's window.
 	//
@@ -152,6 +156,10 @@ func (g HistoryMessageGrant) UsableIn(run RunContext) bool {
 	// from a card, a search or a browse.
 	if locked := strings.TrimSpace(run.LockedSessionID); locked != "" &&
 		g.SourceSessionID == locked && g.SourceKind != HistorySourceSummary {
+		if g.SourceKind == HistorySourceLockedSession &&
+			g.SegmentEndMessageID > 0 && g.MessageID > g.SegmentEndMessageID {
+			return false
+		}
 		return true
 	}
 	switch g.SourceKind {

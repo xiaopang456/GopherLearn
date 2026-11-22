@@ -294,7 +294,7 @@ func collectLockedGapWords(ctx context.Context, store CrossSessionStore, userID 
 				continue
 			}
 			seen[word.ID] = struct{}{}
-			out = append(out, LockedGapWord{Message: word, PointText: cited[word.ID]})
+			out = append(out, LockedGapWord{Message: word, PointText: cited[word.ID], SegmentEndMessageID: end})
 			if len(out) >= maxLockedGapWords {
 				return out
 			}
