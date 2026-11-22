@@ -159,7 +159,7 @@ func uniqueFinalizeUserID() int64 {
 // finalizeFixtureSessionIDs lists the session ids this acceptance reuses
 // across runs; the cleanup keys on them because messages carry no user id.
 func finalizeFixtureSessionIDs() []string {
-	return []string{"fin-acc-0001", "fin-acc-missed", "fin-acc-long"}
+	return []string{"fin-acc-0001", "fin-acc-missed", "fin-acc-long", "fin-acc-crossclass"}
 }
 
 // seedSession inserts one session of the learner with its messages and its
@@ -724,5 +724,55 @@ func TestFinalizeAcceptanceLongSessionBatches(t *testing.T) {
 	}
 	if !third.NoNewContent || len(third.Persisted) != 0 {
 		t.Fatalf("third=%+v, want nothing new", third)
+	}
+}
+
+// TestFinalizeAcceptanceCrossClassExactDuplicateStillConflicts is the 9004
+// protection regression: the extraction's class-scoped comparison cannot see
+// another profile slot's rows, but the draft entry's byte-identical check
+// runs before any narrowing and is class-blind on purpose - an exact
+// duplicate of a goal-class memory is still a duplicate, and the entry
+// refuses the card exactly as it does inside one class.
+func TestFinalizeAcceptanceCrossClassExactDuplicateStillConflicts(t *testing.T) {
+	acc := newFinalizeAcceptance(t)
+	ctx := context.Background()
+	sessionID := "fin-acc-crossclass"
+
+	stored := acc.seedSession(t, ctx, sessionID, nil, baseFinalizeMessages())
+	seedContent := "讲新概念时先举一个我熟悉的例子，再讲正式定义。"
+	if _, err := acc.repo.CreateUserMemory(ctx, memorydao.ExplicitWriteParams{
+		Memory: model.LongTermMemory{
+			UserID: acc.userID, Scope: model.MemoryScopeGlobal, Subject: "目标", Content: seedContent,
+			StructuredJSON: `{}`, Tags: model.StringList{"project"}, Durability: model.MemoryDurabilityStable,
+			ProfileClass: model.ProfileClassGoal,
+			SourceRefs:   model.StringList{"user_api:seed-cross"}, Confidence: 1, Importance: 8,
+			Status: model.LongTermMemoryActive, UserConfirmed: true,
+		},
+		RequestKey: "finalize-acc-seed-cross", Reason: "验收种子", Now: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed cross-class memory: %v", err)
+	}
+
+	acc.proposer.proposals = []SessionRawProposal{{
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassTeachingPreference, Subject: "讲解偏好",
+		Durability: model.MemoryDurabilityStable,
+		Content:    seedContent, EvidenceIDs: []uint{stored[2].ID}, StatementEvidenceID: stored[2].ID,
+	}}
+	outcome, err := acc.runner.RunSession(ctx, acc.userID, sessionID)
+	if err != nil {
+		t.Fatalf("run session: %v", err)
+	}
+	// 提取端的同类收窄看不见目标类条目，入口的字节保护把它挡下。
+	if len(outcome.Persisted) != 0 {
+		t.Fatalf("persisted=%d, want the cross-class exact duplicate refused", len(outcome.Persisted))
+	}
+	if len(outcome.Skipped) != 1 || outcome.Skipped[0].Reason != FinalizeSkipDraftDuplicateExisting {
+		t.Fatalf("skipped=%+v, want the entry's byte protection to pass through", outcome.Skipped)
+	}
+	if !outcome.Advanced {
+		t.Fatalf("advanced=false, want the watermark to move past the refusal")
+	}
+	if got := acc.progress(ctx, sessionID); got != stored[len(stored)-1].ID {
+		t.Fatalf("watermark=%d, want the session tail", got)
 	}
 }

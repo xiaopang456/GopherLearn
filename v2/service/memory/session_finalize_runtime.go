@@ -476,6 +476,11 @@ Evidence rules, enforced by the server:
 - assistant_ids name the assistant's messages the learner explicitly took on, each followed by a learner message that accepted it.
 - One candidate is one matter, self-contained, at most 400 characters.
 
+Body rules, checked at the confirmation page and by evaluation:
+- Write the subject and the content in the learner's own language. A preference said in Chinese is stored in Chinese; never translate, never mix languages inside one candidate.
+- Keep the preference's stated scope in the body: the situations it applies to (for example 讲新概念时, 复习时, 排查报错时) are part of what the learner said and stay in the content.
+- A one-turn request never enters the body. It may have shaped the session - it may have picked this session's example or set this session's range - but it is not a standing rule, and its wording must not appear in the content as one. The example the learner chose for this session stays out; the preference's own scope stays in.
+
 remember_profile is a fact about the learner across topics: a study goal (class goal), background (background), a teaching preference (teaching_preference), or a standing constraint (constraint).
 remember_topic_note is the learner's own understanding of one technical topic: an analogy, a confusion, a pitfall, or their personal wording (kind understanding), or what they say they know (kind self_report). Reuse a topic key from the catalogue when one fits; leave topic_key empty when none does and the learner will place it.
 reject_extraction for one-turn requests, session logistics, unaccepted assistant proposals, quiz scores, and anything without the learner's own words behind it.`

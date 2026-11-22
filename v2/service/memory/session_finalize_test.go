@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -197,13 +198,22 @@ func (p *scriptedProposer) Propose(ctx context.Context, input *SessionExtraction
 }
 
 type scriptedRelations struct {
-	calls  int
+	calls int
+	// result serves every call when the queue is empty.
 	result GlobalRelationResult
-	err    error
+	// queue serves one call each, in order; a contrast pair needs the two
+	// judgements to differ.
+	queue []GlobalRelationResult
+	err   error
 }
 
 func (r *scriptedRelations) Classify(ctx context.Context, incoming ExplicitMemoryInput, existing []model.LongTermMemory) (GlobalRelationResult, error) {
 	r.calls++
+	if len(r.queue) > 0 {
+		result := r.queue[0]
+		r.queue = r.queue[1:]
+		return result, nil
+	}
 	if r.err != nil {
 		return GlobalRelationResult{}, r.err
 	}
@@ -1147,5 +1157,114 @@ func TestFinalizeHandoffWatermarkRules(t *testing.T) {
 	}
 	if !idle.NoNewContent || idle.Advanced || emptyDrafts.calls != 0 {
 		t.Fatalf("idle=%+v draft calls=%d, want nothing new and no draft call", idle, emptyDrafts.calls)
+	}
+}
+
+// TestFinalizeSemanticDedupContrastPair is the dedup contrast pair: an
+// equivalent paraphrase of an existing preference is skipped outright - the
+// existing entry stands and the learner never sees a card - while a
+// preference with a genuinely different scope still proposes and the two
+// coexist. One judgement vocabulary, two opposite outcomes.
+func TestFinalizeSemanticDedupContrastPair(t *testing.T) {
+	board := ext01BoardWithPreference(t)
+	existing := globalEntry("P-teach", "讲新概念时先举一个我熟悉的例子，再讲正式定义。")
+	existing.ProfileClass = model.ProfileClassTeachingPreference
+	relations := &scriptedRelations{queue: []GlobalRelationResult{
+		{Relation: GlobalRelationDuplicate, TargetMemoryID: "P-teach", Reason: "等义改写"},
+		{Relation: GlobalRelationIndependent, Reason: "适用场景不同，可并存"},
+	}}
+	// 排查偏好有自己的原话：它是另一条适用的场景，不是改写。
+	messages := append(ext01Messages(), SessionMessage{
+		ID: 12, IsUser: true,
+		Content:   "以后排查报错的时候，先给我一个能跑的验证步骤，再讲原因。",
+		CreatedAt: finalizeAt(45),
+	})
+	service := newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: messages},
+		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}},
+		fakeFinalizeGlobalMind{entries: []model.LongTermMemory{existing}}, nil,
+		&scriptedProposer{proposals: []SessionRawProposal{
+			{
+				Scope: model.MemoryScopeGlobal, Class: model.ProfileClassTeachingPreference, Subject: "讲解偏好",
+				Durability:  model.MemoryDurabilityStable,
+				Content:     "讲新东西先用熟悉的例子，再给定义。",
+				EvidenceIDs: []uint{3}, StatementEvidenceID: 3,
+			},
+			{
+				Scope: model.MemoryScopeGlobal, Class: model.ProfileClassTeachingPreference, Subject: "排查偏好",
+				Durability:  model.MemoryDurabilityStable,
+				Content:     "排查报错时，先给一个可运行的验证步骤，再讲原因。",
+				EvidenceIDs: []uint{12}, StatementEvidenceID: 12,
+			},
+		}}, relations, 50)
+
+	result, err := service.Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-dedup-pair"}})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(result.Skipped) != 1 || result.Skipped[0].Reason != FinalizeSkipSemanticDuplicate {
+		t.Fatalf("skipped=%+v, want the paraphrase judged the same meaning and skipped", result.Skipped)
+	}
+	if len(result.Proposals) != 1 {
+		t.Fatalf("proposals=%d, want the different-scope preference to coexist", len(result.Proposals))
+	}
+	coexisting := result.Proposals[0]
+	if coexisting.Content != "排查报错时，先给一个可运行的验证步骤，再讲原因。" {
+		t.Fatalf("coexisting body=%q", coexisting.Content)
+	}
+	if len(coexisting.RelatedOld) != 1 || coexisting.RelatedOld[0].ID != "P-teach" {
+		t.Fatalf("related old=%+v, want the existing preference carried for the confirmation", coexisting.RelatedOld)
+	}
+	if existing.Status != model.LongTermMemoryActive {
+		t.Fatalf("existing entry status=%s, want untouched", existing.Status)
+	}
+}
+
+// TestFinalizeBodyKeepsLearnerLanguageScopeAndExcludesTemporary locks the
+// body contract the extraction prompt requires: the body is in the learner's
+// own language, the preference's stated scope stays in, and a one-turn
+// request - even one that shaped this session's example - never appears in
+// the content as a standing rule.
+func TestFinalizeBodyKeepsLearnerLanguageScopeAndExcludesTemporary(t *testing.T) {
+	board := ext01BoardWithPreference(t)
+	// m05 is the one-turn scope limit ("这节就先用排队这个例子讲"). The
+	// correct judgement keeps 排队 as the EXAMPLE the learner named in m03
+	// and leaves the one-turn limit out of the body entirely.
+	body := "讲新概念时，先举一个我熟悉的例子（比如讲缓冲就用排队打比方），再讲正式定义。"
+	relations := &scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "new"}}
+	service := newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: ext01Messages()},
+		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil,
+		&scriptedProposer{proposals: []SessionRawProposal{{
+			Scope: model.MemoryScopeGlobal, Class: model.ProfileClassTeachingPreference, Subject: "讲解偏好",
+			Durability:  model.MemoryDurabilityStable,
+			Content:     body,
+			EvidenceIDs: []uint{3}, StatementEvidenceID: 3,
+		}}}, relations, 0)
+
+	result, err := service.Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-dev-EXT-01"}})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(result.Proposals) != 1 {
+		t.Fatalf("proposals=%d skipped=%+v", len(result.Proposals), result.Skipped)
+	}
+	candidate := result.Proposals[0]
+	// 学习者的语言：正文与证据同一语言，不翻译、不混杂。
+	if !strings.Contains(candidate.Content, "讲新概念时") {
+		t.Fatalf("body lost the learner's scope wording: %q", candidate.Content)
+	}
+	if strings.ContainsAny(candidate.Content, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") &&
+		!strings.Contains(candidate.Content, "select") {
+		t.Fatalf("body drifted out of the learner's language: %q", candidate.Content)
+	}
+	// 适用范围保留在正文里。
+	if !strings.Contains(candidate.Content, "先举一个我熟悉的例子") || !strings.Contains(candidate.Content, "再讲正式定义") {
+		t.Fatalf("body lost the preference's scope: %q", candidate.Content)
+	}
+	// 临时要求不混进正文：m05 的一次性限定话术不出现在正文中。
+	if strings.Contains(candidate.Content, "这节就先") || strings.Contains(candidate.Content, "别再展开别的类比") {
+		t.Fatalf("body mixed a one-turn request in as a standing rule: %q", candidate.Content)
+	}
+	if !candidate.StatementTime.Equal(finalizeAt(6)) {
+		t.Fatalf("statement time=%v, want m03's time", candidate.StatementTime)
 	}
 }
