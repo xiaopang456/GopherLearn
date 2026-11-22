@@ -1287,7 +1287,8 @@ func TestFinalizeCandidateBoundariesReminderInsideTopicAndIndependentPreference(
 	pitfallProposal := SessionRawProposal{
 		Scope: model.MemoryScopeTopic, Kind: FinalizeKindUnderstanding, TopicKey: "gorm",
 		Subject: "Save 传指针", Durability: model.MemoryDurabilityStable,
-		Content:     "我老忘记 GORM 的 Save 要传指针：值传递时零值字段不会更新。",
+		// 一张主题卡同时保留容易混淆的知识点和「以后讲到时提醒」。
+		Content:     "我容易混淆 GORM 中 Save 的传参方式：值传递时零值字段不会更新；以后讲到 GORM 时提醒我复习这一点。",
 		EvidenceIDs: []uint{pitfall.ID}, StatementEvidenceID: pitfall.ID,
 	}
 	preferenceProposal := SessionRawProposal{
@@ -1305,21 +1306,38 @@ func TestFinalizeCandidateBoundariesReminderInsideTopicAndIndependentPreference(
 			&scriptedProposer{proposals: proposals}, relations, 50)
 	}
 
-	// 正例：只有那句难点+提醒 → 一张主题卡。提醒不单独成卡。
+	// 正例：只有那句难点+提醒 → 只出一张主题卡，且卡里同时保留
+	// 「容易混淆的知识点」和「以后讲到时提醒」。
 	merged, err := newService([]SessionMessage{pitfall}, []SessionRawProposal{pitfallProposal}).
 		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-ded04-merge"}})
 	if err != nil {
 		t.Fatalf("merged extract: %v", err)
 	}
 	if len(merged.Proposals) != 1 || merged.Proposals[0].Scope != model.MemoryScopeTopic {
-		t.Fatalf("merged=%+v, want one topic card carrying the reminder", merged.Proposals)
+		t.Fatalf("merged=%+v, want exactly one topic card", merged.Proposals)
 	}
-	if merged.Proposals[0].TopicKey != "gorm" || merged.Proposals[0].Evidence[0].MessageID != pitfall.ID {
-		t.Fatalf("merged candidate=%+v", merged.Proposals[0])
+	card := merged.Proposals[0]
+	if card.TopicKey != "gorm" || card.Evidence[0].MessageID != pitfall.ID {
+		t.Fatalf("merged candidate=%+v", card)
+	}
+	if !strings.Contains(card.Content, "零值字段不会更新") {
+		t.Fatalf("card lost the confusing point: %q", card.Content)
+	}
+	if !strings.Contains(card.Content, "提醒") {
+		t.Fatalf("card lost the reminder intent: %q", card.Content)
 	}
 
-	// 反例（对照）：同一会话里另有独立、可跨主题使用的偏好 → 分别提议。
-	split, err := newService([]SessionMessage{pitfall, preference}, []SessionRawProposal{pitfallProposal, preferenceProposal}).
+	// 反例（对照）：同一句话里另有独立、可跨主题使用的偏好 → 主题卡仍
+	// 只出一张（两个要点都在），独立偏好单独提议。
+	sameSentence := SessionMessage{
+		ID: 3, IsUser: true, CreatedAt: at(35),
+		Content: "我发现我老忘记 Save 传指针，零值字段根本不更新——这个坑记下来，属于 GORM 这个主题。" +
+			"另外，我学完模块喜欢自己画时序图，以后讲新模块先让我自己画。",
+	}
+	sameSentencePreference := preferenceProposal
+	sameSentencePreference.EvidenceIDs = []uint{sameSentence.ID}
+	sameSentencePreference.StatementEvidenceID = sameSentence.ID
+	split, err := newService([]SessionMessage{sameSentence}, []SessionRawProposal{pitfallProposal, sameSentencePreference}).
 		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-ded04-split"}})
 	if err != nil {
 		t.Fatalf("split extract: %v", err)
@@ -1328,18 +1346,27 @@ func TestFinalizeCandidateBoundariesReminderInsideTopicAndIndependentPreference(
 		t.Fatalf("split=%+v, want the topic note and the independent preference", split.Proposals)
 	}
 	scopes := map[model.MemoryScope]int{}
+	topicCardKeptBoth := false
 	for _, candidate := range split.Proposals {
 		scopes[candidate.Scope]++
+		if candidate.Scope == model.MemoryScopeTopic {
+			topicCardKeptBoth = strings.Contains(candidate.Content, "零值字段不会更新") &&
+				strings.Contains(candidate.Content, "提醒")
+		}
 	}
 	if scopes[model.MemoryScopeTopic] != 1 || scopes[model.MemoryScopeGlobal] != 1 {
 		t.Fatalf("scopes=%v, want one topic and one global", scopes)
+	}
+	if !topicCardKeptBoth {
+		t.Fatalf("split=%+v, the topic card must keep both the confusion and the reminder", split.Proposals)
 	}
 
 	// 规则锁定：提示词写明这两条候选边界。
 	for _, fragment := range []string{
 		"belongs to that sentence's subject",
-		"the difficulty and the request are ONE topic note",
+		"keeps BOTH the confusing point AND the wish to be reminded",
 		"is still its own global candidate",
+		"even when it appears in the same utterance",
 	} {
 		if !strings.Contains(finalizeProposerPrompt, fragment) {
 			t.Fatalf("extraction prompt missing boundary rule %q", fragment)
