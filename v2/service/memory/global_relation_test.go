@@ -70,7 +70,7 @@ func (*globalExplicitStub) ApplyDraftEdit(context.Context, memorydao.DraftEditPa
 func (*globalExplicitStub) GetActiveByID(context.Context, int64, string) (*model.LongTermMemory, error) {
 	return nil, memorydao.ErrMemoryNotFound
 }
-func (*globalExplicitStub) FindActiveByIDs(context.Context, int64, []string) ([]model.LongTermMemory, error) {
+func (*globalExplicitStub) FindMemoriesByIDs(context.Context, int64, []string) ([]model.LongTermMemory, error) {
 	return nil, nil
 }
 func (*globalExplicitStub) FindBySourceSession(context.Context, int64, string) ([]model.LongTermMemory, error) {

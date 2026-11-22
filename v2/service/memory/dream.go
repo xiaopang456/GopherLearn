@@ -55,7 +55,7 @@ type ExplicitRepository interface {
 	ArchiveMemory(context.Context, int64, string, string, time.Time) (*model.LongTermMemory, *model.MemoryRevision, error)
 	GetExplicitWrite(context.Context, int64, string) (*memorydao.ExplicitWriteResult, error)
 	GetActiveByID(context.Context, int64, string) (*model.LongTermMemory, error)
-	FindActiveByIDs(context.Context, int64, []string) ([]model.LongTermMemory, error)
+	FindMemoriesByIDs(context.Context, int64, []string) ([]model.LongTermMemory, error)
 	FindBySourceSession(context.Context, int64, string) ([]model.LongTermMemory, error)
 }
 

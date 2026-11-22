@@ -107,15 +107,6 @@ func createUserMemoryTx(ctx context.Context, db *gorm.DB, params ExplicitWritePa
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
-		if params.Memory.Scope == model.MemoryScopeGlobal && params.GlobalSnapshotHash != "" {
-			actual, err := loadActiveGlobalSnapshot(tx, params.Memory.UserID, params.Now, GlobalMemorySnapshotLimit)
-			if err != nil {
-				return err
-			}
-			if GlobalSnapshotFingerprint(actual) != params.GlobalSnapshotHash {
-				return ErrMemoryConflict
-			}
-		}
 
 		memory := params.Memory
 		memory.ID = strings.TrimSpace(memory.ID)
@@ -144,17 +135,33 @@ func createUserMemoryTx(ctx context.Context, db *gorm.DB, params ExplicitWritePa
 				return ErrMemoryConflict
 			}
 			// The version the user confirmed against is checked here, inside
-			// the transaction, after the row lock. A concurrent correction
-			// that committed before this lock lands changes ContentHash under
-			// the same active row; superseding it now would silently write a
-			// replacement the user never saw. Nothing has been written yet,
-			// so failing here leaves the official memory untouched.
+			// the transaction, right after the row lock and before anything
+			// else can fail the write. A concurrent correction that committed
+			// before this lock lands changes ContentHash under the same active
+			// row; superseding it now would silently write a replacement the
+			// user never saw. The specific answer is ErrMemoryTargetModified -
+			// 409 with the latest row, draft stays pending, nothing written.
 			if params.ExpectedTargetHash != "" && target.ContentHash != params.ExpectedTargetHash {
 				return ErrMemoryTargetModified
 			}
 			before = &target
 			action = model.MemoryDreamSupersede
-			if err := tx.Model(&model.LongTermMemory{}).Where("id = ? AND user_id = ? AND status = ?", target.ID, memory.UserID, model.LongTermMemoryActive).Update("status", model.LongTermMemorySuperseded).Error; err != nil {
+		}
+		// The global set fingerprint protects the entries OTHER than the
+		// target: it runs after the target version check so a modified target
+		// answers its specific 409 instead of a generic conflict, while a
+		// change anywhere else in the active set still closes the write.
+		if params.Memory.Scope == model.MemoryScopeGlobal && params.GlobalSnapshotHash != "" {
+			actual, err := loadActiveGlobalSnapshot(tx, params.Memory.UserID, params.Now, GlobalMemorySnapshotLimit)
+			if err != nil {
+				return err
+			}
+			if GlobalSnapshotFingerprint(actual) != params.GlobalSnapshotHash {
+				return ErrMemoryConflict
+			}
+		}
+		if action == model.MemoryDreamSupersede {
+			if err := tx.Model(&model.LongTermMemory{}).Where("id = ? AND user_id = ? AND status = ?", before.ID, memory.UserID, model.LongTermMemoryActive).Update("status", model.LongTermMemorySuperseded).Error; err != nil {
 				return err
 			}
 		}
@@ -400,14 +407,20 @@ func (r *Repository) ApplyDraftEdit(ctx context.Context, params DraftEditParams)
 	return &draft, nil
 }
 
-// FindActiveByIDs loads the given active memories of one user, order not
-// guaranteed. Used to hydrate the conflict details a draft card shows.
-func (r *Repository) FindActiveByIDs(ctx context.Context, userID int64, ids []string) ([]model.LongTermMemory, error) {
+// FindMemoriesByIDs loads the given memories of one user regardless of
+// status (deleted tombstones excluded), order not guaranteed. Used to hydrate
+// the conflict details a draft card shows: a pinned entry the draft captured
+// may have been superseded since, and the learner re-checking a late draft
+// still needs to see its old content and save date - while the superseded row
+// itself remains ineligible as a replace target.
+func (r *Repository) FindMemoriesByIDs(ctx context.Context, userID int64, ids []string) ([]model.LongTermMemory, error) {
 	if r == nil || r.db == nil || userID <= 0 || len(ids) == 0 {
 		return nil, nil
 	}
 	var rows []model.LongTermMemory
-	err := r.db.WithContext(ctx).Where("user_id = ? AND status = ? AND id IN ?", userID, model.LongTermMemoryActive, ids).Find(&rows).Error
+	err := r.db.WithContext(ctx).
+		Where("user_id = ? AND id IN ? AND status <> ?", userID, ids, model.LongTermMemoryDeleted).
+		Find(&rows).Error
 	return rows, err
 }
 

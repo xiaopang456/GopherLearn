@@ -451,6 +451,7 @@ func TestPhase3Batch1Cnf02IgnoreAndPending(t *testing.T) {
 // P3D-CNF-03：迟到旧草稿的替换被阻止（目标不在当前冲突集），正式记忆保持
 // 新值；放弃后无写入。
 func TestPhase3Batch1Cnf03LateDraftBlocked(t *testing.T) {
+	ctx := context.Background()
 	f := newAcceptanceFixture(t, []stubGlobalRule{
 		{contains: "1.23", relation: "replacement", targetHint: "1.22"},
 		{contains: "固定在 go 1.22", relation: "replacement", targetHint: "1.23"},
@@ -468,6 +469,19 @@ func TestPhase3Batch1Cnf03LateDraftBlocked(t *testing.T) {
 	}
 	if len(late.ConflictIDs) == 0 {
 		t.Fatalf("late draft conflicts=%v", late.ConflictIDs)
+	}
+	// 钉住的旧条目即使已被取代，也要能在用户归属校验下取回旧内容和保存时间，
+	// 供用户复核迟到草稿；他人回查为空。
+	history, historyErr := f.svc.MemoriesByIDs(ctx, f.userID, []string{oldValue.ID})
+	if historyErr != nil || len(history) != 1 {
+		t.Fatalf("pinned history rows=%d err=%v", len(history), historyErr)
+	}
+	if history[0].Status != model.LongTermMemorySuperseded || history[0].Content != oldValue.Content || history[0].UpdatedAt.IsZero() {
+		t.Fatalf("pinned history row=%+v", history[0])
+	}
+	foreignHistory, foreignHistoryErr := f.svc.MemoriesByIDs(ctx, f.userID+998, []string{oldValue.ID})
+	if foreignHistoryErr != nil || len(foreignHistory) != 0 {
+		t.Fatalf("foreign history rows=%d err=%v", len(foreignHistory), foreignHistoryErr)
 	}
 	_, err := f.confirm(t, late.ID, "replace", oldValue.ID, "用户误点旧草稿")
 	if !errors.Is(err, memorydao.ErrMemoryConflict) {
@@ -514,7 +528,7 @@ func TestPhase3Batch1Cnf04VersionRecheck(t *testing.T) {
 		t.Fatal("rejected confirm wrote a revision")
 	}
 	// 409 响应载荷：最新内容可见（与控制器抓取同一路径）。
-	latest, err := f.svc.ActiveMemoriesByIDs(context.Background(), f.userID, []string{old.ID})
+	latest, err := f.svc.MemoriesByIDs(context.Background(), f.userID, []string{old.ID})
 	if err != nil || len(latest) != 1 || !strings.Contains(latest[0].Content, "仅本地开发环境") {
 		t.Fatalf("latest payload=%+v err=%v", latest, err)
 	}
@@ -1083,5 +1097,83 @@ func TestPhase3Batch1SessionTracebackAndAssistantEvidenceRule(t *testing.T) {
 	if got := f.loadMemoryAny(t, legacyConfirmed.Memory.ID); got.SourceSession != "S-legacy" {
 		// 存量草稿也有 session：确认带入是契约的自然结果，不破坏兼容。
 		t.Fatalf("legacy source session=%q", got.SourceSession)
+	}
+}
+
+// P3D-CNF-07 补充（事务内顺序）：锁定替换目标后优先核对目标版本——目标已修改
+// 时返回 ErrMemoryTargetModified（409+最新内容）而不是被集合指纹的通用冲突
+// 吞掉；指纹继续保护其他条目的变更。两个用例都在 DAO 事务层确定性复现。
+func TestPhase3Batch1TxChecksVersionBeforeFingerprint(t *testing.T) {
+	ctx := context.Background()
+
+	// 用例一：目标被并发修改，集合指纹同样过期——版本核对优先，返回目标已修改。
+	// 「仅本地开发环境」规则先行，替身对并发修正的分类是独立（其他条目存在时
+	// Correct 也要过一次分类器）。
+	f := newAcceptanceFixture(t, []stubGlobalRule{
+		{contains: "仅本地开发环境", relation: "independent"},
+		{contains: "1.23", relation: "replacement", targetHint: "1.22"},
+	}, nil)
+	target := f.seed(t, model.MemoryScopeGlobal, "", "背景", "当前项目使用 Go 1.22")
+	f.seed(t, model.MemoryScopeGlobal, "", "教学偏好", "讲新概念先举用户熟悉的例子，再讲正式定义")
+	draft, _, skip := f.propose(t, "S-1121", "run-1", model.MemoryScopeGlobal, "", "背景", "当前项目使用 Go 1.23")
+	if draft == nil || skip != "" {
+		t.Fatalf("draft=%v skip=%q", draft, skip)
+	}
+	rows, listErr := f.repo.ListAllActive(ctx, f.userID, model.MemoryScopeGlobal, 0, memorydao.GlobalMemorySnapshotLimit)
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	staleSnapshot := memorydao.GlobalSnapshotFingerprint(rows)
+	if _, _, correctErr := f.svc.Correct(ctx, CorrectionRequest{
+		UserID: f.userID, MemoryID: target.ID, Subject: "背景",
+		Content: "当前项目使用 Go 1.22（仅本地开发环境；CI 已单独升级到 1.23）",
+		Tags:    []string{"go"}, Reason: "另一标签页的用户修正",
+	}); correctErr != nil {
+		t.Fatalf("concurrent correct: %v", correctErr)
+	}
+	_, _, resolveErr := f.repo.ResolveDraft(ctx, memorydao.ResolveDraftParams{
+		UserID: f.userID, DraftID: draft.ID, Action: "replace", TargetMemoryID: target.ID,
+		Reason: "用户确认替换", Now: time.Now().Add(time.Minute), GlobalSnapshotHash: staleSnapshot,
+	})
+	if !errors.Is(resolveErr, memorydao.ErrMemoryTargetModified) {
+		t.Fatalf("tx resolve err=%v, want target modified (version check before fingerprint)", resolveErr)
+	}
+	stored, storedErr := f.repo.GetDraft(ctx, f.userID, draft.ID)
+	if storedErr != nil || stored.Status != model.MemoryDraftPending {
+		t.Fatalf("draft status=%s err=%v", stored.Status, storedErr)
+	}
+	current := f.loadMemoryAny(t, target.ID)
+	if current.Status != model.LongTermMemoryActive || !strings.Contains(current.Content, "仅本地开发环境") {
+		t.Fatalf("official memory disturbed: %+v", current)
+	}
+
+	// 用例二：目标未变、其他条目被并发修改——集合指纹仍拦截，通用冲突。
+	g := newAcceptanceFixture(t, nil, nil)
+	t2 := g.seed(t, model.MemoryScopeGlobal, "", "背景", "当前项目使用 Go 1.22")
+	g.seed(t, model.MemoryScopeGlobal, "", "教学偏好", "讲新概念先举用户熟悉的例子，再讲正式定义")
+	draft2, _, skip2 := g.propose(t, "S-ordering", "run-1", model.MemoryScopeGlobal, "", "教学偏好", "示例代码尽量带单元测试，别只给实现")
+	if draft2 == nil || skip2 != "" {
+		t.Fatalf("draft2=%v skip=%q", draft2, skip2)
+	}
+	rows2, listErr2 := g.repo.ListAllActive(ctx, g.userID, model.MemoryScopeGlobal, 0, memorydao.GlobalMemorySnapshotLimit)
+	if listErr2 != nil {
+		t.Fatal(listErr2)
+	}
+	staleSnapshot2 := memorydao.GlobalSnapshotFingerprint(rows2)
+	if _, _, otherErr := g.svc.Correct(ctx, CorrectionRequest{
+		UserID: g.userID, MemoryID: t2.ID, Subject: "背景",
+		Content: "当前项目使用 Go 1.22（仅本地开发环境）",
+		Tags:    []string{"go"}, Reason: "另一标签页改了其他条目",
+	}); otherErr != nil {
+		t.Fatalf("other correct: %v", otherErr)
+	}
+	// 目标未变：携带目标当前哈希 → 版本核对通过 → 指纹拦截其他条目的变更。
+	_, _, otherResolveErr := g.repo.ResolveDraft(ctx, memorydao.ResolveDraftParams{
+		UserID: g.userID, DraftID: draft2.ID, Action: "replace", TargetMemoryID: t2.ID,
+		Reason: "用户确认替换", Now: time.Now().Add(time.Minute), GlobalSnapshotHash: staleSnapshot2,
+		ExpectedTargetHash: model.MemoryContentHash(t2.Content),
+	})
+	if !errors.Is(otherResolveErr, memorydao.ErrMemoryConflict) {
+		t.Fatalf("other-entry change err=%v, want fingerprint conflict", otherResolveErr)
 	}
 }

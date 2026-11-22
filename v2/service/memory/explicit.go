@@ -244,13 +244,17 @@ func (s *GovernanceService) PendingDrafts(ctx context.Context, userID int64) ([]
 	return s.explicit.ListDrafts(ctx, userID, model.MemoryDraftPending, 100)
 }
 
-// ActiveMemoriesByIDs exposes the conflict-target lookup the memory page uses
-// to hydrate the details a draft card shows beside its replace decision.
-func (s *GovernanceService) ActiveMemoriesByIDs(ctx context.Context, userID int64, ids []string) ([]model.LongTermMemory, error) {
+// MemoriesByIDs loads the given memories of one user regardless of status
+// (deleted tombstones excluded). The memory page uses it to hydrate the
+// details a draft card shows beside its replace decision: a pinned entry may
+// have been superseded since the draft captured it, and the learner
+// re-checking that draft still sees the old content and its save date - the
+// superseded row stays ineligible as a replace target.
+func (s *GovernanceService) MemoriesByIDs(ctx context.Context, userID int64, ids []string) ([]model.LongTermMemory, error) {
 	if s == nil || s.explicit == nil {
 		return nil, ErrDreamNotConfigured
 	}
-	return s.explicit.FindActiveByIDs(ctx, userID, ids)
+	return s.explicit.FindMemoriesByIDs(ctx, userID, ids)
 }
 
 // MemoriesBySession is the user-scoped trace-back path of the provenance

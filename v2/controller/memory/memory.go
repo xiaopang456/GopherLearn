@@ -327,7 +327,7 @@ func ResolveDraft(c *gin.Context) {
 func respondTargetModified(c *gin.Context, service *memoryservice.GovernanceService, userID int64, targetID string) {
 	conflicts := make([]memoryView, 0, 1)
 	if target := strings.TrimSpace(targetID); target != "" {
-		if row, err := service.ActiveMemoriesByIDs(c.Request.Context(), userID, []string{target}); err == nil && len(row) == 1 {
+		if row, err := service.MemoriesByIDs(c.Request.Context(), userID, []string{target}); err == nil && len(row) == 1 {
 			conflicts = append(conflicts, *toMemoryView(&row[0]))
 		}
 	}
@@ -538,7 +538,7 @@ func hydrateConflictTargets(ctx context.Context, service *memoryservice.Governan
 	if len(ids) == 0 {
 		return index, nil
 	}
-	rows, err := service.ActiveMemoriesByIDs(ctx, userID, ids)
+	rows, err := service.MemoriesByIDs(ctx, userID, ids)
 	if err != nil {
 		return nil, err
 	}

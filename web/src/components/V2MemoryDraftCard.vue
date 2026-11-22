@@ -37,6 +37,7 @@ const conflictTargets = computed(() => {
   for (const item of live) byId.set(item.id, item)
   return conflicts.value.map((id) => byId.get(id)).filter(Boolean)
 })
+const conflictStatusText = (status) => ({ superseded: '已被取代', archived: '已归档' }[status] || status)
 const targetLabel = (id) => {
   const item = conflictTargets.value.find((entry) => entry.id === id)
   return item?.subject ? item.subject : `原记忆 ${conflicts.value.indexOf(id) + 1}`
@@ -124,6 +125,7 @@ async function assignTopic() {
       <ul>
         <li v-for="item in conflictTargets" :key="item.id">
           <strong>{{ item.subject }}</strong>
+          <span v-if="item.status && item.status !== 'active'" class="gl-muted" data-test="v2-draft-conflict-status">（{{ conflictStatusText(item.status) }}，不能再作为替换目标）</span>
           <span class="gl-muted">{{ item.content }}</span>
           <span v-if="item.updated_at" class="gl-muted">（保存于 {{ new Date(item.updated_at).toLocaleDateString() }}）</span>
         </li>
