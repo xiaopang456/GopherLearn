@@ -617,3 +617,38 @@ func activeMemoryScope(ctx context.Context, db *gorm.DB, userID int64, memoryID 
 	}
 	return memory.Scope, err
 }
+
+// ListDraftsBySession returns the drafts one session produced, every state
+// included. The finalize extraction reads it to learn which candidates the
+// session already proposed - pending, confirmed and ignored alike - so a
+// repeated trigger of the same source never proposes the same content twice.
+func (r *Repository) ListDraftsBySession(ctx context.Context, userID int64, sessionID string, limit int) ([]model.MemoryDraft, error) {
+	if r == nil || r.db == nil || userID <= 0 || strings.TrimSpace(sessionID) == "" || limit < 1 || limit > 200 {
+		return nil, fmt.Errorf("invalid memory draft session query")
+	}
+	var drafts []model.MemoryDraft
+	err := r.db.WithContext(ctx).
+		Where("user_id = ? AND session_id = ?", userID, strings.TrimSpace(sessionID)).
+		Order("created_at DESC, id DESC").
+		Limit(limit).
+		Find(&drafts).Error
+	return drafts, err
+}
+
+// ListActiveTopicEntries returns the active notes of one topic, newest first.
+// It is the topic scope's own comparison range: the same-narrowed counterpart
+// of the global snapshot the conflict query loads, so a candidate is judged
+// against the topic it will live in and never against another topic's notes.
+func (r *Repository) ListActiveTopicEntries(ctx context.Context, userID int64, topicKey string, limit int) ([]model.LongTermMemory, error) {
+	if r == nil || r.db == nil || userID <= 0 || limit < 1 || limit > 50 {
+		return nil, fmt.Errorf("invalid topic entry query")
+	}
+	var entries []model.LongTermMemory
+	err := r.db.WithContext(ctx).
+		Where("user_id = ? AND memory_scope = ? AND topic_key = ? AND status = ? AND (valid_until IS NULL OR valid_until > ?)",
+			userID, model.MemoryScopeTopic, model.NormalizeLearningTopicKey(topicKey), model.LongTermMemoryActive, time.Now()).
+		Order("updated_at DESC, id DESC").
+		Limit(limit).
+		Find(&entries).Error
+	return entries, err
+}

@@ -658,8 +658,57 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	if err := memoryGovernance.UseGlobalRelations(memoryRepository, globalRelations); err != nil {
 		return nil, fmt.Errorf("configure global memory relation classifier: %v", err)
 	}
+	// The topic-scope semantic judgement is one resolver shared by two
+	// callers: the draft edit path (an attribution or an edit re-judges the
+	// note in its final topic) and the finalize extraction (a candidate that
+	// already resolves to a topic is judged before it proposes). Both see
+	// only the active notes of the topic the note finally belongs to.
+	topicRelations, err := memoryService.NewTopicRelationClassifier(agentModel)
+	if err != nil {
+		return nil, fmt.Errorf("initialize topic relation classifier: %v", err)
+	}
+	if err := memoryGovernance.UseTopicRelations(topicRelations); err != nil {
+		return nil, fmt.Errorf("configure topic relation classifier: %v", err)
+	}
 	if err := memoryService.SetDefaultGovernanceService(memoryGovernance); err != nil {
 		return nil, fmt.Errorf("configure memory governance: %v", err)
+	}
+	// The session-finalize extraction is the third phase's automatic
+	// proposal. It is wired end to end - the close notification, the idle
+	// fallback, the real draft entry and the confirmation list - but stays
+	// off until the config turns it on, because the structured extraction
+	// model is not verified against real sessions yet (the plan's next
+	// batch). An off deployment registers nothing, and the controller
+	// answers the notification with that fact.
+	if conf.AgentConfig.MemoryFinalizeEnabled {
+		finalizeCatalogue, finalizeErr := memoryService.NewTopicCatalogue(learningDAO.DefaultRepository(), memoryService.MemoryTopicAdapter{Repository: memoryRepository}, 100)
+		if finalizeErr != nil {
+			return nil, fmt.Errorf("initialize finalize topic catalogue: %v", finalizeErr)
+		}
+		finalizeProposer, finalizeErr := memoryService.NewModelSessionProposer(agentModel)
+		if finalizeErr != nil {
+			return nil, fmt.Errorf("initialize finalize extraction model: %v", finalizeErr)
+		}
+		finalizeService, finalizeErr := memoryService.BuildSessionFinalizeService(
+			sessionDAO.DefaultRepository(), message.DefaultRepository(), memoryRepository,
+			finalizeCatalogue, finalizeProposer, globalRelations, topicRelations)
+		if finalizeErr != nil {
+			return nil, fmt.Errorf("initialize session finalize service: %v", finalizeErr)
+		}
+		finalizeRunner, finalizeErr := memoryService.NewFinalizeRunner(finalizeService, memoryGovernance, memoryRepository)
+		if finalizeErr != nil {
+			return nil, fmt.Errorf("initialize finalize runner: %v", finalizeErr)
+		}
+		if finalizeErr := memoryService.SetDefaultFinalizeRunner(finalizeRunner); finalizeErr != nil {
+			return nil, fmt.Errorf("configure finalize runner: %v", finalizeErr)
+		}
+		finalizeSweeper, finalizeErr := memoryService.NewFinalizeIdleSweeper(finalizeRunner, memoryService.DefaultFinalizeSweeperConfig())
+		if finalizeErr != nil {
+			return nil, fmt.Errorf("initialize finalize idle sweeper: %v", finalizeErr)
+		}
+		if finalizeErr := finalizeSweeper.Start(appCtx); finalizeErr != nil {
+			return nil, fmt.Errorf("start finalize idle sweeper: %v", finalizeErr)
+		}
 	}
 	// One exact-key provider is shared by the v2 bootstrap and the v3 tool. The
 	// mode decides which consumer receives it; defining the adapter once prevents
