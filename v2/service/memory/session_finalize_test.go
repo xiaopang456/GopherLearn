@@ -1373,3 +1373,111 @@ func TestFinalizeCandidateBoundariesReminderInsideTopicAndIndependentPreference(
 		}
 	}
 }
+
+// TestFinalizeMetaInstructionIsNotProposed is the evidence-backed fix for the
+// directed retest's extra card: an instruction about the proposal process
+// itself (不要再问我"要不要记") is a session directive, not a durable
+// preference. The contrast is in the same session: the real preference stated
+// aloud still proposes, while the meta-instruction is neither a candidate nor
+// folded into the preference's body.
+func TestFinalizeMetaInstructionIsNotProposed(t *testing.T) {
+	at := func(minute int) time.Time {
+		return time.Date(2026, 11, 23, 21, minute, 0, 0, time.FixedZone("CST", 8*3600))
+	}
+	messages := []SessionMessage{
+		{ID: 3, IsUser: true, CreatedAt: at(1),
+			Content: "以后讲新模块的时候，先让我自己画一张时序图，你再讲。"},
+		{ID: 4, IsUser: true, CreatedAt: at(2),
+			Content: "我已经说过的偏好直接记下来即可，不要再问我\"要不要记\"。"},
+	}
+	preference := SessionRawProposal{
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassTeachingPreference, Subject: "学习习惯",
+		Durability:  model.MemoryDurabilityStable,
+		Content:     "讲新模块时先让我自己画一张时序图，再开始讲。",
+		EvidenceIDs: []uint{3}, StatementEvidenceID: 3,
+	}
+	service := newFinalizeService(t, fakeFinalizeBoards{}, fakeFinalizeMessages{messages: messages},
+		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil,
+		&scriptedProposer{proposals: []SessionRawProposal{preference}},
+		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "new"}}, 50)
+	result, err := service.Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-meta"}})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(result.Proposals) != 1 {
+		t.Fatalf("proposals=%d, want only the real preference", len(result.Proposals))
+	}
+	card := result.Proposals[0]
+	if card.Evidence[0].MessageID != 3 {
+		t.Fatalf("evidence=%+v, want the preference's own words", card.Evidence)
+	}
+	for _, forbidden := range []string{"不要再问", "要不要记", "直接记下来即可"} {
+		if strings.Contains(card.Content, forbidden) {
+			t.Fatalf("the meta-instruction leaked into the card body: %q", card.Content)
+		}
+	}
+	if !strings.Contains(finalizeProposerPrompt, "session directive, not a durable preference") {
+		t.Fatalf("the extraction prompt lost the meta-instruction rule")
+	}
+}
+
+// TestGlobalRelationNewValueIsReplacementNotDuplicate is the evidence-backed
+// fix for CNF-01 R2: a proposal stating a different current value of the same
+// matter must be a replacement proposal, never a duplicate skip. The contrast
+// keeps the other side honest: the same value said again is still a duplicate
+// and is skipped.
+func TestGlobalRelationNewValueIsReplacementNotDuplicate(t *testing.T) {
+	board := ext01BoardWithPreference(t)
+	existing := globalEntry("P-go", "当前项目用 Go 1.22。")
+	existing.ProfileClass = model.ProfileClassBackground
+	proposal := func(content string) SessionRawProposal {
+		return SessionRawProposal{
+			Scope: model.MemoryScopeGlobal, Class: model.ProfileClassBackground, Subject: "Go 版本",
+			Durability: model.MemoryDurabilityStable,
+			Content:    content, EvidenceIDs: []uint{3}, StatementEvidenceID: 3,
+		}
+	}
+	newService := func(relation GlobalRelationResult) *SessionFinalizeService {
+		return newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: ext01Messages()},
+			nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}},
+			fakeFinalizeGlobalMind{entries: []model.LongTermMemory{existing}}, nil,
+			&scriptedProposer{proposals: []SessionRawProposal{proposal("当前项目用 Go 1.23。")}},
+			&scriptedRelations{result: relation}, 0)
+	}
+
+	// 新值：替换建议，携带旧条目供确认对照，绝不跳过。
+	replacement, err := newService(GlobalRelationResult{
+		Relation: GlobalRelationReplacement, TargetMemoryID: "P-go", Reason: "same matter, new value",
+	}).Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-newvalue"}})
+	if err != nil {
+		t.Fatalf("replacement extract: %v", err)
+	}
+	if len(replacement.Proposals) != 1 || len(replacement.Skipped) != 0 {
+		t.Fatalf("replacement=%+v skipped=%+v, want a replacement proposal", replacement.Proposals, replacement.Skipped)
+	}
+	if replacement.Proposals[0].Relation.Relation != GlobalRelationReplacement ||
+		len(replacement.Proposals[0].RelatedOld) != 1 || replacement.Proposals[0].RelatedOld[0].ID != "P-go" {
+		t.Fatalf("candidate=%+v, want replacement carrying the old value", replacement.Proposals[0])
+	}
+
+	// 对照：同一值再说一遍仍是重复并跳过。
+	duplicate, err := newService(GlobalRelationResult{
+		Relation: GlobalRelationDuplicate, TargetMemoryID: "P-go", Reason: "same value restated",
+	}).Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-samevalue"}})
+	if err != nil {
+		t.Fatalf("duplicate extract: %v", err)
+	}
+	if len(duplicate.Proposals) != 0 || len(duplicate.Skipped) != 1 || duplicate.Skipped[0].Reason != FinalizeSkipSemanticDuplicate {
+		t.Fatalf("duplicate=%+v skipped=%+v, want the same-value restatement skipped", duplicate.Proposals, duplicate.Skipped)
+	}
+
+	// 规则锁定：新值不是重复。
+	for _, fragment := range []string{
+		"A new value is never a duplicate; duplicate is the same value said again",
+		"当前项目用 Go 1.22 and 当前项目用 Go 1.23 are replacement, not duplicate",
+	} {
+		if !strings.Contains(globalRelationPrompt, fragment) {
+			t.Fatalf("the global relation prompt lost the new-value rule %q", fragment)
+		}
+	}
+}
