@@ -7,6 +7,8 @@ import (
 	"time"
 
 	memorydao "GopherAI/dao/memory"
+	messagedao "GopherAI/dao/message"
+	sessiondao "GopherAI/dao/session"
 	"GopherAI/internal/testdb"
 	"GopherAI/model"
 	memoryservice "GopherAI/service/memory"
@@ -41,6 +43,11 @@ func (batch3Relations) Classify(_ context.Context, incoming memoryservice.Explic
 				Relation: memoryservice.GlobalRelationReplacement, TargetMemoryID: row.ID, Reason: "batch3 replacement stub",
 			}, nil
 		}
+		if strings.Contains(incoming.Content, "Go 1.23") && strings.Contains(row.Content, "Go 1.22") {
+			return memoryservice.GlobalRelationResult{
+				Relation: memoryservice.GlobalRelationReplacement, TargetMemoryID: row.ID, Reason: "batch3 version replacement stub",
+			}, nil
+		}
 	}
 	return memoryservice.GlobalRelationResult{Relation: memoryservice.GlobalRelationIndependent, Reason: "batch3 independent stub"}, nil
 }
@@ -61,7 +68,9 @@ func newBatch3LegacyFixture(t *testing.T) *batch3LegacyFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.LongTermMemory{}, &model.MemoryRevision{}, &model.MemoryDraft{}, &model.TopicProgress{}); err != nil {
+	if err := db.AutoMigrate(&model.LongTermMemory{}, &model.MemoryRevision{}, &model.MemoryDraft{},
+		&model.TopicProgress{}, &model.Session{}, &model.Message{}, &model.SessionSummary{},
+		&model.SessionSummarySegment{}); err != nil {
 		t.Fatal(err)
 	}
 	repo := memorydao.NewRepository(db)
@@ -94,6 +103,10 @@ func newBatch3LegacyFixture(t *testing.T) *batch3LegacyFixture {
 	chat := &scriptedChatModel{}
 	chat.respond = func(_ context.Context, _ int) (*schema.Message, error) {
 		request := batch3RequestText(chat.received[len(chat.received)-1])
+		if strings.Contains(request, "Go 1.23") {
+			// 现行值被送达：按现行作答。
+			return schema.AssistantMessage("现在用 Go 1.23。", nil), nil
+		}
 		if strings.Contains(request, "先举一个我熟悉的例子") || strings.Contains(request, "先举例再说定义") {
 			// 记忆被送达：回答按“先举例再讲定义”的顺序。
 			return schema.AssistantMessage("例子：先把 channel 想成排队打饭；定义：有缓冲 channel 是带容量的队列。", nil), nil
@@ -305,5 +318,101 @@ func TestBatch3UserConfirmedSelectionModelRequests(t *testing.T) {
 	}
 	if strings.Contains(selected, "这条不该出现") {
 		t.Fatalf("another topic's memory leaked into the request")
+	}
+}
+
+// TestBatch3TimeSemanticsNowVersusThen prepares the time-semantics contrast at
+// the loading layer: "现在用什么" is answered from the current profile (the new
+// value only), while "那次用什么" is answered from the old conversation's own
+// evidence (the value as it stood then). The two sources are verified to be
+// disjoint on the value; whether the real model answers each question from the
+// source it was given is measured on the final candidate.
+func TestBatch3TimeSemanticsNowVersusThen(t *testing.T) {
+	fixture := newBatch3LegacyFixture(t)
+	ctx := context.Background()
+	oldSession := "b3-then-session"
+	t.Cleanup(func() {
+		fixture.db.Unscoped().Where("session_id = ?", oldSession).Delete(&model.Message{})
+		fixture.db.Unscoped().Where("id = ?", oldSession).Delete(&model.Session{})
+	})
+
+	thenAt := time.Date(2026, 11, 10, 20, 0, 0, 0, time.FixedZone("CST", 8*3600))
+	if err := fixture.db.WithContext(ctx).Create(&model.Session{
+		ID: oldSession, UserID: fixture.userID, UserName: "batch3", Mode: model.SessionModeNormal,
+		Title: "Go 版本讨论", CreatedAt: thenAt, UpdatedAt: thenAt,
+	}).Error; err != nil {
+		t.Fatalf("seed old session: %v", err)
+	}
+	if err := fixture.db.WithContext(ctx).Create(&model.Message{
+		SessionID: oldSession, UserName: "batch3", IsUser: true,
+		Content: "当前项目用 Go 1.22。", CreatedAt: thenAt.Add(time.Minute),
+	}).Error; err != nil {
+		t.Fatalf("seed old statement: %v", err)
+	}
+
+	// 同一事项的新值：Go 1.22 → 1.23，替换后旧条目退出。
+	oldContent := "当前项目用 Go 1.22。"
+	written, err := fixture.repo.CreateUserMemory(ctx, memorydao.ExplicitWriteParams{
+		Memory: model.LongTermMemory{
+			UserID: fixture.userID, Scope: model.MemoryScopeGlobal, Subject: "Go 版本", Content: oldContent,
+			StructuredJSON: `{}`, Tags: model.StringList{"go"}, Durability: model.MemoryDurabilityStable,
+			SourceRefs: model.StringList{"user_api:b3-go-old"}, Confidence: 1, Importance: 8,
+			Status: model.LongTermMemoryActive, UserConfirmed: true,
+		},
+		RequestKey: "b3-go-old", Reason: "批次3旧版本", Now: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("seed old version: %v", err)
+	}
+	newContent := "当前项目用 Go 1.23。"
+	replaceDraft, _, skip, err := fixture.governance.ProposeDraft(ctx, memoryservice.DraftRequest{
+		UserID: fixture.userID, SessionID: "b3-now-session", RunID: "run-b3-go",
+		Input: memoryservice.ExplicitMemoryInput{
+			Scope: model.MemoryScopeGlobal, Subject: "Go 版本", Content: newContent,
+			Durability: model.MemoryDurabilityStable, IdempotencyKey: "b3:go-version",
+			ProfileClass: model.ProfileClassBackground,
+		},
+	})
+	if err != nil || replaceDraft == nil || skip != "" {
+		t.Fatalf("propose version replacement: draft=%+v skip=%q err=%v", replaceDraft, skip, err)
+	}
+	if _, err := fixture.governance.ConfirmDraft(ctx, memoryservice.ConfirmDraftRequest{
+		UserID: fixture.userID, DraftID: replaceDraft.ID, Action: "replace",
+		TargetMemoryID: written.Memory.ID, Reason: "批次3新版本",
+	}); err != nil {
+		t.Fatalf("confirm version replacement: %v", err)
+	}
+
+	// 现在用什么：新会话的画像请求只有新值。
+	nowRequest, nowAnswer := fixture.run(t, "b3-now-session", "现在用什么 Go 版本？")
+	if !strings.Contains(nowRequest, newContent) {
+		t.Fatalf("the current value is missing from the now request: %s", nowRequest)
+	}
+	if strings.Contains(nowRequest, oldContent) {
+		t.Fatalf("the superseded value is still in the now request")
+	}
+	if !strings.Contains(nowAnswer, "1.23") {
+		t.Fatalf("now answer=%q, want the current value", nowAnswer)
+	}
+
+	// 那次用什么：旧会话自己的证据只有当时的值。
+	store, err := NewDatabaseCrossSessionStore(sessiondao.NewRepository(fixture.db), messagedao.NewRepository(fixture.db))
+	if err != nil {
+		t.Fatalf("cross session store: %v", err)
+	}
+	reader, err := NewDatabaseCrossSessionReader(store)
+	if err != nil {
+		t.Fatalf("cross session reader: %v", err)
+	}
+	locked, err := reader.LockSession(ctx, fixture.userID, oldSession, "那次用什么 Go 版本？")
+	if err != nil {
+		t.Fatalf("lock old session: %v", err)
+	}
+	thenEvidence := locked.Evidence
+	if !strings.Contains(thenEvidence, oldContent) {
+		t.Fatalf("then evidence=%q, want the value as it stood then", thenEvidence)
+	}
+	if strings.Contains(thenEvidence, newContent) {
+		t.Fatalf("then evidence leaked the current value into the historical source")
 	}
 }
