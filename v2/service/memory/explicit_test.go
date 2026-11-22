@@ -23,7 +23,7 @@ func TestNormalizeExplicitInputEnforcesScopeExpiryAndSensitiveBoundary(t *testin
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := normalizeExplicitInput(9, test.input, now)
+			_, err := normalizeExplicitInput(9, test.input, now, false)
 			if test.valid && err != nil {
 				t.Fatal(err)
 			}
@@ -39,7 +39,7 @@ func TestNormalizeExplicitInputCanonicalizesTopicKey(t *testing.T) {
 	input, err := normalizeExplicitInput(7, ExplicitMemoryInput{
 		Scope: model.MemoryScopeTopic, Subject: "HTTP boundary", Content: "I confuse framing modes",
 		TopicKey: " NimbusStream_913 ", Durability: model.MemoryDurabilityStable, IdempotencyKey: "topic-key",
-	}, now)
+	}, now, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestNormalizeExplicitInputDerivesFixedConflictTagsWhenOmitted(t *testing.T)
 	input, err := normalizeExplicitInput(7, ExplicitMemoryInput{
 		Scope: model.MemoryScopeGlobal, Subject: "回答偏好", Content: "回答先给结论，再解释原因。",
 		Durability: model.MemoryDurabilityStable, IdempotencyKey: "derived-tags",
-	}, now)
+	}, now, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestNormalizeExplicitInputRecognizesAnswerOrderAsPreference(t *testing.T) {
 	input, err := normalizeExplicitInput(7, ExplicitMemoryInput{
 		Scope: model.MemoryScopeGlobal, Subject: "回答顺序", Content: "请先说结论，然后解释原因。",
 		Durability: model.MemoryDurabilityStable, IdempotencyKey: "answer-order",
-	}, now)
+	}, now, false)
 	if err != nil {
 		t.Fatal(err)
 	}

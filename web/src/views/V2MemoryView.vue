@@ -325,7 +325,7 @@ onBeforeUnmount(page.dispose)
 
     <section v-if="page.drafts.value.length" class="memory__drafts">
       <h2 class="memory__section-title">待确认的草稿</h2>
-      <V2MemoryDraftCard v-for="draft in page.drafts.value" :key="draft.id" :draft="draft" />
+      <V2MemoryDraftCard v-for="draft in page.drafts.value" :key="draft.id" :draft="draft" @changed="refresh" />
     </section>
   </div>
 </template>

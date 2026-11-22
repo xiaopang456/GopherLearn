@@ -33,4 +33,6 @@ func AgentRouter(r *gin.RouterGroup) {
 	r.POST("/agent/memories/:id/archive", controllermemory.Archive)
 	r.DELETE("/agent/memories/:id", controllermemory.Delete)
 	r.POST("/agent/memory-drafts/:id/resolve", controllermemory.ResolveDraft)
+	r.PATCH("/agent/memory-drafts/:id", controllermemory.EditDraft)
+	r.GET("/agent/memory-topics", controllermemory.Topics)
 }

@@ -64,6 +64,7 @@ const (
 	MemoryConflict          Code = 9004
 	MemoryDerivedReadOnly   Code = 9005
 	MemoryDraftNotFound     Code = 9006
+	MemoryTargetModified    Code = 9007
 
 	AgentRunBusy         Code = 10001
 	AgentRequestConflict Code = 10002
@@ -126,6 +127,7 @@ var msg = map[Code]string{
 	MemoryConflict:          "记忆已发生变化，请刷新后重试",
 	MemoryDerivedReadOnly:   "学习状态来自真实答题记录，请通过评分纠正功能更新",
 	MemoryDraftNotFound:     "待确认记忆草稿不存在",
+	MemoryTargetModified:    "要替换的记忆刚被修改过；请先确认最新内容，再重新替换",
 
 	AgentRunBusy:         "当前会话已有 Agent 任务正在执行",
 	AgentRequestConflict: "该请求编号已被其他内容使用",

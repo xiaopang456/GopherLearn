@@ -20,7 +20,7 @@ import (
 const ProposeMemoryName = "propose_memory"
 
 type MemoryDraftProposer interface {
-	ProposeDraft(context.Context, memoryservice.DraftRequest) (*model.MemoryDraft, bool, error)
+	ProposeDraft(context.Context, memoryservice.DraftRequest) (*model.MemoryDraft, bool, string, error)
 }
 
 type MemoryDraftRegistry struct {
@@ -82,6 +82,10 @@ type ProposeMemoryOutput struct {
 	ConflictIDs              model.StringList       `json:"conflict_ids"`
 	RequiresUserConfirmation bool                   `json:"requires_user_confirmation"`
 	Replay                   bool                   `json:"replay"`
+	// TopicPending says the note is a topic draft whose key is still unset:
+	// the catalogue had more than one equally good match, so the learner
+	// assigns the topic at the memory page before confirming.
+	TopicPending bool `json:"topic_pending,omitempty"`
 	// Rejected says no draft was created.
 	//
 	// The draft is refused rather than failed: a tool that returns an error
@@ -169,7 +173,7 @@ func (r *MemoryDraftRegistry) Tools(ctx context.Context, run serviceagent.RunCon
 			if input.Scope == string(model.MemoryScopeTopic) {
 				topicKey = resolveDraftTopicKey(topics, run.Question, input.TopicKey)
 			}
-			draft, created, err := r.proposer.ProposeDraft(ctx, memoryservice.DraftRequest{
+			draft, created, skipReason, err := r.proposer.ProposeDraft(ctx, memoryservice.DraftRequest{
 				UserID: run.UserID, SessionID: run.SessionID, RunID: run.RunID,
 				Input: memoryservice.ExplicitMemoryInput{
 					Scope: model.MemoryScope(input.Scope), Subject: input.Subject, Content: input.Content, Tags: normalizedTags,
@@ -180,10 +184,21 @@ func (r *MemoryDraftRegistry) Tools(ctx context.Context, run serviceagent.RunCon
 			if err != nil {
 				return nil, err
 			}
+			// A skip is a refusal with a reason, not an error: the content
+			// already lives in active memory (duplicate) or this session
+			// already saw it and the learner ignored it (ignored source). No
+			// draft, nothing to confirm.
+			if skipReason != "" {
+				return &ProposeMemoryOutput{
+					Scope: model.MemoryScope(input.Scope), Subject: input.Subject,
+					Rejected: true, RejectionReason: skipReason,
+				}, nil
+			}
 			return &ProposeMemoryOutput{
 				DraftID: draft.ID, Scope: draft.Scope, Subject: draft.Subject, Content: draft.Content, Tags: draft.Tags,
 				TopicKey: draft.TopicKey, Durability: draft.Durability, ValidUntil: draft.ValidUntil, ConflictIDs: draft.ConflictIDs,
 				RequiresUserConfirmation: true, Replay: !created,
+				TopicPending: draft.Scope == model.MemoryScopeTopic && strings.TrimSpace(draft.TopicKey) == "",
 			}, nil
 		})
 	if err != nil {
@@ -216,6 +231,11 @@ func resolveDraftTopicKey(topics []memoryservice.Topic, question, proposed strin
 	}
 	if bestKey != "" && !tied {
 		return bestKey
+	}
+	if tied {
+		// Two catalogue topics fit equally well: the choice belongs to the
+		// learner, so the draft waits for its attribution instead of guessing.
+		return ""
 	}
 	return key
 }

@@ -17,6 +17,14 @@ import (
 )
 
 var ErrDraftNotFound = errors.New("memory draft not found")
+var ErrDraftNotPending = errors.New("memory draft is not pending")
+var ErrDraftAttributionRequired = errors.New("topic memory draft requires its topic key before confirmation")
+
+// ErrMemoryTargetModified reports that the replace target changed after the
+// draft captured it: the row inside the write transaction carries a different
+// ContentHash than the one the user saw and confirmed against. The draft stays
+// pending, nothing is written, and the caller answers 409 with the latest row.
+var ErrMemoryTargetModified = errors.New("memory replace target was modified after it was shown to the user")
 
 type ExplicitWriteParams struct {
 	Memory         model.LongTermMemory
@@ -28,6 +36,16 @@ type ExplicitWriteParams struct {
 	// active global set that was classified. Empty disables the check for
 	// legacy/topic callers; the production global service always supplies it.
 	GlobalSnapshotHash string
+	// ExpectedTargetHash is the ContentHash the user saw when they chose to
+	// replace TargetMemoryID: either the hash carried by the confirm request
+	// after the user re-checked the latest content, or the hash pinned on the
+	// draft when it was proposed. Verified inside the write transaction after
+	// the target row is locked, so a concurrent correction that lands before
+	// the lock turns into ErrMemoryTargetModified instead of a silent
+	// wrong-baseline replacement. Empty disables the check for callers that
+	// never showed a version (the manual two-step create flow keeps its own
+	// decision UX).
+	ExpectedTargetHash string
 }
 
 type ExplicitWriteResult struct {
@@ -89,15 +107,6 @@ func createUserMemoryTx(ctx context.Context, db *gorm.DB, params ExplicitWritePa
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
-		if params.Memory.Scope == model.MemoryScopeGlobal && params.GlobalSnapshotHash != "" {
-			actual, err := loadActiveGlobalSnapshot(tx, params.Memory.UserID, params.Now, GlobalMemorySnapshotLimit)
-			if err != nil {
-				return err
-			}
-			if GlobalSnapshotFingerprint(actual) != params.GlobalSnapshotHash {
-				return ErrMemoryConflict
-			}
-		}
 
 		memory := params.Memory
 		memory.ID = strings.TrimSpace(memory.ID)
@@ -125,9 +134,34 @@ func createUserMemoryTx(ctx context.Context, db *gorm.DB, params ExplicitWritePa
 			if target.Scope != memory.Scope {
 				return ErrMemoryConflict
 			}
+			// The version the user confirmed against is checked here, inside
+			// the transaction, right after the row lock and before anything
+			// else can fail the write. A concurrent correction that committed
+			// before this lock lands changes ContentHash under the same active
+			// row; superseding it now would silently write a replacement the
+			// user never saw. The specific answer is ErrMemoryTargetModified -
+			// 409 with the latest row, draft stays pending, nothing written.
+			if params.ExpectedTargetHash != "" && target.ContentHash != params.ExpectedTargetHash {
+				return ErrMemoryTargetModified
+			}
 			before = &target
 			action = model.MemoryDreamSupersede
-			if err := tx.Model(&model.LongTermMemory{}).Where("id = ? AND user_id = ? AND status = ?", target.ID, memory.UserID, model.LongTermMemoryActive).Update("status", model.LongTermMemorySuperseded).Error; err != nil {
+		}
+		// The global set fingerprint protects the entries OTHER than the
+		// target: it runs after the target version check so a modified target
+		// answers its specific 409 instead of a generic conflict, while a
+		// change anywhere else in the active set still closes the write.
+		if params.Memory.Scope == model.MemoryScopeGlobal && params.GlobalSnapshotHash != "" {
+			actual, err := loadActiveGlobalSnapshot(tx, params.Memory.UserID, params.Now, GlobalMemorySnapshotLimit)
+			if err != nil {
+				return err
+			}
+			if GlobalSnapshotFingerprint(actual) != params.GlobalSnapshotHash {
+				return ErrMemoryConflict
+			}
+		}
+		if action == model.MemoryDreamSupersede {
+			if err := tx.Model(&model.LongTermMemory{}).Where("id = ? AND user_id = ? AND status = ?", before.ID, memory.UserID, model.LongTermMemoryActive).Update("status", model.LongTermMemorySuperseded).Error; err != nil {
 				return err
 			}
 		}
@@ -260,6 +294,151 @@ func (r *Repository) GetDraft(ctx context.Context, userID int64, draftID string)
 	return &draft, err
 }
 
+// FindDraftByContent returns the newest draft of one user whose content hash
+// matches, optionally narrowed to one scope/topic and one source session.
+//
+// The comparison stays inside one scope class: a topic-scope query only
+// matches drafts of the same topic key (an empty topic key matches the
+// attribution-pending drafts), and a global-scope query only matches global
+// drafts. statuses narrows the lifecycle stage; sourceSession, when non-empty,
+// scopes the result to one origin session - the ignore-suppression key. A
+// re-expression of ignored content from a different session is a new
+// candidate, not an echo of the suppressed one.
+func (r *Repository) FindDraftByContent(ctx context.Context, userID int64, scope model.MemoryScope, topicKey, contentHash, sourceSession string, statuses ...model.MemoryDraftStatus) (*model.MemoryDraft, error) {
+	if r == nil || r.db == nil || userID <= 0 || !scope.Valid() || strings.TrimSpace(contentHash) == "" {
+		return nil, fmt.Errorf("invalid memory draft content query")
+	}
+	db := r.db.WithContext(ctx).Where("user_id = ? AND memory_scope = ? AND content_hash = ?", userID, scope, strings.TrimSpace(contentHash))
+	if scope == model.MemoryScopeTopic {
+		db = db.Where("topic_key = ?", strings.TrimSpace(topicKey))
+	}
+	if sourceSession = strings.TrimSpace(sourceSession); sourceSession != "" {
+		db = db.Where("session_id = ?", sourceSession)
+	}
+	if len(statuses) > 0 {
+		db = db.Where("status IN ?", statuses)
+	}
+	var draft model.MemoryDraft
+	err := db.Order("created_at DESC, id DESC").Limit(1).First(&draft).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &draft, nil
+}
+
+// DraftEditParams carries the post-recheck state of one pending draft. The
+// caller recomputes conflicts and runs the semantic judgement outside the
+// transaction; this transaction only re-locks the row, re-verifies that it is
+// still the pending draft the caller read, and applies the result. Confirm
+// remains the safety net: it verifies the pinned conflict hashes against the
+// live rows before superseding anything.
+type DraftEditParams struct {
+	UserID         int64
+	DraftID        string
+	Subject        string
+	Content        string
+	ContentHash    string
+	Tags           model.StringList
+	TopicKey       string
+	Durability     model.MemoryDurability
+	ValidUntil     *time.Time
+	ConflictIDs    model.StringList
+	ConflictHashes model.StringList
+	// Close ends the draft as cancelled without any user action. It is set
+	// when the re-check judged the final content identical to an active
+	// memory; CancelReason then records why.
+	Close        *bool
+	CancelReason string
+	Now          time.Time
+}
+
+func (r *Repository) ApplyDraftEdit(ctx context.Context, params DraftEditParams) (*model.MemoryDraft, error) {
+	if r == nil || r.db == nil || params.UserID <= 0 || strings.TrimSpace(params.DraftID) == "" || params.Now.IsZero() {
+		return nil, fmt.Errorf("invalid memory draft edit")
+	}
+	var draft model.MemoryDraft
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND user_id = ?", strings.TrimSpace(params.DraftID), params.UserID).First(&draft).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrDraftNotFound
+			}
+			return err
+		}
+		if draft.Status != model.MemoryDraftPending {
+			return ErrDraftNotPending
+		}
+		draft.Subject = strings.TrimSpace(params.Subject)
+		draft.Content = strings.TrimSpace(params.Content)
+		draft.ContentHash = strings.TrimSpace(params.ContentHash)
+		draft.Tags = append(model.StringList(nil), params.Tags...)
+		draft.TopicKey = strings.TrimSpace(params.TopicKey)
+		draft.Durability = params.Durability
+		draft.ValidUntil = params.ValidUntil
+		draft.ConflictIDs = append(model.StringList(nil), params.ConflictIDs...)
+		draft.ConflictHashes = append(model.StringList(nil), params.ConflictHashes...)
+		draft.UpdatedAt = params.Now
+		if params.Close != nil && *params.Close {
+			draft.Status = model.MemoryDraftCancelled
+			draft.CancelReason = strings.TrimSpace(params.CancelReason)
+			draft.ResolvedAt = &params.Now
+		}
+		if err := draft.Validate(); err != nil {
+			return err
+		}
+		updates := map[string]any{
+			"subject": draft.Subject, "content": draft.Content, "content_hash": draft.ContentHash,
+			"tags": draft.Tags, "topic_key": draft.TopicKey, "durability": draft.Durability,
+			"valid_until": draft.ValidUntil, "conflict_ids": draft.ConflictIDs, "conflict_hashes": draft.ConflictHashes,
+			"updated_at": draft.UpdatedAt,
+		}
+		if params.Close != nil && *params.Close {
+			updates["status"] = draft.Status
+			updates["cancel_reason"] = draft.CancelReason
+			updates["resolved_at"] = draft.ResolvedAt
+		}
+		return tx.Model(&model.MemoryDraft{}).Where("id = ? AND user_id = ? AND status = ?", draft.ID, params.UserID, model.MemoryDraftPending).Updates(updates).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &draft, nil
+}
+
+// FindMemoriesByIDs loads the given memories of one user regardless of
+// status (deleted tombstones excluded), order not guaranteed. Used to hydrate
+// the conflict details a draft card shows: a pinned entry the draft captured
+// may have been superseded since, and the learner re-checking a late draft
+// still needs to see its old content and save date - while the superseded row
+// itself remains ineligible as a replace target.
+func (r *Repository) FindMemoriesByIDs(ctx context.Context, userID int64, ids []string) ([]model.LongTermMemory, error) {
+	if r == nil || r.db == nil || userID <= 0 || len(ids) == 0 {
+		return nil, nil
+	}
+	var rows []model.LongTermMemory
+	err := r.db.WithContext(ctx).
+		Where("user_id = ? AND id IN ? AND status <> ?", userID, ids, model.LongTermMemoryDeleted).
+		Find(&rows).Error
+	return rows, err
+}
+
+// FindBySourceSession returns every memory one user's confirmed candidates
+// produced from a source session, newest first. The user id is part of the
+// query, so the trace-back stays inside the owner's data; superseded rows are
+// included because a session trail is history, not just the current values.
+func (r *Repository) FindBySourceSession(ctx context.Context, userID int64, sessionID string) ([]model.LongTermMemory, error) {
+	if r == nil || r.db == nil || userID <= 0 || strings.TrimSpace(sessionID) == "" {
+		return nil, fmt.Errorf("invalid memory source session query")
+	}
+	var rows []model.LongTermMemory
+	err := r.db.WithContext(ctx).
+		Where("user_id = ? AND source_session = ?", userID, strings.TrimSpace(sessionID)).
+		Order("created_at DESC, id DESC").Find(&rows).Error
+	return rows, err
+}
+
 type ResolveDraftParams struct {
 	UserID             int64
 	DraftID            string
@@ -268,6 +447,9 @@ type ResolveDraftParams struct {
 	Reason             string
 	Now                time.Time
 	GlobalSnapshotHash string
+	// ExpectedTargetHash carries the version the user re-confirmed against on
+	// the replace path. Empty falls back to the hash pinned on the draft.
+	ExpectedTargetHash string
 }
 
 func (r *Repository) ResolveDraft(ctx context.Context, params ResolveDraftParams) (*model.MemoryDraft, *ExplicitWriteResult, error) {
@@ -324,20 +506,36 @@ func resolveDraftTx(ctx context.Context, db *gorm.DB, params ResolveDraftParams)
 		if params.Action != "add" && params.Action != "replace" {
 			return fmt.Errorf("invalid memory draft action")
 		}
+		if resolved.Scope == model.MemoryScopeTopic && strings.TrimSpace(resolved.TopicKey) == "" {
+			return ErrDraftAttributionRequired
+		}
 		memory := model.LongTermMemory{
 			UserID: resolved.UserID, Scope: resolved.Scope, Subject: resolved.Subject, Content: resolved.Content, StructuredJSON: `{}`,
 			Tags: append(model.StringList(nil), resolved.Tags...), TopicKey: resolved.TopicKey, Durability: resolved.Durability, ValidUntil: resolved.ValidUntil,
 			SourceRefs: model.StringList{"agent_run:" + resolved.RunID, "memory_draft:" + resolved.ID}, Confidence: 1, Importance: 8,
+			// 自动候选来源契约：确认时把候选上的来源字段随正式记忆保留。
+			ProfileClass: resolved.ProfileClass, EvidenceMessages: append(model.StringList(nil), resolved.EvidenceMessages...),
+			AssistantMessages: append(model.StringList(nil), resolved.AssistantMessages...), StatementTime: resolved.StatementTime,
+			SourceSession: resolved.SessionID,
 		}
 		target := ""
+		expectedHash := ""
 		if params.Action == "replace" {
 			target = strings.TrimSpace(params.TargetMemoryID)
 			if target == "" || !stringListContains(resolved.ConflictIDs, target) {
 				return ErrMemoryConflict
 			}
+			// The version the user saw: the hash carried by the confirm request
+			// after they re-checked the latest content, or the hash pinned when
+			// the draft captured the conflict. Verified inside the write
+			// transaction right after the target row is locked.
+			expectedHash = strings.TrimSpace(params.ExpectedTargetHash)
+			if expectedHash == "" {
+				expectedHash = PinnedConflictHash(resolved, target)
+			}
 		}
 		var err error
-		write, err = createUserMemoryTx(ctx, tx, ExplicitWriteParams{Memory: memory, TargetMemoryID: target, RequestKey: "draft:" + resolved.ID, Reason: params.Reason, Now: params.Now, GlobalSnapshotHash: params.GlobalSnapshotHash})
+		write, err = createUserMemoryTx(ctx, tx, ExplicitWriteParams{Memory: memory, TargetMemoryID: target, RequestKey: "draft:" + resolved.ID, Reason: params.Reason, Now: params.Now, GlobalSnapshotHash: params.GlobalSnapshotHash, ExpectedTargetHash: expectedHash})
 		if err != nil {
 			return err
 		}
@@ -355,6 +553,18 @@ func stringListContains(values model.StringList, target string) bool {
 		}
 	}
 	return false
+}
+
+// PinnedConflictHash returns the ContentHash the draft pinned for the given
+// conflict target when it was proposed or last edited. Empty when the draft
+// predates hash pinning or the pair drifted out of alignment.
+func PinnedConflictHash(draft model.MemoryDraft, targetID string) string {
+	for i, id := range draft.ConflictIDs {
+		if id == targetID && i < len(draft.ConflictHashes) {
+			return strings.TrimSpace(draft.ConflictHashes[i])
+		}
+	}
+	return ""
 }
 
 func (r *Repository) ArchiveMemory(ctx context.Context, userID int64, memoryID, reason string, now time.Time) (*model.LongTermMemory, *model.MemoryRevision, error) {
