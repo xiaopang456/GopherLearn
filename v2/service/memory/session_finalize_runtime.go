@@ -50,8 +50,15 @@ func (s *SessionBoardSource) GetWhiteboard(ctx context.Context, userID int64, se
 type SessionMessageSource struct {
 	messages *messageDAO.Repository
 	sessions *sessionDAO.Repository
-	limit    int
+	// limit is the per-run budget of unprocessed messages: a longer session
+	// continues across triggers, each run bounded.
+	limit int
 }
+
+const (
+	finalizeMessageBatch     = 500
+	finalizeClueMessageLimit = 50
+)
 
 func NewSessionMessageSource(messages *messageDAO.Repository, sessions *sessionDAO.Repository, limit int) (*SessionMessageSource, error) {
 	if messages == nil || sessions == nil {
@@ -63,11 +70,57 @@ func NewSessionMessageSource(messages *messageDAO.Repository, sessions *sessionD
 	return &SessionMessageSource{messages: messages, sessions: sessions, limit: limit}, nil
 }
 
-func (s *SessionMessageSource) LoadSessionMessages(ctx context.Context, userID int64, sessionID string) ([]SessionMessage, error) {
+// LoadUnprocessedMessages reads the session's messages after the watermark,
+// oldest first, in batches until the per-run budget is exhausted or the
+// session runs out. Ownership is resolved once up front: a read for a
+// session the caller does not own looks exactly like a session that does
+// not exist.
+func (s *SessionMessageSource) LoadUnprocessedMessages(ctx context.Context, userID int64, sessionID string, afterID uint) ([]SessionMessage, error) {
 	if _, err := s.sessions.GetByIDAndUserID(ctx, sessionID, userID); err != nil {
 		return nil, fmt.Errorf("session not found for finalize: %w", err)
 	}
-	rows, err := s.messages.ListBySession(ctx, sessionID, s.limit)
+	collected := make([]SessionMessage, 0, finalizeMessageBatch)
+	cursor := afterID
+	for len(collected) < s.limit {
+		batch := finalizeMessageBatch
+		if remaining := s.limit - len(collected); remaining < batch {
+			batch = remaining
+		}
+		rows, err := s.messages.ListAfter(ctx, sessionID, cursor, batch)
+		if err != nil {
+			return nil, err
+		}
+		if len(rows) == 0 {
+			break
+		}
+		for _, row := range rows {
+			collected = append(collected, SessionMessage{
+				ID: row.ID, IsUser: row.IsUser, Content: row.Content, CreatedAt: row.CreatedAt,
+			})
+		}
+		if len(rows) < batch {
+			break
+		}
+		cursor = rows[len(rows)-1].ID
+	}
+	return collected, nil
+}
+
+// LoadSessionMessagesByID reads the whiteboard's referenced words through
+// their owner and session: the scoped owned read joins the session the
+// account owns, so a foreign id comes back as absent instead of leaking
+// another conversation's rows. The clue set is bounded by the board's own
+// structure; the DAO's own bound is the defensive floor.
+func (s *SessionMessageSource) LoadSessionMessagesByID(ctx context.Context, userID int64, sessionID string, messageIDs []uint) ([]SessionMessage, error) {
+	if len(messageIDs) == 0 {
+		return nil, nil
+	}
+	ids := append([]uint(nil), messageIDs...)
+	sort.Slice(ids, func(left, right int) bool { return ids[left] > ids[right] })
+	if len(ids) > finalizeClueMessageLimit {
+		ids = ids[:finalizeClueMessageLimit]
+	}
+	rows, err := s.messages.ReadOwnedMessagesBySession(ctx, userID, map[string][]uint{sessionID: ids})
 	if err != nil {
 		return nil, err
 	}

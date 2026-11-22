@@ -40,6 +40,18 @@ function installGatedFetch() {
 /** Records which fetch carried which signal, so aborts are observable. */
 let signals
 
+/** The last fetch that was an actual history read. The finalize notification
+ * rides along on switches and closes without a signal, so assertions about the
+ * history request must name it by URL, not by position. */
+function lastHistoryCall() {
+  return calls.filter((call) => /\/api\/v1\/sessions\/[^/]+\/messages$/.test(call.url)).at(-1)
+}
+
+/** The last finalize notification, if one fired. */
+function lastFinalizeCall() {
+  return calls.filter((call) => call.url.includes('/agent/sessions/') && call.url.endsWith('/finalize')).at(-1)
+}
+
 function okMessages(id, content) {
   return jsonResponse({
     data: { items: [{ id, role: 'user', content }] },
@@ -146,14 +158,14 @@ describe('out-of-order history responses', () => {
 
     const openingA = chat.openSession('A')
     await settle(1)
-    const aSignal = calls.at(-1).init.signal
+    const aSignal = lastHistoryCall().init.signal
     signals.push(aSignal)
 
     const openingB = chat.openSession('B')
     await settle(1)
 
     expect(aSignal.aborted).toBe(true)
-    expect(calls.at(-1).init.signal).not.toBe(aSignal)
+    expect(lastHistoryCall().init.signal).not.toBe(aSignal)
 
     gates.B.resolve(okMessages('B-1', 'B 的消息'))
     await openingB
@@ -169,7 +181,7 @@ describe('other paths that must not leave a stale history request', () => {
     const openingA = chat.openSession('A')
     await settle()
     chat.closeSession()
-    const pendingSignal = calls.at(-1).init.signal
+    const pendingSignal = lastHistoryCall().init.signal
 
     gates.A.resolve(okMessages('A-1', 'A 的消息'))
     await openingA
@@ -196,6 +208,65 @@ describe('other paths that must not leave a stale history request', () => {
     expect(chat.activeId.value).toBe('')
     expect(chat.messages.value).toEqual([])
     expect(chat.sessions.value).toEqual([])
+  })
+
+  it('closing a session notifies the server to finalize it, apart from the cancel', async () => {
+    const chat = useChat()
+
+    const openingA = chat.openSession('A')
+    await settle()
+    chat.closeSession()
+    await settle()
+
+    expect(lastFinalizeCall().url).toBe('https://api.test/api/v1/AI/agent/sessions/A/finalize')
+    // The notification is fire-and-forget: no signal, no transcript impact.
+    expect(lastFinalizeCall().init.signal).toBeUndefined()
+    expect(lastFinalizeCall().init.method).toBe('POST')
+    gates.A.resolve(okMessages('A-1', 'A 的消息'))
+    await openingA
+    await settle()
+    expect(chat.messages.value).toEqual([])
+  })
+
+  it('switching sessions notifies the one being left, not the one being opened', async () => {
+    const chat = useChat()
+
+    const openingA = chat.openSession('A')
+    await settle()
+    const openingB = chat.openSession('B')
+    await settle()
+
+    expect(lastFinalizeCall().url).toBe('https://api.test/api/v1/AI/agent/sessions/A/finalize')
+    // The first open had no session to leave, so exactly one notification.
+    expect(calls.filter((call) => call.url.endsWith('/finalize')).length).toBe(1)
+    expect(chat.activeId.value).toBe('B')
+
+    gates.B.resolve(okMessages('B-1', 'B 的消息'))
+    await openingB
+    gates.A.resolve(okMessages('A-1', 'A 的消息'))
+    await openingA
+  })
+
+  it('a failing finalize notification cannot break the close', async () => {
+    const chat = useChat()
+
+    const openingA = chat.openSession('A')
+    await settle()
+    const previousFetch = globalThis.fetch
+    globalThis.fetch = async (url, init = {}) => {
+      if (String(url).endsWith('/finalize')) throw new Error('network gone')
+      return previousFetch(url, init)
+    }
+    expect(() => chat.closeSession()).not.toThrow()
+    await settle()
+    expect(chat.activeId.value).toBe('')
+
+    gates.A.resolve(okMessages('A-1', 'A 的消息'))
+    await openingA
+    await settle()
+    // The history request was still cancelled even though the notification
+    // could not reach the server.
+    expect(lastHistoryCall().init.signal.aborted).toBe(true)
   })
 
   it('starting an answer is not overwritten by a history load still running', async () => {

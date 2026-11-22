@@ -119,8 +119,33 @@ func (f fakeFinalizeBoards) GetWhiteboard(ctx context.Context, userID int64, ses
 
 type fakeFinalizeMessages struct{ messages []SessionMessage }
 
-func (f fakeFinalizeMessages) LoadSessionMessages(ctx context.Context, userID int64, sessionID string) ([]SessionMessage, error) {
-	return f.messages, nil
+// LoadUnprocessedMessages returns the messages past the watermark. The fake
+// skips batching: it hands back everything after the watermark in one go,
+// which is what the production adapter's batches add up to.
+func (f fakeFinalizeMessages) LoadUnprocessedMessages(ctx context.Context, userID int64, sessionID string, afterID uint) ([]SessionMessage, error) {
+	result := make([]SessionMessage, 0, len(f.messages))
+	for _, message := range f.messages {
+		if message.ID > afterID {
+			result = append(result, message)
+		}
+	}
+	return result, nil
+}
+
+// LoadSessionMessagesByID returns the named messages when they belong to the
+// fake's store - the clue read.
+func (f fakeFinalizeMessages) LoadSessionMessagesByID(ctx context.Context, userID int64, sessionID string, messageIDs []uint) ([]SessionMessage, error) {
+	wanted := make(map[uint]struct{}, len(messageIDs))
+	for _, id := range messageIDs {
+		wanted[id] = struct{}{}
+	}
+	result := make([]SessionMessage, 0, len(messageIDs))
+	for _, message := range f.messages {
+		if _, ok := wanted[message.ID]; ok {
+			result = append(result, message)
+		}
+	}
+	return result, nil
 }
 
 type fakeFinalizeCatalogue struct{ topics []Topic }
@@ -508,11 +533,14 @@ func TestFinalizeSameSourceRetryKeepsOneCandidate(t *testing.T) {
 	// fingerprint is now known for this session.
 	known.known[first.Proposals[0].Fingerprint] = struct{}{}
 
-	// A later trigger sees one more message but proposes the same content.
-	messages := append(ext01Messages(), SessionMessage{ID: 12, IsUser: true, Content: "下次接着做 select 的题。", CreatedAt: finalizeAt(60)})
+	// A later trigger sees one more message and proposes the same content
+	// resting on that new message: covered words are only visible through
+	// the board, which cites m03 here - but the content is what repeats,
+	// so the fingerprint is what suppresses it.
+	messages := append(ext01Messages(), SessionMessage{ID: 12, IsUser: true, Content: "以后讲新概念还是先举例再讲定义，接着做 select 的题。", CreatedAt: finalizeAt(60)})
 	retryService := newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: messages},
 		nil, known, fakeFinalizeGlobalMind{}, nil,
-		&scriptedProposer{proposals: []SessionRawProposal{preferenceProposal([]uint{3}, nil)}}, relations, 0)
+		&scriptedProposer{proposals: []SessionRawProposal{preferenceProposal([]uint{12}, nil)}}, relations, 50)
 	second, err := retryService.Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-dev-EXT-01", CoveredMessageID: 11}})
 	if err != nil {
 		t.Fatalf("second extract: %v", err)

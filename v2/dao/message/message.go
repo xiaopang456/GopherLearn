@@ -366,21 +366,3 @@ func escapeLike(value string) string {
 	replacer := strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_")
 	return replacer.Replace(value)
 }
-
-// ListBySession returns every message of one session, oldest first, bounded
-// by limit. The finalize extraction reads the session once when it ends; the
-// bound keeps an unusually long session from turning the read into an
-// unbounded scan, and the extraction's own window parameter narrows what the
-// model actually sees.
-func (r *Repository) ListBySession(ctx context.Context, sessionID string, limit int) ([]model.Message, error) {
-	if r == nil || r.db == nil || sessionID == "" || limit < 1 {
-		return nil, fmt.Errorf("invalid session message query")
-	}
-	var messages []model.Message
-	err := r.db.WithContext(ctx).
-		Where("session_id = ?", sessionID).
-		Order("id ASC").
-		Limit(limit).
-		Find(&messages).Error
-	return messages, err
-}

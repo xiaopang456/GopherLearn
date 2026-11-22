@@ -87,6 +87,20 @@ func newFinalizeAcceptance(t *testing.T) *finalizeAcceptance {
 		t.Fatal(err)
 	}
 	repo := memorydao.NewRepository(db)
+	// 同名会话跨次运行复用，且 messages 没有 user_id 列可按用户清：先按
+	// 会话 id 硬删本套夹具的所有残留，再开始播种。
+	if err := db.Unscoped().Where("session_id IN ?", finalizeFixtureSessionIDs()).Delete(&model.Message{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Unscoped().Where("id IN ?", finalizeFixtureSessionIDs()).Delete(&model.Session{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Unscoped().Where("session_id IN ?", finalizeFixtureSessionIDs()).Delete(&model.SessionWhiteboard{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Unscoped().Where("session_id IN ?", finalizeFixtureSessionIDs()).Delete(&model.SessionFinalizeProgress{}).Error; err != nil {
+		t.Fatal(err)
+	}
 	acc := &finalizeAcceptance{
 		db:       db,
 		repo:     repo,
@@ -129,8 +143,10 @@ func newFinalizeAcceptance(t *testing.T) *finalizeAcceptance {
 		db.Unscoped().Where("user_id = ?", acc.userID).Delete(&model.LongTermMemory{})
 		db.Unscoped().Where("user_id = ?", acc.userID).Delete(&model.SessionFinalizeProgress{})
 		db.Unscoped().Where("user_id = ?", acc.userID).Delete(&model.SessionWhiteboard{})
-		db.Unscoped().Where("user_id = ?", acc.userID).Delete(&model.Message{})
-		db.Unscoped().Where("user_id = ?", acc.userID).Delete(&model.Session{})
+		db.Unscoped().Where("session_id IN ?", finalizeFixtureSessionIDs()).Delete(&model.Message{})
+		db.Unscoped().Where("id IN ?", finalizeFixtureSessionIDs()).Delete(&model.Session{})
+		db.Unscoped().Where("session_id IN ?", finalizeFixtureSessionIDs()).Delete(&model.SessionWhiteboard{})
+		db.Unscoped().Where("session_id IN ?", finalizeFixtureSessionIDs()).Delete(&model.SessionFinalizeProgress{})
 		db.Unscoped().Where("user_id = ?", acc.userID).Delete(&model.TopicProgress{})
 	})
 	return acc
@@ -138,6 +154,12 @@ func newFinalizeAcceptance(t *testing.T) *finalizeAcceptance {
 
 func uniqueFinalizeUserID() int64 {
 	return time.Now().UnixNano() % 1_000_000_000
+}
+
+// finalizeFixtureSessionIDs lists the session ids this acceptance reuses
+// across runs; the cleanup keys on them because messages carry no user id.
+func finalizeFixtureSessionIDs() []string {
+	return []string{"fin-acc-0001", "fin-acc-missed", "fin-acc-long"}
 }
 
 // seedSession inserts one session of the learner with its messages and its
@@ -361,15 +383,16 @@ func TestFinalizeAcceptanceFullChain(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed active memory: %v", err)
 	}
-	acc.proposer.proposals = []SessionRawProposal{{
-		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassTeachingPreference, Subject: "讲解偏好",
-		Durability: model.MemoryDurabilityStable,
-		Content:    seedContent, EvidenceIDs: []uint{stored[2].ID}, StatementEvidenceID: stored[2].ID,
-	}}
-	// 造一条新消息把水位推前，这次触发才真的跑提取。
+	// 造一条新消息把水位推前，这次触发才真的跑提取；证据引用这条新消息
+	// （已覆盖的原话只经白板可见，而这条内容在本会话没有白板线索）。
 	skipMessage := acc.seedMessages(t, ctx, sessionID, []SessionMessage{
 		{IsUser: true, Content: "这条也顺便说说，然后今天就到这。", CreatedAt: preferenceAt.Add(10 * time.Minute)},
 	})
+	acc.proposer.proposals = []SessionRawProposal{{
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassTeachingPreference, Subject: "讲解偏好",
+		Durability: model.MemoryDurabilityStable,
+		Content:    seedContent, EvidenceIDs: []uint{skipMessage[0].ID}, StatementEvidenceID: skipMessage[0].ID,
+	}}
 	skipOutcome, err := acc.runner.RunSession(ctx, acc.userID, sessionID)
 	if err != nil {
 		t.Fatalf("skip run: %v", err)
@@ -458,16 +481,17 @@ func TestFinalizeAcceptanceFullChain(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("cancel draft: %v", err)
 	}
+	// 造一条新消息把水位推前，让这次触发真的跑提取；同内容的重复提议
+	// 引用这条新消息（已覆盖的原话只经白板可见）。
+	again := acc.seedMessages(t, ctx, sessionID, []SessionMessage{
+		{IsUser: true, Content: "顺带把这条也记上：gorm 的 Unscoped。", CreatedAt: preferenceAt.Add(40 * time.Minute)},
+	})
 	acc.proposer.proposals = []SessionRawProposal{{
 		Scope: model.MemoryScopeTopic, Kind: FinalizeKindUnderstanding, TopicKey: "gorm",
 		Subject: "GORM 软删除", Durability: model.MemoryDurabilityStable,
 		Content:     "我老忘记 GORM 默认查询会过滤软删除记录，要用 Unscoped 才能看到。",
-		EvidenceIDs: []uint{newMessages[0].ID}, StatementEvidenceID: newMessages[0].ID,
+		EvidenceIDs: []uint{again[0].ID}, StatementEvidenceID: again[0].ID,
 	}}
-	// 造一条新消息把水位推前，让这次触发真的跑提取。
-	again := acc.seedMessages(t, ctx, sessionID, []SessionMessage{
-		{IsUser: true, Content: "顺带把这条也记上：gorm 的 Unscoped。", CreatedAt: preferenceAt.Add(40 * time.Minute)},
-	})
 	ignoredOutcome, err := acc.runner.RunSession(ctx, acc.userID, sessionID)
 	if err != nil {
 		t.Fatalf("ignored run: %v", err)
@@ -563,7 +587,7 @@ func TestFinalizeAcceptanceFullChain(t *testing.T) {
 		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassTeachingPreference, Subject: "讲解偏好",
 		Durability:  model.MemoryDurabilityStable,
 		Content:     "讲新概念先举例，再给正式定义，例子要配一道练习题。",
-		EvidenceIDs: []uint{missedStored[2].ID, narrowMessage[0].ID}, StatementEvidenceID: missedStored[2].ID,
+		EvidenceIDs: []uint{narrowMessage[0].ID}, StatementEvidenceID: narrowMessage[0].ID,
 	}}
 	narrowed, err := acc.runner.RunSession(ctx, acc.userID, missedSession)
 	if err != nil {
@@ -607,4 +631,98 @@ func (a *finalizeAcceptance) seedMessages(t *testing.T, ctx context.Context, ses
 		stored = append(stored, SessionMessage{ID: message.ID, IsUser: row.IsUser, Content: row.Content, CreatedAt: row.CreatedAt})
 	}
 	return stored
+}
+
+// TestFinalizeAcceptanceLongSessionBatches is the long-session boundary
+// regression: reading runs in batches past the watermark, so a session
+// longer than one run's budget still proposes from its tail and loses
+// nothing - the old earliest-window query stopped at the same 2,000 forever
+// and every later message stayed unread.
+func TestFinalizeAcceptanceLongSessionBatches(t *testing.T) {
+	acc := newFinalizeAcceptance(t)
+	ctx := context.Background()
+	sessionID := "fin-acc-long"
+
+	const total = 2050
+	base := time.Date(2026, 11, 22, 18, 0, 0, 0, time.FixedZone("CST", 8*3600))
+	rows := make([]model.Message, 0, total)
+	for i := 0; i < total; i += 1 {
+		rows = append(rows, model.Message{
+			SessionID: sessionID, UserName: "finalize-acc",
+			IsUser:    i%2 == 0,
+			Content:   fmt.Sprintf("长会话流水消息 %d 号。", i+1),
+			CreatedAt: base.Add(time.Duration(i) * time.Second),
+		})
+	}
+	// 收尾那条必须是学习者的原话：回归的候选引用它。
+	rows[total-1].IsUser = true
+	if err := acc.db.WithContext(ctx).CreateInBatches(rows, 200).Error; err != nil {
+		t.Fatalf("seed long session messages: %v", err)
+	}
+	if err := acc.db.WithContext(ctx).Create(&model.Session{
+		ID: sessionID, UserID: acc.userID, UserName: "finalize-acc", Mode: model.SessionModeNormal,
+		Title: "长会话验收", CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}).Error; err != nil {
+		t.Fatalf("seed long session: %v", err)
+	}
+	// CreateInBatches 不保证把自增 id 回填进值切片，落库后按会话回读。
+	var stored []model.Message
+	if err := acc.db.WithContext(ctx).
+		Where("session_id = ?", sessionID).
+		Order("id ASC").
+		Find(&stored).Error; err != nil {
+		t.Fatalf("reload long session messages: %v", err)
+	}
+	if len(stored) != total {
+		t.Fatalf("stored=%d, want %d", len(stored), total)
+	}
+	last := stored[total-1]
+	if !last.IsUser {
+		t.Fatalf("the last stored message is not the learner's")
+	}
+
+	// 第一轮：预算 2000 条为止，水位停在预算边界——不是会话末尾。
+	acc.proposer.proposals = nil
+	first, err := acc.runner.RunSession(ctx, acc.userID, sessionID)
+	if err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	if first.NoNewContent || !first.Advanced {
+		t.Fatalf("first=%+v", first)
+	}
+	if got := acc.progress(ctx, sessionID); got != stored[1999].ID {
+		t.Fatalf("watermark=%d, want the budget boundary %d (按水位分批)", got, stored[1999].ID)
+	}
+	if got := acc.progress(ctx, sessionID); got >= last.ID {
+		t.Fatalf("watermark=%d reached the tail on run one, want batching", got)
+	}
+
+	// 第二轮：从未处理的水位继续读尾部，尾部候选照常提议、不漏记。
+	acc.proposer.proposals = []SessionRawProposal{{
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassConstraint, Subject: "长会话约束",
+		Durability:  model.MemoryDurabilityStable,
+		Content:     "长会话收尾仍要记：本轮流水只到占位，长期约束以尾部原话为准。",
+		EvidenceIDs: []uint{last.ID}, StatementEvidenceID: last.ID,
+	}}
+	second, err := acc.runner.RunSession(ctx, acc.userID, sessionID)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if len(second.Persisted) != 1 || len(second.Skipped) != 0 || len(second.RetryPending) != 0 {
+		t.Fatalf("second=%+v, want the tail candidate proposed (不漏记)", second)
+	}
+	if second.Proposals[0].Evidence[0].MessageID != last.ID {
+		t.Fatalf("tail evidence=%+v, want traceable to the last message", second.Proposals[0].Evidence)
+	}
+	if got := acc.progress(ctx, sessionID); got != last.ID {
+		t.Fatalf("watermark=%d, want the session tail %d", got, last.ID)
+	}
+	// 第三轮：再触发无事可做，不出卡。
+	third, err := acc.runner.RunSession(ctx, acc.userID, sessionID)
+	if err != nil {
+		t.Fatalf("third run: %v", err)
+	}
+	if !third.NoNewContent || len(third.Persisted) != 0 {
+		t.Fatalf("third=%+v, want nothing new", third)
+	}
 }

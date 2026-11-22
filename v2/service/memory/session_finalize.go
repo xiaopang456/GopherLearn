@@ -173,9 +173,6 @@ type SessionExtractionInput struct {
 	Board model.SessionWhiteboardDocument
 	// Visible maps every message id the proposer may cite to the message.
 	Visible map[uint]SessionMessage
-	// RecentUserIDs are the learner's messages the window covers, oldest
-	// first. They are a subset of Visible.
-	RecentUserIDs []uint
 	// Topics is the learner's topic catalogue, for the proposer to reuse a
 	// key from. It carries no memory content and no scores.
 	Topics []Topic
@@ -267,8 +264,17 @@ type FinalizeBoardSource interface {
 // through its owner: the finalize trigger passes a (user, session) pair it
 // has already checked, and the adapter keeps that check by never returning
 // messages for a session the user does not own.
+//
+// The two reads answer the two reasons the extraction opens a session: the
+// messages the watermark has not covered yet, read oldest first in batches
+// so a long session is covered across triggers instead of one unbounded
+// scan that always stops at the same bound; and the whiteboard's own
+// references, which may point at messages an earlier run already covered -
+// the clue has to stay readable regardless of the watermark, but it is
+// bounded by the board's own structure.
 type FinalizeMessageSource interface {
-	LoadSessionMessages(ctx context.Context, userID int64, sessionID string) ([]SessionMessage, error)
+	LoadUnprocessedMessages(ctx context.Context, userID int64, sessionID string, afterID uint) ([]SessionMessage, error)
+	LoadSessionMessagesByID(ctx context.Context, userID int64, sessionID string, messageIDs []uint) ([]SessionMessage, error)
 }
 
 // FinalizeTopicCatalogue lists the learner's topics, derived from quiz
@@ -538,14 +544,15 @@ func (s *SessionFinalizeService) Extract(ctx context.Context, request FinalizeRe
 	sessionID := strings.TrimSpace(request.Cursor.SessionID)
 	result := FinalizeResult{SessionID: sessionID, Cursor: FinalizeCursor{SessionID: sessionID, CoveredMessageID: request.Cursor.CoveredMessageID}}
 
-	messages, err := s.messages.LoadSessionMessages(ctx, request.UserID, sessionID)
+	// 未处理的已完成消息：从水位之后按批读，读到本轮预算为止。水位的
+	// 语义因此是真正的处理进度——一个两千条之后还有新消息的会话，由下一
+	// 次触发接着读，而不是被同一个"最早两千条"的界挡住。
+	unprocessed, err := s.messages.LoadUnprocessedMessages(ctx, request.UserID, sessionID, request.Cursor.CoveredMessageID)
 	if err != nil {
-		return FinalizeResult{}, fmt.Errorf("load session messages: %w", err)
+		return FinalizeResult{}, fmt.Errorf("load unprocessed messages: %w", err)
 	}
-	byID := make(map[uint]SessionMessage, len(messages))
 	newest := uint(0)
-	for _, message := range messages {
-		byID[message.ID] = message
+	for _, message := range unprocessed {
 		if message.ID > newest {
 			newest = message.ID
 		}
@@ -553,7 +560,7 @@ func (s *SessionFinalizeService) Extract(ctx context.Context, request FinalizeRe
 	// Nothing new since the last trigger: no proposer call, no proposals,
 	// the cursor stays where it was. This is the "no new content" branch the
 	// plan's repeated-trigger rule rests on.
-	if newest == 0 || newest <= request.Cursor.CoveredMessageID {
+	if newest == 0 {
 		result.NoNewContent = true
 		return result, nil
 	}
@@ -564,9 +571,16 @@ func (s *SessionFinalizeService) Extract(ctx context.Context, request FinalizeRe
 	}
 	result.BoardMissing = boardMissing
 
+	// 白板线索指向的原话单独按引用读：线索可能指向本轮之前已覆盖的消息，
+	// 不受水位限制，但集合由白板自身的引用结构决定大小。
+	clue, err := s.messages.LoadSessionMessagesByID(ctx, request.UserID, sessionID, board.EvidenceMessageIDs())
+	if err != nil {
+		return FinalizeResult{}, fmt.Errorf("load board clue messages: %w", err)
+	}
+
 	input := &SessionExtractionInput{
 		UserID: request.UserID, SessionID: sessionID,
-		Visible: visibleMessages(board, byID, s.RecentMessageWindow),
+		Visible: visibleMessages(clue, unprocessed, s.RecentMessageWindow),
 		Topics:  s.loadTopics(ctx, request.UserID),
 	}
 
@@ -801,29 +815,24 @@ func classScopedEntries(entries []model.LongTermMemory, class model.MemoryProfil
 }
 
 // visibleMessages assembles the set the proposer may cite: every message the
-// board cites, plus a bounded window of the session's most recent messages on
-// both sides. The window is what keeps a fact the board missed extractable
-// while its message is still recent - the plan §6.1 read-back - and what
-// keeps an adopted proposal's two sides in one input when the board did not
-// carry the acceptance.
-func visibleMessages(board model.SessionWhiteboardDocument, byID map[uint]SessionMessage, window int) map[uint]SessionMessage {
+// board cites, loaded by reference, plus a bounded window of the most recent
+// unprocessed messages on both sides. The window is what keeps a fact the
+// board missed extractable while its message is still unprocessed - the plan
+// §6.1 read-back - and what keeps an adopted proposal's two sides in one
+// input when the board did not carry the acceptance.
+func visibleMessages(clue []SessionMessage, unprocessed []SessionMessage, window int) map[uint]SessionMessage {
 	visible := make(map[uint]SessionMessage)
-	for _, id := range board.EvidenceMessageIDs() {
-		if message, ok := byID[id]; ok {
-			visible[id] = message
-		}
+	for _, message := range clue {
+		visible[message.ID] = message
 	}
-	if window > 0 {
-		ids := make([]uint, 0, len(byID))
-		for id := range byID {
-			ids = append(ids, id)
+	if window > 0 && len(unprocessed) > 0 {
+		ordered := append([]SessionMessage(nil), unprocessed...)
+		sort.Slice(ordered, func(left, right int) bool { return ordered[left].ID < ordered[right].ID })
+		if len(ordered) > window {
+			ordered = ordered[len(ordered)-window:]
 		}
-		sort.Slice(ids, func(left, right int) bool { return ids[left] < ids[right] })
-		if len(ids) > window {
-			ids = ids[len(ids)-window:]
-		}
-		for _, id := range ids {
-			visible[id] = byID[id]
+		for _, message := range ordered {
+			visible[message.ID] = message
 		}
 	}
 	return visible
