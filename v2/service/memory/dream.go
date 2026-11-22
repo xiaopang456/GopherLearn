@@ -49,9 +49,13 @@ type ExplicitRepository interface {
 	UpsertDraft(context.Context, *model.MemoryDraft) (*model.MemoryDraft, bool, error)
 	GetDraft(context.Context, int64, string) (*model.MemoryDraft, error)
 	ListDrafts(context.Context, int64, model.MemoryDraftStatus, int) ([]model.MemoryDraft, error)
+	FindDraftByContent(context.Context, int64, model.MemoryScope, string, string, string, ...model.MemoryDraftStatus) (*model.MemoryDraft, error)
+	ApplyDraftEdit(context.Context, memorydao.DraftEditParams) (*model.MemoryDraft, error)
 	ResolveDraft(context.Context, memorydao.ResolveDraftParams) (*model.MemoryDraft, *memorydao.ExplicitWriteResult, error)
 	ArchiveMemory(context.Context, int64, string, string, time.Time) (*model.LongTermMemory, *model.MemoryRevision, error)
 	GetExplicitWrite(context.Context, int64, string) (*memorydao.ExplicitWriteResult, error)
+	GetActiveByID(context.Context, int64, string) (*model.LongTermMemory, error)
+	FindActiveByIDs(context.Context, int64, []string) ([]model.LongTermMemory, error)
 }
 
 type LearningProgressReader interface {
@@ -266,6 +270,10 @@ type GovernanceService struct {
 	indexSync       MemoryIndexSync
 	globalSource    GlobalMemorySnapshotSource
 	globalRelations GlobalRelationResolver
+	// topicRelations judges a proposed topic note against the active notes of
+	// its final topic on the edit path. Optional: nil means the judgement is
+	// skipped and the conflict query alone decides what the learner sees.
+	topicRelations TopicRelationResolver
 }
 
 type GlobalMemorySnapshotSource interface {
@@ -292,6 +300,17 @@ func (s *GovernanceService) UseGlobalRelations(source GlobalMemorySnapshotSource
 		return fmt.Errorf("global memory relation source and classifier are required")
 	}
 	s.globalSource, s.globalRelations = source, classifier
+	return nil
+}
+
+// UseTopicRelations attaches the topic-scope semantic judgement used by the
+// draft edit path. Optional: without it the topic conflict query alone
+// (same topic key or same content hash) decides.
+func (s *GovernanceService) UseTopicRelations(resolver TopicRelationResolver) error {
+	if resolver == nil {
+		return fmt.Errorf("topic memory relation resolver is required")
+	}
+	s.topicRelations = resolver
 	return nil
 }
 

@@ -94,6 +94,38 @@ const (
 // August" is equally readable as a preference and as a goal.
 type MemoryDurability string
 
+// MemoryProfileClass is the 全局画像类别 carried by an auto-proposed candidate:
+// which slot of the user profile this fact belongs to. The conflict query and
+// the profile rendering group by it ("同类画像对比"). It exists only for
+// global-scope memories; topic notes describe one technical topic and carry no
+// profile slot. Empty on manually written rows is fine: the writer chooses.
+type MemoryProfileClass string
+
+const (
+	ProfileClassGoal               MemoryProfileClass = "goal"
+	ProfileClassBackground         MemoryProfileClass = "background"
+	ProfileClassTeachingPreference MemoryProfileClass = "teaching_preference"
+	ProfileClassConstraint         MemoryProfileClass = "constraint"
+)
+
+func (c MemoryProfileClass) Valid() bool {
+	switch c {
+	case ProfileClassGoal, ProfileClassBackground, ProfileClassTeachingPreference, ProfileClassConstraint:
+		return true
+	default:
+		return false
+	}
+}
+
+// candidateProvenanceLimits bound the per-candidate provenance lists so one
+// proposal cannot smuggle an unbounded message dump.
+const (
+	profileClassMaxRunes  = 32
+	evidenceMaxEntries    = 20
+	assistantMaxEntries   = 20
+	provenanceRefMaxRunes = 128
+)
+
 const (
 	MemoryDurabilityStable    MemoryDurability = "stable"
 	MemoryDurabilityTimeBound MemoryDurability = "time_bound"
@@ -449,12 +481,21 @@ type LongTermMemory struct {
 	Importance        int                  `gorm:"not null" json:"importance"`
 	Status            LongTermMemoryStatus `gorm:"type:varchar(24);not null;index:idx_long_memories_scope_recall,priority:2" json:"status"`
 	UserConfirmed     bool                 `gorm:"not null;default:false" json:"user_confirmed"`
-	TombstoneHash     string               `gorm:"type:char(64);index:idx_long_memories_hash,priority:2" json:"tombstone_hash,omitempty"`
-	LastUsedAt        *time.Time           `gorm:"index" json:"last_used_at,omitempty"`
-	UsageCount        uint64               `gorm:"not null;default:0" json:"usage_count"`
-	CreatedAt         time.Time            `json:"created_at"`
-	UpdatedAt         time.Time            `json:"updated_at"`
-	DeletedAt         *time.Time           `json:"deleted_at,omitempty"`
+	// 自动候选来源契约（第三阶段批次 1）：候选字段随草稿确认保留到正式记忆。
+	// ProfileClass 是全局画像类别（仅 global）；EvidenceMessages 是用户证据
+	// 原话的消息 ID；AssistantMessages 是被采纳的助手原话的消息 ID（采纳须
+	// 同时记录两类原话）；StatementTime 是支撑当前值的原话发生时间。手动录入
+	// 与存量行留空，行为不变。
+	ProfileClass      MemoryProfileClass `gorm:"column:profile_class;type:varchar(32)" json:"profile_class,omitempty"`
+	EvidenceMessages  StringList         `gorm:"type:json" json:"evidence_messages,omitempty"`
+	AssistantMessages StringList         `gorm:"type:json" json:"assistant_messages,omitempty"`
+	StatementTime     *time.Time         `gorm:"column:statement_time" json:"statement_time,omitempty"`
+	TombstoneHash     string             `gorm:"type:char(64);index:idx_long_memories_hash,priority:2" json:"tombstone_hash,omitempty"`
+	LastUsedAt        *time.Time         `gorm:"index" json:"last_used_at,omitempty"`
+	UsageCount        uint64             `gorm:"not null;default:0" json:"usage_count"`
+	CreatedAt         time.Time          `json:"created_at"`
+	UpdatedAt         time.Time          `json:"updated_at"`
+	DeletedAt         *time.Time         `json:"deleted_at,omitempty"`
 }
 
 func (m *LongTermMemory) Validate() error {
@@ -476,6 +517,9 @@ func (m *LongTermMemory) Validate() error {
 	}
 	if !validMemoryTags(m.Tags, 0, 5) || len(m.SourceRefs) == 0 || len(m.SourceRefs) > 32 || m.Confidence < 0 || m.Confidence > 1 || m.Importance < 1 || m.Importance > 10 {
 		return fmt.Errorf("invalid long-term memory metadata")
+	}
+	if err := validateCandidateProvenance(m.Scope, m.ProfileClass, m.EvidenceMessages, m.AssistantMessages); err != nil {
+		return err
 	}
 	if !json.Valid([]byte(m.StructuredJSON)) {
 		return fmt.Errorf("invalid long-term memory state")
@@ -570,26 +614,50 @@ type MemoryRevision struct {
 // these fields, but it cannot choose owner, lifecycle status, revision actor or
 // a database action. Only the explicit confirmation API can promote it.
 type MemoryDraft struct {
-	ID             string            `gorm:"primaryKey;type:varchar(36)" json:"id"`
-	UserID         int64             `gorm:"not null;uniqueIndex:idx_memory_drafts_idempotency,priority:1;index:idx_memory_drafts_owner_status,priority:1" json:"user_id"`
-	SessionID      string            `gorm:"type:varchar(36);not null;index" json:"session_id"`
-	RunID          string            `gorm:"type:varchar(36);not null;index" json:"run_id"`
-	IdempotencyKey string            `gorm:"type:varchar(128);not null;uniqueIndex:idx_memory_drafts_idempotency,priority:2" json:"idempotency_key"`
-	Scope          MemoryScope       `gorm:"column:memory_scope;type:varchar(32);not null" json:"scope"`
-	Subject        string            `gorm:"type:varchar(200);not null" json:"subject"`
-	Content        string            `gorm:"type:text;not null" json:"content"`
-	ContentHash    string            `gorm:"type:char(64);not null;index" json:"-"`
-	Tags           StringList        `gorm:"type:json;not null" json:"tags"`
-	TopicKey       string            `gorm:"type:varchar(160);index" json:"topic_key,omitempty"`
-	Durability     MemoryDurability  `gorm:"type:varchar(16);not null" json:"durability"`
-	ValidUntil     *time.Time        `gorm:"index" json:"valid_until,omitempty"`
-	ConflictIDs    StringList        `gorm:"type:json;not null" json:"conflict_ids"`
+	ID             string           `gorm:"primaryKey;type:varchar(36)" json:"id"`
+	UserID         int64            `gorm:"not null;uniqueIndex:idx_memory_drafts_idempotency,priority:1;index:idx_memory_drafts_owner_status,priority:1" json:"user_id"`
+	SessionID      string           `gorm:"type:varchar(36);not null;index" json:"session_id"`
+	RunID          string           `gorm:"type:varchar(36);not null;index" json:"run_id"`
+	IdempotencyKey string           `gorm:"type:varchar(128);not null;uniqueIndex:idx_memory_drafts_idempotency,priority:2" json:"idempotency_key"`
+	Scope          MemoryScope      `gorm:"column:memory_scope;type:varchar(32);not null" json:"scope"`
+	Subject        string           `gorm:"type:varchar(200);not null" json:"subject"`
+	Content        string           `gorm:"type:text;not null" json:"content"`
+	ContentHash    string           `gorm:"type:char(64);not null;index" json:"-"`
+	Tags           StringList       `gorm:"type:json;not null" json:"tags"`
+	TopicKey       string           `gorm:"type:varchar(160);index" json:"topic_key,omitempty"`
+	Durability     MemoryDurability `gorm:"type:varchar(16);not null" json:"durability"`
+	ValidUntil     *time.Time       `gorm:"index" json:"valid_until,omitempty"`
+	ConflictIDs    StringList       `gorm:"type:json;not null" json:"conflict_ids"`
+	// 自动候选来源契约：与 LongTermMemory 上的同名字段一一对应。候选写入草稿，
+	// 确认后随正式记忆保留；批次 2 的提取端负责填这些字段，批次 1 用固定候选
+	// 验证保存、读取与确认全链路。旧草稿与手动路径留空，行为不变。
+	ProfileClass      MemoryProfileClass `gorm:"column:profile_class;type:varchar(32)" json:"profile_class,omitempty"`
+	EvidenceMessages  StringList         `gorm:"type:json" json:"evidence_messages,omitempty"`
+	AssistantMessages StringList         `gorm:"type:json" json:"assistant_messages,omitempty"`
+	StatementTime     *time.Time         `gorm:"column:statement_time" json:"statement_time,omitempty"`
+	// ConflictHashes pins the ContentHash of every ConflictIDs entry at the
+	// moment the draft was proposed (or last edited), index-aligned with
+	// ConflictIDs. Confirmation re-reads the target under a row lock inside
+	// the write transaction and refuses to supersede a row whose hash moved:
+	// the user must look at the latest content and re-confirm.
+	ConflictHashes StringList        `gorm:"type:json" json:"conflict_hashes,omitempty"`
 	Status         MemoryDraftStatus `gorm:"type:varchar(16);not null;index:idx_memory_drafts_owner_status,priority:2" json:"status"`
 	MemoryID       string            `gorm:"type:varchar(36);index" json:"memory_id,omitempty"`
-	CreatedAt      time.Time         `json:"created_at"`
-	UpdatedAt      time.Time         `json:"updated_at"`
-	ResolvedAt     *time.Time        `json:"resolved_at,omitempty"`
+	// CancelReason distinguishes the two ways a draft ends cancelled: the
+	// learner ignored it (empty reason) and the re-check after an edit or a
+	// topic change found the content identical to an active memory
+	// (CancelReasonSemanticDuplicate). It is never set on pending or
+	// confirmed drafts.
+	CancelReason string     `gorm:"type:varchar(64)" json:"cancel_reason,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	ResolvedAt   *time.Time `json:"resolved_at,omitempty"`
 }
+
+// CancelReasonSemanticDuplicate marks a draft the system closed itself because
+// the final content under the final topic was judged identical to an active
+// memory. The learner never has to click "abandon" on such a draft.
+const CancelReasonSemanticDuplicate = "semantic_duplicate"
 
 func (d *MemoryDraft) Validate() error {
 	if d == nil || strings.TrimSpace(d.ID) == "" || d.UserID <= 0 || strings.TrimSpace(d.SessionID) == "" || strings.TrimSpace(d.RunID) == "" ||
@@ -602,13 +670,24 @@ func (d *MemoryDraft) Validate() error {
 	if strings.TrimSpace(d.Subject) == "" || strings.TrimSpace(d.Content) == "" || utf8.RuneCountInString(d.Subject) > MemorySubjectMaxRunes || utf8.RuneCountInString(d.Content) > MemoryContentMaxRunes || d.ContentHash != MemoryContentHash(d.Content) {
 		return fmt.Errorf("invalid memory draft content")
 	}
-	if !validMemoryTags(d.Tags, 0, 5) || len(d.ConflictIDs) > 20 {
+	if !validMemoryTags(d.Tags, 0, 5) || len(d.ConflictIDs) > 20 || len(d.ConflictHashes) > 20 || utf8.RuneCountInString(d.CancelReason) > 64 {
 		return fmt.Errorf("invalid memory draft metadata")
 	}
-	if err := validateMemoryShape(d.Scope, d.TopicKey, d.Durability, d.ValidUntil, d.CreatedAt); err != nil {
+	if err := validateCandidateProvenance(d.Scope, d.ProfileClass, d.EvidenceMessages, d.AssistantMessages); err != nil {
 		return err
 	}
-	if d.Status == MemoryDraftPending && (d.MemoryID != "" || d.ResolvedAt != nil) {
+	// A topic-scope draft may wait for its attribution: the learner assigns the
+	// topic key at the memory page before confirming, or ignores the draft
+	// while it is still unassigned. Only a confirmed draft must carry the key;
+	// the write path refuses to confirm one that is still empty.
+	shapeTopicKey := d.TopicKey
+	if d.Scope == MemoryScopeTopic && strings.TrimSpace(shapeTopicKey) == "" && d.Status != MemoryDraftConfirmed {
+		shapeTopicKey = "pending-attribution"
+	}
+	if err := validateMemoryShape(d.Scope, shapeTopicKey, d.Durability, d.ValidUntil, d.CreatedAt); err != nil {
+		return err
+	}
+	if d.Status == MemoryDraftPending && (d.MemoryID != "" || d.ResolvedAt != nil || strings.TrimSpace(d.CancelReason) != "") {
 		return fmt.Errorf("pending memory draft cannot be resolved")
 	}
 	if d.Status == MemoryDraftConfirmed && (d.MemoryID == "" || d.ResolvedAt == nil) {
@@ -659,6 +738,32 @@ func MemoryContentHash(content string) string {
 	value := strings.TrimSpace(content)
 	sum := sha256.Sum256([]byte(value))
 	return fmt.Sprintf("%x", sum[:])
+}
+
+// validateCandidateProvenance guards the auto-candidate provenance fields:
+// the profile class exists only for global memories and must name a known
+// slot; the evidence/assistant message lists are bounded and each reference
+// must be a non-empty message id.
+func validateCandidateProvenance(scope MemoryScope, profileClass MemoryProfileClass, evidence, assistant StringList) error {
+	class := MemoryProfileClass(strings.TrimSpace(string(profileClass)))
+	if utf8.RuneCountInString(string(class)) > profileClassMaxRunes || (class != "" && !class.Valid()) {
+		return fmt.Errorf("invalid memory profile class %q", string(profileClass))
+	}
+	if scope == MemoryScopeTopic && class != "" {
+		return fmt.Errorf("topic memory must not carry a profile class")
+	}
+	if len(evidence) > evidenceMaxEntries || len(assistant) > assistantMaxEntries {
+		return fmt.Errorf("memory provenance list exceeds its bound")
+	}
+	for _, list := range [][]string{evidence, assistant} {
+		for _, ref := range list {
+			trimmed := strings.TrimSpace(ref)
+			if trimmed == "" || utf8.RuneCountInString(trimmed) > provenanceRefMaxRunes {
+				return fmt.Errorf("invalid memory provenance message reference")
+			}
+		}
+	}
+	return nil
 }
 
 // validMemoryTags allows an empty tag set.

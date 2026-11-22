@@ -24,6 +24,9 @@ export async function nativeMemoryRequest(path, { method = 'GET', body, signal }
     const error = new ApiError(result?.status_msg || '原记忆治理操作未完成。', {
       status: response.status, code: nativeCode === 2006 ? 'unauthorized' : `v2_${nativeCode ?? response.status}`, path })
     error.nativeCode = nativeCode
+    // A 409 with a conflict payload (target modified) carries the latest rows
+    // the learner must look at before re-confirming. Keep the body reachable.
+    error.data = result || null
     throw reportIfRejected(error)
   }
   return result
@@ -40,3 +43,5 @@ export const archiveV2Memory = (id, reason, signal) => nativeMemoryRequest(`${me
 export const deleteV2Memory = (id, reason, signal) => nativeMemoryRequest(memoryPath(id), { method: 'DELETE', body: { reason }, signal })
 export const revisionsV2Memory = (id, signal) => nativeMemoryRequest(`${memoryPath(id)}/revisions`, { signal })
 export const resolveV2Draft = (id, body, signal) => nativeMemoryRequest(`/api/v1/AI/agent/memory-drafts/${encodeURIComponent(String(id))}/resolve`, { method: 'POST', body, signal })
+export const editV2Draft = (id, body, signal) => nativeMemoryRequest(`/api/v1/AI/agent/memory-drafts/${encodeURIComponent(String(id))}`, { method: 'PATCH', body, signal })
+export const listV2MemoryTopics = (signal) => nativeMemoryRequest('/api/v1/AI/agent/memory-topics', { signal })

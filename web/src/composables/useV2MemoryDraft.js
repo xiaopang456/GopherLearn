@@ -22,11 +22,19 @@ export function useV2MemoryDraft(getDraft, getRunId = () => '') {
     outcome.value = response
     return response
   }
-  function decide(action, reason = '', target = '') {
+  function decide(action, reason = '', target = '', expectedTargetHash = '') {
     if (operation.busy.value) return Promise.resolve(null)
     if (!['add', 'replace', 'cancel'].includes(action) || !v2DraftId(getDraft())) return Promise.resolve(null)
     if ((action !== 'cancel' && !reason.trim()) || (action === 'replace' && !v2ConflictIds(getDraft()).includes(target))) return Promise.resolve(null)
-    return publish(() => operation.start('resolve', { action, reason, ...(action === 'replace' ? { target_memory_id: target } : {}) }, v2DraftId(getDraft())))
+    const body = { action, reason, ...(action === 'replace' ? { target_memory_id: target } : {}) }
+    // Set after the learner looked at the latest content a modified-target
+    // answer returned; the server re-verifies it inside the write transaction.
+    if (action === 'replace' && expectedTargetHash) body.expected_target_hash = expectedTargetHash
+    return publish(() => operation.start('resolve', body, v2DraftId(getDraft())))
+  }
+  function editDraft(body) {
+    if (operation.busy.value || !v2DraftId(getDraft())) return Promise.resolve(null)
+    return publish(() => operation.start('editDraft', body, v2DraftId(getDraft())))
   }
   function retry() {
     if (operation.busy.value || operation.pending.value?.id !== v2DraftId(getDraft())) return Promise.resolve(null)
@@ -34,5 +42,5 @@ export function useV2MemoryDraft(getDraft, getRunId = () => '') {
   }
   function cancel() { operation.cancel(); outcome.value = null }
   function dispose() { stop(); operation.reset(); outcome.value = null }
-  return { operation, outcome, decide, retry, cancel, dispose }
+  return { operation, outcome, decide, editDraft, retry, cancel, dispose }
 }

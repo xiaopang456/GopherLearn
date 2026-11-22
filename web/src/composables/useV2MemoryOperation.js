@@ -1,5 +1,5 @@
 import { ref } from 'vue'
-import { createV2Memory, correctV2Memory, archiveV2Memory, deleteV2Memory, resolveV2Draft } from '../api/v2Memory.js'
+import { createV2Memory, correctV2Memory, archiveV2Memory, deleteV2Memory, resolveV2Draft, editV2Draft } from '../api/v2Memory.js'
 import { localId } from '../lib/id.js'
 
 // Request presentation only. Original services decide states/conflicts/replay.
@@ -13,6 +13,7 @@ export function useV2MemoryOperation() {
     archive: (op, signal) => archiveV2Memory(op.id, op.body.reason, signal),
     delete: (op, signal) => deleteV2Memory(op.id, op.body.reason, signal),
     resolve: (op, signal) => resolveV2Draft(op.id, op.body, signal),
+    editDraft: (op, signal) => editV2Draft(op.id, op.body, signal),
   }
   async function send(op) {
     if (busy.value) return null
@@ -28,7 +29,12 @@ export function useV2MemoryOperation() {
       result.value = response
       return response
     } catch (cause) {
-      if (current === generation) error.value = { message: cause.name === 'AbortError' ? '请求已取消；服务端状态尚未确认。' : cause.message, code: cause.code || cause.name }
+      if (current === generation) error.value = {
+        message: cause.name === 'AbortError' ? '请求已取消；服务端状态尚未确认。' : cause.message,
+        code: cause.code || cause.name,
+        nativeCode: cause.nativeCode,
+        payload: cause.data || null,
+      }
       return null
     } finally { if (current === generation) busy.value = false }
   }

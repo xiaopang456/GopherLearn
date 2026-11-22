@@ -16,9 +16,9 @@ import (
 
 type fakeDraftProposer struct{ last memoryservice.DraftRequest }
 
-func (f *fakeDraftProposer) ProposeDraft(_ context.Context, request memoryservice.DraftRequest) (*model.MemoryDraft, bool, error) {
+func (f *fakeDraftProposer) ProposeDraft(_ context.Context, request memoryservice.DraftRequest) (*model.MemoryDraft, bool, string, error) {
 	f.last = request
-	return &model.MemoryDraft{ID: "draft", Scope: request.Input.Scope, Subject: request.Input.Subject, Content: request.Input.Content, Tags: request.Input.Tags, TopicKey: request.Input.TopicKey, Durability: request.Input.Durability, ConflictIDs: model.StringList{}}, true, nil
+	return &model.MemoryDraft{ID: "draft", Scope: request.Input.Scope, Subject: request.Input.Subject, Content: request.Input.Content, Tags: request.Input.Tags, TopicKey: request.Input.TopicKey, Durability: request.Input.Durability, ConflictIDs: model.StringList{}}, true, "", nil
 }
 
 func TestMemoryDraftToolDescriptionProvidesClockForTimeBoundDates(t *testing.T) {
