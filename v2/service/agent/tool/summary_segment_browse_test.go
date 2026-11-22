@@ -206,7 +206,7 @@ func TestBrowseSummarySegmentsTrimsOneSegmentToItsOwnBudget(t *testing.T) {
 	long := strings.Repeat("拆包边界处理", 70)
 	browsed, ok := registry.render(browseSegment(t, 1, 1, 30, "拆包边界", []model.SessionSummarySegmentPoint{
 		{Text: long},
-	}), model.SessionWhiteboardDocument{})
+	}), model.SessionWhiteboardDocument{}, 0)
 	if !ok {
 		t.Fatal("the segment did not render")
 	}
@@ -241,13 +241,13 @@ func TestBrowseSummarySegmentsGivesEverySegmentTheSameBudget(t *testing.T) {
 	text := strings.Repeat("拆包", 90)
 	first, ok := registry.render(browseSegment(t, 1, 1, 30, "拆包", []model.SessionSummarySegmentPoint{
 		{Text: text}, {Text: text},
-	}), model.SessionWhiteboardDocument{})
+	}), model.SessionWhiteboardDocument{}, 0)
 	if !ok {
 		t.Fatal("the first segment did not render")
 	}
 	second, ok := registry.render(browseSegment(t, 2, 31, 60, "粘包", []model.SessionSummarySegmentPoint{
 		{Text: text}, {Text: text},
-	}), model.SessionWhiteboardDocument{})
+	}), model.SessionWhiteboardDocument{}, 0)
 	if !ok {
 		t.Fatal("the second segment did not render")
 	}

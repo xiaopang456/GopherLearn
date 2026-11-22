@@ -11,8 +11,8 @@ func TestSnapshotArchiveRoundTripAndTampering(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.json")
 	s := validSnapshot()
 	key := "request-123"
-	s.Session.CreationRequestKey = &key
-	s.Session.CreationInputHash = strings.Repeat("a", 64)
+	s.Sessions[0].Session.CreationRequestKey = &key
+	s.Sessions[0].Session.CreationInputHash = strings.Repeat("a", 64)
 	if err := WriteSnapshot(path, s); err != nil {
 		t.Fatal(err)
 	}
@@ -20,7 +20,8 @@ func TestSnapshotArchiveRoundTripAndTampering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Session.CreationRequestKey == nil || *got.Session.CreationRequestKey != key || got.Session.CreationInputHash != s.Session.CreationInputHash {
+	gotPrimary := primaryOf(got)
+	if gotPrimary.Session.CreationRequestKey == nil || *gotPrimary.Session.CreationRequestKey != key || gotPrimary.Session.CreationInputHash != primaryOf(s).Session.CreationInputHash {
 		t.Fatal("session metadata lost")
 	}
 	if err := WriteSnapshot(path, s); err == nil {

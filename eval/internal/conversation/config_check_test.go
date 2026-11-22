@@ -229,6 +229,74 @@ summarySegmentMode = "on"
 	}
 }
 
+// The card namespace is checked in both halves.
+//
+// The index name and the key prefix are one namespace, and the prefix is the
+// half that decides which rows a search can see: two arms that agreed on the
+// name but not on the prefix would write into one index and read each other's
+// cards. A check that compared the name and ignored the prefix would pass a
+// run whose cards were written somewhere else than the run believes.
+func TestTheCardNamespaceIsCheckedInBothHalves(t *testing.T) {
+	root := aCheckoutWith(t, `
+[agentConfig]
+summarySegmentMode = "on"
+summaryAssistantContent = "on"
+summarySegmentDebugDump = true
+sessionCardMode = "enabled"
+sessionCardIndexName = "gopherai_session_card_arm_idx"
+sessionCardIndexKeyPrefix = "gopherai:session_card:arm:"
+`)
+	report, err := CheckProductConfiguration(ConfigurationCheck{Repository: root})
+	if err != nil {
+		t.Fatalf("the check could not read the configuration: %v", err)
+	}
+	if report.SessionCardMode != "enabled" ||
+		report.SessionCardIndexName != "gopherai_session_card_arm_idx" ||
+		report.SessionCardIndexPrefix != "gopherai:session_card:arm:" {
+		t.Fatalf("the report does not carry the card namespace: %+v", report)
+	}
+	expected := theRunNeeds()
+	expected.SessionCardMode = "enabled"
+	expected.SessionCardIndexName = "gopherai_session_card_arm_idx"
+	expected.SessionCardIndexKeyPrefix = "gopherai:session_card:arm:"
+	if !report.MatchesExpected(expected) {
+		t.Fatalf("the report does not match the namespace the run needs: %+v", report)
+	}
+	// The prefix is the half that used to go uncompared.
+	wrongPrefix := expected
+	wrongPrefix.SessionCardIndexKeyPrefix = "gopherai:session_card:other:"
+	if report.MatchesExpected(wrongPrefix) {
+		t.Fatal("a run that expected another key prefix passed the check")
+	}
+	// And so is the name.
+	wrongName := expected
+	wrongName.SessionCardIndexName = "gopherai_session_card_other_idx"
+	if report.MatchesExpected(wrongName) {
+		t.Fatal("a run that expected another index name passed the check")
+	}
+}
+
+// A run that names no namespace is not compared over one.
+//
+// The old path measures the Episode, and the run that measures it says
+// nothing about a card namespace. Failing such a run over a namespace it
+// never named would make the check unusable for the arm that does not use it.
+func TestTheCardNamespaceIsNotComparedWhenTheRunNamesNone(t *testing.T) {
+	root := aCheckoutWith(t, `
+[agentConfig]
+summarySegmentMode = "on"
+summaryAssistantContent = "on"
+summarySegmentDebugDump = true
+`)
+	report, err := CheckProductConfiguration(ConfigurationCheck{Repository: root})
+	if err != nil {
+		t.Fatalf("the check could not read the configuration: %v", err)
+	}
+	if !report.MatchesExpected(theRunNeeds()) {
+		t.Fatalf("the report does not match what the run needs: %+v", report)
+	}
+}
+
 // The budgets the report carries are the ones the window renders with.
 //
 // The configured numbers and the effective numbers are different numbers: a

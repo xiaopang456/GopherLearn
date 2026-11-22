@@ -90,6 +90,7 @@ type Application struct {
 	Context *agentService.DatabaseContextBuilder
 	// The same original service used by native handlers and document_read.
 	Documents *knowledgeService.DocumentService
-	// The original derived index used by this assembly, for deletion cleanup.
-	EpisodeIndex episodeService.EpisodeIndex
+	// The derived index this assembly writes, for deletion cleanup: the
+	// Episode index on the old path, the thin card index under the card path.
+	DerivedIndex episodeService.DerivedIndexDeleter
 }

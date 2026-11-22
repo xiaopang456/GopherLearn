@@ -61,7 +61,18 @@ type RecallResult struct {
 	Trace    ShadowTrace
 }
 
-type RetrieverConfig struct{ CandidateDepth, MaxResults int }
+type RetrieverConfig struct {
+	CandidateDepth, MaxResults int
+	// CardMode says the rows this retriever returns are session cards
+	// rather than Episodes.
+	//
+	// The two carry different slots, so the evidence filter has to look in
+	// the right one. A card's arrangements are where an Episode keeps its
+	// decisions, and a card's open items are where an Episode keeps its
+	// open loops; a filter that looked in the Episode's slots would throw
+	// every card away.
+	CardMode bool
+}
 
 func DefaultRetrieverConfig() RetrieverConfig {
 	return RetrieverConfig{CandidateDepth: 20, MaxResults: 5}
@@ -148,7 +159,7 @@ func (r *Retriever) recallByTime(ctx context.Context, request RecallRequest, pla
 	if err != nil {
 		return result, err
 	}
-	rows = filterByEvidence(rows, plan.EvidenceMode)
+	rows = filterByEvidence(rows, plan.EvidenceMode, r.config.CardMode)
 	if plan.TemporalMode == TemporalRange {
 		rows = narrowRangeByTopic(rows, plan)
 	}
@@ -246,7 +257,7 @@ func (r *Retriever) recallByRelevance(ctx context.Context, request RecallRequest
 	if err != nil {
 		return result, err
 	}
-	rows = filterByEvidence(rows, plan.EvidenceMode)
+	rows = filterByEvidence(rows, plan.EvidenceMode, r.config.CardMode)
 	if plan.TemporalMode == TemporalLatestMatching {
 		// Recency ranks the relevant candidates; it does not select them. The
 		// old router had this the other way round, which is how "上次关于 X"
@@ -288,29 +299,60 @@ func legacyIntent(plan MemoryReadPlan) QueryIntent {
 // projection rather than against the search text. "决定" is a word that occurs
 // in episodes that recorded no decision, and an episode that recorded one does
 // not have to contain the word.
-func filterByEvidence(rows []model.EpisodeMemory, mode EvidenceMode) []model.EpisodeMemory {
+func filterByEvidence(rows []model.EpisodeMemory, mode EvidenceMode, cardMode bool) []model.EpisodeMemory {
 	if mode == EvidenceAny {
 		return rows
 	}
 	kept := make([]model.EpisodeMemory, 0, len(rows))
 	for _, row := range rows {
+		eligible := true
 		switch mode {
 		case EvidenceDecision:
-			if len(row.Document.Decisions) == 0 {
-				continue
+			if cardMode {
+				eligible = len(row.Card.Arrangements) > 0
+			} else {
+				eligible = len(row.Document.Decisions) > 0
 			}
 		case EvidenceCorrection:
-			if len(row.Document.UserCorrections) == 0 {
-				continue
+			if cardMode {
+				// A card keeps no correction slot. The nearest thing it
+				// holds is an entry the learner changed afterwards, and
+				// that is what the question means here.
+				eligible = cardHasChangedEntry(row)
+			} else {
+				eligible = len(row.Document.UserCorrections) > 0
 			}
 		case EvidenceOpenLoop:
-			if len(row.Document.OpenLoops) == 0 {
-				continue
+			if cardMode {
+				eligible = len(row.Card.OpenItems) > 0
+			} else {
+				eligible = len(row.Document.OpenLoops) > 0
 			}
+		}
+		if !eligible {
+			continue
 		}
 		kept = append(kept, row)
 	}
 	return kept
+}
+
+// cardHasChangedEntry reports whether a card records something the learner
+// changed after it was settled.
+//
+// It is a slot check rather than a reading of the text: the card already
+// says, in the entry's status, that the item was changed, and reading the
+// sentence again would be the kind of text rule the card format exists to
+// avoid.
+func cardHasChangedEntry(row model.EpisodeMemory) bool {
+	for _, group := range row.Card.EntryGroups() {
+		for _, entry := range group {
+			if entry.Status.Normalized() == model.SessionCardStatusLaterChanged {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func sortByRecency(rows []model.EpisodeMemory) []model.EpisodeMemory {

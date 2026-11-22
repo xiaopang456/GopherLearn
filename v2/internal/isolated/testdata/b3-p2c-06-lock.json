@@ -1,0 +1,36 @@
+{
+  "note": "Frozen rows taken verbatim from eval-data/runs/r2-phase2-acceptance-20261116/r3-targeted-b/cut-restore/B3-r1/snapshot.json, session p2c-06. Only the summary segment and the two words after it are kept; the text is unchanged. The second session is synthetic and exists only to prove that another conversation's tail cannot reach the locked evidence.",
+  "target_session": {
+    "id": "p2c-06",
+    "title": "Evaluation conversation"
+  },
+  "segment": {
+    "seq": 1,
+    "start_message_id": 655,
+    "end_message_id": 718,
+    "topic": "Go 构建变慢排查：增量、缓存、并行、依赖",
+    "points": [
+      "每次改一行代码都要等构建，转圈那段最熬人",
+      "怀疑是全量重建，但没细看",
+      "项目是 Go，模块不多",
+      "为腾空间清过缓存目录",
+      "没有远端缓存，就是本机",
+      "机器是共享的，邻居一忙就卡",
+      "调试信息我还挺需要",
+      "交叉编译每次重下工具链太费劲",
+      "一般凭感觉猜哪一步慢",
+      "想把这几块变成题目练一练"
+    ]
+  },
+  "tail": [
+    {"id": 719, "is_user": true, "content": "构建这块我每次都靠等，给我三个练习吧，就叫「蓁葭」。"},
+    {"id": 720, "is_user": false, "content": "「蓁葭」三道：一、构建缓存；二、依赖裁剪；三、静态检查。"}
+  ],
+  "question": "上次你给我排的那三道题里，第二道练的是什么？",
+  "other_session": {
+    "id": "p2c-06-other",
+    "title": "不该被并入的会话",
+    "point": "另一个会话的摘要内容",
+    "tail": "另一个会话的尾部原话，不该出现在锁证据里"
+  }
+}

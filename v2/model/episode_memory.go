@@ -203,7 +203,21 @@ func (d EpisodeDocument) AssertionCount() int {
 	return total
 }
 
+// IsZero reports whether the document holds nothing at all.
+//
+// It is what decides whether an Episode row stores an Episode at all. A row of
+// the other content kind leaves this column empty rather than storing an empty
+// document, so a reader can tell "this row carries no Episode" from "this row
+// carries an Episode with nothing in it".
+func (d EpisodeDocument) IsZero() bool {
+	return strings.TrimSpace(d.Synopsis) == "" && len(d.Topics) == 0 &&
+		d.AssertionCount() == 0 && len(d.SourceHandles) == 0
+}
+
 func (d EpisodeDocument) Value() (driver.Value, error) {
+	if d.IsZero() {
+		return nil, nil
+	}
 	return json.Marshal(d)
 }
 
@@ -328,21 +342,45 @@ func validateEpisodeEvidence(entry EpisodeEvidence) error {
 // EpisodeMemory is one updateable, cross-session projection per Session. The
 // raw Message rows remain authoritative; source watermarks make every derived
 // version auditable and prevent stale projectors from moving coverage back.
+//
+// One table holds two kinds of row, told apart by ContentKind.
+//
+// The kinds are separate documents, not two versions of one document: an
+// Episode carries five kinds of durable assertion with identities and
+// relations between them, and a session card carries what one session was
+// about, what was arranged then, what the assistant produced and what was
+// left open. They are stored in separate columns and read through separate
+// decoders, because the Episode decoder refuses unknown fields and a card
+// written into the Episode column would make the row unreadable for the code
+// that reads Episodes.
+//
+// The uniqueness of a row is therefore (owner, session, kind) rather than
+// (owner, session). A session that has an Episode and later a card keeps both:
+// the old document is not rewritten in place, and two arms of an experiment
+// writing to the same history cannot overwrite each other.
 type EpisodeMemory struct {
-	ID                     string            `gorm:"primaryKey;type:varchar(36)" json:"id"`
-	UserID                 int64             `gorm:"not null;index:idx_episode_owner_session,unique,priority:1;index:idx_episode_owner_time,priority:1" json:"user_id"`
-	SessionID              string            `gorm:"type:varchar(36);not null;index:idx_episode_owner_session,unique,priority:2;index" json:"session_id"`
-	Title                  string            `gorm:"type:varchar(160);not null" json:"title"`
-	Document               EpisodeDocument   `gorm:"column:content_json;type:json;not null" json:"content"`
-	SearchText             string            `gorm:"type:text;not null" json:"-"`
-	TopicKeys              StringList        `gorm:"type:json;not null" json:"topic_keys"`
-	SourceEpisodes         EpisodeSourceRefs `gorm:"type:json" json:"-"`
-	SourceSummaryVersion   uint64            `gorm:"not null;default:0" json:"source_summary_version"`
-	SourceSummaryWatermark uint              `gorm:"not null;default:0" json:"source_summary_watermark"`
-	SourceLastMessageID    uint              `gorm:"not null;index" json:"source_last_message_id"`
-	LastMessageAt          time.Time         `gorm:"not null;index:idx_episode_owner_time,priority:2" json:"last_message_at"`
-	Version                uint64            `gorm:"not null;default:1" json:"version"`
-	Status                 EpisodeStatus     `gorm:"type:varchar(16);not null;index" json:"status"`
+	ID        string `gorm:"primaryKey;type:varchar(36)" json:"id"`
+	UserID    int64  `gorm:"not null;index:idx_episode_owner_session_kind,unique,priority:1;index:idx_episode_owner_time,priority:1" json:"user_id"`
+	SessionID string `gorm:"type:varchar(36);not null;index:idx_episode_owner_session_kind,unique,priority:2;index" json:"session_id"`
+	// ContentKind says which document this row carries. It is written
+	// explicitly on every save rather than left to the column default,
+	// because a default that only applies when the field is absent would
+	// make a row's kind depend on how it was built.
+	ContentKind EpisodeContentKind `gorm:"column:content_kind;type:varchar(16);not null;default:'episode';index:idx_episode_owner_session_kind,unique,priority:3" json:"content_kind"`
+	Title       string             `gorm:"type:varchar(160);not null" json:"title"`
+	Document    EpisodeDocument    `gorm:"column:content_json;type:json" json:"content"`
+	// Card is the session card this row carries. It is empty on an Episode
+	// row and holds the whole card on a card row.
+	Card                   SessionCardDocument `gorm:"column:card_json;type:json" json:"card,omitempty"`
+	SearchText             string              `gorm:"type:text;not null" json:"-"`
+	TopicKeys              StringList          `gorm:"type:json;not null" json:"topic_keys"`
+	SourceEpisodes         EpisodeSourceRefs   `gorm:"type:json" json:"-"`
+	SourceSummaryVersion   uint64              `gorm:"not null;default:0" json:"source_summary_version"`
+	SourceSummaryWatermark uint                `gorm:"not null;default:0" json:"source_summary_watermark"`
+	SourceLastMessageID    uint                `gorm:"not null;index" json:"source_last_message_id"`
+	LastMessageAt          time.Time           `gorm:"not null;index:idx_episode_owner_time,priority:2" json:"last_message_at"`
+	Version                uint64              `gorm:"not null;default:1" json:"version"`
+	Status                 EpisodeStatus       `gorm:"type:varchar(16);not null;index" json:"status"`
 	// AbstainReason is set only on an abstained row and is empty otherwise, so
 	// a row cannot claim both to be memory and to be a reason there is none.
 	AbstainReason AbstainReason      `gorm:"type:varchar(32);not null;default:''" json:"abstain_reason,omitempty"`
@@ -359,8 +397,29 @@ func (m *EpisodeMemory) Validate() error {
 	if strings.TrimSpace(m.Title) == "" || utf8.RuneCountInString(m.Title) > EpisodeTitleMaxRunes || strings.TrimSpace(m.SearchText) == "" || utf8.RuneCountInString(m.SearchText) > EpisodeSearchTextMaxRunes {
 		return fmt.Errorf("invalid episode memory content")
 	}
-	if err := m.Document.Validate(); err != nil {
-		return err
+	kind := m.ContentKind.Normalized()
+	if !kind.Valid() {
+		return fmt.Errorf("invalid episode memory content kind %q", m.ContentKind)
+	}
+	switch kind {
+	case EpisodeContentEpisode:
+		// A row cannot be both. The two documents live in separate columns
+		// precisely so that a reader knows which one it has, and a row that
+		// carried both would make that question unanswerable.
+		if !m.Card.IsZero() {
+			return fmt.Errorf("episode row cannot carry a session card")
+		}
+		if err := m.Document.Validate(); err != nil {
+			return err
+		}
+	case EpisodeContentSessionCard:
+		if strings.TrimSpace(m.Document.Synopsis) != "" || len(m.Document.Topics) != 0 ||
+			m.Document.AssertionCount() != 0 || len(m.Document.SourceHandles) != 0 {
+			return fmt.Errorf("session card row cannot carry an episode document")
+		}
+		if err := m.Card.Validate(); err != nil {
+			return err
+		}
 	}
 	if len(m.TopicKeys) > EpisodeTopicLimit {
 		return fmt.Errorf("episode memory exceeds topic key limit")
@@ -384,12 +443,26 @@ func (m *EpisodeMemory) Validate() error {
 		}
 		seenTopics[topic] = struct{}{}
 	}
-	if len(seenTopics) != len(m.Document.Topics) {
-		return fmt.Errorf("episode topic keys do not match document topics")
-	}
-	for _, topic := range m.Document.Topics {
-		if _, exists := seenTopics[strings.TrimSpace(topic.Key)]; !exists {
+	// The stored topic column is derived from the document the row carries,
+	// never written beside it, so the two cannot drift apart.
+	switch kind {
+	case EpisodeContentEpisode:
+		if len(seenTopics) != len(m.Document.Topics) {
 			return fmt.Errorf("episode topic keys do not match document topics")
+		}
+		for _, topic := range m.Document.Topics {
+			if _, exists := seenTopics[strings.TrimSpace(topic.Key)]; !exists {
+				return fmt.Errorf("episode topic keys do not match document topics")
+			}
+		}
+	case EpisodeContentSessionCard:
+		if len(seenTopics) != len(m.Card.Topics) {
+			return fmt.Errorf("session card topic keys do not match document topics")
+		}
+		for _, topic := range m.Card.Topics {
+			if _, exists := seenTopics[strings.TrimSpace(topic.Key)]; !exists {
+				return fmt.Errorf("session card topic keys do not match document topics")
+			}
 		}
 	}
 	if m.SourceLastMessageID == 0 || m.LastMessageAt.IsZero() || m.Version == 0 || !m.Status.Valid() || !m.IndexStatus.Valid() {
@@ -404,6 +477,13 @@ func (m *EpisodeMemory) Validate() error {
 				if messageID > m.SourceLastMessageID {
 					return fmt.Errorf("episode evidence exceeds source message watermark")
 				}
+			}
+		}
+	}
+	if kind == EpisodeContentSessionCard {
+		for _, messageID := range m.Card.CitedMessageIDs() {
+			if messageID > m.SourceLastMessageID {
+				return fmt.Errorf("session card evidence exceeds source message watermark")
 			}
 		}
 	}

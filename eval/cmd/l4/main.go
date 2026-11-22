@@ -89,7 +89,8 @@ func run(args []string, out io.Writer) (resultErr error) {
 	if err = conversation.WriteSnapshot(*output, snapshot); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "OFFLINE STUB: no quality or cost conclusion\nturns=%d summary_calls=%d messages=%d\n", len(prepared), generator.Calls, len(snapshot.Messages))
+	fmt.Fprintf(out, "OFFLINE STUB: no quality or cost conclusion\nturns=%d summary_calls=%d messages=%d conversations=%d\n",
+		len(prepared), generator.Calls, snapshot.MessageCount(), len(snapshot.Sessions))
 	return nil
 }
 func main() {

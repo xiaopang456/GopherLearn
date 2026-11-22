@@ -384,6 +384,20 @@ func testSettings(t *testing.T) *Settings {
 	s.Config.KnowledgeConfig.StorageDir = t.TempDir()
 	return s
 }
+
+// oldPathSettings is the configuration of a deployment that turned the card
+// path off: the old Episode path.
+//
+// The tests that are about THAT path pin it explicitly, so that a change to
+// the shipped default does not quietly move their subject. The default is the
+// thin card now, and the two paths have different rules about which grants
+// exist and which history the model may read.
+func oldPathSettings(t *testing.T) *Settings {
+	t.Helper()
+	s := testSettings(t)
+	s.Config.AgentConfig.SessionCardMode = "disabled"
+	return s
+}
 func sqliteDatabase(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "v2-test.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Warn)})
@@ -519,7 +533,18 @@ func TestNativeEntryCapturesDefaultAndDeploymentTools(t *testing.T) {
 			// is there. The segment browse tool is on the table because the
 			// layered summary is on by default, and it only exists in that
 			// mode: there are no segments to browse in the other two.
-			want := []string{"browse_summary_segments", "document_read", "knowledge_search", "propose_memory"}
+			//
+			// The cross-session tools are on the table because the card path
+			// is on by default: the thin card finds the conversation a
+			// question is about, and the other three open it. The read-back
+			// tool stays on the table under the card path even when nothing is
+			// granted yet, because the search that runs in the same turn
+			// grants what it returns.
+			want := []string{
+				"ask_which_conversation", "browse_summary_segments", "document_read", "knowledge_search",
+				"propose_memory", "read_history_message", "read_session_whiteboard", "search_history_segments",
+				"search_session_cards", "search_session_history",
+			}
 			if !reflect.DeepEqual(names, want) {
 				t.Fatalf("tools %v want %v", names, want)
 			}

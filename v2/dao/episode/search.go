@@ -285,17 +285,127 @@ func (r *Repository) UpdateIndexStatus(ctx context.Context, userID int64, episod
 
 func (r *Repository) ListActiveForReindex(ctx context.Context, userID int64, afterID string, limit int) ([]model.EpisodeMemory, error) {
 	var rows []model.EpisodeMemory
-	query := activeEpisodeQuery(r.db.WithContext(ctx)).Where("episode_memories.user_id = ? AND episode_memories.status = ? AND episode_memories.id > ?", userID, model.EpisodeStatusActive, afterID).Order("episode_memories.id ASC").Limit(limit)
+	query := activeEpisodeQuery(r.db.WithContext(ctx)).Where("episode_memories.user_id = ? AND episode_memories.content_kind = ? AND episode_memories.status = ? AND episode_memories.id > ?", userID, string(model.EpisodeContentEpisode), model.EpisodeStatusActive, afterID).Order("episode_memories.id ASC").Limit(limit)
 	err := query.Find(&rows).Error
 	return rows, err
 }
 
+// ListActiveCardsForReindex is ListActiveForReindex for the session cards.
+//
+// The card index is a different namespace from the Episode index, so a
+// reindex of one must not write the other's rows into it.
+func (r *Repository) ListActiveCardsForReindex(ctx context.Context, userID int64, afterID string, limit int) ([]model.EpisodeMemory, error) {
+	var rows []model.EpisodeMemory
+	query := activeEpisodeQuery(r.db.WithContext(ctx)).Where("episode_memories.user_id = ? AND episode_memories.content_kind = ? AND episode_memories.status = ? AND episode_memories.id > ?", userID, string(model.EpisodeContentSessionCard), model.EpisodeStatusActive, afterID).Order("episode_memories.id ASC").Limit(limit)
+	err := query.Find(&rows).Error
+	return rows, err
+}
+
+// CardIndexSource is the card index's view of the store.
+//
+// The card index is a different namespace from the Episode index, so a
+// reindex of one must not write the other's rows into it. The status update
+// is shared: a row's index status is a fact about the row, whichever index
+// holds it.
+type CardIndexSource struct {
+	Repository *Repository
+}
+
+// UpdateIndexStatus records the index outcome on the row.
+func (s CardIndexSource) UpdateIndexStatus(ctx context.Context, userID int64, episodeID string,
+	version uint64, status model.EpisodeIndexStatus) error {
+	if s.Repository == nil {
+		return fmt.Errorf("episode repository is not initialized")
+	}
+	return s.Repository.UpdateIndexStatus(ctx, userID, episodeID, version, status)
+}
+
+// ListActiveForReindex lists the card rows that belong in the card index.
+func (s CardIndexSource) ListActiveForReindex(ctx context.Context, userID int64, afterID string, limit int) ([]model.EpisodeMemory, error) {
+	if s.Repository == nil {
+		return nil, fmt.Errorf("episode repository is not initialized")
+	}
+	return s.Repository.ListActiveCardsForReindex(ctx, userID, afterID, limit)
+}
+
+// CardLoader loads session cards for the retriever.
+//
+// The retriever is the same one the Episode path uses, because the channels it
+// runs - exact topic, lexical, vector - are the channels a card is found by
+// too. Only the loader differs: it names the kind, so a card and an Episode
+// of the same session never reach the same result list.
+type CardLoader struct {
+	Repository *Repository
+}
+
+func (l CardLoader) LoadCandidates(ctx context.Context, userID int64, currentSession string, ids []string) ([]model.EpisodeMemory, error) {
+	if l.Repository == nil {
+		return nil, fmt.Errorf("episode repository is not initialized")
+	}
+	return l.Repository.LoadCardCandidates(ctx, userID, currentSession, ids)
+}
+
+func (l CardLoader) ListByTime(ctx context.Context, userID int64, currentSession string, from, to time.Time, limit int) ([]model.EpisodeMemory, error) {
+	if l.Repository == nil {
+		return nil, fmt.Errorf("episode repository is not initialized")
+	}
+	return l.Repository.ListCardsByTime(ctx, userID, currentSession, from, to, limit)
+}
+
 func (r *Repository) LoadCandidates(ctx context.Context, userID int64, currentSession string, ids []string) ([]model.EpisodeMemory, error) {
+	return r.loadCandidates(ctx, userID, currentSession, ids, model.EpisodeContentEpisode)
+}
+
+// LoadCardCandidates is LoadCandidates for the session cards.
+//
+// The two live in one table, so a loader that did not say which kind it wanted
+// would return whichever row the database happened to order first. The
+// distinction matters because the two are rendered in different shapes and
+// cite different sources.
+func (r *Repository) LoadCardCandidates(ctx context.Context, userID int64, currentSession string, ids []string) ([]model.EpisodeMemory, error) {
+	return r.loadCandidates(ctx, userID, currentSession, ids, model.EpisodeContentSessionCard)
+}
+
+// LoadCardOfSession loads the current session card of one session.
+//
+// It is the lookup by identity rather than by words. It exists because the
+// words are not always enough: a segment search can find a stretch of turns
+// in a conversation whose card the word search did NOT find, because the
+// question's words and the card's words are different words. The card of that
+// conversation still exists, and it is the card that says the conversation
+// may be opened.
+//
+// The current session is not excluded: the caller decides that, because the
+// caller is the one that knows which conversation the turn is about.
+func (r *Repository) LoadCardOfSession(ctx context.Context, userID int64, sessionID string) (*model.EpisodeMemory, error) {
+	if r == nil || r.db == nil {
+		return nil, fmt.Errorf("episode repository is not initialized")
+	}
+	if userID <= 0 || strings.TrimSpace(sessionID) == "" {
+		return nil, fmt.Errorf("invalid session card identity")
+	}
+	var rows []model.EpisodeMemory
+	err := activeEpisodeQuery(r.db.WithContext(ctx)).
+		Where("episode_memories.user_id = ? AND episode_memories.content_kind = ? AND episode_memories.status = ? AND episode_memories.session_id = ?",
+			userID, string(model.EpisodeContentSessionCard), model.EpisodeStatusActive, sessionID).
+		Order("episode_memories.version DESC").Limit(1).Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	card := rows[0]
+	return &card, nil
+}
+
+func (r *Repository) loadCandidates(ctx context.Context, userID int64, currentSession string, ids []string,
+	kind model.EpisodeContentKind) ([]model.EpisodeMemory, error) {
 	if len(ids) == 0 {
 		return []model.EpisodeMemory{}, nil
 	}
 	var rows []model.EpisodeMemory
-	err := activeEpisodeQuery(r.db.WithContext(ctx)).Where("episode_memories.user_id = ? AND episode_memories.status = ? AND episode_memories.index_status = ? AND episode_memories.session_id <> ? AND episode_memories.id IN ?", userID, model.EpisodeStatusActive, model.EpisodeIndexIndexed, currentSession, ids).Find(&rows).Error
+	err := activeEpisodeQuery(r.db.WithContext(ctx)).Where("episode_memories.user_id = ? AND episode_memories.content_kind = ? AND episode_memories.status = ? AND episode_memories.index_status = ? AND episode_memories.session_id <> ? AND episode_memories.id IN ?", userID, string(kind.Normalized()), model.EpisodeStatusActive, model.EpisodeIndexIndexed, currentSession, ids).Find(&rows).Error
 	if err != nil {
 		return nil, err
 	}
@@ -313,8 +423,18 @@ func (r *Repository) LoadCandidates(ctx context.Context, userID int64, currentSe
 }
 
 func (r *Repository) ListByTime(ctx context.Context, userID int64, currentSession string, from, to time.Time, limit int) ([]model.EpisodeMemory, error) {
+	return r.listByTime(ctx, userID, currentSession, from, to, limit, model.EpisodeContentEpisode)
+}
+
+// ListCardsByTime is ListByTime for the session cards.
+func (r *Repository) ListCardsByTime(ctx context.Context, userID int64, currentSession string, from, to time.Time, limit int) ([]model.EpisodeMemory, error) {
+	return r.listByTime(ctx, userID, currentSession, from, to, limit, model.EpisodeContentSessionCard)
+}
+
+func (r *Repository) listByTime(ctx context.Context, userID int64, currentSession string, from, to time.Time,
+	limit int, kind model.EpisodeContentKind) ([]model.EpisodeMemory, error) {
 	var rows []model.EpisodeMemory
-	query := activeEpisodeQuery(r.db.WithContext(ctx)).Where("episode_memories.user_id = ? AND episode_memories.status = ? AND episode_memories.session_id <> ?", userID, model.EpisodeStatusActive, currentSession)
+	query := activeEpisodeQuery(r.db.WithContext(ctx)).Where("episode_memories.user_id = ? AND episode_memories.content_kind = ? AND episode_memories.status = ? AND episode_memories.session_id <> ?", userID, string(kind.Normalized()), model.EpisodeStatusActive, currentSession)
 	if !from.IsZero() {
 		query = query.Where("episode_memories.last_message_at >= ?", from)
 	}

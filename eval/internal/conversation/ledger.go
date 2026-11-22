@@ -22,6 +22,32 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
+// CardExchange is one card generation's raw request and response.
+//
+// The bodies are the model's own words and the card it wrote. They carry no
+// credential: the handler that reads them never reads a header, and the key
+// the harness uses is a placeholder.
+type CardExchange struct {
+	// SessionID is the conversation the card was written for, when the
+	// caller knew it.
+	SessionID string `json:"session_id,omitempty"`
+	// TargetMessageID is how far the card was asked to reach.
+	//
+	// It is the one number in the request that names a conversation: the
+	// payload carries the id the card may cite to, and that id belongs to
+	// exactly one conversation. So a refused card can be pointed at the
+	// conversation it was written for.
+	TargetMessageID uint `json:"target_message_id,omitempty"`
+	// Request is the body the model was sent.
+	Request string `json:"request"`
+	// Response is the body the model answered.
+	Response string `json:"response"`
+	// HTTPStatus is the status the answer carried.
+	HTTPStatus int `json:"http_status,omitempty"`
+	// At is when the exchange happened.
+	At time.Time `json:"at"`
+}
+
 // ModelCall deliberately retains unknown usage as nil, never an invented zero.
 // UsageSamples are provider snapshots; Usage is the last reported snapshot.
 // Monetary cost needs a separately approved price table and is not inferred here.
@@ -50,11 +76,65 @@ type ModelCall struct {
 	TelemetryError               string              `json:"telemetry_error,omitempty"`
 	RequestedMaxTokens           *int                `json:"requested_max_tokens"`
 	RequestedMaxCompletionTokens *int                `json:"requested_max_completion_tokens"`
-	Error                        string              `json:"error,omitempty"`
+	// CardSessions names the source conversations of the session cards the
+	// request carried.
+	//
+	// The request body is the record of what the model was shown, and the
+	// product does not persist the cards it showed. The names are read out of
+	// that body, so an attempt can say what the answer was given without
+	// asking the product to remember it.
+	CardSessions []string `json:"card_sessions,omitempty"`
+	// ToolTable names the tools the request offered the model.
+	//
+	// The two arms do not carry the same table, and a comparison that does
+	// not say so would be comparing something the reader cannot see.
+	ToolTable []string `json:"tool_table,omitempty"`
+	// ShownMemoryKind says which cross-session memory the request carried:
+	// "card", "episode" or "none".
+	//
+	// It is read out of the request body, because the product keeps the ids
+	// of the memories it showed in the window but does not persist them, and
+	// the request body is the only place left that says what the model was
+	// actually shown.
+	ShownMemoryKind string `json:"shown_memory_kind,omitempty"`
+	// InjectedText is the cross-session memory block itself, truncated. It is
+	// the difference between "the memory was there" and "the memory was there
+	// and said this".
+	InjectedText string `json:"injected_text,omitempty"`
+	// InjectedMessageIDs are the messages the injected block cited. They are
+	// the block's own citations, so they say which conversation the memory
+	// was written from.
+	InjectedMessageIDs []uint `json:"injected_message_ids,omitempty"`
+	// InjectedSegmentSeqs are the summary segment numbers the injected block
+	// cited.
+	//
+	// A card written from the compressed state cites the segment it read
+	// rather than the messages under it, and the segment belongs to one
+	// conversation - which is what says where the card came from.
+	InjectedSegmentSeqs []int  `json:"injected_segment_seqs,omitempty"`
+	Error               string `json:"error,omitempty"`
 }
 type ModelLedger struct {
 	mu    sync.Mutex
 	calls []ModelCall
+	// cardExchanges are the card generation's raw request and response
+	// bodies.
+	//
+	// They are kept because the card's own failure is the one failure a
+	// reader cannot reconstruct: the ledger holds hashes, and a hash says
+	// that two bodies differ, not what either of them said. When the server
+	// refuses a card, the question is what the model actually wrote - and
+	// that is in the response body.
+	//
+	// They live in the harness and not in the sandbox: the sandbox holds the
+	// database, and the evidence outlives it. The attempt writes them to its
+	// own private directory before it seals its outputs, so that a failed
+	// export cannot take them away.
+	cardExchanges []CardExchange
+	// pendingTools is the tool table the model was bound to, read out of the
+	// binding rather than out of the request. It is kept between the binding
+	// and the call, because the product binds the tools once and then calls.
+	pendingTools []string
 }
 
 func digest(b []byte) string { v := sha256.Sum256(b); return hex.EncodeToString(v[:]) }
@@ -86,6 +166,26 @@ func (l *ModelLedger) finish(id int, err error) {
 		c.Error = err.Error()
 	}
 }
+
+// CardExchanges returns the card generations' raw bodies.
+//
+// They are copied out, because the ledger keeps writing to them while the
+// preparation is still running.
+func (l *ModelLedger) CardExchanges() []CardExchange {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]CardExchange, len(l.cardExchanges))
+	copy(out, l.cardExchanges)
+	return out
+}
+
+// CaptureCardExchange records one card generation's raw bodies.
+func (l *ModelLedger) CaptureCardExchange(exchange CardExchange) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.cardExchanges = append(l.cardExchanges, exchange)
+}
+
 func (l *ModelLedger) Calls() []ModelCall {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -104,6 +204,8 @@ func (l *ModelLedger) Calls() []ModelCall {
 		for j, raw := range l.calls[i].RawUsageSamples {
 			out[i].RawUsageSamples[j] = append(json.RawMessage(nil), raw...)
 		}
+		out[i].CardSessions = append([]string(nil), out[i].CardSessions...)
+		out[i].ToolTable = append([]string(nil), out[i].ToolTable...)
 		if out[i].Usage != nil {
 			u := *out[i].Usage
 			out[i].Usage = &u
@@ -163,6 +265,12 @@ func LoadRolePrompts(repository string, mode memoryrecall.ReadMode) (RolePrompts
 		{"agent/runner.go", "citationRepairSystemPrompt", "answer"},
 		{"agent/runner.go", "memoryRepairSystemPrompt", "answer"},
 		{"episode/generator.go", "episodeSystemPrompt", "background"},
+		// The session card is written by the same background worker, in the
+		// same place an Episode is, so it carries the same role. A table that
+		// held only the Episode prompt refused the card's request as
+		// unclassified, and the card was never written: the arm then measured
+		// a window without a card and called it a result.
+		{"episode/card_generator.go", "cardSystemPrompt", "background"},
 		{"episode/support_verifier.go", "SupportSystemPrompt", "background"},
 		{"memory/extractor.go", "extractorPrompt", "background"},
 		{"memory/dream.go", "dreamPrompt", "background"},
@@ -339,6 +447,14 @@ func (m *ledgerModel) WithTools(tools []*schema.ToolInfo) (modelcomponent.ToolCa
 	if err != nil {
 		return nil, err
 	}
+	// The tool table is what the model is offered, and it is bound before the
+	// call. Recording it here says what the answer could have done, which is
+	// not the same question as what it did - and the two arms differ in it.
+	if names := ToolNamesFromInfos(tools); len(names) > 0 {
+		m.ledger.mu.Lock()
+		m.ledger.pendingTools = names
+		m.ledger.mu.Unlock()
+	}
 	return &ledgerModel{bound, m.ledger, m.roles}, nil
 }
 func (m *ledgerModel) start(method string, input []*schema.Message) (int, error) {
@@ -351,6 +467,29 @@ func (m *ledgerModel) start(method string, input []*schema.Message) (int, error)
 		}
 	}
 	id := m.ledger.begin(role, method, input, prompt)
+	// The prompt is the record of what the model was shown, and the cards it
+	// carried are read out of it here. The names are kept with the call, so
+	// an attempt does not have to hold the whole prompt to say what the
+	// answer was given.
+	if shown, sessions := ReadShownCards(input); shown {
+		m.ledger.mu.Lock()
+		m.ledger.calls[id-1].CardSessions = sessions
+		m.ledger.mu.Unlock()
+	}
+	// The cross-session memory the prompt carried is read out of the same
+	// prompt, so the in-process path says what the model was given as well.
+	memory := ReadShownMemory(input)
+	m.ledger.mu.Lock()
+	m.ledger.calls[id-1].ShownMemoryKind = memory.Kind
+	m.ledger.calls[id-1].InjectedText = memory.Text
+	m.ledger.calls[id-1].InjectedMessageIDs = memory.MessageIDs
+	m.ledger.calls[id-1].InjectedSegmentSeqs = memory.SegmentSeqs
+	m.ledger.mu.Unlock()
+	m.ledger.mu.Lock()
+	if len(m.ledger.pendingTools) > 0 {
+		m.ledger.calls[id-1].ToolTable = append([]string(nil), m.ledger.pendingTools...)
+	}
+	m.ledger.mu.Unlock()
 	if role == "unknown" {
 		err := fmt.Errorf("unclassified model call refused")
 		m.ledger.finish(id, err)

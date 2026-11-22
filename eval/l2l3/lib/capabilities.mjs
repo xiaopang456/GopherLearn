@@ -18,6 +18,11 @@ export const Capability = Object.freeze({
   MemoryDraft: 'memory_draft',
   HistoryRead: 'history_read',
   BrowseSummarySegments: 'browse_summary_segments',
+  SearchSessionHistory: 'search_session_history',
+  SearchSessionCards: 'search_session_cards',
+  SearchHistorySegments: 'search_history_segments',
+  ReadSessionWhiteboard: 'read_session_whiteboard',
+  AskWhichConversation: 'ask_which_conversation',
   Unknown: 'unknown',
 })
 
@@ -29,6 +34,11 @@ export const KNOWN_CAPABILITIES = Object.freeze([
   Capability.MemoryDraft,
   Capability.HistoryRead,
   Capability.BrowseSummarySegments,
+  Capability.SearchSessionHistory,
+  Capability.SearchSessionCards,
+  Capability.SearchHistorySegments,
+  Capability.ReadSessionWhiteboard,
+  Capability.AskWhichConversation,
 ])
 
 export const TOOL_CAPABILITIES = Object.freeze({
@@ -43,6 +53,15 @@ export const TOOL_CAPABILITIES = Object.freeze({
   save_memory_draft: Capability.MemoryDraft,
   read_history_message: Capability.HistoryRead,
   browse_summary_segments: Capability.BrowseSummarySegments,
+  search_session_history: Capability.SearchSessionHistory,
+  search_session_cards: Capability.SearchSessionCards,
+  find_session_cards: Capability.SearchSessionCards,
+  search_history_segments: Capability.SearchHistorySegments,
+  find_history_segments: Capability.SearchHistorySegments,
+  read_session_whiteboard: Capability.ReadSessionWhiteboard,
+  show_session_whiteboard: Capability.ReadSessionWhiteboard,
+  ask_which_conversation: Capability.AskWhichConversation,
+  choose_conversation: Capability.AskWhichConversation,
 })
 
 /**

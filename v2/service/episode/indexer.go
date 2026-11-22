@@ -20,6 +20,17 @@ type EpisodeIndex interface {
 	ResetUser(context.Context, int64) error
 }
 
+// DerivedIndexDeleter removes rows from one derived index.
+//
+// The session deletion needs to delete rows and nothing else. The
+// cross-session memory has two instruments - the Episode index and the thin
+// card index - and they are two types with two different shapes, but they
+// delete by the same rule: the row's key is the owner's id and the row's own
+// id. The seam asks for that rule and not for the whole instrument.
+type DerivedIndexDeleter interface {
+	Delete(context.Context, int64, []string) error
+}
+
 type EpisodeIndexSource interface {
 	UpdateIndexStatus(context.Context, int64, string, uint64, model.EpisodeIndexStatus) error
 	ListActiveForReindex(context.Context, int64, string, int) ([]model.EpisodeMemory, error)

@@ -93,7 +93,26 @@ func TestHTTPSessionDeleteUsesOriginalCascadeAndDerivedIndex(t *testing.T) {
 			transport.mu.Lock()
 			keys := append([]string(nil), transport.keys...)
 			transport.mu.Unlock()
-			if len(keys) != 1 || !strings.HasSuffix(keys[0], "1:delete-episode") {
+			// The derived cleanup removes the rows of the deleted conversation
+			// from the index this assembly writes. Under the card path that is
+			// the thin card's index, and it holds two rows for this
+			// conversation: the Episode row the fixture wrote and the card the
+			// session's own projection wrote (the card is a row of its own, so
+			// its id is not the session's). A card must not outlive the
+			// conversation it describes.
+			episode := false
+			prefix := ""
+			for _, key := range keys {
+				if strings.HasSuffix(key, "1:delete-episode") {
+					episode = true
+				}
+				if prefix == "" {
+					prefix = key[:strings.LastIndex(key, ":")+1]
+				} else if !strings.HasPrefix(key, prefix) {
+					t.Fatalf("the cleanup touched two indexes: %v", keys)
+				}
+			}
+			if !episode || len(keys) < 2 {
 				t.Fatalf("derived cleanup seam discarded IDs: %v", keys)
 			}
 			st, _, _ = requestHTTP(t, app.Handler, "GET", "/api/v1/sessions/"+sid+"/messages", "", token)

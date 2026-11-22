@@ -105,7 +105,12 @@ func TestRolePromptsLoadCheckout(t *testing.T) {
 	// batch is asked for when the board no longer fits. A call shape that is
 	// not in this list is refused, so these counts are what say a new shape
 	// was classified and reviewed.
-	if counts["background"] != 5 {
+	//
+	// Six prompts carry the background role: the Episode, its support
+	// verifier, the card, and the three memory prompts. The card's prompt is
+	// in the table because a table that held only the Episode's refused the
+	// card's request as unclassified, and the card was never written.
+	if counts["background"] != 6 {
 		t.Fatal(counts)
 	}
 	if counts["summary"] < 3 {

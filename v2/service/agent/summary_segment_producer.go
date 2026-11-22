@@ -125,6 +125,14 @@ type ModelSummarySegmentProducer struct {
 	// the deployment has no vector index, and the segment is written either
 	// way: the vector is a way of finding the segment, not the segment.
 	publisher SummarySegmentIndexPublisher
+	// thinCards keeps the session's thin card current. It is nil when the
+	// deployment runs no thin cards.
+	//
+	// The segment is where the card's clues come from: the topic and the
+	// names a segment recorded are the card's topics and the card's names,
+	// and the segment's number is the card's way back to it. So the card is
+	// brought up to date here, right after the segment was written.
+	thinCards ThinCardSyncer
 }
 
 // NewModelSummarySegmentProducer builds a producer.
@@ -153,6 +161,19 @@ func (p *ModelSummarySegmentProducer) UseIndexPublisher(publisher SummarySegment
 		return
 	}
 	p.publisher = publisher
+}
+
+// UseThinCardSyncer attaches the writer that keeps the session's thin card
+// current.
+//
+// It is a setter rather than a constructor argument because the thin card is
+// a deployment's choice, and a deployment without one still writes its
+// segments.
+func (p *ModelSummarySegmentProducer) UseThinCardSyncer(syncer ThinCardSyncer) {
+	if p == nil {
+		return
+	}
+	p.thinCards = syncer
 }
 
 // ProduceSegment generates one segment and writes it with the board.
@@ -333,6 +354,13 @@ func (p *ModelSummarySegmentProducer) persist(
 		return SummarySegmentOutcome{}, fmt.Errorf("save summary segment: %w", err)
 	}
 	p.publish(ctx, segment)
+	// The thin card is brought up to date now, because the segment that was
+	// just written is where the card's clues come from.
+	//
+	// Its failure does not fail the attempt: the segment is in MySQL and is
+	// readable there, and a card that is behind is a card the next sync will
+	// fix.
+	p.syncThinCard(ctx, job.UserID, job.SessionID)
 	return SummarySegmentOutcome{
 		SegmentSeq:        seq,
 		StartMessageID:    start,
@@ -340,6 +368,20 @@ func (p *ModelSummarySegmentProducer) persist(
 		WhiteboardVersion: whiteboardVersion + 1,
 		WhiteboardChanges: len(result.Changes),
 	}, nil
+}
+
+// syncThinCard brings the session's thin card up to date.
+//
+// It runs after the segment was written and it costs no model call: the
+// card is derived from the segment that was just written and from the
+// session's own title and last message.
+func (p *ModelSummarySegmentProducer) syncThinCard(ctx context.Context, userID int64, sessionID string) {
+	if p.thinCards == nil {
+		return
+	}
+	if err := p.thinCards.SyncThinCard(ctx, userID, sessionID); err != nil {
+		log.Printf("[summary-segment] thin card sync failed: session=%s error_type=%T", sessionID, err)
+	}
 }
 
 // publish writes the segment's derived search vector.

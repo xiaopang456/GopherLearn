@@ -335,7 +335,10 @@ func (s *httpSurface) sessionItem(w http.ResponseWriter, r *http.Request, uid in
 	if len(ids) > 0 {
 		// SQL deletion is authoritative. A derived-index failure is reported rather
 		// than pretending SQL rolled back, or silently discarding the cleanup seam.
-		if s.agent.EpisodeIndex == nil || s.agent.EpisodeIndex.Delete(r.Context(), uid, ids) != nil {
+		//
+		// The index cleaned here is the one this assembly writes: the Episode
+		// index on the old path, the thin card index under the card path.
+		if s.agent.DerivedIndex == nil || s.agent.DerivedIndex.Delete(r.Context(), uid, ids) != nil {
 			apiError(w, 503, "derived_cleanup_failed", "session deleted; derived index cleanup is incomplete")
 			return
 		}
@@ -588,6 +591,17 @@ func messageRowView(row model.Message) map[string]any {
 			sources = append(sources, map[string]any{"source_id": strconv.Itoa(source.Citation), "document_id": source.DocID, "title": source.FileName, "section": strings.Join(source.TitlePath, " / "), "snippet": source.Snippet, "original_v2": map[string]any{"citation": strconv.Itoa(source.Citation), "doc_id": source.DocID, "doc_version": source.DocVersion, "file_name": source.FileName, "title_path": source.TitlePath, "start_line": source.StartLine, "end_line": source.EndLine, "chunk_index": source.ChunkIndex, "score": source.Score, "snippet": source.Snippet}})
 		}
 		view["sources"] = sources
+	}
+	// The clarification travels with the message it was asked in, and the
+	// client needs it after a reload as much as it needed it in the moment:
+	// the learner may answer it minutes later, in a conversation they have
+	// reloaded in between.
+	//
+	// It is the product's OWN card, not a second hand-written shape: the turn
+	// response carries the same struct, and a row that is read back in a
+	// different shape is a card whose buttons lost their titles.
+	if row.Clarification != nil && !row.Clarification.IsEmpty() {
+		view["clarification"] = agentService.ClarificationCardOf(row.Clarification)
 	}
 	return view
 }

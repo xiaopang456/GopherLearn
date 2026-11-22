@@ -58,7 +58,16 @@ type Message struct {
 	AnswerBasis     rag.AnswerBasis     `gorm:"type:varchar(32);not null;default:legacy_unspecified" json:"answer_basis"`
 	KnowledgeStatus rag.KnowledgeStatus `gorm:"type:varchar(32);not null;default:legacy_unspecified" json:"knowledge_status"`
 	KnowledgeReason rag.KnowledgeReason `gorm:"type:varchar(48);not null;default:none" json:"knowledge_reason"`
-	CreatedAt       time.Time           `json:"created_at"`
+	// Clarification is the question the model asked because it could not
+	// tell which conversation the learner meant.
+	//
+	// It is on the message because the message is what the next turn
+	// reads: the learner answers the clarification in their next message,
+	// and the answer has to be resolvable against the candidates that were
+	// offered. A clarification that only existed in the run's result would
+	// be gone by the time the learner answered.
+	Clarification *SessionClarification `gorm:"type:json" json:"clarification,omitempty"`
+	CreatedAt     time.Time             `json:"created_at"`
 }
 
 const (

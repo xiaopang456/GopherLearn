@@ -88,6 +88,34 @@ func (r *Repository) ListOwnedHistoryPage(ctx context.Context, userID int64, ses
 	return HistoryPage{Messages: newestFirst, HasMore: hasMore, NextBeforeID: nextBeforeID}, nil
 }
 
+// ListOwnedWordsAfter reads one learner's conversation words after one message
+// id, oldest first.
+//
+// It is the read of the stretch a summary has NOT covered yet: the summary's
+// last covered message is the high-water mark, and everything after it exists
+// only as words. The session join is the ownership boundary, exactly as in
+// ListOwnedHistoryPage, so this read cannot reach a conversation the learner
+// does not own however the caller names it.
+func (r *Repository) ListOwnedWordsAfter(ctx context.Context, userID int64, sessionID string,
+	afterID uint, limit int) ([]model.Message, error) {
+	if r == nil || r.db == nil || userID <= 0 || sessionID == "" {
+		return nil, fmt.Errorf("invalid owned message read")
+	}
+	if limit <= 0 {
+		limit = DefaultHistoryPageLimit
+	}
+	if limit > MaxHistoryPageLimit {
+		limit = MaxHistoryPageLimit
+	}
+	var messages []model.Message
+	err := r.db.WithContext(ctx).
+		Joins("JOIN sessions ON sessions.id = messages.session_id AND sessions.deleted_at IS NULL").
+		Where("sessions.user_id = ? AND messages.session_id = ? AND messages.id > ?", userID, sessionID, afterID).
+		Order("messages.id ASC").Limit(limit).
+		Find(&messages).Error
+	return messages, err
+}
+
 // ListRecentAfter is identical to ListRecent but excludes messages already
 // represented by a rolling session summary.
 func (r *Repository) ListRecentAfter(ctx context.Context, sessionID string, afterID uint, limit int) ([]model.Message, error) {
@@ -274,4 +302,67 @@ func (r *Repository) ReadOwnedMessagesBySession(ctx context.Context, userID int6
 		Order("messages.id ASC").
 		Find(&messages).Error
 	return messages, err
+}
+
+// SearchOwnedMessagesBySession finds the messages of one session that contain
+// a keyword.
+//
+// It is the last step of the read-back chain: a card says what a session was
+// about, its summary says what was said in it, and this answers "what exactly
+// did they write there" for the one detail none of the compressions kept.
+//
+// The scope is the whole point. The query is bound to an owner and to one
+// session, and the session join is the ownership check, so a search cannot
+// reach a conversation the learner did not name and this run was not shown.
+// The keyword is matched inside the database rather than in Go, because a
+// search that read the whole session into memory first would be an unbounded
+// read of somebody's history.
+//
+// THE ORDER IS THE NEWEST FIRST, and that is the whole point of the change.
+//
+// A conversation settles its arrangements at its end: the number that was
+// finally agreed on, the thing that was decided last, the words that
+// replaced an earlier number. A search that returned the OLDEST matching
+// messages would answer a question about how the conversation began - which
+// is not what anybody asks an earlier conversation for - and would make the
+// end of a long conversation unreachable: the matches the learner needs are
+// the last ones, and a limit of five oldest matches never reaches them.
+//
+// The newest matches come first, and the ids of the ones that are not the
+// answer are still shown, so a reader that wants an earlier one can ask for
+// the message id by name.
+func (r *Repository) SearchOwnedMessagesBySession(ctx context.Context, userID int64,
+	sessionID string, keyword string, limit int) ([]model.Message, error) {
+	if r == nil || r.db == nil || userID <= 0 {
+		return nil, fmt.Errorf("invalid owned message search")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	keyword = strings.TrimSpace(keyword)
+	if sessionID == "" || keyword == "" {
+		return nil, fmt.Errorf("owned message search needs a session and a keyword")
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	var messages []model.Message
+	err := r.db.WithContext(ctx).
+		Joins("JOIN sessions ON sessions.id = messages.session_id AND sessions.deleted_at IS NULL").
+		Where("sessions.user_id = ? AND messages.session_id = ?", userID, sessionID).
+		Where("messages.content LIKE ?", "%"+escapeLike(keyword)+"%").
+		Order("messages.id DESC").Limit(limit).
+		Find(&messages).Error
+	return messages, err
+}
+
+// escapeLike escapes the characters MySQL's LIKE treats as wildcards.
+//
+// A keyword the learner typed may contain a percent sign, and a search that
+// treated it as a wildcard would match every message of the session - the
+// whole conversation, returned because someone typed "%".
+func escapeLike(value string) string {
+	replacer := strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_")
+	return replacer.Replace(value)
 }

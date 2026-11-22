@@ -308,16 +308,50 @@ func agentRunnerConfig(mode memoryrecall.ReadMode, agentConf config.AgentConfig,
 	// mode rather than with the deployment's tuning knobs: a config file that
 	// could rename the model's tools without changing the mode would make the
 	// mode's identity stop describing what the model saw.
-	if mode.UsesExplicitMemoryActionNames() {
-		runnerConfig.ToolSurface = agentService.SurfaceExplicitActions
-		if mode.UsesExplicitKnowledgeSourceName() {
-			runnerConfig.ToolSurface = agentService.SurfaceExplicitSources
-		}
+	runnerConfig.ToolSurface = toolSurfaceFor(mode)
+	// The thin card's cross-session tools get a ceiling of their own.
+	//
+	// The ceiling is the point of the thin card: the question is answered from
+	// ONE earlier conversation, so the round trips are bounded - find the
+	// conversation, read its summary or its board, answer. A second card
+	// search with different words is allowed, because the first card's
+	// evidence may not be the conversation the learner meant; the segment
+	// search is allowed once, because it is the fallback and it costs an
+	// embedding; the board is read once per conversation.
+	//
+	// The ceilings are clamped to the whole-run tool budget, because
+	// RunnerConfig.Validate refuses a per-capability limit above it.
+	if agentConf.SessionCardThin() {
+		runnerConfig.PerTool.SearchSessionCards = min(2, runnerConfig.MaxToolCalls)
+		runnerConfig.PerTool.SearchHistorySegments = min(1, runnerConfig.MaxToolCalls)
+		runnerConfig.PerTool.ReadSessionWhiteboard = min(2, runnerConfig.MaxToolCalls)
+		// The question the model asks when the candidates cannot be told
+		// apart is one question, and the turn ends with it.
+		runnerConfig.PerTool.AskWhichConversation = min(1, runnerConfig.MaxToolCalls)
 	}
 	if mode.OrdersMemoryDraftBeforeMemoryRead() {
 		runnerConfig.ForcesMemoryDraftBeforeMemoryRead = true
 	}
 	return runnerConfig
+}
+
+// toolSurfaceFor is the surface the tools of one mode are named under.
+//
+// It is a function because the surface and the ordering rule travel together
+// with the mode rather than with the deployment's tuning knobs: a config file
+// that could rename the model's tools without changing the mode would make
+// the mode's identity stop describing what the model saw.
+//
+// The tool block and the runner read it from here, so a tool registered under
+// one name is never called under another.
+func toolSurfaceFor(mode memoryrecall.ReadMode) agentService.ToolSurface {
+	if !mode.UsesExplicitMemoryActionNames() {
+		return agentService.SurfaceLegacy
+	}
+	if mode.UsesExplicitKnowledgeSourceName() {
+		return agentService.SurfaceExplicitSources
+	}
+	return agentService.SurfaceExplicitActions
 }
 
 // buildTopicMemoryReadRegistry keeps the application wiring under the same
@@ -671,6 +705,90 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	// rest of the system agrees exists.
 	var topicCatalogue *memoryService.TopicCatalogue
 	var agentTools agentService.ToolRegistry = knowledgeTools
+	// sessionCardEnabled says the card path is running. It is read here, in
+	// the tool block, and again in the memory block further down, and both
+	// read the same flag: the tools and the read path have to agree about
+	// which path is on, or a turn could be offered a tool it may not use.
+	sessionCardEnabled := conf.AgentConfig.SessionCardEnabled()
+	// sessionCardThin says the card path is running with the THIN card: the
+	// card the program derives, which costs no model call and carries no
+	// body.
+	//
+	// The two cards are different instruments, so they are two flags. What
+	// they share is the path they belong to: both replace the Episode path,
+	// and both are reached through the same cross-session tools.
+	sessionCardThin := conf.AgentConfig.SessionCardThin()
+	// sessionCardPathEnabled says that a card path is running, whichever
+	// card it writes. The tools that reach across sessions are registered
+	// under it: a card arm without them could find a session and not be
+	// able to read it.
+	sessionCardPathEnabled := sessionCardEnabled || sessionCardThin
+	// The thin card's own parts.
+	//
+	// They are assembled here, before the tools, because the tools are what
+	// make the card worth keeping: a card the turn cannot reach would be a
+	// card nobody ever finds, and a card nobody finds costs a write per
+	// session for nothing.
+	//
+	// thinCards is the writer that keeps a session's card current, and
+	// thinCardRetriever is the reader that finds the earlier sessions.
+	var thinCards *episodeService.ThinCardService
+	var thinCardRetriever *episodeService.ThinCardRetriever
+	var thinCardProjectionRunner episodeService.ProjectionRunner
+	// thinCardIndex is the index the thin cards live in. It is kept here
+	// because it is also the index a deleted conversation's card has to be
+	// removed from: the card must not outlive the session it describes.
+	var thinCardIndex *episodeDAO.RedisThinCardIndex
+	// deletionDerivedIndex is the index the session deletion cleans. It is
+	// the Episode index on the old path and the thin card index under the
+	// card path - the index this assembly actually writes is the index the
+	// deletion has to clean.
+	var deletionDerivedIndex episodeService.DerivedIndexDeleter
+	if sessionCardThin {
+		thinLoader, thinLoaderErr := episodeService.NewDatabaseThinCardSourceLoader(mysql.DB)
+		if thinLoaderErr != nil {
+			return nil, fmt.Errorf("initialize thin card source loader: %v", thinLoaderErr)
+		}
+		thinProjector, thinProjectorErr := episodeService.NewThinCardProjector(thinLoader,
+			episodeService.ProgrammaticThinCardDeriver{}, episodeDAO.DefaultRepository())
+		if thinProjectorErr != nil {
+			return nil, fmt.Errorf("initialize thin card projector: %v", thinProjectorErr)
+		}
+		// The thin card's index has no vector field: a vector needs an
+		// embedding, and an embedding is a model call. The card is found by
+		// its words - the title, the topics, the names - which is what a
+		// question about an earlier session is phrased in.
+		thinIndex, thinIndexErr := episodeDAO.NewRedisThinCardIndex(redis.Rdb,
+			thinCardIndexName(conf), thinCardKeyPrefix(conf))
+		if thinIndexErr != nil {
+			return nil, fmt.Errorf("initialize thin card index: %v", thinIndexErr)
+		}
+		if thinIndexErr = thinIndex.EnsureIndex(appCtx); thinIndexErr != nil {
+			return nil, fmt.Errorf("ensure thin card index: %v", thinIndexErr)
+		}
+		thinIndexer, thinIndexerErr := episodeService.NewThinCardIndexer(thinIndex,
+			episodeDAO.CardIndexSource{Repository: episodeDAO.DefaultRepository()})
+		if thinIndexerErr != nil {
+			return nil, fmt.Errorf("initialize thin card indexer: %v", thinIndexerErr)
+		}
+		thinCardIndex = thinIndex
+		thinService, thinServiceErr := episodeService.NewThinCardService(thinProjector, thinIndexer)
+		if thinServiceErr != nil {
+			return nil, fmt.Errorf("initialize thin card service: %v", thinServiceErr)
+		}
+		thinCards = thinService
+		thinRetriever, thinRetrieverErr := episodeService.NewThinCardRetriever(thinIndex,
+			episodeDAO.ThinCardLoader{Repository: episodeDAO.DefaultRepository()}, thinCardCandidateLimit)
+		if thinRetrieverErr != nil {
+			return nil, fmt.Errorf("initialize thin card retriever: %v", thinRetrieverErr)
+		}
+		thinCardRetriever = thinRetriever
+		thinJobProjector, thinJobErr := episodeService.NewThinCardJobProjector(thinService)
+		if thinJobErr != nil {
+			return nil, fmt.Errorf("initialize thin card job projector: %v", thinJobErr)
+		}
+		thinCardProjectionRunner = thinJobProjector
+	}
 	if conf.AgentConfig.MaxToolCalls > 0 {
 		memoryDraftTools, draftErr := agentTool.NewMemoryDraftRegistry(memoryGovernance)
 		if draftErr != nil {
@@ -711,15 +829,21 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 					return agentTool.EpisodeEvidenceFacts{}, err
 				}
 				cited := make([]uint, 0, 12)
-				for _, group := range episode.Document.AssertionGroups() {
-					for _, entry := range *group.Entries {
-						cited = append(cited, entry.EvidenceMessageIDs...)
+				switch episode.ContentKind.Normalized() {
+				case model.EpisodeContentSessionCard:
+					cited = append(cited, episode.Card.CitedMessageIDs()...)
+				default:
+					for _, group := range episode.Document.AssertionGroups() {
+						for _, entry := range *group.Entries {
+							cited = append(cited, entry.EvidenceMessageIDs...)
+						}
 					}
 				}
 				return agentTool.EpisodeEvidenceFacts{
 					EpisodeID: episode.ID, UserID: episode.UserID, SessionID: episode.SessionID,
 					Version: episode.Version, Status: string(episode.Status),
 					IndexStatus: string(episode.IndexStatus), Watermark: episode.SourceLastMessageID,
+					ContentKind:        string(episode.ContentKind.Normalized()),
 					EvidenceMessageIDs: cited,
 				}, nil
 			}))
@@ -731,6 +855,17 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		// summary records them. The grant set still decides which ids exist
 		// for the run, so an assistant message nobody cited stays unreadable.
 		historyTools.UseAssistantContent(conf.AgentConfig.SummaryAssistantContentEnabled())
+		// Under the card path the same turn offers the conversation search,
+		// and the search grants read-back for every hit it returns. The tool
+		// table is built before any tool runs, so the read-back tool must stay
+		// on the table while the grant set is still empty - otherwise the hit
+		// the search just showed could not be read in full. The per-call grant
+		// check remains the authorisation boundary.
+		historyTools.UseOnDemandSearchGrants(sessionCardPathEnabled)
+		// A search hit is a window onto a sentence: the answer often sits in
+		// the message beside it. The neighbour read is authorised by the same
+		// grant as the hit, so this does not widen what the run may read.
+		historyTools.UseAdjacentRead(sessionCardPathEnabled)
 		registries := []agentService.ToolRegistry{knowledgeTools, memoryDraftTools, historyTools}
 		if summarySegmentAssembly.Applies() {
 			// browse_summary_segments opens the session's older segments. It
@@ -746,7 +881,103 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 				// them without being asked again.
 				browseTools.UseRecentUse(summarySegmentIndex)
 			}
+			// The session parameter is what lets the model open the source
+			// conversation of a card. It is attached only under the card
+			// path, because the tool's schema is part of its contract and the
+			// modes whose measurements were published must keep the schema
+			// they were measured with.
+			browseTools.UseSessionParameter(sessionCardPathEnabled)
+			// A named earlier conversation's summary can stop before the
+			// conversation settles. The words after the summary are the only
+			// place the later decision lives, and the browse tool carries
+			// them when it opens such a conversation.
+			browseTools.UseTailReader(message.DefaultRepository())
 			registries = append(registries, browseTools)
+		}
+		if sessionCardPathEnabled {
+			// The keyword search is the last step of the card's chain: the
+			// detail that neither the card nor the summary kept.
+			//
+			// It is registered only under the card path. A deployment that
+			// does not run the cards has no source conversation to search
+			// in, and offering the tool would invite calls that can only be
+			// refused.
+			sessionSearchTools, sessionSearchErr := agentTool.NewSearchSessionHistoryRegistry(message.DefaultRepository())
+			if sessionSearchErr != nil {
+				return nil, fmt.Errorf("initialize agent session history search tool: %v", sessionSearchErr)
+			}
+			// The same switch the read-back path uses: a deployment that does
+			// not record the assistant's products does not get them back
+			// through a search either.
+			sessionSearchTools.UseAssistantContent(conf.AgentConfig.SummaryAssistantContentEnabled())
+			registries = append(registries, sessionSearchTools)
+		}
+		if sessionCardThin {
+			// The three on-demand tools of the thin card.
+			//
+			// The card finds the conversation, the segment search finds the
+			// stretch of turns when the card did not, and the whiteboard
+			// says what that conversation finally arranged. Each one reads
+			// only what it names, and each one is registered only under the
+			// thin card path - a deployment that does not keep the cards has
+			// no cross-session door to offer.
+			cardSearchTools, cardSearchErr := agentTool.NewSearchSessionCardsRegistry(thinCardRetriever)
+			if cardSearchErr != nil {
+				return nil, fmt.Errorf("initialize agent session card search tool: %v", cardSearchErr)
+			}
+			cardSearchTools.UseToolSurface(toolSurfaceFor(memoryReadMode))
+			registries = append(registries, cardSearchTools)
+			// The segment search is the fallback of the card search, and the
+			// only one of the three that makes a model call: it embeds the
+			// question to reach the segments' own vectors. That call is
+			// counted apart from the card's cost, which is zero.
+			//
+			// It needs the segment index, and a deployment without that
+			// index has no segments to search: the tool is not registered
+			// rather than registered broken.
+			if summarySegmentIndex != nil {
+				historySegmentTools, historySegmentErr := agentTool.NewSearchHistorySegmentsRegistry(
+					summarySegmentIndex, sessionDAO.DefaultRepository(), thinCardRetriever)
+				if historySegmentErr != nil {
+					return nil, fmt.Errorf("initialize agent history segment search tool: %v", historySegmentErr)
+				}
+				// The query embedder is the segment index's own dimension:
+				// the segments were written with the shared embedder at that
+				// size, and a vector of another size is not a vector of that
+				// space.
+				queryEmbedder, embedderErr := memoryService.NewEinoQueryEmbedder(runtime.embedder,
+					redis.SummarySegmentVectorDimension)
+				if embedderErr != nil {
+					return nil, fmt.Errorf("initialize history segment query embedder: %v", embedderErr)
+				}
+				historySegmentTools.UseSemanticChannel(summarySegmentIndex, queryEmbedder)
+				// A hit segment's summary can stop before the conversation
+				// settles; the words after it carry the later decision.
+				historySegmentTools.UseTailReader(message.DefaultRepository())
+				historySegmentTools.UseToolSurface(toolSurfaceFor(memoryReadMode))
+				registries = append(registries, historySegmentTools)
+			}
+			// The whiteboard is the conversation's current state: what it had
+			// settled on when it was last talked in.
+			whiteboardTools, whiteboardErr := agentTool.NewReadSessionWhiteboardRegistry(sessionDAO.DefaultRepository())
+			if whiteboardErr != nil {
+				return nil, fmt.Errorf("initialize agent session whiteboard read tool: %v", whiteboardErr)
+			}
+			whiteboardTools.UseToolSurface(toolSurfaceFor(memoryReadMode))
+			registries = append(registries, whiteboardTools)
+			// The question the model asks when the candidates cannot be
+			// told apart.
+			//
+			// It is registered with the card retriever rather than with the
+			// index, because a candidate is offered only when the learner
+			// owns it and it has a card - the same boundary the search
+			// itself keeps.
+			askTools, askErr := agentTool.NewAskWhichConversationRegistry(thinCardRetriever)
+			if askErr != nil {
+				return nil, fmt.Errorf("initialize agent ask-which-conversation tool: %v", askErr)
+			}
+			askTools.UseToolSurface(toolSurfaceFor(memoryReadMode))
+			registries = append(registries, askTools)
 		}
 		if memoryReadMode.UsesMemorySearchTool() {
 			// read_history_message stays registered but has nothing to offer
@@ -883,6 +1114,50 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	}), summarySource)
 	if err != nil {
 		return nil, fmt.Errorf("initialize agent context builder: %v", err)
+	}
+	// The server's own door to the learner's other conversations.
+	//
+	// It is attached under the card path only: a deployment that does not
+	// keep the cards has no earlier conversation to point at, and a window
+	// that resolved a clarification against conversations the deployment
+	// never indexed would be reading a history it does not have.
+	//
+	// The locator is the card search - one lightweight lookup, no model
+	// call - and the reader locks one conversation of the learner's own and
+	// reads the evidence out of it. They go together: a reader without a
+	// locator could only answer a click, and a locator without a reader
+	// could only find candidates.
+	if sessionCardThin {
+		crossStore, crossStoreErr := agentService.NewDatabaseCrossSessionStore(
+			sessionDAO.DefaultRepository(), message.DefaultRepository())
+		if crossStoreErr != nil {
+			return nil, fmt.Errorf("initialize cross session store: %v", crossStoreErr)
+		}
+		crossReader, crossReaderErr := agentService.NewDatabaseCrossSessionReader(crossStore)
+		if crossReaderErr != nil {
+			return nil, fmt.Errorf("initialize cross session reader: %v", crossReaderErr)
+		}
+		contextBuilder.UseCrossSession(
+			agentService.CrossSessionLocatorFunc(func(ctx context.Context, userID int64,
+				currentSession, clue string) ([]agentService.SessionCandidate, error) {
+				found, recallErr := thinCardRetriever.Recall(ctx, userID, currentSession,
+					agentTool.ThinCardQueryFor(clue, clue))
+				if recallErr != nil {
+					return nil, recallErr
+				}
+				out := make([]agentService.SessionCandidate, 0, len(found))
+				for _, candidate := range found {
+					out = append(out, agentService.SessionCandidate{
+						SessionID:    candidate.SessionID,
+						Title:        candidate.Title,
+						Topics:       append([]string{}, candidate.Topics...),
+						LastTalkedAt: candidate.LastTalkedAt,
+					})
+				}
+				return out, nil
+			}),
+			crossReader,
+		)
 	}
 	// The layered summary's read side. It is attached only in the applied
 	// mode: the off and the shadow modes send exactly what they sent before.
@@ -1043,57 +1318,117 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		return nil, fmt.Errorf("initialize agent run lease reaper: %v", err)
 	}
 	episodeRepository := episodeDAO.DefaultRepository()
-	episodeLoader, err := episodeService.NewDatabaseEvidenceLoader(mysql.DB, conf.AgentConfig.EpisodeMaxMessages)
-	if err != nil {
-		return nil, fmt.Errorf("initialize episode evidence loader: %v", err)
-	}
-	// In the applied mode the episode is projected from the raw messages only.
+	// The session-card path and the Episode path are alternatives, and the
+	// configuration picks one.
 	//
-	// The old rolling summary is a frozen picture of an earlier part of the
-	// session, taken before the layered summary existed. A value that was
-	// replaced afterwards is still in it, and reading it would let a stale
-	// statement become an assertion about the learner. Reading the summary
-	// segments instead is a later change.
-	if !agentService.EpisodeReadsLegacySummary(conf.AgentConfig.SummarySegmentMode) {
-		episodeLoader.WithoutLegacySummary()
-	}
-	episodeGenerator, err := episodeService.NewModelGenerator(agentModel, conf.AgentConfig.EpisodeMaxInputTokens, conf.AgentConfig.EpisodeMaxOutputTokens)
-	if err != nil {
-		return nil, fmt.Errorf("initialize episode generator: %v", err)
-	}
-	// The second semantic layer, and it is assembled before the projector
-	// because the projector will not be built without it.
-	//
-	// It reuses the same chat component as the generator, but it is a separate
-	// component making a separate request with its own prompt and a minimal
-	// context. Reusing the generator's answer would be the model grading
-	// itself, and the prompt it is already given says not to promote assistant
-	// text into user facts - which is the very thing the pass-1 audit caught it
-	// doing.
-	//
-	// A failure here stops the Episode projector and worker rather than falling
-	// back to an unverified projector. Degrading would mean the one deployment
-	// whose verifier could not be built is the one that stores every assertion
-	// a model produces, unchecked, and it would look exactly like a healthy one.
-	episodeSupportVerifier, err := episodeService.NewModelSupportVerifier(
-		episodeService.SupportVerifierConfig{Chat: agentModel})
-	if err != nil {
-		return nil, fmt.Errorf("initialize episode support verifier: %v", err)
-	}
-	episodeProjector, err := episodeService.NewProjector(episodeLoader, episodeGenerator,
-		episodeRepository, episodeSupportVerifier)
-	if err != nil {
-		return nil, fmt.Errorf("initialize episode projector: %v", err)
-	}
-	// Only the mode that governs assertion time can orphan a relation, so only
-	// it makes the projector fail closed on one. Every other mode keeps the
-	// projection behaviour its measurements were produced under.
-	if memoryReadMode.GovernsAssertionTime() {
-		governanceIndex, err := episodeassertdao.NewRepository(mysql.DB)
-		if err != nil {
-			return nil, fmt.Errorf("initialize assertion governance index: %v", err)
+	// They share the job table, the worker, the lease, the retry budget and
+	// the versioning, so a deployment that switches paths keeps the same
+	// scheduler and only changes what the projector writes. What it must
+	// not do is run both: two generation models would mean two answers to
+	// the same question about the same conversation, and the learner would
+	// pay for both.
+	// The session-card path replaces the Episode path, and this is the one
+	// place that says so for the tools as well as the memory.
+	var projectionRunner episodeService.ProjectionRunner
+	if sessionCardEnabled {
+		cardLoader, cardLoaderErr := episodeService.NewDatabaseCardEvidenceLoader(mysql.DB, conf.AgentConfig.EpisodeMaxMessages)
+		if cardLoaderErr != nil {
+			return nil, fmt.Errorf("initialize session card evidence loader: %v", cardLoaderErr)
 		}
-		episodeProjector.UseGovernanceIndex(governanceIndex)
+		cardGenerator, cardGeneratorErr := episodeService.NewModelCardGenerator(agentModel,
+			conf.AgentConfig.EpisodeMaxInputTokens, cardOutputTokens(conf.AgentConfig))
+		if cardGeneratorErr != nil {
+			return nil, fmt.Errorf("initialize session card generator: %v", cardGeneratorErr)
+		}
+		cardProjector, cardProjectorErr := episodeService.NewCardProjector(cardLoader, cardGenerator, episodeRepository)
+		if cardProjectorErr != nil {
+			return nil, fmt.Errorf("initialize session card projector: %v", cardProjectorErr)
+		}
+		projectionRunner = cardProjector
+		log.Printf("session card path enabled: the episode projector is not run")
+	} else if sessionCardThin {
+		// The thin card path.
+		//
+		// The card is derived by the program from what the session already
+		// compressed, so there is no model to ask and no document to write:
+		// the card is a title, a time, the topics and names the summary
+		// segments recorded, and the way back to those segments.
+		//
+		// What it saves is the whole cost of the full card: one chat call
+		// per session, and a card that repeats the summary in the window.
+		// What it gives up is the card's own body, and the body is read from
+		// the source session when a question needs it.
+		//
+		// The assembly itself lives above, next to the tools that read it:
+		// the tools are what make the card worth keeping, and a card the
+		// tools cannot reach would be a card nobody ever finds.
+		projectionRunner = thinCardProjectionRunner
+		// The card is kept current from two directions.
+		//
+		// After a segment is written, the segment's own topic, names and
+		// number become the card's clues and the card's way back to the
+		// body. After an answer ends, the title and the last talked time
+		// move.
+		//
+		// Both go through the same service, and neither of them asks a
+		// model: the card is written from what is already on disk.
+		configuredAgentService.SetThinCardSyncer(thinCards)
+		summarySegmentAssembly.UseThinCardSyncer(thinCards)
+		log.Printf("thin session card path enabled: the card is derived by the program and costs no model call")
+	} else {
+		episodeLoader, err := episodeService.NewDatabaseEvidenceLoader(mysql.DB, conf.AgentConfig.EpisodeMaxMessages)
+		if err != nil {
+			return nil, fmt.Errorf("initialize episode evidence loader: %v", err)
+		}
+		// In the applied mode the episode is projected from the raw messages only.
+		//
+		// The old rolling summary is a frozen picture of an earlier part of the
+		// session, taken before the layered summary existed. A value that was
+		// replaced afterwards is still in it, and reading it would let a stale
+		// statement become an assertion about the learner. Reading the summary
+		// segments instead is a later change.
+		if !agentService.EpisodeReadsLegacySummary(conf.AgentConfig.SummarySegmentMode) {
+			episodeLoader.WithoutLegacySummary()
+		}
+		episodeGenerator, err := episodeService.NewModelGenerator(agentModel, conf.AgentConfig.EpisodeMaxInputTokens, conf.AgentConfig.EpisodeMaxOutputTokens)
+		if err != nil {
+			return nil, fmt.Errorf("initialize episode generator: %v", err)
+		}
+		// The second semantic layer, and it is assembled before the projector
+		// because the projector will not be built without it.
+		//
+		// It reuses the same chat component as the generator, but it is a separate
+		// component making a separate request with its own prompt and a minimal
+		// context. Reusing the generator's answer would be the model grading
+		// itself, and the prompt it is already given says not to promote assistant
+		// text into user facts - which is the very thing the pass-1 audit caught it
+		// doing.
+		//
+		// A failure here stops the Episode projector and worker rather than falling
+		// back to an unverified projector. Degrading would mean the one deployment
+		// whose verifier could not be built is the one that stores every assertion
+		// a model produces, unchecked, and it would look exactly like a healthy one.
+		episodeSupportVerifier, err := episodeService.NewModelSupportVerifier(
+			episodeService.SupportVerifierConfig{Chat: agentModel})
+		if err != nil {
+			return nil, fmt.Errorf("initialize episode support verifier: %v", err)
+		}
+		episodeProjector, err := episodeService.NewProjector(episodeLoader, episodeGenerator,
+			episodeRepository, episodeSupportVerifier)
+		if err != nil {
+			return nil, fmt.Errorf("initialize episode projector: %v", err)
+		}
+		// Only the mode that governs assertion time can orphan a relation, so only
+		// it makes the projector fail closed on one. Every other mode keeps the
+		// projection behaviour its measurements were produced under.
+		if memoryReadMode.GovernsAssertionTime() {
+			governanceIndex, err := episodeassertdao.NewRepository(mysql.DB)
+			if err != nil {
+				return nil, fmt.Errorf("initialize assertion governance index: %v", err)
+			}
+			episodeProjector.UseGovernanceIndex(governanceIndex)
+		}
+		projectionRunner = episodeProjector
 	}
 	// The episodic write-side relation pass.
 	//
@@ -1157,7 +1492,14 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	if err != nil {
 		return nil, fmt.Errorf("initialize episode reconciler: %v", err)
 	}
-	episodeWorker, err := episodeService.NewWorker(episodeRepository, episodeProjector, episodeReconciler, episodeService.WorkerConfig{
+	if sessionCardPathEnabled {
+		// The reconciler repairs a missed enqueue by looking for the derived
+		// row that is behind. A card that is behind is not repaired by an
+		// Episode that is up to date, so the reconciler has to look at the
+		// kind the path writes.
+		episodeReconciler.UseContentKind(model.EpisodeContentSessionCard)
+	}
+	episodeWorker, err := episodeService.NewWorker(episodeRepository, projectionRunner, episodeReconciler, episodeService.WorkerConfig{
 		WorkerCount: conf.AgentConfig.EpisodeWorkerCount, QueueSize: conf.AgentConfig.EpisodeQueueSize,
 		ScanInterval:      time.Duration(conf.AgentConfig.EpisodeScanIntervalSeconds) * time.Second,
 		ReconcileInterval: time.Duration(conf.AgentConfig.EpisodeReconcileIntervalSeconds) * time.Second,
@@ -1177,17 +1519,51 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 	// path. It is checked after this block, because the block degrades on a
 	// Redis outage and that degradation is acceptable for every other mode.
 	plannedMemoryWired := false
-	var deletionEpisodeIndex episodeService.EpisodeIndex
+	// episodeRetriever is declared out here because the card path reads it
+	// from outside the index block: the card path is attached whether or not
+	// the index was built, and a retriever that could not be built is
+	// reported rather than silently absent.
+	var episodeRetriever episodeService.Recaller
 	// Episode indexing remains a derived, degradable path. Projection keeps
 	// running when Redis is unavailable; failed rows are visible through
 	// index_status and cmd/episodereindex repairs them later.
-	if episodeIndex, indexErr := episodeDAO.NewRedisEpisodeIndex(redis.Rdb, redis.EpisodeVectorDimension); indexErr != nil {
+	// The card path binds the same instrument to the card index's own
+	// namespace. Two indexes rather than one index with two kinds of row in
+	// it: a search that could see both would answer "what did we decide"
+	// with whichever kind of row ranked higher.
+	episodeIndex, indexErr := episodeDAO.NewRedisEpisodeIndex(redis.Rdb, redis.EpisodeVectorDimension)
+	var indexSource episodeService.EpisodeIndexSource = episodeRepository
+	if sessionCardEnabled {
+		cardIndexName := strings.TrimSpace(conf.AgentConfig.SessionCardIndexName)
+		cardKeyPrefix := strings.TrimSpace(conf.AgentConfig.SessionCardIndexKeyPrefix)
+		if cardIndexName == "" {
+			cardIndexName = redis.SessionCardIndexName
+		}
+		if cardKeyPrefix == "" {
+			cardKeyPrefix = redis.SessionCardKeyPrefix
+		}
+		episodeIndex, indexErr = episodeDAO.NewRedisEpisodeIndexWithConfig(redis.Rdb, redis.EpisodeVectorDimension,
+			episodeDAO.EpisodeIndexConfig{IndexName: cardIndexName, KeyPrefix: cardKeyPrefix})
+		indexSource = episodeDAO.CardIndexSource{Repository: episodeRepository}
+	}
+	if indexErr != nil {
 		log.Printf("episode index disabled: %v", indexErr)
+	} else if sessionCardThin {
+		// The thin card path writes the thin card index and nothing else.
+		// The Episode index is a different instrument with a vector field,
+		// and the thin card's index has no vector field at all - so the
+		// Episode index is not created, and the worker is not given an
+		// indexer that would write the thin card's row into it.
+		//
+		// The thin card's own index is the one the session deletion cleans:
+		// a card must not outlive the conversation it describes.
+		deletionDerivedIndex = thinCardIndex
+		log.Printf("thin card path: the episode index is not written")
 	} else {
-		deletionEpisodeIndex = episodeIndex
+		deletionDerivedIndex = episodeIndex
 		if indexErr = episodeIndex.EnsureIndex(appCtx); indexErr != nil {
 			log.Printf("episode index writer disabled: ensure index: %v", indexErr)
-		} else if episodeIndexer, buildErr := episodeService.NewIndexer(episodeIndex, episodeRepository, runtime.embedder, redis.EpisodeVectorDimension); buildErr != nil {
+		} else if episodeIndexer, buildErr := episodeService.NewIndexer(episodeIndex, indexSource, runtime.embedder, redis.EpisodeVectorDimension); buildErr != nil {
 			log.Printf("episode index writer disabled: %v", buildErr)
 		} else {
 			episodeWorker.UseIndexer(episodeIndexer)
@@ -1196,10 +1572,17 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		// The mode decides which read path is constructed at all. Under
 		// legacy_v2 the v3 retriever is never built, so no later branch can
 		// reach the multi-axis plan, the resolved keys or the recall cycle.
-		var episodeRetriever episodeService.Recaller
 		var recallErr error
 		if embedErr == nil {
-			if memoryReadMode.UsesReadPlan() {
+			if sessionCardEnabled {
+				// The card retriever is the same instrument over the card
+				// index and the card rows, and it says so in its config so
+				// that the evidence filter looks in the card's slots.
+				cardConfig := episodeService.DefaultRetrieverConfig()
+				cardConfig.CardMode = true
+				episodeRetriever, recallErr = episodeService.NewRetriever(episodeService.NewQueryRouter(), episodeIndex,
+					episodeDAO.CardLoader{Repository: episodeRepository}, queryEmbedder, cardConfig)
+			} else if memoryReadMode.UsesReadPlan() {
 				episodeRetriever, recallErr = episodeService.NewRetriever(episodeService.NewQueryRouter(), episodeIndex, episodeRepository, queryEmbedder, episodeService.DefaultRetrieverConfig())
 			} else {
 				episodeRetriever, recallErr = episodeService.NewLegacyRetriever(episodeIndex, episodeRepository, queryEmbedder, episodeService.DefaultRetrieverConfig())
@@ -1221,7 +1604,7 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 			// context builder never consults, and a reader that exists gets
 			// called eventually.
 			log.Printf("episode recall handled by %s", memoryReadMode)
-		} else {
+		} else if !sessionCardEnabled {
 			switch agentService.EpisodeRecallMode(conf.AgentConfig.EpisodeRecallMode) {
 			case agentService.EpisodeRecallShadow:
 				if observer, observerErr := episodeService.NewShadowObserver(episodeRepository, episodeRetriever); observerErr != nil {
@@ -1244,6 +1627,30 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 				configuredAgentService.SetEpisodeSessionHistoryReader(episodeRepository)
 			}
 		}
+	}
+	// The card path's read side.
+	//
+	// It is attached outside the recall-mode switch because the card path is
+	// an explicit opt-in rather than a mode: a deployment that turned it on
+	// asked for the cards to be shown, and the Episode recall mode still
+	// describes the Episode path.
+	if sessionCardEnabled && episodeRetriever != nil {
+		contextBuilder.UseSessionCardProvider(agentService.SessionCardProviderFunc(
+			func(ctx context.Context, input agentService.RunContext) ([]model.EpisodeMemory, error) {
+				result, cardErr := episodeRetriever.Recall(ctx, episodeService.RecallRequest{
+					UserID: input.UserID, SessionID: input.SessionID, Question: input.Question,
+					CurrentSessionHasHistory: input.CurrentSessionHasHistory,
+					ProposedTopicKeys:        input.ProposedTopicKeys, Cycle: input.RecallCycle,
+				})
+				if cardErr != nil {
+					return nil, cardErr
+				}
+				return result.Episodes, nil
+			}))
+		// The reader is what tells the run that this session has history,
+		// and the cards are only fetched for a run that has one.
+		configuredAgentService.SetEpisodeSessionHistoryReader(episodeRepository)
+		log.Printf("session card read path enabled")
 	}
 	if memoryReadMode.UsesModelPlanner() && !plannedMemoryWired {
 		// Fail closed at startup rather than at the first learner question. A
@@ -1305,8 +1712,55 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		}
 	}
 	handler := buildRouter(runtime.documents, conf, registration)
-	return &Application{Lifecycle: l, Handler: handler, Agent: configuredAgentService, Runner: agentRunner, Context: contextBuilder, Documents: runtime.documents, EpisodeIndex: deletionEpisodeIndex}, nil
+	return &Application{Lifecycle: l, Handler: handler, Agent: configuredAgentService, Runner: agentRunner, Context: contextBuilder, Documents: runtime.documents, DerivedIndex: deletionDerivedIndex}, nil
 }
+
+// cardOutputTokens is how many tokens the card writer may use.
+//
+// The card writes its whole document into a tool call, so its budget has to
+// hold the document AND the JSON wrapper around it. The Episode's 1800 was
+// written for a document of assertions, and a card of a real session ran into
+// it: the model used every token it was given, the arguments stopped in the
+// middle of the JSON, and the decoder refused the document as a protocol
+// violation.
+//
+// A deployment that says nothing gets the card's own budget. A deployment
+// that sets one gets that one, and the number is validated with the rest of
+// the configuration.
+func cardOutputTokens(agent config.AgentConfig) int {
+	if agent.SessionCardMaxOutputTokens > 0 {
+		return agent.SessionCardMaxOutputTokens
+	}
+	return agent.EpisodeMaxOutputTokens
+}
+
+// thinCardIndexName is the thin card index's name.
+//
+// It is the deployment's own, and a deployment that says nothing gets the
+// default. The thin card's index has no vector field, so it cannot share a
+// namespace with the full card's index.
+func thinCardIndexName(conf *config.Config) string {
+	if name := strings.TrimSpace(conf.AgentConfig.SessionCardThinIndexName); name != "" {
+		return name
+	}
+	return redis.ThinCardIndexName
+}
+
+// thinCardKeyPrefix is the thin card index's key prefix.
+func thinCardKeyPrefix(conf *config.Config) string {
+	if prefix := strings.TrimSpace(conf.AgentConfig.SessionCardThinIndexKeyPrefix); prefix != "" {
+		return prefix
+	}
+	return redis.ThinCardKeyPrefix
+}
+
+// thinCardCandidateLimit is how many candidate sessions a thin card search
+// returns.
+//
+// It is a handful: the card is a finding aid and the reader is a person who
+// has to recognise the session, so a list of five is already more than one
+// person can choose between.
+const thinCardCandidateLimit = 5
 
 // buildSummarySegmentPreselector builds the preselector on the budgets the
 // window will actually render with.

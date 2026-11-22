@@ -67,6 +67,10 @@ type ProductResult struct {
 	// not a seed.
 	SeededMemories   SeedMemoryReport       `json:"seeded_memories"`
 	SeededMemoryRows []model.LongTermMemory `json:"seeded_memory_rows,omitempty"`
+	// SessionCard is what the card arm observed: the card that was written,
+	// whether it was indexed before the question was asked, the conversation
+	// the question was asked in and what the answer looked at.
+	SessionCard *CardArmEvidence `json:"session_card,omitempty"`
 }
 
 // QuestionResult is one question of an attempt and what came back.
@@ -113,6 +117,9 @@ type AttemptInput struct {
 	// without one. The wait is what turns "the segment was written" into
 	// "the segment was in the window when the model was asked".
 	WaitForSummarySegment bool
+	// SessionCard says which arm this attempt measures. It is nil for the
+	// old attempt, and it names the card path when the attempt measures it.
+	SessionCard *CardArm
 }
 
 // Question is one question of an attempt.
@@ -227,22 +234,57 @@ type WarmupReport struct {
 	// memories are written before the conversation is prepared, so that the
 	// product sees them while the conversation is built.
 	SeededMemories SeedMemoryReport `json:"seeded_memories"`
+	// Projection is what the preparation projected: the conversations it
+	// published, the kind of document it published, and how long it waited
+	// for the memories to be indexed.
+	Projection *ArmProjection `json:"projection,omitempty"`
+	// LayeredSummary is what the preparation wrote for the layered summary:
+	// the summary segments and the whiteboard of every conversation.
+	//
+	// It is here because the card path reads THAT state, and a report that
+	// said the card path was measured without saying whether the compressed
+	// state existed would be describing a card that was written from the raw
+	// messages alone.
+	//
+	// A conversation whose entry carries an Error got no segment and no
+	// board, and its card was written from the raw messages. The count of
+	// those is here so that a reader does not have to count them.
+	LayeredSummary []LayeredSummaryRecord `json:"layered_summary,omitempty"`
+	// LayeredSummaryFailures is how many conversations got no layered
+	// summary.
+	//
+	// It is a number of its own and not something to count out of the list,
+	// because the number is the finding: a card arm where a quarter of the
+	// cards were written from raw messages is a different measurement from
+	// one where they all were, and the reader has to be able to see it.
+	LayeredSummaryFailures int `json:"layered_summary_failures"`
 }
 
-func PrepareOfflineProduct(ctx context.Context, repository string, turns []Turn, input AttemptInput) (Snapshot, []ModelCall, error) {
-	report, err := PrepareOfflineProductReport(ctx, repository, turns, input)
+func PrepareOfflineProduct(ctx context.Context, repository string, histories []History, input AttemptInput) (Snapshot, []ModelCall, error) {
+	report, err := PrepareOfflineProductReport(ctx, repository, histories, input, "")
 	return report.Snapshot, report.Calls, err
 }
-func PrepareOfflineProductReport(ctx context.Context, repository string, turns []Turn, input AttemptInput) (report WarmupReport, resultErr error) {
-	report.Snapshot, report.Calls, report.SeededMemories, resultErr = prepareOfflineProduct(ctx, repository, turns, input, func(prepared []PreparedTurn) {
+
+// PrepareOfflineProductReport prepares the attempt's conversations offline.
+//
+// evidenceDir is the run's private output directory. The offline model is
+// in-process and writes no card through HTTP, so there are no card bodies
+// to keep: the file is written empty, and its presence says that the phase
+// looked for them and found none.
+func PrepareOfflineProductReport(ctx context.Context, repository string, histories []History, input AttemptInput, evidenceDir string) (report WarmupReport, resultErr error) {
+	report.Snapshot, report.Calls, report.SeededMemories, resultErr = prepareOfflineProduct(ctx, repository, histories, input, evidenceDir, func(prepared []PreparedTurn) {
 		report.Turns = prepared
 		SummarizeTurns(prepared, &report)
+	}, func(layered []LayeredSummaryRecord) {
+		report.LayeredSummary = layered
+		report.LayeredSummaryFailures = countLayeredSummaryFailures(layered)
 	})
 	var usageErr error
 	report.UsageByRole, usageErr = SummarizeCalls(report.Calls)
-	return report, errors.Join(resultErr, usageErr)
+	resultErr = errors.Join(resultErr, usageErr)
+	return report, resultErr
 }
-func prepareOfflineProduct(ctx context.Context, repository string, turns []Turn, input AttemptInput, observe func([]PreparedTurn)) (snapshot Snapshot, calls []ModelCall, memories SeedMemoryReport, resultErr error) {
+func prepareOfflineProduct(ctx context.Context, repository string, histories []History, input AttemptInput, evidenceDir string, observe func([]PreparedTurn), observeLayered func([]LayeredSummaryRecord)) (snapshot Snapshot, calls []ModelCall, memories SeedMemoryReport, resultErr error) {
 	if err := ctx.Err(); err != nil {
 		return snapshot, nil, memories, err
 	}
@@ -259,7 +301,19 @@ func prepareOfflineProduct(ctx context.Context, repository string, turns []Turn,
 	if err != nil {
 		return snapshot, nil, memories, err
 	}
-	defer func() { resultErr = errors.Join(resultErr, closeSandbox(s)) }()
+	// The evidence is written BEFORE the sandbox is closed, and the sandbox is
+	// closed ONLY after the write succeeded.
+	//
+	// The offline model is in-process and writes no card through HTTP, so
+	// there are no card bodies to keep: the file is written empty, and its
+	// presence says that the phase looked for them and found none. The rule
+	// is the one the real path follows - a write that failed keeps the
+	// sandbox, because a teardown that ran anyway would take the run's own
+	// rows with it.
+	defer func() {
+		resultErr = errors.Join(resultErr, writeCardEvidenceThenClose(evidenceDir, nil, s.name(),
+			cardEvidenceSaved{Calls: len(calls)}, WriteCardEvidence, func() error { return closeSandbox(s) }))
+	}()
 	if err = s.InitProductSchema(ctx); err != nil {
 		return snapshot, nil, memories, err
 	}
@@ -274,7 +328,14 @@ func prepareOfflineProduct(ctx context.Context, repository string, turns []Turn,
 		return snapshot, nil, memories, err
 	}
 	if err = (guardedStore{s}).with(ctx, func(tx *gorm.DB) error {
-		return tx.Create(&model.Session{ID: "synthetic-evaluation", UserID: 7, UserName: "synthetic-learner", Mode: model.SessionModeAgent, Title: "Synthetic evaluation"}).Error
+		for _, history := range histories {
+			session := model.Session{ID: history.SessionID, UserID: 7, UserName: "synthetic-learner",
+				Mode: model.SessionModeAgent, Title: "Synthetic evaluation"}
+			if err := tx.Create(&session).Error; err != nil {
+				return err
+			}
+		}
+		return nil
 	}); err != nil {
 		return snapshot, nil, memories, err
 	}
@@ -297,12 +358,39 @@ func prepareOfflineProduct(ctx context.Context, repository string, turns []Turn,
 	if err != nil {
 		return snapshot, nil, memories, err
 	}
-	prepared, err := s.Prepare(ctx, 7, "synthetic-evaluation", "synthetic-learner", turns, generator, policy)
+	prepared, err := s.PrepareMany(ctx, 7, "synthetic-learner", histories, generator, policy)
 	observe(prepared)
 	if err != nil {
 		return snapshot, ledger.Calls(), memories, err
 	}
-	snapshot, err = s.Capture(ctx, 7, "synthetic-evaluation")
+	sessionIDs := make([]string, 0, len(histories))
+	for _, history := range histories {
+		sessionIDs = append(sessionIDs, history.SessionID)
+	}
+	// The layered summary is written here, with the product's own producer,
+	// for the same reason the real path writes it: the card path reads the
+	// summary segments and the whiteboard, and a preparation that stopped at
+	// the rolling summary would produce a card written from the raw messages
+	// alone.
+	layered, layeredErr := WriteLayeredSummaries(ctx, s, 7, sessionIDs, chat,
+		LayeredSummarySettings(settings.Config))
+	if observeLayered != nil {
+		observeLayered(layered)
+	}
+	if layeredErr != nil {
+		return snapshot, ledger.Calls(), memories, layeredErr
+	}
+	if err := (guardedStore{sandbox: s}).with(ctx, func(tx *gorm.DB) error {
+		for _, record := range layered {
+			if record.Segments == 0 && record.Error == "" {
+				return fmt.Errorf("the conversation %s got no summary segment", record.SessionID)
+			}
+		}
+		return nil
+	}); err != nil {
+		return snapshot, ledger.Calls(), memories, err
+	}
+	snapshot, err = s.CaptureMany(ctx, 7, sessionIDs)
 	return snapshot, ledger.Calls(), memories, err
 }
 
@@ -345,6 +433,21 @@ func (m *offlineChat) Generate(ctx context.Context, input []*schema.Message, _ .
 		m.mu.Unlock()
 		return schema.AssistantMessage(m.segmentDocument(input), nil), nil
 	}
+	if len(input) > 0 && strings.HasPrefix(input[0].Content, cardWriterPromptPrefix) {
+		// The card is read as a tool call, because that is how the product
+		// reads it: the arguments are the card document, and the program
+		// checks every id in it against the evidence it showed the model. A
+		// fake that answered with prose would leave the product with nothing
+		// to store, and the arm would measure a window without a card.
+		arguments, err := m.cardDocument(input)
+		if err != nil {
+			return nil, err
+		}
+		return schema.AssistantMessage("", []schema.ToolCall{{
+			ID: "offline-card", Type: "function",
+			Function: schema.FunctionCall{Name: cardToolName, Arguments: arguments},
+		}}), nil
+	}
 	if len(input) > 0 && strings.HasPrefix(input[0].Content, "You compress an older portion") {
 		return schema.AssistantMessage(`{"schema_version":2,"current_goal":"synthetic offline summary"}`, nil), nil
 	}
@@ -383,6 +486,137 @@ func (m *offlineChat) answerInputs() [][]*schema.Message {
 		out = append(out, append([]*schema.Message(nil), answer...))
 	}
 	return out
+}
+
+// cardWriterPromptPrefix is how the session card's writer prompt starts.
+//
+// The prompt is the product's own, and the fake model answers the call it
+// recognizes. A call the fake model does not recognize is refused, and a
+// refused card call is a projection that produced nothing: the window then
+// carries no card at all, and an attempt that only checked that the
+// projection ran would call that a success.
+const cardWriterPromptPrefix = "You write one card for one finished chat session"
+
+// cardToolName is the tool the product asks the card to be written
+// into. It is the product's name, and the product refuses a card that came
+// back under another one.
+//
+// The same name is the harness's marker for the card generation: the call
+// that binds this tool is the one whose raw exchange is kept.
+const cardToolName = "publish_session_card"
+
+// cardDocument is what the fake model answers when the product asks for a
+// card.
+//
+// The card cites the messages it was shown, because the program refuses a
+// citation it never showed the model: a card that cites nothing is a claim
+// with nothing behind it, and the whole card is refused rather than the one
+// entry.
+func (m *offlineChat) cardDocument(input []*schema.Message) (string, error) {
+	payload := ""
+	if len(input) > 1 && input[1] != nil {
+		payload = input[1].Content
+	}
+	var request struct {
+		SessionTitle string `json:"session_title"`
+		Messages     []struct {
+			ID      uint   `json:"id"`
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+		Segments []struct {
+			Seq    int      `json:"seq"`
+			Points []string `json:"points"`
+		} `json:"segments"`
+	}
+	if err := json.Unmarshal([]byte(payload), &request); err != nil {
+		return "", fmt.Errorf("decode the session card payload: %w", err)
+	}
+	title := strings.TrimSpace(request.SessionTitle)
+	if title == "" {
+		title = "synthetic offline session"
+	}
+	document := model.SessionCardDocument{
+		Version:  model.SessionCardContentVersion,
+		Title:    title,
+		Synopsis: fmt.Sprintf("synthetic offline card for %d messages", len(request.Messages)),
+		Topics:   []model.EpisodeTopic{{Key: "synthetic-offline", Label: "synthetic offline"}},
+	}
+	for _, message := range request.Messages {
+		if message.ID == 0 {
+			continue
+		}
+		entry := model.SessionCardEntry{
+			Text:       offlineCardText(message.Content),
+			MessageIDs: []uint{message.ID},
+		}
+		if message.Role == "user" {
+			entry.Status = model.SessionCardStatusStated
+			document.Arrangements = append(document.Arrangements, entry)
+			continue
+		}
+		entry.Status = model.SessionCardStatusAssistantProposed
+		document.AssistantProducts = append(document.AssistantProducts, entry)
+	}
+	// The conversation was compressed before the card was written, so the raw
+	// messages are gone and what the fake was shown is the summary. A real
+	// model writes the card from what it was shown, and so does the fake: the
+	// card cites the segments it read, and the words it puts there are the
+	// conversation's own words.
+	//
+	// Without this the card would carry nothing of the conversation, and a card
+	// that says nothing about what was said is a card the retrieval cannot
+	// find: the arm would measure a card path that found no card.
+	if len(document.Arrangements) == 0 && len(document.AssistantProducts) == 0 {
+		for _, segment := range request.Segments {
+			for position, point := range segment.Points {
+				text := strings.TrimSpace(point)
+				if text == "" {
+					continue
+				}
+				// The card payload carries the points as plain texts, so the
+				// only attribution left is the order: the fake's summary
+				// writes the learner's point first and the assistant's
+				// second. Writing the assistant's product into the
+				// learner's "arrangements" would say the learner had settled
+				// something the assistant only proposed, and a card that
+				// misattributes is worse than a card that says less.
+				entry := model.SessionCardEntry{Text: offlineCardText(text), SegmentSeqs: []int{segment.Seq}}
+				switch position {
+				case 0:
+					entry.Status = model.SessionCardStatusStated
+					document.Arrangements = append(document.Arrangements, entry)
+				case 1:
+					entry.Status = model.SessionCardStatusAssistantProposed
+					document.AssistantProducts = append(document.AssistantProducts, entry)
+				default:
+					// The fake writes one point per role, so a third point is
+					// something the fake did not write and is left out.
+				}
+			}
+		}
+	}
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		return "", fmt.Errorf("encode the offline session card: %w", err)
+	}
+	return string(encoded), nil
+}
+
+// offlineCardText is the line a card entry carries.
+//
+// It is short on purpose: the entry is a pointer back to the message, and
+// the whole wording is one read-back away.
+func offlineCardText(content string) string {
+	text := strings.TrimSpace(content)
+	runes := []rune(text)
+	if len(runes) > 120 {
+		return string(runes[:120]) + "…"
+	}
+	if text == "" {
+		return "synthetic offline line"
+	}
+	return text
 }
 
 // segmentWriterPromptPrefix is how the layered summary's writer prompt starts.
@@ -428,16 +662,16 @@ func (m *offlineChat) segmentDocument(input []*schema.Message) string {
 	if len(input) > 1 && input[1] != nil {
 		payload = input[1].Content
 	}
-	learner, product := segmentPayloadMessageIDs(payload)
+	learner, product, learnerText, productText := segmentPayloadMessages(payload)
 	points := []map[string]any{}
 	if learner > 0 {
 		points = append(points, map[string]any{
-			"text": syntheticSegmentLearnerText, "evidence_message_ids": []uint{learner}, "source": "user",
+			"text": summaryPointText(learnerText, syntheticSegmentLearnerText), "evidence_message_ids": []uint{learner}, "source": "user",
 		})
 	}
 	if m.assistantContent && product > 0 {
 		points = append(points, map[string]any{
-			"text": syntheticSegmentProductText, "evidence_message_ids": []uint{product}, "source": "assistant",
+			"text": summaryPointText(productText, syntheticSegmentProductText), "evidence_message_ids": []uint{product}, "source": "assistant",
 		})
 	}
 	document := map[string]any{
@@ -466,27 +700,57 @@ func (m *offlineChat) segmentDocument(input []*schema.Message) string {
 	return string(encoded)
 }
 
-// segmentPayloadMessageIDs reads the id of the batch's first learner message
-// and of its first assistant message out of the payload the writer was given.
+// segmentPayloadMessages reads the batch's first learner message and of its
+// first assistant message out of the payload the writer was given.
 //
-// The payload names every message with its id and its role, so the fake model
-// cites messages the batch really contained.
-func segmentPayloadMessageIDs(payload string) (learner, product uint) {
-	for _, match := range segmentPayloadMessage.FindAllStringSubmatch(payload, -1) {
-		id, err := strconv.ParseUint(match[1], 10, 64)
+// The payload names every message with its id and its role and shows its
+// text, so the fake model cites messages the batch really contained and
+// writes down the subject the batch really talked about.
+//
+// The text matters as much as the ids. A summary that kept no words of its own
+// would leave every card written from it empty of the conversation, and a card
+// nobody can find is a card the arm cannot measure: the retrieval would look
+// for what the learner said and find nothing, and the attempt would say the
+// card path found nothing while the card was sitting in the index.
+func segmentPayloadMessages(payload string) (learner, product uint, learnerText, productText string) {
+	matches := segmentPayloadMessage.FindAllStringSubmatchIndex(payload, -1)
+	for index, match := range matches {
+		id, err := strconv.ParseUint(payload[match[2]:match[3]], 10, 64)
 		if err != nil {
 			continue
 		}
-		switch match[2] {
+		role := payload[match[4]:match[5]]
+		// The text is what follows the marker, up to the next marker. A
+		// message may span several lines, so the line is not the end of it.
+		end := len(payload)
+		if index+1 < len(matches) {
+			end = matches[index+1][0]
+		}
+		text := strings.TrimSpace(payload[match[1]:end])
+		switch role {
 		case "user":
 			if learner == 0 {
-				learner = uint(id)
+				learner, learnerText = uint(id), text
 			}
 		case "assistant":
 			if product == 0 {
-				product = uint(id)
+				product, productText = uint(id), text
 			}
 		}
 	}
-	return learner, product
+	return learner, product, learnerText, productText
+}
+
+// summaryPointText is what one summary point says.
+//
+// The message's own words are kept, because a summary is a compression of what
+// was said and not a replacement for it: the words the learner used are the
+// words a later question will use. The fixed text is the fallback for a
+// payload that carries no readable text.
+func summaryPointText(text, fallback string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return fallback
+	}
+	return offlineCardText(trimmed)
 }

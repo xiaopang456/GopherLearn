@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"GopherAI/model"
+	"github.com/xiaopang456/GopherLearn/eval/internal/conversation"
 )
 
 // userNameColumnWidth reads the narrowest width the product's own tables give
@@ -223,5 +224,51 @@ func TestScenarioIdentityCollisionCheckIsExhaustiveForListedGroups(t *testing.T)
 			}
 		}
 		ids = append(ids, id)
+	}
+}
+
+// The two arms of the comparison are the old Episode and the new card. They
+// are kept apart by two levers, and both have to hold: the card index has its
+// own namespace per arm, and the evaluation identity carries the arm and the
+// path. One lever alone is not enough - a shared identity would let the card
+// arm read the Episode arm's memories out of the same database.
+func TestTheTwoArmsAreIsolated(t *testing.T) {
+	episode := scenarioInput()
+	card := scenarioInput()
+	card.sessionCardMode = conversation.CardArmModeOn
+	episodeID, episodeName, err := deriveScenarioIdentity(allExplicit(), episode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cardID, cardName, err := deriveScenarioIdentity(allExplicit(), card)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if episodeID == cardID || episodeName == cardName {
+		t.Fatal("the two arms share one evaluation identity")
+	}
+	// The namespace is derived from the arm, so an operator cannot point two
+	// arms at one index by writing the same name twice.
+	first, firstPrefix := cardNamespace("card", conversation.CardArmModeOn)
+	second, secondPrefix := cardNamespace("episode", conversation.CardArmModeOn)
+	if first == second || firstPrefix == secondPrefix {
+		t.Fatal("two arms share one card index namespace")
+	}
+	if !strings.HasPrefix(first, "gopherai_session_card_") || !strings.HasPrefix(second, "gopherai_session_card_") {
+		t.Fatalf("the derived namespace left the declared family: %q %q", first, second)
+	}
+	same, samePrefix := cardNamespace("card", conversation.CardArmModeOn)
+	if same != first || samePrefix != firstPrefix {
+		t.Fatal("the derived namespace changed between two readings of the same arm")
+	}
+	// The thin card has its own family: it is a different index with a
+	// different document, and a search that meant one must not find the
+	// other.
+	thin, thinPrefix := cardNamespace("card", conversation.CardArmModeThin)
+	if !strings.HasPrefix(thin, "gopherai_thin_card_") || !strings.HasPrefix(thinPrefix, "gopherai:thin_card:") {
+		t.Fatalf("the thin card's namespace left its family: %q %q", thin, thinPrefix)
+	}
+	if thin == first || thinPrefix == firstPrefix {
+		t.Fatal("the thin card and the full card share one index namespace")
 	}
 }

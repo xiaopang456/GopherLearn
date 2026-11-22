@@ -53,7 +53,7 @@ func TestOlderModePromptsKeepTheirFrozenBytes(t *testing.T) {
 		{memoryrecall.ModeAgentMemoryToolV1, "a30ba8b983eb4cc0c5fa01841f3c80710a0c133fd9ea52187c030e285e5904d0"},
 		{memoryrecall.ModeAgentMemoryToolV2, "e4282b7928e4dfdfe979e1bc49d39cc16909dbaedb7d73f114b9b16e4943ae15"},
 		{memoryrecall.ModeAgentMemoryToolV3, "f6ce9df396fdf635d18fb2e11b4ddb0f266e46226d9f1a204117484b725994db"},
-		{memoryrecall.ModeAgentMemoryToolV4, "69f53953243ae66e6a126db9db09e871249c10a9d7442c7c9f6960e5d204b699"},
+		{memoryrecall.ModeAgentMemoryToolV4, "ea6c66d3c7e1940d1c0909cfc9a34cfc8ff7e4d9910464b8137ca6bd7cb93a5b"},
 		{memoryrecall.ModeAgentMemoryUserConfirmedV1, "bf4235a5071547c284dab703e5429cd36e5d7af982f142185273c65514f3c798"},
 		{memoryrecall.ModeEpisodeAssertionGovernedV11, "bf4235a5071547c284dab703e5429cd36e5d7af982f142185273c65514f3c798"},
 		{memoryrecall.ModeAgentMemoryExplicitActionsV1, "50203b8b401ad0c71ca1f478f210fcf9b25d24b387a7161f23058553d7ce8ee8"},

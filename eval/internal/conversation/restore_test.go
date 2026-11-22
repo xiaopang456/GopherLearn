@@ -24,11 +24,11 @@ func TestRestoreRequiresEmptyTablesAndIsAtomic(t *testing.T) {
 	if err = restoreIntoEmpty(context.Background(), db, s); err != nil {
 		t.Fatal(err)
 	}
-	got, err := Capture(context.Background(), db, s.Session.UserID, s.Session.ID)
+	got, err := Capture(context.Background(), db, s.Sessions[0].Session.UserID, s.Sessions[0].Session.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Messages[0].ID != 1 || got.Summary.CoveredMessageID != 2 {
+	if got.Sessions[0].Messages[0].ID != 1 || got.Sessions[0].Summary.CoveredMessageID != 2 {
 		t.Fatal("message ids changed")
 	}
 	if err = restoreIntoEmpty(context.Background(), db, s); err == nil {

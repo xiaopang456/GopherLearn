@@ -26,6 +26,11 @@ const maxHistoryMessageRunes = 600
 // tool budget allows, so five ids is what a learner gets asked about at once.
 const maxHistoryMessageIDsPerCall = 5
 
+// maxAdjacentMessages bounds the neighbour read: at most one message on each
+// side of a search hit. The neighbour is a completion of the hit, not a way to
+// read a conversation by walking it.
+const maxAdjacentMessages = 2
+
 // readHistoryMessageDescription is the contract the model reads.
 //
 // It is a constant rather than an inline argument because a freeze must be able
@@ -101,6 +106,13 @@ type EpisodeEvidenceFacts struct {
 	Status      string
 	IndexStatus string
 	Watermark   uint
+	// ContentKind says which document the row carries.
+	//
+	// One table holds two kinds of derived row, and the citation closure
+	// below belongs to one of them: an Episode cites through its assertions,
+	// a card cites through its entries. A grant that named the wrong kind
+	// would be checked against a closure that is not there.
+	ContentKind string
 	// EvidenceMessageIDs is the closure the stored card cites right now. An id that
 	// is not in it was not cited by this version, whatever the rendered block showed.
 	EvidenceMessageIDs []uint
@@ -144,6 +156,16 @@ const (
 	refusalEpisodeWatermark = "message_past_episode_watermark"
 	refusalVerifierAbsent   = "episode_verifier_not_wired"
 	refusalUnreadable       = "episode_evidence_unreadable"
+
+	// The session card's refusal reasons.
+	//
+	// A card is the same kind of derived row as an Episode and is checked
+	// the same way, with one addition: the row must still be the card the
+	// grant was drawn from. A row that was rewritten as an Episode in the
+	// meantime cites a different closure, and the id the run holds would
+	// not be in it.
+	refusalCardMissing = "session_card_not_found"
+	refusalCardKind    = "session_card_kind_mismatch"
 
 	// The summary segments' refusal reasons.
 	//
@@ -225,6 +247,20 @@ type HistoryMessageRegistry struct {
 	// It is off by default. With it off, only the learner's own words are
 	// readable, and the tool says so.
 	assistantContent bool
+	// adjacentRead says a read-back of a SEARCH hit also brings the messages
+	// immediately before and after it in the same conversation. A search hit
+	// is a window onto a sentence: the half that answers the question often
+	// sits in the neighbouring message ("练习单子" in one, "动作、提问、验收" in
+	// the next). Only a search grant is expanded; a card citation is not.
+	adjacentRead bool
+	// onDemandSearch says this deployment offers the conversation search in
+	// the same turn. The search registers the ids it shows the model as
+	// read-back grants, but the tool table is built BEFORE any tool runs: with
+	// an empty grant set the tool would be left out, and the model could never
+	// read the hit it just found. When this is on, the tool is registered even
+	// with no grants yet; the per-call grant check still refuses every id the
+	// search did not show.
+	onDemandSearch bool
 }
 
 func NewHistoryMessageRegistry(reader HistoryMessageReader) (*HistoryMessageRegistry, error) {
@@ -291,8 +327,57 @@ func (r *HistoryMessageRegistry) UseAssistantContent(enabled bool) {
 	r.assistantContent = enabled
 }
 
+// UseOnDemandSearchGrants keeps the read-back tool on the table when the same
+// turn offers the conversation search.
+//
+// The search adds a grant for every message id it returns, but tools are built
+// before the turn runs; without this the tool would be omitted for a run whose
+// grants are still empty, and a hit the search just showed the model could not
+// be read back in full. Registration is not authorisation: every call still
+// resolves the id against the run's grant set, and a search grant is still
+// re-checked against its session, the card behind it and the lock.
+func (r *HistoryMessageRegistry) UseOnDemandSearchGrants(enabled bool) {
+	if r == nil {
+		return
+	}
+	r.onDemandSearch = enabled
+}
+
+// UseAdjacentRead turns on the neighbour read for search hits.
+//
+// The neighbour is authorised against the SAME grant as the hit it came from
+// (same conversation, same card, same watermark, same lock/session check); it
+// is not an independent id the model supplied.
+func (r *HistoryMessageRegistry) UseAdjacentRead(enabled bool) {
+	if r == nil {
+		return
+	}
+	r.adjacentRead = enabled
+}
+
+// readHistoryMessageOnDemandDescription is the extra sentence a run with the
+// conversation search adds: the search is what makes a message id readable in
+// the same turn, and the model has to know that before it searches.
+const readHistoryMessageOnDemandDescription = " A message id that a conversation search in this turn returned can be read back in full with this tool; an id nothing showed you is refused."
+
+// readHistoryMessageAdjacentDescription is the extra sentence the neighbour
+// read adds: a search hit is a window, and the message beside it often carries
+// the other half of the sentence.
+const readHistoryMessageAdjacentDescription = " When a search hit is read back, the messages immediately before and after it in the same conversation are included as adjacent=true, so a sentence the search cut in half can be read whole."
+
 // description is the contract the model reads for this run.
 func (r *HistoryMessageRegistry) description() string {
+	if r != nil && r.onDemandSearch {
+		description := readHistoryMessageDescription
+		if r.assistantContent {
+			description = readHistoryMessageAssistantDescription
+		}
+		description += readHistoryMessageOnDemandDescription
+		if r.adjacentRead {
+			description += readHistoryMessageAdjacentDescription
+		}
+		return description
+	}
 	if r != nil && r.assistantContent {
 		return readHistoryMessageAssistantDescription
 	}
@@ -326,6 +411,10 @@ type HistoryMessageView struct {
 	// check resolves it. It is empty only when the run carried no evidence registry, in
 	// which case nothing this tool returns is citable and the read itself is unchanged.
 	Reference string `json:"reference,omitempty"`
+	// Adjacent says this message was not requested: it is the message beside
+	// a requested search hit, read because a sentence the search cut in half
+	// often continues there. It is authorised by the same grant as the hit.
+	Adjacent bool `json:"adjacent,omitempty"`
 }
 
 func (r *HistoryMessageRegistry) Tools(ctx context.Context, run serviceagent.RunContext) ([]tool.BaseTool, error) {
@@ -343,8 +432,10 @@ func (r *HistoryMessageRegistry) Tools(ctx context.Context, run serviceagent.Run
 		grants = serviceagent.NewHistoryGrantSet(run, run.HistoryGrants)
 	}
 	// Nothing was recalled, so there is nothing this run may read. Offering the
-	// tool anyway would invite calls that can only be refused.
-	if grants.Len() == 0 {
+	// tool anyway would invite calls that can only be refused - except on the
+	// on-demand path, where the conversation search is what fills the grant set
+	// during the turn (see UseOnDemandSearchGrants).
+	if grants.Len() == 0 && !r.onDemandSearch {
 		return nil, nil
 	}
 	userID := run.UserID
@@ -352,7 +443,9 @@ func (r *HistoryMessageRegistry) Tools(ctx context.Context, run serviceagent.Run
 	// the same facts, and re-reading the row per id would turn two tool calls into a
 	// query per citation.
 	facts := &episodeFactsCache{reader: r.episodeEvidence, segments: r.segmentEvidence, userID: userID,
-		loaded: map[string]episodeFactsEntry{}, segmentLoaded: map[int]segmentFactsEntry{}}
+		sessionID:       strings.TrimSpace(run.SessionID),
+		lockedSessionID: strings.TrimSpace(run.LockedSessionID),
+		loaded:          map[string]episodeFactsEntry{}, segmentLoaded: map[int]segmentFactsEntry{}}
 	// A message this run reads back is evidence the learner actually said those words,
 	// and the only thing that can make a citation to them legal. The registry comes from
 	// the run, exactly like memory_search's does, so the reference the tool issues is the
@@ -474,6 +567,96 @@ func (r *HistoryMessageRegistry) Tools(ctx context.Context, run serviceagent.Run
 					allowed[message.ID], message.CreatedAt, content)
 				out.Messages = append(out.Messages, view)
 			}
+			// The message beside a search hit.
+			//
+			// A keyword hit is a window onto a sentence, not the sentence: a
+			// search for "练习单子" lands on the message that says "那就弄成
+			// 一张练习单子", while the answer ("动作、提问、验收") is the very
+			// next message. The neighbour is authorised against the SAME
+			// grant as the hit - same conversation, card, watermark and
+			// lock/session check - never as an id the model supplied.
+			if r.adjacentRead && len(wanted) > 0 {
+				type neighbour struct {
+					id    uint
+					grant serviceagent.HistoryMessageGrant
+				}
+				candidates := make([]neighbour, 0, maxAdjacentMessages)
+				seen := make(map[uint]struct{}, maxAdjacentMessages)
+				for _, messageID := range wanted {
+					for _, grant := range allowed[messageID] {
+						if grant.SourceKind != serviceagent.HistorySourceSessionSearch {
+							continue
+						}
+						for _, delta := range []int{-1, 1} {
+							neighbourID := int(messageID) + delta
+							if neighbourID <= 0 {
+								continue
+							}
+							id := uint(neighbourID)
+							if _, already := wantedSet[id]; already {
+								continue
+							}
+							if _, done := seen[id]; done {
+								continue
+							}
+							neighbourGrant := grant
+							neighbourGrant.MessageID = id
+							if _, ok := facts.confirm(ctx, neighbourGrant); !ok {
+								continue
+							}
+							seen[id] = struct{}{}
+							candidates = append(candidates, neighbour{id: id, grant: neighbourGrant})
+							if len(candidates) >= maxAdjacentMessages {
+								break
+							}
+						}
+					}
+				}
+				if len(candidates) > 0 {
+					idsBySession := make(map[string][]uint, len(candidates))
+					for _, candidate := range candidates {
+						idsBySession[candidate.grant.SourceSessionID] =
+							append(idsBySession[candidate.grant.SourceSessionID], candidate.id)
+					}
+					adjacentMessages, readErr := r.reader.ReadOwnedMessagesBySession(ctx, userID, idsBySession)
+					if readErr == nil {
+						byID := make(map[uint]model.Message, len(adjacentMessages))
+						for _, message := range adjacentMessages {
+							byID[message.ID] = message
+						}
+						for _, candidate := range candidates {
+							message, found := byID[candidate.id]
+							if !found || (!message.IsUser && !r.assistantContent) {
+								continue
+							}
+							if !sessionCovered([]serviceagent.HistoryMessageGrant{candidate.grant}, message.SessionID) {
+								continue
+							}
+							content, truncated := boundRunes(message.Content, maxHistoryMessageRunes)
+							if content == "" {
+								continue
+							}
+							role := "user"
+							if !message.IsUser {
+								role = "assistant"
+							}
+							view := HistoryMessageView{
+								MessageID: int(message.ID), Role: role,
+								SentAt:  message.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+								Content: content, Truncated: truncated, Adjacent: true,
+							}
+							view.Reference = registerReadBackEvidence(evidence, userID, int64(message.ID),
+								[]serviceagent.HistoryMessageGrant{candidate.grant}, message.CreatedAt, content)
+							out.Messages = append(out.Messages, view)
+							// The neighbour becomes readable/citable exactly
+							// as the hit is: it is the same provenance.
+							if run.GrantSet != nil {
+								run.GrantSet.Extend(run, []serviceagent.HistoryMessageGrant{candidate.grant})
+							}
+						}
+					}
+				}
+			}
 			return out, nil
 		})
 	if err != nil {
@@ -502,7 +685,7 @@ func registerReadBackEvidence(registry *serviceagent.MemoryEvidenceRegistry, own
 	if registry == nil || len(grants) == 0 {
 		return ""
 	}
-	var summary, episode, segment bool
+	var summary, episode, segment, card, search bool
 	var version uint64
 	for _, grant := range grants {
 		switch grant.SourceKind {
@@ -515,6 +698,22 @@ func registerReadBackEvidence(registry *serviceagent.MemoryEvidenceRegistry, own
 			episode = true
 			if grant.EpisodeVersion > version {
 				version = grant.EpisodeVersion
+			}
+		case serviceagent.HistorySourceSessionCard:
+			card = true
+			if grant.CardVersion > version {
+				version = grant.CardVersion
+			}
+		case serviceagent.HistorySourceSessionSearch:
+			// A keyword search inside a conversation the learner owns. It
+			// gets its own source label so that the ledger can tell a
+			// card's own citation from a word found in the conversation the
+			// card opened. The two are different facts about how the answer
+			// reached the learner's original words, and an audit that
+			// cannot tell them apart cannot say which one was used.
+			search = true
+			if grant.CardVersion > version {
+				version = grant.CardVersion
 			}
 		case serviceagent.HistorySourceSummarySegment:
 			segment = true
@@ -531,6 +730,10 @@ func registerReadBackEvidence(registry *serviceagent.MemoryEvidenceRegistry, own
 		source = "summary+episode"
 	case episode:
 		source = serviceagent.HistorySourceEpisode
+	case search:
+		source = serviceagent.HistorySourceSessionSearch
+	case card:
+		source = serviceagent.HistorySourceSessionCard
 	case segment:
 		source = serviceagent.HistorySourceSummarySegment
 	}
@@ -552,6 +755,20 @@ type episodeFactsCache struct {
 	// episode card, and one store's miss is not the other's.
 	segments SummarySegmentEvidenceReader
 	userID   int64
+	// sessionID is the conversation this run is in.
+	//
+	// A search hit found in this run's own conversation has no card behind
+	// it, so the check that decides it is "is this the conversation the run
+	// is in", and answering that needs to know which conversation that is.
+	sessionID string
+	// lockedSessionID is the conversation the server locked for this turn.
+	//
+	// It is the second conversation this run may read, and it may have no
+	// card at all: the learner may have picked it from their own list, which
+	// no search had offered. The authority behind a read taken in it is the
+	// LOCK - the server checked that it is the learner's and read it - and
+	// not a card.
+	lockedSessionID string
 
 	mu     sync.Mutex
 	loaded map[string]episodeFactsEntry
@@ -578,11 +795,132 @@ func (c *episodeFactsCache) confirm(ctx context.Context, grant serviceagent.Hist
 	switch grant.SourceKind {
 	case serviceagent.HistorySourceEpisode:
 		return c.confirmEpisode(ctx, grant)
+	case serviceagent.HistorySourceSessionCard:
+		return c.confirmCard(ctx, grant)
+	case serviceagent.HistorySourceSessionSearch:
+		return c.confirmSearch(ctx, grant)
 	case serviceagent.HistorySourceSummarySegment:
 		return c.confirmSegment(ctx, grant)
 	default:
 		return "", true
 	}
+}
+
+// confirmCard re-establishes a session card's facts.
+//
+// It is the Episode check with the kind added, and the kind is the point: the
+// card and the Episode are two documents in one table, and the citation
+// closure a grant is checked against is the one the row really carries.
+func (c *episodeFactsCache) confirmCard(ctx context.Context, grant serviceagent.HistoryMessageGrant) (string, bool) {
+	facts, reason, ok := c.cardFacts(ctx, grant)
+	if !ok {
+		return reason, false
+	}
+	if !slices.Contains(facts.EvidenceMessageIDs, grant.MessageID) {
+		return refusalEpisodeClosure, false
+	}
+	if facts.Watermark > 0 && grant.MessageID > facts.Watermark {
+		return refusalEpisodeWatermark, false
+	}
+	return "", true
+}
+
+// confirmSearch re-establishes a keyword search hit.
+//
+// A search hit is checked against the card that opened the conversation, and
+// the check is deliberately not the citation closure. A card cites the
+// messages it was written from, so its citations are inside its closure; a
+// search finds the detail the card and the summary did not keep, so its hits
+// are outside that closure by definition. Holding the hit to the closure
+// would refuse every hit the search exists to find, and the third step of
+// the chain - card, then summary, then the original words - would be
+// unreachable.
+//
+// What is checked is the card itself: that it is still there, still this
+// card, still this version, still active, still indexed, still owned by this
+// learner, and still about the session the hit was found in. The watermark is
+// the ceiling: the card read the session as far as it had reached, and a
+// message above that line is not something it ever saw.
+func (c *episodeFactsCache) confirmSearch(ctx context.Context, grant serviceagent.HistoryMessageGrant) (string, bool) {
+	// A hit found in this run's own conversation has no card behind it: the
+	// search looked in the conversation the run is already in, so the card
+	// there is to look at is the one that does not exist. What authorises the
+	// hit is the owner and the conversation, and the read-back query binds
+	// both again - the same authority a summary grant rests on, and confirmed
+	// the same way.
+	//
+	// The one thing such a hit may not do is name another conversation, so
+	// the session is checked here rather than assumed. A grant that names
+	// another conversation without a card never reaches this point: the
+	// grant set refuses it before it is stored.
+	if strings.TrimSpace(grant.CardID) == "" {
+		// No card behind the hit. That is the case of a search in the
+		// conversation the run is already in, and the case of the LOCKED
+		// conversation: the learner pointed at it, the server checked that
+		// it is theirs and read it, and it may have no card at all.
+		//
+		// The authority is the run's own conversation or the lock, and
+		// nothing else: a hit that names a third conversation never reaches
+		// this point, because the grant set refuses it before it is stored.
+		session := strings.TrimSpace(grant.SourceSessionID)
+		if session != c.sessionID && (c.lockedSessionID == "" || session != c.lockedSessionID) {
+			return refusalEpisodeSession, false
+		}
+		return "", true
+	}
+	facts, reason, ok := c.cardFacts(ctx, grant)
+	if !ok {
+		return reason, false
+	}
+	if facts.Watermark > 0 && grant.MessageID > facts.Watermark {
+		return refusalEpisodeWatermark, false
+	}
+	return "", true
+}
+
+// cardFacts re-establishes the card a grant was drawn from.
+//
+// The checks are the ones every card-drawn grant shares: the row is still
+// there, it is still a card, it is still the same card at the same version,
+// it is still active and indexed, it belongs to this learner, and it is
+// about the session the grant names. What the caller adds on top is the
+// check that differs between the kinds - the citation closure for a card's
+// own citation, and nothing for a search hit.
+func (c *episodeFactsCache) cardFacts(ctx context.Context,
+	grant serviceagent.HistoryMessageGrant) (EpisodeEvidenceFacts, string, bool) {
+	if c.reader == nil {
+		return EpisodeEvidenceFacts{}, refusalVerifierAbsent, false
+	}
+	entry := c.entry(ctx, grant.CardID)
+	if entry.err != nil {
+		if errors.Is(entry.err, ErrEpisodeEvidenceMissing) {
+			return EpisodeEvidenceFacts{}, refusalCardMissing, false
+		}
+		return EpisodeEvidenceFacts{}, refusalUnreadable, false
+	}
+	facts := entry.facts
+	if strings.TrimSpace(facts.ContentKind) != string(model.EpisodeContentSessionCard) {
+		return facts, refusalCardKind, false
+	}
+	if strings.TrimSpace(facts.EpisodeID) != strings.TrimSpace(grant.CardID) {
+		return facts, refusalCardMissing, false
+	}
+	if facts.UserID != c.userID {
+		return facts, refusalEpisodeOwner, false
+	}
+	if strings.TrimSpace(facts.SessionID) != strings.TrimSpace(grant.SourceSessionID) {
+		return facts, refusalEpisodeSession, false
+	}
+	if facts.Version == 0 || facts.Version != grant.CardVersion {
+		return facts, refusalEpisodeVersion, false
+	}
+	if facts.Status != string(model.EpisodeStatusActive) {
+		return facts, refusalEpisodeInactive, false
+	}
+	if facts.IndexStatus != string(model.EpisodeIndexIndexed) {
+		return facts, refusalEpisodeIndex, false
+	}
+	return facts, "", true
 }
 
 // confirmSegment re-establishes that a summary segment is still the segment

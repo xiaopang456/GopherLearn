@@ -36,10 +36,18 @@ func run(args []string, out io.Writer) error {
 	seedMemory := flags.String("seed-memory", "", "file holding the profile memories the learner confirmed earlier (JSON array)")
 	runID := flags.String("run-id", "", "evaluation run identifier")
 	qid := flags.String("qid", "synthetic-offline", "scenario identifier for the scoring record")
+	scope := flags.String("scope", "", "the preparation this attempt belongs to; questions that share a scope share one preparation and one archive")
+	questionSession := flags.String("question-session", "", "the conversation the question is asked in; two questions of one preparation need two of them")
 	arm := flags.String("arm", "current", "configuration identifier")
 	rep := flags.Int("rep", 0, "repeat number: 0, 1 or 2")
 	condition := flags.String("condition", "main", "main, control or distractor")
 	mode := flags.String("mode", "off", "the arm to measure: off, shadow or on")
+	sessionCardMode := flags.String("session-card-mode", "disabled", "the cross-session memory path: disabled (Episode) or enabled (session card)")
+	cardIndexName := flags.String("card-index-name", "", "the card index's own namespace; the default is derived from the arm")
+	cardKeyPrefix := flags.String("card-key-prefix", "", "the card index's key prefix; the default is derived from the arm")
+	memoryReadMode := flags.String("memory-read-mode", "legacy_v2", "the product's read path; both arms use the same one")
+	episodeRecallMode := flags.String("episode-recall-mode", "", "the product's Episode recall switch: disabled, shadow_only or inject_enabled; the default follows the arm")
+	memoryWait := flags.Duration("memory-wait", 0, "how long the arm waits for the memory to be indexed; the default depends on the environment")
 	stopFile := flags.String("stop-file", "", "private stop-file path, watched during execution")
 	timeout := flags.Duration("timeout", 0, "attempt deadline; the default depends on the environment")
 	proxy := flags.String("proxy", "", "counting proxy base URL (real mode)")
@@ -68,6 +76,28 @@ func run(args []string, out io.Writer) error {
 	if *rep < 0 || *rep > 2 || *qid == "" || *arm == "" || (*condition != "main" && *condition != "control" && *condition != "distractor") {
 		return fmt.Errorf("invalid attempt identity")
 	}
+	if !conversation.SessionCardModeKnown(*sessionCardMode) {
+		return fmt.Errorf("the session card mode must be disabled or enabled")
+	}
+	if !conversation.MemoryReadModeKnown(*memoryReadMode) {
+		return fmt.Errorf("the memory read mode %q is not one the product knows", *memoryReadMode)
+	}
+	// The Episode recall switch follows the arm when the run does not say:
+	// the old arm injects the Episode, and the card arm replaces it.
+	//
+	// Both cards replace it. The thin card is not a second memory beside the
+	// Episode - it IS the cross-session memory, and running both would let
+	// two answers to the same question about the same conversation through.
+	if *episodeRecallMode == "" {
+		if *sessionCardMode == conversation.CardArmModeOn || *sessionCardMode == conversation.CardArmModeThin {
+			*episodeRecallMode = "disabled"
+		} else {
+			*episodeRecallMode = "inject_enabled"
+		}
+	}
+	if !conversation.EpisodeRecallModeKnown(*episodeRecallMode) {
+		return fmt.Errorf("the episode recall mode %q is not one the product knows", *episodeRecallMode)
+	}
 	guarded := map[string]string{"output": *output}
 	if *phase != "index" {
 		guarded["input"] = *input
@@ -91,7 +121,7 @@ func run(args []string, out io.Writer) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	var turns []conversation.Turn
+	var histories []conversation.History
 	var snapshot conversation.Snapshot
 	var err error
 	var attempt conversation.AttemptInput
@@ -117,15 +147,21 @@ func run(args []string, out io.Writer) error {
 		}
 		decoder := json.NewDecoder(io.LimitReader(file, 8<<20))
 		decoder.DisallowUnknownFields()
-		if err = decoder.Decode(&turns); err != nil {
+		// The input is either one conversation (a flat turn array) or a set
+		// of them (an object naming the conversations). A comparison of two
+		// cross-session memory paths needs several conversations in the
+		// database, because the retrieval has to choose between them.
+		var raw json.RawMessage
+		if err = decoder.Decode(&raw); err != nil {
 			return err
 		}
 		var extra any
 		if err = decoder.Decode(&extra); err != io.EOF {
 			return fmt.Errorf("turn file contains trailing data")
 		}
-		if len(turns) < 1 || len(turns) > 256 {
-			return fmt.Errorf("turn count must be 1 through 256")
+		histories, err = readHistories(raw)
+		if err != nil {
+			return err
 		}
 	} else if *phase == "answer" {
 		if *questionFile != "" {
@@ -163,6 +199,23 @@ func run(args []string, out io.Writer) error {
 		attempt.Memories = memories
 	}
 	real := *env == "real"
+	// The card index's namespace is derived from the arm, so that two arms of
+	// the same run cannot be pointed at one index by accident. The two arms of
+	// the comparison - the old Episode and the new card - are kept apart by
+	// this namespace and by the evaluation identity, which carries the arm and
+	// the path.
+	derivedName, derivedPrefix := cardNamespace(*arm, *sessionCardMode)
+	indexName, keyPrefix := derivedName, derivedPrefix
+	if strings.TrimSpace(*cardIndexName) != "" {
+		indexName = strings.TrimSpace(*cardIndexName)
+	}
+	if strings.TrimSpace(*cardKeyPrefix) != "" {
+		keyPrefix = strings.TrimSpace(*cardKeyPrefix)
+	}
+	attempt.SessionCard = &conversation.CardArm{
+		Mode: *sessionCardMode, IndexName: indexName, KeyPrefix: keyPrefix,
+		MemoryReadMode: *memoryReadMode, EpisodeRecallMode: *episodeRecallMode,
+	}
 	var environment conversation.RealEnvironment
 	var seed *conversation.KnowledgeSeed
 	if real {
@@ -171,12 +224,13 @@ func run(args []string, out io.Writer) error {
 		id, name, err := deriveScenarioIdentity(explicit, identityInput{
 			phase: *phase, run: *runID, arm: *arm, qid: *qid, condition: *condition,
 			rep: *rep, knowledgeSeed: *knowledgeSeed, userID: *userID, userName: *userName,
+			sessionCardMode: *sessionCardMode, scope: *scope,
 		})
 		if err != nil {
 			return err
 		}
 		*userID, *userName = id, name
-		environment, err = realEnvironment(flags, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel, userID, userName, sessionID, *mode)
+		environment, err = realEnvironment(flags, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel, userID, userName, sessionID, *mode, *sessionCardMode, indexName, keyPrefix, *memoryReadMode, *episodeRecallMode, *questionSession, *memoryWait)
 		if err != nil {
 			return err
 		}
@@ -217,15 +271,32 @@ func run(args []string, out io.Writer) error {
 	} else if *phase == "prepare" {
 		var warmup conversation.WarmupReport
 		if real {
-			warmup, err = conversation.PrepareRealProductReport(ctx, *repository, turns, environment, attempt)
+			warmup, err = conversation.PrepareRealProductReport(ctx, *repository, histories, environment, attempt, *output)
 		} else {
-			warmup, err = conversation.PrepareOfflineProductReport(ctx, *repository, turns, attempt)
+			warmup, err = conversation.PrepareOfflineProductReport(ctx, *repository, histories, attempt, *output)
 		}
 		snapshot = warmup.Snapshot
 		paidCalls = len(warmup.Calls)
+		// The card generations' own bodies were written by the preparation
+		// itself, BEFORE the sandbox was closed.
+		//
+		// They are the one thing a reader cannot reconstruct: the ledger
+		// holds hashes, and a hash says that two bodies differ, not what
+		// either of them said. When the server refuses a card, the question
+		// is what the model actually wrote - and that is in that file.
+		//
+		// The preparation writes it rather than this command, because the
+		// sandbox holds the database that the bodies talk about, and the
+		// teardown of the sandbox must not be able to take them with it.
 		err = errors.Join(err, write("model-calls.json", warmup.Calls), write("warmup.json", warmup))
-		if err == nil {
-			err = conversation.WriteSnapshot(filepath.Join(*output, "snapshot.json"), snapshot)
+		// The archive is written on the failing exit too.
+		//
+		// A preparation that stopped has to say which conversations it could
+		// not write, and the archive is what says it. An archive written
+		// only when everything went well would hide the conversations that
+		// did not - which is the one thing the archive must never do.
+		if len(snapshot.Sessions) > 0 {
+			err = errors.Join(err, conversation.WriteSnapshot(filepath.Join(*output, "snapshot.json"), snapshot))
 		}
 	} else {
 		var result conversation.ProductResult
@@ -263,6 +334,12 @@ func run(args []string, out io.Writer) error {
 			}
 			record["qid"], record["arm"], record["rep"], record["condition"] = attemptQID(*qid, index, len(result.Questions)), *arm, *rep, *condition
 			record["question"], record["answer"] = asked.Question, asked.Answer
+			// The preparation boundary is written beside the answer, because
+			// the cost attribution reads it: the calls that prepared the
+			// memory are the memory's cost and not the answer's.
+			if !result.Audit.Prepared.IsZero() {
+				record["preparedAt"] = result.Audit.Prepared.UTC().Format(time.RFC3339Nano)
+			}
 			// The question index of a record is the round of the conversation the
 			// question was asked at, when the attempt says which round that is.
 			// The turn says where in the conversation the answer has to come
@@ -292,6 +369,16 @@ func run(args []string, out io.Writer) error {
 		err = errors.Join(err, cause)
 	}
 	manifest := map[string]any{"scope": conversation.ProductScope, "env": *env, "phase": *phase, "paid_model_calls": paidCalls, "quality_and_cost_verified": false, "success": err == nil}
+	manifest["session_card_mode"] = *sessionCardMode
+	// The switches the product ran with are written into the manifest, so
+	// that a reader can tell the two arms apart by what they ran rather than
+	// by what they are called.
+	manifest["memory_read_mode"] = *memoryReadMode
+	manifest["episode_recall_mode"] = *episodeRecallMode
+	if *sessionCardMode == conversation.CardArmModeOn {
+		manifest["card_index_name"] = indexName
+		manifest["card_index_prefix"] = keyPrefix
+	}
 	if real {
 		manifest["proxy"] = environment.ProxyBaseURL
 		manifest["evaluation_index"] = environment.RedisAddress
@@ -308,7 +395,7 @@ func run(args []string, out io.Writer) error {
 		manifest["input_sha256"] = inputDigest
 	}
 	outputs := map[string]string{}
-	for _, name := range []string{"snapshot.json", "model-calls.json", "warmup.json", "result.json", "record.jsonl", "index-report.json"} {
+	for _, name := range []string{"snapshot.json", "model-calls.json", "warmup.json", "result.json", "record.jsonl", "index-report.json", "card-exchanges.json"} {
 		hash, hashErr := fileDigest(filepath.Join(*output, name))
 		if hashErr == nil {
 			outputs[name] = hash
@@ -338,7 +425,7 @@ func run(args []string, out io.Writer) error {
 // realEnvironment collects the paid-run wiring. The index password is read
 // from the process environment so that it never reaches a command line, an
 // output file, or an error message.
-func realEnvironment(flags *flag.FlagSet, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel *string, userID *int64, userName, sessionID *string, mode string) (conversation.RealEnvironment, error) {
+func realEnvironment(flags *flag.FlagSet, proxy, redis, redisPassword, storage, knowledgeSeed, chatModel, embeddingModel, rerankModel *string, userID *int64, userName, sessionID *string, mode, sessionCardMode, cardIndexName, cardKeyPrefix, memoryReadMode, episodeRecallMode, questionSession string, memoryWait time.Duration) (conversation.RealEnvironment, error) {
 	var environment conversation.RealEnvironment
 	if *proxy == "" || *redis == "" || *storage == "" || *chatModel == "" || *embeddingModel == "" || *rerankModel == "" || *userID <= 0 || *userName == "" || *sessionID == "" {
 		return environment, fmt.Errorf("the real mode needs the proxy, index, storage, models and evaluation identity")
@@ -369,6 +456,20 @@ func realEnvironment(flags *flag.FlagSet, proxy, redis, redisPassword, storage, 
 		// label does not match the mode it booted with cannot be compared
 		// with anything.
 		SummarySegmentMode: mode,
+		// The cross-session memory path is read the same way, and the card
+		// index's namespace travels with it: the shared evaluation index
+		// holds the cards of every run, and one arm's cards must not be
+		// visible to another arm's searches.
+		SessionCardMode:           sessionCardMode,
+		MemoryReadMode:            memoryReadMode,
+		EpisodeRecallMode:         episodeRecallMode,
+		QuestionSession:           questionSession,
+		SessionCardIndexName:      cardIndexName,
+		SessionCardIndexKeyPrefix: cardKeyPrefix,
+		// How long the arm waits for the memory to be indexed. Zero means
+		// the environment's own default, which is the paid run's: the
+		// stand-in answers in milliseconds and a real model does not.
+		MemoryWaitTimeout: memoryWait,
 	}
 	return environment, environment.Validate()
 }
