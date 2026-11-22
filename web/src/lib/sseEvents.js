@@ -26,6 +26,12 @@ function firstString(...candidates) {
   return ''
 }
 
+function stringList(value) {
+  return Array.isArray(value)
+    ? value.filter((item) => typeof item === 'string' && item !== '')
+    : []
+}
+
 function parsePayload(raw) {
   if (typeof raw !== 'string' || raw.trim() === '') return {}
   try {
@@ -73,6 +79,9 @@ export function toStreamEvent(frame) {
     // chat turn, a knowledge turn, an agent turn on the legacy channel — so it stays ''
     // rather than becoming a block id that happens to be empty.
     finalBlockId: typeof payload.final_block_id === 'string' ? payload.final_block_id : '',
+    // The confirmation receipt, on the completed frame only: which of the
+    // learner's own subjects this answer used. Absent means none were used.
+    usedTopicKeys: stringList(payload.usedTopicKeys ?? payload.used_topic_keys),
   }
 }
 

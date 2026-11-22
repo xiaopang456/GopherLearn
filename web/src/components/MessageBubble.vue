@@ -92,6 +92,13 @@ const clarificationCard = computed(() => {
 const processNotes = computed(() =>
   props.message.role === 'assistant' ? props.message.processNotes ?? [] : [],
 )
+
+/** Which of the learner's own topics this answer used, when it confirmed any. */
+const usedTopicKeys = computed(() =>
+  props.message.role === 'assistant' && Array.isArray(props.message.usedTopicKeys)
+    ? props.message.usedTopicKeys
+    : [],
+)
 const notesOpen = ref(false)
 </script>
 
@@ -158,6 +165,10 @@ const notesOpen = ref(false)
         :caret="streaming()"
         :rich="!isUser()"
       />
+      <p v-if="usedTopicKeys.length" class="message__topic-receipt" data-test="topic-receipt">
+        本回答使用了：{{ usedTopicKeys.join(' / ') }}
+      </p>
+
       <CitationList :sources="props.message.sources ?? []" />
       <AgentResult v-if="props.message.originalV2" :result="props.message.originalV2" :run-id="props.message.runId" :message-id="props.message.serverId" />
       <ClarificationCard
@@ -317,5 +328,10 @@ const notesOpen = ref(false)
 
 .turn__notice {
   margin-top: var(--gl-space-3);
+}
+.message__topic-receipt {
+  margin-top: var(--gl-space-2);
+  color: var(--gl-ink-soft);
+  font-size: var(--gl-text-sm);
 }
 </style>

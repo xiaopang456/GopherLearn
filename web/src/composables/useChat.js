@@ -339,6 +339,11 @@ export function useChat() {
         && !isTerminalPhase(previous.phase) && next.ignoredEvents === previous.ignoredEvents) {
         const target = messages.value.find((item) => item.id === next.placeholderId)
         if (target && event.originalV2) target.originalV2 = event.originalV2
+        // The confirmation receipt: which of the learner's own topics this
+        // answer actually used. Absent on a turn that confirmed nothing.
+        if (target && Array.isArray(event.usedTopicKeys) && event.usedTopicKeys.length) {
+          target.usedTopicKeys = [...event.usedTopicKeys]
+        }
         pendingSend.value = null
       }
       syncStepsWithRun(next)
@@ -673,8 +678,13 @@ export function useChat() {
       : mode === SessionMode.Chat
         ? 'knowledge_disabled'
         : undefined
+    // A confirmed topic turn mints its requestId before asking for
+    // suggestions: the ticket is signed for (session, requestId, question) and
+    // the run is verified against the same three, so send() must reuse the id
+    // the caller already used rather than minting a second one.
+    const providedRequestId = typeof agentFields.requestId === 'string' ? agentFields.requestId.trim() : ''
     const operation = retryOperation || (isLearningAgent(mode) ? {
-      sessionId, content, requestId: localId('send'), enableThinking: thinkingChoice,
+      sessionId, content, requestId: providedRequestId || localId('send'), enableThinking: thinkingChoice,
       ...(knowledgePolicy !== undefined ? { knowledgePolicy } : {}),
       ...(agentFields.topicConsent !== undefined ? { topicConsent: structuredClone(agentFields.topicConsent) } : {}),
     } : null)
