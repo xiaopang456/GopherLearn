@@ -1138,7 +1138,7 @@ func topicNamedInEvidence(key string, topics []Topic, evidence, assistant []Sess
 			}
 			text := strings.ToLower(message.Content)
 			for _, needle := range needles {
-				if needle != "" && strings.Contains(text, needle) {
+				if topicNameAppears(text, needle) {
 					return true
 				}
 			}
@@ -1146,6 +1146,55 @@ func topicNamedInEvidence(key string, topics []Topic, evidence, assistant []Sess
 		return false
 	}
 	return named(evidence) || named(assistant)
+}
+
+// topicNameAppears reports whether the needle names the topic in the text.
+//
+// An ASCII-only needle must appear as a whole word: "rag" is inside
+// "storage", and a substring match would let an unrelated word name the
+// topic - the learner who writes "storage 层" has not named RAG. A needle
+// that carries CJK content is matched as a phrase, because those scripts
+// have no word delimiters; the byte before/after an ASCII run inside them is
+// a boundary either way.
+func topicNameAppears(text, needle string) bool {
+	needle = strings.ToLower(strings.TrimSpace(needle))
+	if needle == "" {
+		return false
+	}
+	if !asciiOnly(needle) {
+		return strings.Contains(text, needle)
+	}
+	for offset := 0; offset <= len(text)-len(needle); {
+		position := strings.Index(text[offset:], needle)
+		if position < 0 {
+			return false
+		}
+		start := offset + position
+		end := start + len(needle)
+		beforeOK := start == 0 || !asciiNameRune(text[start-1])
+		afterOK := end == len(text) || !asciiNameRune(text[end])
+		if beforeOK && afterOK {
+			return true
+		}
+		offset = start + 1
+	}
+	return false
+}
+
+func asciiOnly(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+func asciiNameRune(value byte) bool {
+	return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') || (value >= '0' && value <= '9')
 }
 
 // CandidateFingerprint identifies one candidate within one session: the same

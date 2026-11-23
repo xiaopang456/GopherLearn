@@ -1968,3 +1968,62 @@ func TestFinalizeNewConfigVersusOneOffDevSamples(t *testing.T) {
 		}
 	}
 }
+
+// TestFinalizeTopicNamingNeedsAWholeWord tightens the naming match: "RAG" as a
+// word names the topic, while "storage" - which contains "rag" as a substring -
+// does not. The unique-attribution positive case is kept: a model-declared
+// unique match still prefills even when the learner never named it.
+func TestFinalizeTopicNamingNeedsAWholeWord(t *testing.T) {
+	topics := fakeFinalizeCatalogue{topics: []Topic{{Key: "rag", Name: "RAG"}}}
+	topicProposal := func(evidence uint, unique bool) SessionRawProposal {
+		return SessionRawProposal{
+			Scope: model.MemoryScopeTopic, Kind: FinalizeKindUnderstanding, TopicKey: "rag",
+			Subject: "分片与召回", Durability: model.MemoryDurabilityStable,
+			Content:     "我容易混淆分片和召回的责任边界。",
+			EvidenceIDs: []uint{evidence}, StatementEvidenceID: evidence, TopicUnique: unique,
+		}
+	}
+	newService := func(messages []SessionMessage, proposal SessionRawProposal) *SessionFinalizeService {
+		return newFinalizeService(t, fakeFinalizeBoards{}, fakeFinalizeMessages{messages: messages},
+			topics, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{},
+			fakeFinalizeTopicMind{byTopic: map[string][]model.LongTermMemory{}},
+			&scriptedProposer{proposals: []SessionRawProposal{proposal}},
+			&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "x"}}, 50)
+	}
+
+	// 正例：明确点名 RAG → 预填。
+	named := []SessionMessage{
+		{ID: 3, IsUser: true, Content: "这个坑记下来，属于 RAG 这个主题。", CreatedAt: finalizeAt(6)},
+	}
+	explicit, err := newService(named, topicProposal(3, false)).
+		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-rag-named"}})
+	if err != nil {
+		t.Fatalf("named extract: %v", err)
+	}
+	if len(explicit.Proposals) != 1 || explicit.Proposals[0].TopicPending || explicit.Proposals[0].TopicKey != "rag" {
+		t.Fatalf("candidate=%+v, want the named RAG topic prefilled", explicit.Proposals)
+	}
+
+	// 反例：只出现 storage（内含 "rag" 子串）→ 不算点名，留空待归属。
+	storageOnly := []SessionMessage{
+		{ID: 3, IsUser: true, Content: "storage 层怎么设计我还没想清楚，这个坑记下来。", CreatedAt: finalizeAt(6)},
+	}
+	ambiguous, err := newService(storageOnly, topicProposal(3, false)).
+		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-storage"}})
+	if err != nil {
+		t.Fatalf("storage extract: %v", err)
+	}
+	if len(ambiguous.Proposals) != 1 || !ambiguous.Proposals[0].TopicPending || ambiguous.Proposals[0].TopicKey != "" {
+		t.Fatalf("candidate=%+v, want storage not to count as naming RAG", ambiguous.Proposals)
+	}
+
+	// 正例保留：未点名但模型声明唯一 → 仍预填。
+	unique, err := newService(storageOnly, topicProposal(3, true)).
+		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-rag-unique"}})
+	if err != nil {
+		t.Fatalf("unique extract: %v", err)
+	}
+	if len(unique.Proposals) != 1 || unique.Proposals[0].TopicPending || unique.Proposals[0].TopicKey != "rag" {
+		t.Fatalf("candidate=%+v, want the declared-unique topic prefilled", unique.Proposals)
+	}
+}
