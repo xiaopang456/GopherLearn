@@ -537,6 +537,7 @@ func (p *ModelSessionProposer) Propose(ctx context.Context, input *SessionExtrac
 	}
 	proposals := make([]SessionRawProposal, 0, len(response.ToolCalls))
 	rejected := false
+	invalidRejects := 0
 	malformed := 0
 	capped := false
 	for _, call := range response.ToolCalls {
@@ -545,6 +546,15 @@ func (p *ModelSessionProposer) Propose(ctx context.Context, input *SessionExtrac
 		}
 		switch call.Function.Name {
 		case finalizeToolReject:
+			// A rejection is only a decision when it says WHY. The tool name
+			// alone is not an answer: an empty or missing reason is a broken
+			// response, and treating it as a terminal rejection would advance
+			// the watermark over a session nobody actually judged.
+			var args rejectArgs
+			if err := decodeToolArguments(call.Function.Arguments, &args); err != nil || !validGlobalReason(args.RejectReason) {
+				invalidRejects++
+				continue
+			}
 			rejected = true
 			continue
 		case finalizeToolProfile, finalizeToolTopic:
@@ -578,14 +588,24 @@ func (p *ModelSessionProposer) Propose(ctx context.Context, input *SessionExtrac
 	if len(proposals) > 0 {
 		return proposals, nil
 	}
+	if malformed > 0 {
+		// Proposal-shaped calls came back broken. A reject beside them does
+		// not make that a decision - the response that was supposed to carry
+		// the candidates never parsed, and the reject may just be the model's
+		// fallback. Retry the same progress instead of advancing past it.
+		return nil, fmt.Errorf("%w: %d malformed extraction calls", ErrCandidateToolProtocol, malformed)
+	}
 	if rejected {
-		// The model looked at the words and rejected them: terminal, and it
-		// has to be recorded as a decision rather than as an empty run.
+		// The model looked at the words and rejected them with a reason:
+		// terminal, recorded as a decision rather than as an empty run.
 		return nil, ErrFinalizeNothingToRemember
 	}
-	// Every proposal-shaped call was malformed and there is no rejection:
-	// nothing usable came back, which is retryable.
-	return nil, fmt.Errorf("%w: %d malformed extraction calls", ErrCandidateToolProtocol, malformed)
+	if invalidRejects > 0 {
+		// The reject call itself is broken (no reason, or beyond the bound):
+		// nothing usable came back, which is retryable.
+		return nil, fmt.Errorf("%w: %d reject calls without a valid reason", ErrCandidateToolProtocol, invalidRejects)
+	}
+	return nil, fmt.Errorf("%w: no usable extraction tool call", ErrCandidateToolProtocol)
 }
 
 func memoryScopeForToolName(name string) (model.MemoryScope, bool) {

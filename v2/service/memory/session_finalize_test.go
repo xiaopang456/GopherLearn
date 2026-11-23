@@ -1677,3 +1677,49 @@ func TestFinalizeDevQuestionValidation(t *testing.T) {
 	_ = preference
 	_ = newValue
 }
+
+// TestFinalizeProposerRejectNeedsReason tightens the terminal condition: the
+// reject tool name alone is not an answer. A reject without a valid reason,
+// or a broken proposal call beside a reject, leaves the progress retryable.
+func TestFinalizeProposerRejectNeedsReason(t *testing.T) {
+	board := ext01BoardWithPreference(t)
+	newService := func(chat *memoryChat) *SessionFinalizeService {
+		proposer, err := NewModelSessionProposer(chat)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: ext01Messages()},
+			nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil,
+			proposer, &scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "x"}}, 0)
+	}
+
+	// 拒绝参数无效：无 reason、reason 为空、字段类型错，都不得推进水位。
+	for name, arguments := range map[string]string{
+		"missing reason": `{"sensitive":false}`,
+		"blank reason":   `{"reject_reason":"  ","sensitive":false}`,
+		"wrong type":     `{"reject_reason":42}`,
+	} {
+		result, err := newService(&memoryChat{response: toolMessage(finalizeToolReject, arguments)}).
+			Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-bad-reject"}})
+		if err == nil {
+			t.Fatalf("%s: want a retryable protocol failure, got result=%+v", name, result)
+		}
+	}
+
+	// 候选全解析失败且混有（合法）拒绝：仍按可重试处理，不把拒绝当终态。
+	mixed := schema.AssistantMessage("", []schema.ToolCall{
+		{ID: "call-1", Type: "function", Function: schema.FunctionCall{Name: finalizeToolProfile, Arguments: "{not-json"}},
+		{ID: "call-2", Type: "function", Function: schema.FunctionCall{Name: finalizeToolReject, Arguments: `{"reject_reason":"looks empty"}`}},
+	})
+	if _, err := newService(&memoryChat{response: mixed}).
+		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-mixed"}}); err == nil {
+		t.Fatalf("a broken proposal beside a reject must stay retryable")
+	}
+
+	// 对照：合法拒绝仍是明确的终态决定。
+	rejected, err := newService(&memoryChat{response: toolMessage(finalizeToolReject, `{"reject_reason":"one-turn logistics"}`)}).
+		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-good-reject"}})
+	if err != nil || !rejected.ProposerRejected || len(rejected.Proposals) != 0 {
+		t.Fatalf("valid reject: result=%+v err=%v", rejected, err)
+	}
+}

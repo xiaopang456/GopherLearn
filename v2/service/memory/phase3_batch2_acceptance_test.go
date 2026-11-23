@@ -997,6 +997,37 @@ func TestFinalizeAcceptanceModelAnswerShapesWatermark(t *testing.T) {
 		t.Fatalf("watermark=%d after a prose answer, want it held at 0", got)
 	}
 
+	// 拒绝参数无效：不是决定，水位保持。
+	invalidRejectProposer, err := NewModelSessionProposer(&memoryChat{
+		response: toolMessage(finalizeToolReject, `{"sensitive":false}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := acc.runnerWithProposer(t, invalidRejectProposer).RunSession(ctx, acc.userID, sessionID); err == nil {
+		t.Fatalf("a reject without a reason must fail the run")
+	}
+	if got := acc.progress(ctx, sessionID); got != 0 {
+		t.Fatalf("watermark=%d after an invalid reject, want it held at 0", got)
+	}
+
+	// 候选全解析失败且混有合法拒绝：响应整体不可用，水位保持。
+	mixedProposer, err := NewModelSessionProposer(&memoryChat{
+		response: schema.AssistantMessage("", []schema.ToolCall{
+			{ID: "call-1", Type: "function", Function: schema.FunctionCall{Name: finalizeToolProfile, Arguments: "{not-json"}},
+			{ID: "call-2", Type: "function", Function: schema.FunctionCall{Name: finalizeToolReject, Arguments: `{"reject_reason":"looks empty"}`}},
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := acc.runnerWithProposer(t, mixedProposer).RunSession(ctx, acc.userID, sessionID); err == nil {
+		t.Fatalf("a broken proposal beside a reject must fail the run")
+	}
+	if got := acc.progress(ctx, sessionID); got != 0 {
+		t.Fatalf("watermark=%d after a broken mixed response, want it held at 0", got)
+	}
+
 	rejectProposer, err := NewModelSessionProposer(&memoryChat{
 		response: toolMessage(finalizeToolReject, `{"reject_reason":"one-turn logistics"}`),
 	})
