@@ -190,6 +190,12 @@ type SessionRawProposal struct {
 	Durability  model.MemoryDurability
 	ValidUntil  *time.Time
 	EvidenceIDs []uint // the learner's own words the candidate rests on
+	// TopicUnique says the proposer judged that exactly one catalogue topic
+	// clearly applies to this note. It is the model's explicit answer to the
+	// ambiguity question, and the program prefills only on it (or when the
+	// learner named the topic) - a silent pick among several plausible
+	// topics leaves the attribution to the learner.
+	TopicUnique bool
 	// StatementEvidenceID names the evidence message that directly supports
 	// the candidate's current value, and it has to be one of the
 	// EvidenceIDs. A proposal that cites several messages must name it: with
@@ -639,7 +645,7 @@ func (s *SessionFinalizeService) Extract(ctx context.Context, request FinalizeRe
 			result.Skipped = append(result.Skipped, FinalizeSkip{Reason: skip, Subject: proposal.Subject, EvidenceIDs: proposal.EvidenceIDs, AssistantIDs: proposal.AssistantIDs})
 			continue
 		}
-		candidate := s.buildCandidate(request.UserID, coverage, proposal, evidence, assistant, input.Topics)
+		candidate := s.buildCandidate(request.UserID, coverage, proposal, evidence, assistant, input.Topics, input.Visible)
 		fingerprint := candidate.Fingerprint
 		if _, seen := known[fingerprint]; seen {
 			result.Skipped = append(result.Skipped, FinalizeSkip{Reason: FinalizeSkipDuplicateKnown, Subject: candidate.Subject, EvidenceIDs: proposal.EvidenceIDs, AssistantIDs: proposal.AssistantIDs})
@@ -1051,7 +1057,7 @@ func dedupeIDs(ids []uint, limit int) ([]uint, bool) {
 // learner to place, because a topic the program guessed wrong is harder to
 // fix after saving than before.
 func (s *SessionFinalizeService) buildCandidate(userID int64, coverage FinalizeCursor, proposal SessionRawProposal,
-	evidence, assistant []SessionEvidenceRef, topics []Topic) SessionMemoryCandidate {
+	evidence, assistant []SessionEvidenceRef, topics []Topic, visible map[uint]SessionMessage) SessionMemoryCandidate {
 	scope := model.MemoryScope(strings.ToLower(strings.TrimSpace(string(proposal.Scope))))
 	subject := strings.TrimSpace(proposal.Subject)
 	content := strings.TrimSpace(proposal.Content)
@@ -1060,11 +1066,17 @@ func (s *SessionFinalizeService) buildCandidate(userID int64, coverage FinalizeC
 	topicPending := false
 	if scope == model.MemoryScopeTopic {
 		key, matched := Resolve(topics, proposal.TopicKey)
-		if matched {
+		if matched && (proposal.TopicUnique || topicNamedInEvidence(key, topics, evidence, assistant, visible)) {
 			topicKey = key
 		} else {
-			// No unique home in the catalogue. The candidate still proposes;
-			// the confirmation flow asks the learner where it belongs.
+			// Either the catalogue has no unique home, the model did not
+			// declare the topic unique, or the learner never named it. The
+			// candidate still proposes; the confirmation flow asks the learner
+			// where it belongs. The prefill is a convenience, and a
+			// convenience that guesses is worse than no prefill: several
+			// topics can be plausible, and the learner's own words (or the
+			// model's explicit "unique" answer) are the only evidence of which
+			// one it is.
 			topicKey = ""
 			topicPending = true
 		}
@@ -1100,6 +1112,40 @@ func (s *SessionFinalizeService) buildCandidate(userID int64, coverage FinalizeC
 	}
 	candidate.Fingerprint = CandidateFingerprint(candidate.UserID, coverage.SessionID, candidate.Scope, candidate.TopicKey, candidate.Subject, candidate.Content)
 	return candidate
+}
+
+// topicNamedInEvidence reports whether the learner named the topic in the
+// words the candidate rests on - or accepted an assistant proposal that named
+// it. The topic's catalogue key and display name are the identities a name can
+// take; a topic nobody named is left to the learner to choose, however exact
+// the model's proposed key looks.
+func topicNamedInEvidence(key string, topics []Topic, evidence, assistant []SessionEvidenceRef, visible map[uint]SessionMessage) bool {
+	needles := []string{strings.ToLower(strings.TrimSpace(key))}
+	for _, topic := range topics {
+		if topic.Key != key {
+			continue
+		}
+		if name := strings.ToLower(strings.TrimSpace(topic.Name)); name != "" && name != needles[0] {
+			needles = append(needles, name)
+		}
+		break
+	}
+	named := func(refs []SessionEvidenceRef) bool {
+		for _, ref := range refs {
+			message, ok := visible[ref.MessageID]
+			if !ok {
+				continue
+			}
+			text := strings.ToLower(message.Content)
+			for _, needle := range needles {
+				if needle != "" && strings.Contains(text, needle) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return named(evidence) || named(assistant)
 }
 
 // CandidateFingerprint identifies one candidate within one session: the same

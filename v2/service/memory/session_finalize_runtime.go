@@ -458,6 +458,7 @@ type finalizeProposalArgs struct {
 	Class               string `json:"class,omitempty"`
 	Kind                string `json:"kind,omitempty"`
 	TopicKey            string `json:"topic_key,omitempty"`
+	TopicUnique         bool   `json:"topic_unique,omitempty"`
 	Subject             string `json:"subject"`
 	ProposedContent     string `json:"proposed_content"`
 	Durability          string `json:"durability"`
@@ -485,10 +486,11 @@ Candidate boundaries, checked by evaluation:
 - A reminder inside one sentence belongs to that sentence's subject. When the learner says 记下来 or 记住 while describing a difficulty on a topic (for example "我老忘记 Save 传指针，这个坑记下来，属于 GORM 这个主题"), the difficulty and the request are ONE topic note: the content keeps BOTH the confusing point AND the wish to be reminded about it when the topic comes up later. Do not emit a second candidate for the reminder.
 - A preference that applies across topics and stands on its own (for example how they want new modules taught) is still its own global candidate, even when it appears in the same utterance next to a topic difficulty.
 - An instruction about the memory-proposal process itself - 不要再问我"要不要记"、不用再确认、别再问这类话 - is a session directive, not a durable preference about learning. Do not propose it as a candidate and do not fold it into another candidate's body.
-- Separate a one-off operation from a new standing configuration. An instruction scoped to this operation only - 这次、这单、本条先、先这样 - is not durable and is not proposed. A configuration the learner adopts from now on - 以后都、从此、默认改成 - is a durable new value and belongs in a candidate; the relationship judgement decides whether it replaces the older value.
+- Separate a one-off operation from a new standing configuration. An instruction scoped to this operation only - 这次、这单、本条先、先这样 - is not durable and is not proposed. A configuration the learner adopts from now on - 以后都、从此、默认改成 - is a durable new value and belongs in a candidate; the relationship judgement decides whether it replaces the older value. A statement that the environment, project or tooling has changed and future work should follow it (升级到…以后都…/以后示例都按…写) is a new standing configuration: propose it, and never reject it as a temporary instruction.
+- Never reject a statement because it resembles something already known. A restatement of a preference is still a candidate; the relationship judgement decides whether it is a duplicate. Rejecting it yourself would skip that judgement and silently drop the learner's words.
 
 remember_profile is a fact about the learner across topics: a study goal (class goal), background (background), a teaching preference (teaching_preference), or a standing constraint (constraint).
-remember_topic_note is the learner's own understanding of one technical topic: an analogy, a confusion, a pitfall, or their personal wording (kind understanding), or what they say they know (kind self_report). Reuse a topic key from the catalogue only when exactly one clearly applies. When several topics could plausibly hold the note and the learner did not name one, leave topic_key empty: the learner chooses the topic, and the note is compared with old memories in its final topic only after that choice. Leave it empty when none fits as well.
+remember_topic_note is the learner's own understanding of one technical topic: an analogy, a confusion, a pitfall, or their personal wording (kind understanding), or what they say they know (kind self_report). Reuse a topic key from the catalogue only when exactly one clearly applies, and set topic_unique=true for that answer. When several topics could plausibly hold the note and the learner did not name one, leave topic_key empty and topic_unique=false: the learner chooses the topic, and the note is compared with old memories in its final topic only after that choice. Leave it empty when none fits as well.
 reject_extraction for one-turn requests, session logistics, unaccepted assistant proposals, quiz scores, and anything without the learner's own words behind it.`
 
 // ModelSessionProposer extracts candidates with a tool-calling model.
@@ -572,7 +574,8 @@ func (p *ModelSessionProposer) Propose(ctx context.Context, input *SessionExtrac
 			proposals = append(proposals, SessionRawProposal{
 				Scope: scope, Class: model.MemoryProfileClass(strings.TrimSpace(args.Class)),
 				Kind: strings.TrimSpace(args.Kind), TopicKey: strings.TrimSpace(args.TopicKey),
-				Subject: strings.TrimSpace(args.Subject), Content: strings.TrimSpace(args.ProposedContent),
+				TopicUnique: args.TopicUnique,
+				Subject:     strings.TrimSpace(args.Subject), Content: strings.TrimSpace(args.ProposedContent),
 				Durability: model.MemoryDurability(strings.TrimSpace(args.Durability)), ValidUntil: validUntil,
 				EvidenceIDs:         append([]uint(nil), args.EvidenceIDs...),
 				StatementEvidenceID: args.StatementEvidenceID,
@@ -649,6 +652,7 @@ func finalizeExtractionTools() []*schema.ToolInfo {
 		"scope":                 {Type: schema.String, Desc: "topic for this tool.", Required: true},
 		"kind":                  {Type: schema.String, Enum: []string{FinalizeKindUnderstanding, FinalizeKindSelfReport}, Required: true},
 		"topic_key":             {Type: schema.String, Desc: "A catalogue key, or empty when no catalogue topic fits."},
+		"topic_unique":          {Type: schema.Boolean, Desc: "True only when exactly one catalogue topic clearly applies; false when several could and the learner named none."},
 		"subject":               {Type: schema.String, Required: true},
 		"proposed_content":      {Type: schema.String, Required: true},
 		"durability":            {Type: schema.String, Enum: []string{string(model.MemoryDurabilityStable), string(model.MemoryDurabilityTimeBound)}, Required: true},

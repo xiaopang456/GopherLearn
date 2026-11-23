@@ -331,7 +331,7 @@ func TestFinalizeExtractTopicUnderstandingPrefill(t *testing.T) {
 		Scope: model.MemoryScopeTopic, Kind: FinalizeKindUnderstanding, TopicKey: "go-basics",
 		Subject: "切片易错点", Durability: model.MemoryDurabilityStable,
 		Content:     "我容易混淆切片共享底层数组和拷贝：append 未扩容时改的是共享底层数组，扩容后才指向新数组。",
-		EvidenceIDs: []uint{8, 3}, StatementEvidenceID: 8,
+		EvidenceIDs: []uint{8, 3}, StatementEvidenceID: 8, TopicUnique: true,
 	}}}
 	relations := &scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "different matter than TM-GB-01"}}
 	topics := fakeFinalizeCatalogue{topics: []Topic{
@@ -728,7 +728,7 @@ func TestFinalizeSelfReportKeepsItsLimit(t *testing.T) {
 			Scope: model.MemoryScopeTopic, Kind: FinalizeKindSelfReport, TopicKey: "go-concurrency", Subject: "select 自述",
 			Durability:  model.MemoryDurabilityStable,
 			Content:     "我自述已掌握 select 多路复用，但仍会因粗心看错题目条件出错。",
-			EvidenceIDs: []uint{1, 3}, StatementEvidenceID: 1,
+			EvidenceIDs: []uint{1, 3}, StatementEvidenceID: 1, TopicUnique: true,
 		},
 		{
 			Scope: model.MemoryScopeGlobal, Class: model.ProfileClassConstraint, Subject: "学习时间",
@@ -1812,6 +1812,159 @@ func TestFinalizeOneOffVersusNewConfiguration(t *testing.T) {
 	} {
 		if !strings.Contains(finalizeProposerPrompt, fragment) {
 			t.Fatalf("the one-off/new-configuration rule is missing %q", fragment)
+		}
+	}
+}
+
+// TestFinalizePrefillRequiresNamedTopic is the attribution-step reproduction:
+// the model may propose an exact catalogue key, but the program prefills it
+// today without checking that the learner named the topic. With several topics
+// plausible and no name in the learner's words, the candidate must stay
+// unattributed for the learner to choose; a named topic (by the learner, or by
+// the assistant and accepted) still prefills.
+func TestFinalizePrefillRequiresNamedTopic(t *testing.T) {
+	topics := fakeFinalizeCatalogue{topics: []Topic{
+		{Key: "go-concurrency", Name: "Go 并发"},
+		{Key: "go-basics", Name: "Go 基础"},
+	}}
+	topicProposal := func(evidence uint, assistant []uint) SessionRawProposal {
+		return SessionRawProposal{
+			Scope: model.MemoryScopeTopic, Kind: FinalizeKindUnderstanding, TopicKey: "go-concurrency",
+			Subject: "我的理解", Durability: model.MemoryDurabilityStable,
+			Content:     "我容易混淆有缓冲与无缓冲 channel 的阻塞时机。",
+			EvidenceIDs: []uint{evidence}, StatementEvidenceID: evidence, AssistantIDs: assistant,
+		}
+	}
+	newService := func(messages []SessionMessage, proposal SessionRawProposal) *SessionFinalizeService {
+		return newFinalizeService(t, fakeFinalizeBoards{}, fakeFinalizeMessages{messages: messages},
+			topics, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{},
+			fakeFinalizeTopicMind{byTopic: map[string][]model.LongTermMemory{}},
+			&scriptedProposer{proposals: []SessionRawProposal{proposal}},
+			&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "x"}}, 50)
+	}
+
+	// 反例：学习者没点名、模型也没声明唯一 → 必须留空待归属。
+	unnamed := []SessionMessage{
+		{ID: 3, IsUser: true, Content: "这个坑记下来，我老是分不清什么时候会阻塞。", CreatedAt: finalizeAt(6)},
+	}
+	ambiguous, err := newService(unnamed, topicProposal(3, nil)).
+		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-unnamed"}})
+	if err != nil {
+		t.Fatalf("unnamed extract: %v", err)
+	}
+	if len(ambiguous.Proposals) != 1 || !ambiguous.Proposals[0].TopicPending || ambiguous.Proposals[0].TopicKey != "" {
+		t.Fatalf("candidate=%+v, want the unnamed topic left to the learner", ambiguous.Proposals)
+	}
+
+	// 正例：学习者没点名，但模型明确声明唯一匹配 → 预填。
+	unique := topicProposal(3, nil)
+	unique.TopicUnique = true
+	uniqueResult, err := newService(unnamed, unique).
+		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-unique"}})
+	if err != nil {
+		t.Fatalf("unique extract: %v", err)
+	}
+	if len(uniqueResult.Proposals) != 1 || uniqueResult.Proposals[0].TopicPending || uniqueResult.Proposals[0].TopicKey != "go-concurrency" {
+		t.Fatalf("candidate=%+v, want the declared-unique topic prefilled", uniqueResult.Proposals)
+	}
+
+	// 正例：学习者点名 → 预填。
+	named := []SessionMessage{
+		{ID: 3, IsUser: true, Content: "这个坑记下来，属于 Go 并发 这个主题。", CreatedAt: finalizeAt(6)},
+	}
+	explicit, err := newService(named, topicProposal(3, nil)).
+		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-named"}})
+	if err != nil {
+		t.Fatalf("named extract: %v", err)
+	}
+	if len(explicit.Proposals) != 1 || explicit.Proposals[0].TopicPending || explicit.Proposals[0].TopicKey != "go-concurrency" {
+		t.Fatalf("candidate=%+v, want the named topic prefilled", explicit.Proposals)
+	}
+
+	// 正例：助手点名、学习者明确接受 → 同样预填。
+	accepted := []SessionMessage{
+		{ID: 2, IsUser: false, Content: "建议记到 Go 基础 的主题记忆里。", CreatedAt: finalizeAt(5)},
+		{ID: 3, IsUser: true, Content: "行，记吧。", CreatedAt: finalizeAt(6)},
+	}
+	acceptedProposal := topicProposal(3, []uint{2})
+	acceptedProposal.TopicKey = "go-basics"
+	viaAssistant, err := newService(accepted, acceptedProposal).
+		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-accepted"}})
+	if err != nil {
+		t.Fatalf("accepted extract: %v", err)
+	}
+	if len(viaAssistant.Proposals) != 1 || viaAssistant.Proposals[0].TopicPending || viaAssistant.Proposals[0].TopicKey != "go-basics" {
+		t.Fatalf("candidate=%+v, want the assistant-named accepted topic prefilled", viaAssistant.Proposals)
+	}
+}
+
+// TestFinalizeNewConfigVersusOneOffDevSamples is the extraction-step contrast:
+// a one-off operation stays out, while a standing configuration adopted from
+// now on (including an environment upgrade phrased as "以后都…") is proposed and
+// enters the replacement flow. A restatement of an existing preference is also
+// proposed, so the duplicate judgement runs instead of being skipped at
+// extraction.
+func TestFinalizeNewConfigVersusOneOffDevSamples(t *testing.T) {
+	board := ext01BoardWithPreference(t)
+	profile := func(content string) model.LongTermMemory {
+		entry := globalEntry("P-go", content)
+		entry.ProfileClass = model.ProfileClassBackground
+		return entry
+	}
+	newService := func(chat *memoryChat, relations GlobalRelationResolver, entries []model.LongTermMemory) *SessionFinalizeService {
+		proposer, err := NewModelSessionProposer(chat)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: ext01Messages()},
+			nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}},
+			fakeFinalizeGlobalMind{entries: entries}, nil, proposer, relations, 0)
+	}
+	newConfigCall := `{"scope":"global","class":"background","subject":"示例代码的 Go 版本",` +
+		`"proposed_content":"本地和测试环境都已升级到 Go 1.23，以后给的示例代码都要按 Go 1.23 来写。","durability":"stable",` +
+		`"evidence_ids":[3],"statement_evidence_id":3}`
+	restatementCall := `{"scope":"global","class":"background","subject":"示例代码的 Go 版本",` +
+		`"proposed_content":"示例代码都按 Go 1.22 来写。","durability":"stable",` +
+		`"evidence_ids":[3],"statement_evidence_id":3}`
+
+	// 反例：一次性操作 → 模型拒绝 → 零卡。
+	oneOff, err := newService(&memoryChat{response: toolMessage(finalizeToolReject, `{"reject_reason":"this answer only, not a standing rule"}`)},
+		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "x"}}, nil).
+		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-dev-oneoff"}})
+	if err != nil || len(oneOff.Proposals) != 0 || !oneOff.ProposerRejected {
+		t.Fatalf("one-off: proposals=%d rejected=%v err=%v", len(oneOff.Proposals), oneOff.ProposerRejected, err)
+	}
+
+	// 正例：环境升级 + 以后都… → 保留为候选，进入替换流程。
+	old := profile("示例代码统一用 Go 1.22 语法。")
+	newConfig, err := newService(&memoryChat{response: toolMessage(finalizeToolProfile, newConfigCall)},
+		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationReplacement, TargetMemoryID: "P-go", Reason: "same matter, new configuration"}},
+		[]model.LongTermMemory{old}).
+		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-dev-newconfig"}})
+	if err != nil || len(newConfig.Proposals) != 1 {
+		t.Fatalf("new config: proposals=%d err=%v", len(newConfig.Proposals), err)
+	}
+	if newConfig.Proposals[0].Relation.Relation != GlobalRelationReplacement || len(newConfig.Proposals[0].RelatedOld) != 1 {
+		t.Fatalf("candidate=%+v, want the replacement suggestion", newConfig.Proposals[0])
+	}
+
+	// 正例：同值复述 → 仍提议，由关系判定执行去重（跳过），不在提取端吞掉。
+	restatement, err := newService(&memoryChat{response: toolMessage(finalizeToolProfile, restatementCall)},
+		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationDuplicate, TargetMemoryID: "P-go", Reason: "same value restated"}},
+		[]model.LongTermMemory{old}).
+		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-dev-restate"}})
+	if err != nil || len(restatement.Proposals) != 0 || len(restatement.Skipped) != 1 ||
+		restatement.Skipped[0].Reason != FinalizeSkipSemanticDuplicate {
+		t.Fatalf("restatement: proposals=%d skipped=%+v err=%v", len(restatement.Proposals), restatement.Skipped, err)
+	}
+
+	for _, fragment := range []string{
+		"never reject it as a temporary instruction",
+		"Never reject a statement because it resembles something already known",
+		"the relationship judgement decides whether it is a duplicate",
+	} {
+		if !strings.Contains(finalizeProposerPrompt, fragment) {
+			t.Fatalf("the extraction prompt lost the rule %q", fragment)
 		}
 	}
 }
