@@ -1481,3 +1481,80 @@ func TestGlobalRelationNewValueIsReplacementNotDuplicate(t *testing.T) {
 		}
 	}
 }
+
+// TestFinalizeProposerRequestCarriesBoardClueAndUtterances is the request-level
+// audit of the board wiring: with a whiteboard, the proposer's actual request
+// carries both the board's clue and the cited utterance; without a board it
+// still carries the recent utterances and extraction continues. The board is
+// only a clue - a candidate that cites words outside the visible set is
+// refused even when the board exists.
+func TestFinalizeProposerRequestCarriesBoardClueAndUtterances(t *testing.T) {
+	board := ext01BoardWithPreference(t)
+	topicCall := `{"scope":"topic","kind":"understanding","topic_key":"go-basics","subject":"讲解偏好",` +
+		`"proposed_content":"讲新概念时先举一个我熟悉的例子，再讲正式定义。","durability":"stable",` +
+		`"evidence_ids":[3],"statement_evidence_id":3}`
+	fabricatedCall := `{"scope":"topic","kind":"understanding","topic_key":"go-basics","subject":"讲解偏好",` +
+		`"proposed_content":"讲新概念时先举一个我熟悉的例子。","durability":"stable",` +
+		`"evidence_ids":[99],"statement_evidence_id":99}`
+	topics := fakeFinalizeCatalogue{topics: []Topic{{Key: "go-basics", Name: "Go 基础"}}}
+	newService := func(boards FinalizeBoardSource, chat *memoryChat, window int) *SessionFinalizeService {
+		proposer, err := NewModelSessionProposer(chat)
+		if err != nil {
+			t.Fatalf("proposer: %v", err)
+		}
+		return newFinalizeService(t, boards, fakeFinalizeMessages{messages: ext01Messages()},
+			topics, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil,
+			proposer, &scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "new"}}, window)
+	}
+
+	// 有白板：请求同时包含白板线索与对应原话，候选通过原话校验。
+	withBoard := &memoryChat{response: toolMessage(finalizeToolTopic, topicCall)}
+	result, err := newService(fakeFinalizeBoards{content: &board}, withBoard, 0).
+		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-board"}})
+	if err != nil {
+		t.Fatalf("board extract: %v", err)
+	}
+	if len(result.Proposals) != 1 {
+		t.Fatalf("proposals=%d skipped=%+v, want the candidate to pass utterance validation", len(result.Proposals), result.Skipped)
+	}
+	if len(withBoard.messages) != 2 {
+		t.Fatalf("model messages=%d, want system plus payload", len(withBoard.messages))
+	}
+	payload := withBoard.messages[1].Content
+	if !strings.Contains(payload, "teaching-preference") || !strings.Contains(payload, "先举例再讲定义") {
+		t.Fatalf("the request lost the board clue: %s", payload)
+	}
+	if !strings.Contains(payload, "以后你给我讲新的概念，都先举一个我熟悉的例子再讲定义") {
+		t.Fatalf("the request lost the cited utterance the board points at: %s", payload)
+	}
+
+	// 缺板：请求里白板为空，但近期原话仍在，提取继续。
+	noBoard := &memoryChat{response: toolMessage(finalizeToolTopic, topicCall)}
+	noBoardResult, err := newService(fakeFinalizeBoards{}, noBoard, 50).
+		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-no-board"}})
+	if err != nil {
+		t.Fatalf("no-board extract: %v", err)
+	}
+	if !noBoardResult.BoardMissing || len(noBoardResult.Proposals) != 1 {
+		t.Fatalf("board missing=%v proposals=%d, want extraction from utterances alone", noBoardResult.BoardMissing, len(noBoardResult.Proposals))
+	}
+	noBoardPayload := noBoard.messages[1].Content
+	if strings.Contains(noBoardPayload, "teaching-preference") {
+		t.Fatalf("the request invented a board clue: %s", noBoardPayload)
+	}
+	if !strings.Contains(noBoardPayload, "以后你给我讲新的概念") {
+		t.Fatalf("the no-board request lost the recent utterance: %s", noBoardPayload)
+	}
+
+	// 白板只是线索：即使板上有记录，引用可见集之外的原话照样被拒。
+	fabricated := &memoryChat{response: toolMessage(finalizeToolTopic, fabricatedCall)}
+	fabricatedResult, err := newService(fakeFinalizeBoards{content: &board}, fabricated, 0).
+		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-fabricated"}})
+	if err != nil {
+		t.Fatalf("fabricated extract: %v", err)
+	}
+	if len(fabricatedResult.Proposals) != 0 || len(fabricatedResult.Skipped) != 1 ||
+		fabricatedResult.Skipped[0].Reason != FinalizeSkipEvidenceMissing {
+		t.Fatalf("fabricated=%+v skipped=%+v, want the out-of-set citation refused", fabricatedResult.Proposals, fabricatedResult.Skipped)
+	}
+}

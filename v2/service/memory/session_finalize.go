@@ -580,6 +580,12 @@ func (s *SessionFinalizeService) Extract(ctx context.Context, request FinalizeRe
 
 	input := &SessionExtractionInput{
 		UserID: request.UserID, SessionID: sessionID,
+		// The whiteboard is the clue the extraction is organised around: the
+		// proposer has to see it, or a session whose board already held a
+		// fact would reach the model as a plain message list. It stays a
+		// clue only - every candidate is still validated against the
+		// utterances before it can propose.
+		Board:   board,
 		Visible: visibleMessages(clue, unprocessed, s.RecentMessageWindow),
 		Topics:  s.loadTopics(ctx, request.UserID),
 	}
