@@ -528,10 +528,23 @@ type FinalizeResult struct {
 	// NoNewContent says the cursor already covered the session's newest
 	// message: nothing was proposed and the proposer was not called.
 	NoNewContent bool
+	// ProposerRejected says the extraction model answered with the reject
+	// tool: it looked at the same words and judged that nothing there is
+	// durable. That is a terminal answer and the watermark advances, but it
+	// is recorded apart from "the model returned nothing usable" - the two
+	// used to look identical in the run output, and that is exactly the
+	// evidence the real-model rounds could not recover.
+	ProposerRejected bool
 	// BoardMissing says the session has no whiteboard yet. Extraction ran
 	// from the recent window alone.
 	BoardMissing bool
 }
+
+// ErrFinalizeNothingToRemember is the proposer's terminal "nothing here"
+// answer: the model saw the words and rejected them. It is not a failure - it
+// is a decision, and the watermark may move past it - but it is kept apart
+// from a protocol failure so the run output can tell the two apart.
+var ErrFinalizeNothingToRemember = errors.New("extraction model rejected the session")
 
 // Extract runs one finalize extraction over a finished session.
 func (s *SessionFinalizeService) Extract(ctx context.Context, request FinalizeRequest) (FinalizeResult, error) {
@@ -597,6 +610,14 @@ func (s *SessionFinalizeService) Extract(ctx context.Context, request FinalizeRe
 
 	raw, err := s.proposer.Propose(ctx, input)
 	if err != nil {
+		if errors.Is(err, ErrFinalizeNothingToRemember) {
+			// A terminal decision, not a failure: the model looked at the
+			// same words and judged that nothing is durable. The run records
+			// the decision and the watermark moves past the progress.
+			result.ProposerRejected = true
+			result.Cursor.CoveredMessageID = newest
+			return result, nil
+		}
 		// The proposer failed before returning anything: the run fails, the
 		// cursor stays, and the next trigger retries the same progress.
 		return FinalizeResult{}, fmt.Errorf("propose finalize candidates: %w", err)

@@ -22,6 +22,7 @@ type finalizeSessionResponse struct {
 	Advanced          bool   `json:"advanced"`
 	NoNewContent      bool   `json:"no_new_content"`
 	BoardMissing      bool   `json:"board_missing"`
+	ProposerRejected  bool   `json:"proposer_rejected"`
 	PersistedCount    int    `json:"persisted"`
 	SkippedCount      int    `json:"skipped"`
 	RetryPendingCount int    `json:"retry_pending"`
@@ -57,6 +58,7 @@ func FinalizeSession(c *gin.Context) {
 	response.Advanced = outcome.Advanced
 	response.NoNewContent = outcome.NoNewContent
 	response.BoardMissing = outcome.BoardMissing
+	response.ProposerRejected = outcome.ProposerRejected
 	response.PersistedCount = len(outcome.Persisted)
 	response.SkippedCount = len(outcome.Skipped)
 	response.RetryPendingCount = len(outcome.RetryPending)

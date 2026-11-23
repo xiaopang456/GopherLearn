@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cloudwego/eino/schema"
+
 	memorydao "GopherAI/dao/memory"
 	"GopherAI/model"
 )
@@ -1557,4 +1559,121 @@ func TestFinalizeProposerRequestCarriesBoardClueAndUtterances(t *testing.T) {
 		fabricatedResult.Skipped[0].Reason != FinalizeSkipEvidenceMissing {
 		t.Fatalf("fabricated=%+v skipped=%+v, want the out-of-set citation refused", fabricatedResult.Proposals, fabricatedResult.Skipped)
 	}
+}
+
+// TestFinalizeProposerNoToolCallIsRetryable is the zero-cost reproduction of
+// the r8 common symptom: the extraction model answers in prose, with no tool
+// call. Before the fix that produced an empty success and the watermark moved
+// past a session the model never judged; now it is a retryable protocol
+// failure and the progress stays put.
+func TestFinalizeProposerNoToolCallIsRetryable(t *testing.T) {
+	board := ext01BoardWithPreference(t)
+	chat := &memoryChat{response: schema.AssistantMessage("我认为这个会话没有需要记录的内容。", nil)}
+	proposer, err := NewModelSessionProposer(chat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: ext01Messages()},
+		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil,
+		proposer, &scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "x"}}, 0)
+	if _, err := service.Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-prose"}}); err == nil {
+		t.Fatalf("a prose answer must be a retryable protocol failure, not an empty success")
+	}
+}
+
+// TestFinalizeProposerRejectIsTerminalEmpty keeps the other side honest: the
+// reject tool is a decision. It produces no card, it is recorded as a
+// rejection, and the watermark advances.
+func TestFinalizeProposerRejectIsTerminalEmpty(t *testing.T) {
+	board := ext01BoardWithPreference(t)
+	chat := &memoryChat{response: toolMessage(finalizeToolReject, `{"reject_reason":"one-turn logistics"}`)}
+	proposer, err := NewModelSessionProposer(chat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: ext01Messages()},
+		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil,
+		proposer, &scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "x"}}, 0)
+	result, err := service.Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-reject"}})
+	if err != nil {
+		t.Fatalf("reject must not fail the run: %v", err)
+	}
+	if !result.ProposerRejected || len(result.Proposals) != 0 || result.Cursor.CoveredMessageID != 11 {
+		t.Fatalf("result=%+v, want a recorded rejection with the watermark advanced", result)
+	}
+}
+
+// TestFinalizeDevQuestionValidation runs the four development questions the
+// fix must satisfy: clear long-term information proposes; temporary requests
+// and memory-operation instructions produce no card; a new value enters the
+// replacement flow; a same-value restatement produces no duplicate draft.
+func TestFinalizeDevQuestionValidation(t *testing.T) {
+	board := ext01BoardWithPreference(t)
+	preference := SessionRawProposal{
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassTeachingPreference, Subject: "讲解偏好",
+		Durability:  model.MemoryDurabilityStable,
+		Content:     "讲新概念时先举一个我熟悉的例子，再讲正式定义。",
+		EvidenceIDs: []uint{3}, StatementEvidenceID: 3,
+	}
+	newValue := SessionRawProposal{
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassBackground, Subject: "Go 版本",
+		Durability:  model.MemoryDurabilityStable,
+		Content:     "当前项目用 Go 1.23。",
+		EvidenceIDs: []uint{3}, StatementEvidenceID: 3,
+	}
+	newService := func(chat *memoryChat, relations GlobalRelationResolver, entries []model.LongTermMemory) *SessionFinalizeService {
+		proposer, err := NewModelSessionProposer(chat)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: ext01Messages()},
+			nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}},
+			fakeFinalizeGlobalMind{entries: entries}, nil, proposer, relations, 0)
+	}
+	topicCall := `{"scope":"global","class":"teaching_preference","subject":"讲解偏好",` +
+		`"proposed_content":"讲新概念时先举一个我熟悉的例子，再讲正式定义。","durability":"stable",` +
+		`"evidence_ids":[3],"statement_evidence_id":3}`
+	newValueCall := `{"scope":"global","class":"background","subject":"Go 版本",` +
+		`"proposed_content":"当前项目用 Go 1.23。","durability":"stable",` +
+		`"evidence_ids":[3],"statement_evidence_id":3}`
+
+	// 1. 明确长期信息 → 出卡。
+	proposed, err := newService(&memoryChat{response: toolMessage(finalizeToolProfile, topicCall)},
+		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "new"}}, nil).
+		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-dev-1"}})
+	if err != nil || len(proposed.Proposals) != 1 {
+		t.Fatalf("clear preference: proposals=%d err=%v", len(proposed.Proposals), err)
+	}
+
+	// 2. 临时要求与记忆操作指令 → 模型拒绝 → 零卡、终态记录。
+	rejected, err := newService(&memoryChat{response: toolMessage(finalizeToolReject, `{"reject_reason":"temporary and meta instruction"}`)},
+		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "x"}}, nil).
+		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-dev-2"}})
+	if err != nil || len(rejected.Proposals) != 0 || !rejected.ProposerRejected {
+		t.Fatalf("temporary/meta: proposals=%d rejected=%v err=%v", len(rejected.Proposals), rejected.ProposerRejected, err)
+	}
+
+	// 3. 新值 → 进入替换流程（携带旧条目）。
+	old := globalEntry("P-ver", "当前项目用 Go 1.22。")
+	old.ProfileClass = model.ProfileClassBackground
+	replaced, err := newService(&memoryChat{response: toolMessage(finalizeToolProfile, newValueCall)},
+		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationReplacement, TargetMemoryID: "P-ver", Reason: "new value"}},
+		[]model.LongTermMemory{old}).
+		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-dev-3"}})
+	if err != nil || len(replaced.Proposals) != 1 || replaced.Proposals[0].Relation.Relation != GlobalRelationReplacement ||
+		len(replaced.Proposals[0].RelatedOld) != 1 {
+		t.Fatalf("new value: proposals=%+v err=%v", replaced.Proposals, err)
+	}
+
+	// 4. 同值重述 → 判重跳过，零新卡。
+	duplicate, err := newService(&memoryChat{response: toolMessage(finalizeToolProfile, newValueCall)},
+		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationDuplicate, TargetMemoryID: "P-ver", Reason: "same value restated"}},
+		[]model.LongTermMemory{old}).
+		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-dev-4"}})
+	if err != nil || len(duplicate.Proposals) != 0 || len(duplicate.Skipped) != 1 ||
+		duplicate.Skipped[0].Reason != FinalizeSkipSemanticDuplicate {
+		t.Fatalf("same value: proposals=%d skipped=%+v err=%v", len(duplicate.Proposals), duplicate.Skipped, err)
+	}
+	_ = preference
+	_ = newValue
 }

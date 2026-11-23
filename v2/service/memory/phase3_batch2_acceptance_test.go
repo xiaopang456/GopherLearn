@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cloudwego/eino/schema"
+
 	mysqldriver "gorm.io/driver/mysql"
 
 	memorydao "GopherAI/dao/memory"
@@ -160,7 +162,7 @@ func uniqueFinalizeUserID() int64 {
 // finalizeFixtureSessionIDs lists the session ids this acceptance reuses
 // across runs; the cleanup keys on them because messages carry no user id.
 func finalizeFixtureSessionIDs() []string {
-	return []string{"fin-acc-0001", "fin-acc-missed", "fin-acc-long", "fin-acc-crossclass", "fin-acc-topic"}
+	return []string{"fin-acc-0001", "fin-acc-missed", "fin-acc-long", "fin-acc-crossclass", "fin-acc-topic", "fin-acc-answer"}
 }
 
 // seedSession inserts one session of the learner with its messages and its
@@ -949,4 +951,66 @@ func countActiveMemories(t *testing.T, db *gorm.DB, userID int64) int64 {
 		t.Fatal(err)
 	}
 	return count
+}
+
+// runnerWithProposer rebuilds the finalize runner with a different proposer
+// over the same real stores, so a test can swap the model answer while the
+// entry, the watermarks and the validation stay real.
+func (a *finalizeAcceptance) runnerWithProposer(t *testing.T, proposer SessionCandidateProposer) *FinalizeRunner {
+	t.Helper()
+	catalogue, err := NewTopicCatalogue(nil, MemoryTopicAdapter{Repository: a.repo}, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := BuildSessionFinalizeService(a.session, a.messages, a.repo, catalogue, proposer, a.global, a.topic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := NewFinalizeRunner(service, a.governance, a.repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runner
+}
+
+// TestFinalizeAcceptanceModelAnswerShapesWatermark is the before/after
+// evidence at the pipeline level: a prose answer (no tool call) used to look
+// like an empty success and moved the watermark; now it fails the run and the
+// progress stays put, while a reject tool call remains a terminal decision
+// that is recorded and moves the watermark.
+func TestFinalizeAcceptanceModelAnswerShapesWatermark(t *testing.T) {
+	acc := newFinalizeAcceptance(t)
+	ctx := context.Background()
+	sessionID := "fin-acc-answer"
+	stored := acc.seedSession(t, ctx, sessionID, nil, baseFinalizeMessages())
+	_ = stored
+
+	proseProposer, err := NewModelSessionProposer(&memoryChat{response: schema.AssistantMessage("这个会话没有需要记录的内容。", nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proseRunner := acc.runnerWithProposer(t, proseProposer)
+	if _, err := proseRunner.RunSession(ctx, acc.userID, sessionID); err == nil {
+		t.Fatalf("a prose answer must fail the run, not report an empty success")
+	}
+	if got := acc.progress(ctx, sessionID); got != 0 {
+		t.Fatalf("watermark=%d after a prose answer, want it held at 0", got)
+	}
+
+	rejectProposer, err := NewModelSessionProposer(&memoryChat{
+		response: toolMessage(finalizeToolReject, `{"reject_reason":"one-turn logistics"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejectOutcome, err := acc.runnerWithProposer(t, rejectProposer).RunSession(ctx, acc.userID, sessionID)
+	if err != nil {
+		t.Fatalf("reject run: %v", err)
+	}
+	if !rejectOutcome.ProposerRejected || !rejectOutcome.Advanced || len(rejectOutcome.Proposals) != 0 {
+		t.Fatalf("reject outcome=%+v, want a recorded terminal rejection", rejectOutcome)
+	}
+	if got := acc.progress(ctx, sessionID); got == 0 {
+		t.Fatalf("the watermark did not move past a recorded rejection")
+	}
 }

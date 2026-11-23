@@ -526,18 +526,34 @@ func (p *ModelSessionProposer) Propose(ctx context.Context, input *SessionExtrac
 	if err != nil {
 		return nil, fmt.Errorf("extract finalize candidates: %w", err)
 	}
-	if response == nil {
-		return nil, nil
+	if response == nil || len(response.ToolCalls) == 0 {
+		// No tool call is not "nothing to remember": the extraction protocol
+		// requires one of the supplied tools, and a model that answered in
+		// prose produced no decision at all. Returning it as an empty success
+		// would advance the watermark past a session the model never judged -
+		// the failure mode the real-model rounds could not diagnose because
+		// it left no trace. It is a retryable protocol failure instead.
+		return nil, fmt.Errorf("%w: extraction model returned no tool call", ErrCandidateToolProtocol)
 	}
 	proposals := make([]SessionRawProposal, 0, len(response.ToolCalls))
+	rejected := false
+	malformed := 0
+	capped := false
 	for _, call := range response.ToolCalls {
+		if capped {
+			break
+		}
 		switch call.Function.Name {
 		case finalizeToolReject:
+			rejected = true
 			continue
 		case finalizeToolProfile, finalizeToolTopic:
 			var args finalizeProposalArgs
 			if err := decodeToolArguments(call.Function.Arguments, &args); err != nil {
-				// One malformed call must not sink the ones that parsed.
+				// One malformed call must not sink the ones that parsed, but
+				// a response where every proposal call is malformed is a
+				// protocol failure, not an empty extraction.
+				malformed++
 				continue
 			}
 			scope, _ := memoryScopeForToolName(args.Scope)
@@ -552,13 +568,24 @@ func (p *ModelSessionProposer) Propose(ctx context.Context, input *SessionExtrac
 				AssistantIDs:        append([]uint(nil), args.AssistantIDs...),
 			})
 			if len(proposals) >= p.maxProposals {
-				break
+				// The cap is a break of the loop, not of the switch.
+				capped = true
 			}
 		default:
 			continue
 		}
 	}
-	return proposals, nil
+	if len(proposals) > 0 {
+		return proposals, nil
+	}
+	if rejected {
+		// The model looked at the words and rejected them: terminal, and it
+		// has to be recorded as a decision rather than as an empty run.
+		return nil, ErrFinalizeNothingToRemember
+	}
+	// Every proposal-shaped call was malformed and there is no rejection:
+	// nothing usable came back, which is retryable.
+	return nil, fmt.Errorf("%w: %d malformed extraction calls", ErrCandidateToolProtocol, malformed)
 }
 
 func memoryScopeForToolName(name string) (model.MemoryScope, bool) {
