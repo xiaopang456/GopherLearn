@@ -674,12 +674,9 @@ func Assemble(parent context.Context, settings *Settings, deps Dependencies) (ap
 		return nil, fmt.Errorf("configure memory governance: %v", err)
 	}
 	// The session-finalize extraction is the third phase's automatic
-	// proposal. It is wired end to end - the close notification, the idle
-	// fallback, the real draft entry and the confirmation list - but stays
-	// off until the config turns it on, because the structured extraction
-	// model is not verified against real sessions yet (the plan's next
-	// batch). An off deployment registers nothing, and the controller
-	// answers the notification with that fact.
+	// proposal. The close notification and idle fallback share one runner.
+	// Deployments that disable automatic proposals leave both entry points
+	// inactive.
 	if conf.AgentConfig.MemoryFinalizeEnabled {
 		finalizeCatalogue, finalizeErr := memoryService.NewTopicCatalogue(learningDAO.DefaultRepository(), memoryService.MemoryTopicAdapter{Repository: memoryRepository}, 100)
 		if finalizeErr != nil {
