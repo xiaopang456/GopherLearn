@@ -1723,3 +1723,95 @@ func TestFinalizeProposerRejectNeedsReason(t *testing.T) {
 		t.Fatalf("valid reject: result=%+v err=%v", rejected, err)
 	}
 }
+
+// TestFinalizeAmbiguousTopicKeepsEmptyAttribution locks the ambiguity rule:
+// when several catalogue topics could plausibly hold the note and the learner
+// named none, the candidate keeps an empty attribution - it proposes, no old
+// memory is compared yet, and the comparison happens only after the learner
+// chooses. A unique exact topic still prefills (covered by the prefill test).
+func TestFinalizeAmbiguousTopicKeepsEmptyAttribution(t *testing.T) {
+	topics := fakeFinalizeCatalogue{topics: []Topic{
+		{Key: "go-basics", Name: "Go 基础"},
+		{Key: "go-concurrency", Name: "Go 并发"},
+		{Key: "gorm", Name: "GORM"},
+	}}
+	relations := &scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "should not run"}}
+	service := newFinalizeService(t, fakeFinalizeBoards{}, fakeFinalizeMessages{messages: ext01Messages()},
+		topics, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{},
+		fakeFinalizeTopicMind{byTopic: map[string][]model.LongTermMemory{}},
+		&scriptedProposer{proposals: []SessionRawProposal{{
+			Scope: model.MemoryScopeTopic, Kind: FinalizeKindUnderstanding, TopicKey: "",
+			Subject: "切片与拷贝", Durability: model.MemoryDurabilityStable,
+			Content:     "我容易混淆切片共享底层数组和拷贝。",
+			EvidenceIDs: []uint{3}, StatementEvidenceID: 3,
+		}}}, relations, 50)
+	result, err := service.Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-ambiguous"}})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(result.Proposals) != 1 {
+		t.Fatalf("proposals=%d skipped=%+v, want the candidate proposed with an empty attribution", len(result.Proposals), result.Skipped)
+	}
+	if !result.Proposals[0].TopicPending || result.Proposals[0].TopicKey != "" {
+		t.Fatalf("candidate=%+v, want the topic left to the learner", result.Proposals[0])
+	}
+	if relations.calls != 0 {
+		t.Fatalf("relation calls=%d, want no comparison before the topic is chosen", relations.calls)
+	}
+	if !strings.Contains(finalizeProposerPrompt, "leave topic_key empty") ||
+		!strings.Contains(finalizeProposerPrompt, "compared with old memories in its final topic only after that choice") {
+		t.Fatalf("the ambiguity rule is missing from the extraction prompt")
+	}
+}
+
+// TestFinalizeOneOffVersusNewConfiguration is the paired development sample:
+// an instruction scoped to this operation produces no card, while a
+// configuration adopted from now on stays a candidate and enters the
+// relationship judgement, which may propose a replacement.
+func TestFinalizeOneOffVersusNewConfiguration(t *testing.T) {
+	board := ext01BoardWithPreference(t)
+	newService := func(chat *memoryChat, relations GlobalRelationResolver, entries []model.LongTermMemory) *SessionFinalizeService {
+		proposer, err := NewModelSessionProposer(chat)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: ext01Messages()},
+			nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}},
+			fakeFinalizeGlobalMind{entries: entries}, nil, proposer, relations, 0)
+	}
+
+	// 只在这次操作：模型拒绝，零卡、终态记录。
+	oneOff, err := newService(&memoryChat{response: toolMessage(finalizeToolReject, `{"reject_reason":"one-off formatting request for this answer only"}`)},
+		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "x"}}, nil).
+		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-one-off"}})
+	if err != nil || len(oneOff.Proposals) != 0 || !oneOff.ProposerRejected {
+		t.Fatalf("one-off: proposals=%d rejected=%v err=%v", len(oneOff.Proposals), oneOff.ProposerRejected, err)
+	}
+
+	// 从此采用的新配置：保留为候选，关系判定给出替换建议。
+	old := globalEntry("P-fmt", "示例代码统一用 Go 1.22 语法。")
+	old.ProfileClass = model.ProfileClassConstraint
+	newConfigCall := `{"scope":"global","class":"constraint","subject":"示例代码版本",` +
+		`"proposed_content":"示例代码从此统一按 Go 1.23 语法写。","durability":"stable",` +
+		`"evidence_ids":[3],"statement_evidence_id":3}`
+	adopted, err := newService(&memoryChat{response: toolMessage(finalizeToolProfile, newConfigCall)},
+		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationReplacement, TargetMemoryID: "P-fmt", Reason: "same matter, new configuration"}},
+		[]model.LongTermMemory{old}).
+		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-new-config"}})
+	if err != nil || len(adopted.Proposals) != 1 {
+		t.Fatalf("new configuration: proposals=%d err=%v", len(adopted.Proposals), err)
+	}
+	if adopted.Proposals[0].Relation.Relation != GlobalRelationReplacement || len(adopted.Proposals[0].RelatedOld) != 1 {
+		t.Fatalf("candidate=%+v, want the replacement suggestion carrying the old value", adopted.Proposals[0])
+	}
+
+	for _, fragment := range []string{
+		"Separate a one-off operation from a new standing configuration",
+		"An instruction scoped to this operation only",
+		"the relationship judgement decides whether it replaces the older value",
+	} {
+		if !strings.Contains(finalizeProposerPrompt, fragment) {
+			t.Fatalf("the one-off/new-configuration rule is missing %q", fragment)
+		}
+	}
+}
