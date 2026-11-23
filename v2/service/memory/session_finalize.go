@@ -176,6 +176,21 @@ type SessionExtractionInput struct {
 	// Topics is the learner's topic catalogue, for the proposer to reuse a
 	// key from. It carries no memory content and no scores.
 	Topics []Topic
+	// ExistingValues are the learner's confirmed current values that look
+	// directly relevant to this session - a small bounded set. They are
+	// context for one question only: does the new statement replace the old
+	// value from now on, or adjust it for this one time? They are not
+	// evidence: every candidate still has to cite the learner's own messages,
+	// and only the learner's confirmation writes anything.
+	ExistingValues []SessionExistingValue
+}
+
+// SessionExistingValue is one confirmed current value shown to the proposer
+// for comparison. It carries no message ids and cannot be cited as evidence.
+type SessionExistingValue struct {
+	ID      string
+	Subject string
+	Content string
 }
 
 // SessionRawProposal is one candidate as the proposer returned it, before
@@ -190,6 +205,12 @@ type SessionRawProposal struct {
 	Durability  model.MemoryDurability
 	ValidUntil  *time.Time
 	EvidenceIDs []uint // the learner's own words the candidate rests on
+	// TopicUnique says the proposer judged that exactly one catalogue topic
+	// clearly applies to this note. It is the model's explicit answer to the
+	// ambiguity question, and the program prefills only on it (or when the
+	// learner named the topic) - a silent pick among several plausible
+	// topics leaves the attribution to the learner.
+	TopicUnique bool
 	// StatementEvidenceID names the evidence message that directly supports
 	// the candidate's current value, and it has to be one of the
 	// EvidenceIDs. A proposal that cites several messages must name it: with
@@ -245,6 +266,12 @@ type SessionFinalizeService struct {
 	// the input stays a bounded cost. The number is an implementation
 	// parameter of this round and is recorded in the batch report.
 	RecentMessageWindow int
+	// existingValues supplies the bounded confirmed values the proposer sees
+	// as comparison context. Optional: without it the extraction request
+	// carries no old values.
+	existingValues FinalizeExistingValueSource
+	// ExistingValueLimit bounds how many old values reach one request.
+	ExistingValueLimit int
 	// RelationTargets is how many in-range active entries one relation
 	// judgement may be given. Only entries related to the candidate should
 	// travel to the real model; until that filter exists the range is the
@@ -292,6 +319,14 @@ type FinalizeFingerprintSource interface {
 	KnownCandidateFingerprints(ctx context.Context, userID int64, sessionID string) (map[string]struct{}, error)
 }
 
+// FinalizeExistingValueSource selects a small bounded set of the learner's
+// confirmed current values that are directly relevant to the session's own
+// words. Relevance is the source's business; the extraction only needs a
+// short list to compare a new statement against.
+type FinalizeExistingValueSource interface {
+	RelevantExistingValues(ctx context.Context, userID int64, sessionText string, limit int) ([]SessionExistingValue, error)
+}
+
 // FinalizeTopicEntrySource lists the active topic notes of one topic. The
 // production adapter wraps the explicit repository the same way the global
 // snapshot source wraps its own queries.
@@ -321,8 +356,19 @@ func NewSessionFinalizeService(
 		proposer: proposer, relations: relations,
 		now:                 func() time.Time { return time.Now() },
 		RecentMessageWindow: 50,
+		ExistingValueLimit:  5,
 		RelationTargets:     10,
 	}, nil
+}
+
+// UseExistingValues attaches the source of the confirmed old values shown to
+// the proposer as comparison context.
+func (s *SessionFinalizeService) UseExistingValues(source FinalizeExistingValueSource) error {
+	if source == nil {
+		return fmt.Errorf("existing value source is required")
+	}
+	s.existingValues = source
+	return nil
 }
 
 // UseTopicRelations attaches the topic-scope semantic judgement. It is the
@@ -528,10 +574,23 @@ type FinalizeResult struct {
 	// NoNewContent says the cursor already covered the session's newest
 	// message: nothing was proposed and the proposer was not called.
 	NoNewContent bool
+	// ProposerRejected says the extraction model answered with the reject
+	// tool: it looked at the same words and judged that nothing there is
+	// durable. That is a terminal answer and the watermark advances, but it
+	// is recorded apart from "the model returned nothing usable" - the two
+	// used to look identical in the run output, and that is exactly the
+	// evidence the real-model rounds could not recover.
+	ProposerRejected bool
 	// BoardMissing says the session has no whiteboard yet. Extraction ran
 	// from the recent window alone.
 	BoardMissing bool
 }
+
+// ErrFinalizeNothingToRemember is the proposer's terminal "nothing here"
+// answer: the model saw the words and rejected them. It is not a failure - it
+// is a decision, and the watermark may move past it - but it is kept apart
+// from a protocol failure so the run output can tell the two apart.
+var ErrFinalizeNothingToRemember = errors.New("extraction model rejected the session")
 
 // Extract runs one finalize extraction over a finished session.
 func (s *SessionFinalizeService) Extract(ctx context.Context, request FinalizeRequest) (FinalizeResult, error) {
@@ -580,8 +639,22 @@ func (s *SessionFinalizeService) Extract(ctx context.Context, request FinalizeRe
 
 	input := &SessionExtractionInput{
 		UserID: request.UserID, SessionID: sessionID,
+		// The whiteboard is the clue the extraction is organised around: the
+		// proposer has to see it, or a session whose board already held a
+		// fact would reach the model as a plain message list. It stays a
+		// clue only - every candidate is still validated against the
+		// utterances before it can propose.
+		Board:   board,
 		Visible: visibleMessages(clue, unprocessed, s.RecentMessageWindow),
 		Topics:  s.loadTopics(ctx, request.UserID),
+	}
+	// A small set of confirmed current values, selected from the session's own
+	// words, so the proposer can tell a new standing value from a one-off
+	// adjustment. Losing this context degrades the judgement, not the run.
+	if s.existingValues != nil {
+		if values, valueErr := s.existingValues.RelevantExistingValues(ctx, request.UserID, sessionText(input.Visible), s.ExistingValueLimit); valueErr == nil {
+			input.ExistingValues = values
+		}
 	}
 
 	known, err := s.known.KnownCandidateFingerprints(ctx, request.UserID, sessionID)
@@ -591,6 +664,14 @@ func (s *SessionFinalizeService) Extract(ctx context.Context, request FinalizeRe
 
 	raw, err := s.proposer.Propose(ctx, input)
 	if err != nil {
+		if errors.Is(err, ErrFinalizeNothingToRemember) {
+			// A terminal decision, not a failure: the model looked at the
+			// same words and judged that nothing is durable. The run records
+			// the decision and the watermark moves past the progress.
+			result.ProposerRejected = true
+			result.Cursor.CoveredMessageID = newest
+			return result, nil
+		}
 		// The proposer failed before returning anything: the run fails, the
 		// cursor stays, and the next trigger retries the same progress.
 		return FinalizeResult{}, fmt.Errorf("propose finalize candidates: %w", err)
@@ -612,7 +693,7 @@ func (s *SessionFinalizeService) Extract(ctx context.Context, request FinalizeRe
 			result.Skipped = append(result.Skipped, FinalizeSkip{Reason: skip, Subject: proposal.Subject, EvidenceIDs: proposal.EvidenceIDs, AssistantIDs: proposal.AssistantIDs})
 			continue
 		}
-		candidate := s.buildCandidate(request.UserID, coverage, proposal, evidence, assistant, input.Topics)
+		candidate := s.buildCandidate(request.UserID, coverage, proposal, evidence, assistant, input.Topics, input.Visible)
 		fingerprint := candidate.Fingerprint
 		if _, seen := known[fingerprint]; seen {
 			result.Skipped = append(result.Skipped, FinalizeSkip{Reason: FinalizeSkipDuplicateKnown, Subject: candidate.Subject, EvidenceIDs: proposal.EvidenceIDs, AssistantIDs: proposal.AssistantIDs})
@@ -1024,7 +1105,7 @@ func dedupeIDs(ids []uint, limit int) ([]uint, bool) {
 // learner to place, because a topic the program guessed wrong is harder to
 // fix after saving than before.
 func (s *SessionFinalizeService) buildCandidate(userID int64, coverage FinalizeCursor, proposal SessionRawProposal,
-	evidence, assistant []SessionEvidenceRef, topics []Topic) SessionMemoryCandidate {
+	evidence, assistant []SessionEvidenceRef, topics []Topic, visible map[uint]SessionMessage) SessionMemoryCandidate {
 	scope := model.MemoryScope(strings.ToLower(strings.TrimSpace(string(proposal.Scope))))
 	subject := strings.TrimSpace(proposal.Subject)
 	content := strings.TrimSpace(proposal.Content)
@@ -1033,11 +1114,17 @@ func (s *SessionFinalizeService) buildCandidate(userID int64, coverage FinalizeC
 	topicPending := false
 	if scope == model.MemoryScopeTopic {
 		key, matched := Resolve(topics, proposal.TopicKey)
-		if matched {
+		if matched && (proposal.TopicUnique || topicNamedInEvidence(key, topics, evidence, assistant, visible)) {
 			topicKey = key
 		} else {
-			// No unique home in the catalogue. The candidate still proposes;
-			// the confirmation flow asks the learner where it belongs.
+			// Either the catalogue has no unique home, the model did not
+			// declare the topic unique, or the learner never named it. The
+			// candidate still proposes; the confirmation flow asks the learner
+			// where it belongs. The prefill is a convenience, and a
+			// convenience that guesses is worse than no prefill: several
+			// topics can be plausible, and the learner's own words (or the
+			// model's explicit "unique" answer) are the only evidence of which
+			// one it is.
 			topicKey = ""
 			topicPending = true
 		}
@@ -1073,6 +1160,154 @@ func (s *SessionFinalizeService) buildCandidate(userID int64, coverage FinalizeC
 	}
 	candidate.Fingerprint = CandidateFingerprint(candidate.UserID, coverage.SessionID, candidate.Scope, candidate.TopicKey, candidate.Subject, candidate.Content)
 	return candidate
+}
+
+// sessionText joins the learner's own visible words for relevance selection.
+func sessionText(visible map[uint]SessionMessage) string {
+	ids := make([]uint, 0, len(visible))
+	for id, message := range visible {
+		if message.IsUser {
+			ids = append(ids, id)
+		}
+	}
+	sort.Slice(ids, func(left, right int) bool { return ids[left] < ids[right] })
+	var builder strings.Builder
+	for _, id := range ids {
+		builder.WriteString(visible[id].Content)
+		builder.WriteString("\n")
+	}
+	return builder.String()
+}
+
+// selectRelevantExistingValues picks the confirmed values that share the
+// session's own tags - a bounded, deterministic relevance. Entries without a
+// tag match are left out: the context is supposed to be a short list of
+// directly related old values, not the whole profile.
+func selectRelevantExistingValues(rows []model.LongTermMemory, sessionText string, limit int) []SessionExistingValue {
+	if limit < 1 {
+		return nil
+	}
+	wanted := GenerateQueryTags(sessionText, "")
+	if len(wanted) == 0 {
+		return nil
+	}
+	type scored struct {
+		value SessionExistingValue
+		score int
+	}
+	candidates := make([]scored, 0, len(rows))
+	for _, row := range rows {
+		if !row.UserConfirmed || row.Status != model.LongTermMemoryActive {
+			continue
+		}
+		score := 0
+		for _, tag := range row.Tags {
+			for _, want := range wanted {
+				if tag == want {
+					score++
+				}
+			}
+		}
+		if score == 0 {
+			continue
+		}
+		candidates = append(candidates, scored{
+			value: SessionExistingValue{ID: row.ID, Subject: row.Subject, Content: row.Content},
+			score: score,
+		})
+	}
+	sort.SliceStable(candidates, func(left, right int) bool { return candidates[left].score > candidates[right].score })
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	values := make([]SessionExistingValue, 0, len(candidates))
+	for _, candidate := range candidates {
+		values = append(values, candidate.value)
+	}
+	return values
+}
+
+// topicNamedInEvidence reports whether the learner named the topic in the
+// words the candidate rests on - or accepted an assistant proposal that named
+// it. The topic's catalogue key and display name are the identities a name can
+// take; a topic nobody named is left to the learner to choose, however exact
+// the model's proposed key looks.
+func topicNamedInEvidence(key string, topics []Topic, evidence, assistant []SessionEvidenceRef, visible map[uint]SessionMessage) bool {
+	needles := []string{strings.ToLower(strings.TrimSpace(key))}
+	for _, topic := range topics {
+		if topic.Key != key {
+			continue
+		}
+		if name := strings.ToLower(strings.TrimSpace(topic.Name)); name != "" && name != needles[0] {
+			needles = append(needles, name)
+		}
+		break
+	}
+	named := func(refs []SessionEvidenceRef) bool {
+		for _, ref := range refs {
+			message, ok := visible[ref.MessageID]
+			if !ok {
+				continue
+			}
+			text := strings.ToLower(message.Content)
+			for _, needle := range needles {
+				if topicNameAppears(text, needle) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return named(evidence) || named(assistant)
+}
+
+// topicNameAppears reports whether the needle names the topic in the text.
+//
+// An ASCII-only needle must appear as a whole word: "rag" is inside
+// "storage", and a substring match would let an unrelated word name the
+// topic - the learner who writes "storage 层" has not named RAG. A needle
+// that carries CJK content is matched as a phrase, because those scripts
+// have no word delimiters; the byte before/after an ASCII run inside them is
+// a boundary either way.
+func topicNameAppears(text, needle string) bool {
+	needle = strings.ToLower(strings.TrimSpace(needle))
+	if needle == "" {
+		return false
+	}
+	if !asciiOnly(needle) {
+		return strings.Contains(text, needle)
+	}
+	for offset := 0; offset <= len(text)-len(needle); {
+		position := strings.Index(text[offset:], needle)
+		if position < 0 {
+			return false
+		}
+		start := offset + position
+		end := start + len(needle)
+		beforeOK := start == 0 || !asciiNameRune(text[start-1])
+		afterOK := end == len(text) || !asciiNameRune(text[end])
+		if beforeOK && afterOK {
+			return true
+		}
+		offset = start + 1
+	}
+	return false
+}
+
+func asciiOnly(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+func asciiNameRune(value byte) bool {
+	return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') || (value >= '0' && value <= '9')
 }
 
 // CandidateFingerprint identifies one candidate within one session: the same

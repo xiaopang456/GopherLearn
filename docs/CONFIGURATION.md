@@ -221,6 +221,7 @@ go -C v2 run ./cmd/indexaudit -config ../config.toml
 | `episodeRelationMode` | `off` | 情景关系抽取模式 |
 | `summarySegmentMode` | `on` | **分层摘要模式**。`on`：写入并读回（白板 + 摘要分段），窗口里不再带旧的滚动摘要；`off`：不写，回到旧的滚动摘要；`shadow`：只写不读，只观察写入侧。详见下面「分层摘要」一节 |
 | `summaryAssistantContent` | `on` | **分层摘要要不要把助手给过的东西一并记进去**。`on`：助手给过的练习题、计划条目、给出的数值和清单也一并写进摘要段与白板，并标出那一句是谁说的；学习者明确接受的那条方案会写进白板的当前状态。`off`：只记学习者自己说过的话。**请先看下面「分层摘要」一节里的回退说明**：打开后写入的是新数据版本，之后不能再回退到 v0.3.0 及更早的版本 |
+| `memoryFinalizeEnabled` | `true` | 会话收尾时后台提取长期记忆草稿，由学习者在记忆页编辑、确认或放弃。设为 `false` 并重启可关闭自动提议。 |
 | `summarySegmentDebugDump` | `false` | **要不要把模型返回的原始 JSON 存下来**。`true`：每一批生成时模型返回的那份 JSON（摘要段与白板）原样写进 `session_summary_segments.raw_output`，用于事后查一段摘要为什么长这样；`false`：不写。**默认关闭**：这份原文是每批模型回答的大小，不查的时候不该付这份存储。它随会话一起删除 |
 | `summaryGroupItemLimit` | `20` | 摘要里**每一组**最多留多少条。超出时按「留最新、丢最早」截断，**整份摘要不会被丢掉** |
 | `summaryOpenLoopsItemLimit` | `20` | 摘要里「待办」这一组最多留多少条。待办涨得最快，单独给一个上限，方便实测发现砍太狠时调大 |

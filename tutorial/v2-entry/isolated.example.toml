@@ -67,3 +67,8 @@ rerankEnabled = false
 # of its own - writes sessionCardMode = "enabled".
 # [agentConfig]
 # sessionCardMode = "disabled"
+
+# Session close or idle processing proposes memory drafts for user review
+# by default. Set this to false to disable automatic proposals.
+# [agentConfig]
+# memoryFinalizeEnabled = false

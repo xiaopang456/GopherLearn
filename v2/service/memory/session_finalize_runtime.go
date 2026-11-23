@@ -133,6 +133,35 @@ func (s *SessionMessageSource) LoadSessionMessagesByID(ctx context.Context, user
 	return messages, nil
 }
 
+// MemoryExistingValueSource selects the confirmed global values whose tags
+// match the session's own words. It is the production implementation of the
+// comparison context: bounded, deterministic, and never the whole profile.
+type MemoryExistingValueSource struct {
+	repository *memoryDAO.Repository
+	limit      int
+}
+
+func NewMemoryExistingValueSource(repository *memoryDAO.Repository, limit int) (*MemoryExistingValueSource, error) {
+	if repository == nil {
+		return nil, fmt.Errorf("existing value source requires the memory repository")
+	}
+	if limit < 1 || limit > 20 {
+		limit = 5
+	}
+	return &MemoryExistingValueSource{repository: repository, limit: limit}, nil
+}
+
+func (s *MemoryExistingValueSource) RelevantExistingValues(ctx context.Context, userID int64, sessionText string, limit int) ([]SessionExistingValue, error) {
+	if limit < 1 || limit > s.limit {
+		limit = s.limit
+	}
+	rows, err := s.repository.ListAllActive(ctx, userID, model.MemoryScopeGlobal, 0, GlobalMemoryHardLimit+1)
+	if err != nil {
+		return nil, err
+	}
+	return selectRelevantExistingValues(rows, sessionText, limit), nil
+}
+
 // SessionTopicCatalogue adapts the shared topic catalogue: the same derived
 // list the memory page shows, quiz progress and existing topic notes.
 type SessionTopicCatalogue struct {
@@ -437,6 +466,16 @@ func BuildSessionFinalizeService(
 			return nil, err
 		}
 	}
+	// The comparison context: a small set of confirmed old values selected
+	// from the session's own words, so the proposer can tell a new standing
+	// value from a one-off adjustment.
+	existingValues, err := NewMemoryExistingValueSource(memoryRepository, 5)
+	if err != nil {
+		return nil, err
+	}
+	if err := service.UseExistingValues(existingValues); err != nil {
+		return nil, err
+	}
 	return service, nil
 }
 
@@ -458,6 +497,7 @@ type finalizeProposalArgs struct {
 	Class               string `json:"class,omitempty"`
 	Kind                string `json:"kind,omitempty"`
 	TopicKey            string `json:"topic_key,omitempty"`
+	TopicUnique         bool   `json:"topic_unique,omitempty"`
 	Subject             string `json:"subject"`
 	ProposedContent     string `json:"proposed_content"`
 	Durability          string `json:"durability"`
@@ -484,9 +524,13 @@ Body rules, checked at the confirmation page and by evaluation:
 Candidate boundaries, checked by evaluation:
 - A reminder inside one sentence belongs to that sentence's subject. When the learner says 记下来 or 记住 while describing a difficulty on a topic (for example "我老忘记 Save 传指针，这个坑记下来，属于 GORM 这个主题"), the difficulty and the request are ONE topic note: the content keeps BOTH the confusing point AND the wish to be reminded about it when the topic comes up later. Do not emit a second candidate for the reminder.
 - A preference that applies across topics and stands on its own (for example how they want new modules taught) is still its own global candidate, even when it appears in the same utterance next to a topic difficulty.
+- An instruction about the memory-proposal process itself - 不要再问我"要不要记"、不用再确认、别再问这类话 - is a session directive, not a durable preference about learning. Do not propose it as a candidate and do not fold it into another candidate's body.
+- Separate a one-off operation from a new standing configuration. An instruction scoped to this operation only - 这次、这单、本条先、先这样 - is not durable and is not proposed. A configuration the learner adopts from now on - 以后都、从此、默认改成 - is a durable new value and belongs in a candidate; the relationship judgement decides whether it replaces the older value. A statement that the environment, project or tooling has changed and future work should follow it (升级到…以后都…/以后示例都按…写) is a new standing configuration: propose it, and never reject it as a temporary instruction.
+- Never reject a statement because it resembles something already known. A restatement of a preference is still a candidate; the relationship judgement decides whether it is a duplicate. Rejecting it yourself would skip that judgement and silently drop the learner's words.
+- existing_values are the learner's confirmed current values, shown for comparison only. Use them to tell 以后改用新值 (the learner adopts a new standing value - propose it) from 只在这次临时调整 (a one-off adjustment - reject it). They are not evidence: never cite them, and every candidate must cite the learner's own message ids.
 
 remember_profile is a fact about the learner across topics: a study goal (class goal), background (background), a teaching preference (teaching_preference), or a standing constraint (constraint).
-remember_topic_note is the learner's own understanding of one technical topic: an analogy, a confusion, a pitfall, or their personal wording (kind understanding), or what they say they know (kind self_report). Reuse a topic key from the catalogue when one fits; leave topic_key empty when none does and the learner will place it.
+remember_topic_note is the learner's own understanding of one technical topic: an analogy, a confusion, a pitfall, or their personal wording (kind understanding), or what they say they know (kind self_report). Reuse a topic key from the catalogue only when exactly one clearly applies, and set topic_unique=true for that answer. When several topics could plausibly hold the note and the learner did not name one, leave topic_key empty and topic_unique=false: the learner chooses the topic, and the note is compared with old memories in its final topic only after that choice. Leave it empty when none fits as well.
 reject_extraction for one-turn requests, session logistics, unaccepted assistant proposals, quiz scores, and anything without the learner's own words behind it.`
 
 // ModelSessionProposer extracts candidates with a tool-calling model.
@@ -511,9 +555,10 @@ func (p *ModelSessionProposer) Propose(ctx context.Context, input *SessionExtrac
 		return nil, fmt.Errorf("bind finalize extraction tools: %w", err)
 	}
 	payload, err := json.Marshal(map[string]any{
-		"board":    renderFinalizeBoard(input.Board),
-		"messages": finalizeVisibleMessages(input.Visible),
-		"topics":   finalizeTopicCatalogue(input.Topics),
+		"board":           renderFinalizeBoard(input.Board),
+		"messages":        finalizeVisibleMessages(input.Visible),
+		"topics":          finalizeTopicCatalogue(input.Topics),
+		"existing_values": finalizeExistingValues(input.ExistingValues),
 	})
 	if err != nil {
 		return nil, err
@@ -525,18 +570,44 @@ func (p *ModelSessionProposer) Propose(ctx context.Context, input *SessionExtrac
 	if err != nil {
 		return nil, fmt.Errorf("extract finalize candidates: %w", err)
 	}
-	if response == nil {
-		return nil, nil
+	if response == nil || len(response.ToolCalls) == 0 {
+		// No tool call is not "nothing to remember": the extraction protocol
+		// requires one of the supplied tools, and a model that answered in
+		// prose produced no decision at all. Returning it as an empty success
+		// would advance the watermark past a session the model never judged -
+		// the failure mode the real-model rounds could not diagnose because
+		// it left no trace. It is a retryable protocol failure instead.
+		return nil, fmt.Errorf("%w: extraction model returned no tool call", ErrCandidateToolProtocol)
 	}
 	proposals := make([]SessionRawProposal, 0, len(response.ToolCalls))
+	rejected := false
+	invalidRejects := 0
+	malformed := 0
+	capped := false
 	for _, call := range response.ToolCalls {
+		if capped {
+			break
+		}
 		switch call.Function.Name {
 		case finalizeToolReject:
+			// A rejection is only a decision when it says WHY. The tool name
+			// alone is not an answer: an empty or missing reason is a broken
+			// response, and treating it as a terminal rejection would advance
+			// the watermark over a session nobody actually judged.
+			var args rejectArgs
+			if err := decodeToolArguments(call.Function.Arguments, &args); err != nil || !validGlobalReason(args.RejectReason) {
+				invalidRejects++
+				continue
+			}
+			rejected = true
 			continue
 		case finalizeToolProfile, finalizeToolTopic:
 			var args finalizeProposalArgs
 			if err := decodeToolArguments(call.Function.Arguments, &args); err != nil {
-				// One malformed call must not sink the ones that parsed.
+				// One malformed call must not sink the ones that parsed, but
+				// a response where every proposal call is malformed is a
+				// protocol failure, not an empty extraction.
+				malformed++
 				continue
 			}
 			scope, _ := memoryScopeForToolName(args.Scope)
@@ -544,20 +615,42 @@ func (p *ModelSessionProposer) Propose(ctx context.Context, input *SessionExtrac
 			proposals = append(proposals, SessionRawProposal{
 				Scope: scope, Class: model.MemoryProfileClass(strings.TrimSpace(args.Class)),
 				Kind: strings.TrimSpace(args.Kind), TopicKey: strings.TrimSpace(args.TopicKey),
-				Subject: strings.TrimSpace(args.Subject), Content: strings.TrimSpace(args.ProposedContent),
+				TopicUnique: args.TopicUnique,
+				Subject:     strings.TrimSpace(args.Subject), Content: strings.TrimSpace(args.ProposedContent),
 				Durability: model.MemoryDurability(strings.TrimSpace(args.Durability)), ValidUntil: validUntil,
 				EvidenceIDs:         append([]uint(nil), args.EvidenceIDs...),
 				StatementEvidenceID: args.StatementEvidenceID,
 				AssistantIDs:        append([]uint(nil), args.AssistantIDs...),
 			})
 			if len(proposals) >= p.maxProposals {
-				break
+				// The cap is a break of the loop, not of the switch.
+				capped = true
 			}
 		default:
 			continue
 		}
 	}
-	return proposals, nil
+	if len(proposals) > 0 {
+		return proposals, nil
+	}
+	if malformed > 0 {
+		// Proposal-shaped calls came back broken. A reject beside them does
+		// not make that a decision - the response that was supposed to carry
+		// the candidates never parsed, and the reject may just be the model's
+		// fallback. Retry the same progress instead of advancing past it.
+		return nil, fmt.Errorf("%w: %d malformed extraction calls", ErrCandidateToolProtocol, malformed)
+	}
+	if rejected {
+		// The model looked at the words and rejected them with a reason:
+		// terminal, recorded as a decision rather than as an empty run.
+		return nil, ErrFinalizeNothingToRemember
+	}
+	if invalidRejects > 0 {
+		// The reject call itself is broken (no reason, or beyond the bound):
+		// nothing usable came back, which is retryable.
+		return nil, fmt.Errorf("%w: %d reject calls without a valid reason", ErrCandidateToolProtocol, invalidRejects)
+	}
+	return nil, fmt.Errorf("%w: no usable extraction tool call", ErrCandidateToolProtocol)
 }
 
 func memoryScopeForToolName(name string) (model.MemoryScope, bool) {
@@ -600,6 +693,7 @@ func finalizeExtractionTools() []*schema.ToolInfo {
 		"scope":                 {Type: schema.String, Desc: "topic for this tool.", Required: true},
 		"kind":                  {Type: schema.String, Enum: []string{FinalizeKindUnderstanding, FinalizeKindSelfReport}, Required: true},
 		"topic_key":             {Type: schema.String, Desc: "A catalogue key, or empty when no catalogue topic fits."},
+		"topic_unique":          {Type: schema.Boolean, Desc: "True only when exactly one catalogue topic clearly applies; false when several could and the learner named none."},
 		"subject":               {Type: schema.String, Required: true},
 		"proposed_content":      {Type: schema.String, Required: true},
 		"durability":            {Type: schema.String, Enum: []string{string(model.MemoryDurabilityStable), string(model.MemoryDurabilityTimeBound)}, Required: true},
@@ -655,6 +749,19 @@ func finalizeVisibleMessages(visible map[uint]SessionMessage) []map[string]any {
 		}
 		result = append(result, map[string]any{
 			"id": id, "role": role, "text": message.Content, "time": message.CreatedAt.Format(time.RFC3339),
+		})
+	}
+	return result
+}
+
+func finalizeExistingValues(values []SessionExistingValue) []map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make([]map[string]string, 0, len(values))
+	for _, value := range values {
+		result = append(result, map[string]string{
+			"id": value.ID, "subject": value.Subject, "content": value.Content,
 		})
 	}
 	return result

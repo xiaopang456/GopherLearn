@@ -59,6 +59,33 @@ type TopicCatalogueResponse struct {
 	serviceagent.TopicCataloguePage
 }
 
+// TopicCapabilityResponse tells the client whether this deployment runs the
+// read-side confirmation flow at all.
+//
+// It exists because the page must not promise "nothing is read before you
+// choose" on a deployment that does not ask: the default read mode still
+// matches topics from the question, and a switch that promised otherwise
+// would make the page lie about what it loads.
+type TopicCapabilityResponse struct {
+	controller.Response
+	Supported bool `json:"supported"`
+}
+
+// TopicCapability reports whether the confirmed flow is wired.
+func TopicCapability(c *gin.Context) {
+	res := new(TopicCapabilityResponse)
+	if _, err := serviceagent.DefaultTopicSuggestionService(); err != nil {
+		// Not an error the user should see as a failure: this deployment does
+		// not ask for confirmation, so the client hides the entry.
+		res.Success()
+		c.JSON(http.StatusOK, res)
+		return
+	}
+	res.Success()
+	res.Supported = true
+	c.JSON(http.StatusOK, res)
+}
+
 type TopicConsentIssueRequest struct {
 	SessionID         string   `json:"sessionId" binding:"required"`
 	Question          string   `json:"question" binding:"required"`

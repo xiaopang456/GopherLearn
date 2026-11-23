@@ -8,13 +8,28 @@ import ComposerBox from '../components/ComposerBox.vue'
 import MessageBubble from '../components/MessageBubble.vue'
 import ServerNotice from '../components/ServerNotice.vue'
 import SessionPanel from '../components/SessionPanel.vue'
+import TopicConsentPanel from '../components/TopicConsentPanel.vue'
 import { useChat } from '../composables/useChat.js'
 import { useMediaQuery } from '../composables/useMediaQuery.js'
+import { useTopicSelection } from '../composables/useTopicSelection.js'
 import { SessionMode } from '../lib/modes.js'
 
 const route = useRoute()
 const router = useRouter()
 const chat = useChat()
+// The read-side confirmation flow lives beside the chat it belongs to: it
+// mints the turn's requestId and hands it to send() only after the ticket.
+const topic = useTopicSelection(chat)
+
+// The entry is offered only where the deployment actually asks: the probe
+// hides it on a read mode that matches topics from the question instead.
+watch(
+  () => chat.isAgentSession.value,
+  (isAgent) => {
+    if (isAgent) topic.refreshCapability()
+  },
+  { immediate: true },
+)
 
 const panelOpen = ref(false)
 const transcript = ref(null)
@@ -238,6 +253,38 @@ function select(id) {
       <p v-if="chat.sendError.value" class="chat__send-error">
         {{ chat.sendError.value }}
       </p>
+      <p v-if="topic.error.value" class="chat__send-error" data-test="topic-error">
+        {{ topic.error.value }}
+      </p>
+
+      <TopicConsentPanel
+        v-if="topic.prompt.value.visible"
+        :prompt="topic.prompt.value"
+        @toggle="topic.toggleSelection"
+        @open-catalogue="topic.openCatalogue"
+        @update:query="topic.setCatalogueQuery"
+        @search="topic.searchCatalogue"
+        @show-all="topic.showAllTopics"
+        @load-more="topic.loadMoreTopics"
+        @confirm="topic.confirmSelection"
+        @skip="topic.skipSelection"
+      />
+
+      <div v-if="chat.isAgentSession.value && topic.capability.value.supported" class="chat__learning-records">
+        <button
+          type="button"
+          class="chat__learning-toggle"
+          :class="{ 'is-active': topic.enabled.value }"
+          :aria-pressed="topic.enabled.value"
+          :disabled="chat.streaming.value || topic.suggesting.value"
+          data-test="learning-records-toggle"
+          title="仅本次问题使用；选择主题前不会读取掌握情况或主题长期记忆"
+          @click="topic.enabled.value = !topic.enabled.value"
+        >
+          使用我的学习记录
+        </button>
+        <span class="chat__learning-hint">仅本次问题使用；选题前不会读取掌握度或主题记忆</span>
+      </div>
 
       <ComposerBox
         v-model="chat.draft.value"
@@ -247,7 +294,7 @@ function select(id) {
         :mode="chat.activeMode.value"
         v-model:knowledge-enabled="chat.knowledgeEnabled.value"
         :can-use-knowledge="chat.canUseKnowledge.value"
-        @submit="chat.send()"
+        @submit="topic.submit()"
         @abort="chat.cancel"
       />
     </section>
@@ -469,5 +516,37 @@ function select(id) {
   .chat__drawer {
     display: none;
   }
+}
+.chat__learning-records {
+  display: flex;
+  align-items: center;
+  gap: var(--gl-space-2);
+  margin: 0 0 var(--gl-space-2);
+}
+
+.chat__learning-toggle {
+  padding: 0.2em 0.7em;
+  border: 1px solid var(--gl-surface-line);
+  border-radius: var(--gl-radius-pill);
+  background: var(--gl-surface);
+  color: var(--gl-ink-soft);
+  cursor: pointer;
+  font-size: var(--gl-text-sm);
+}
+
+.chat__learning-toggle.is-active {
+  border-color: var(--gl-accent-ink);
+  color: var(--gl-accent-ink);
+  background: var(--gl-accent-soft);
+}
+
+.chat__learning-toggle:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.chat__learning-hint {
+  color: var(--gl-ink-faint);
+  font-size: var(--gl-text-xs);
 }
 </style>
