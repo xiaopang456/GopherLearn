@@ -14,11 +14,12 @@ function fakeChat() {
   }
 }
 
-function fakeApi({ suggest, browse, issue } = {}) {
+function fakeApi({ suggest, browse, issue, capability } = {}) {
   return {
     suggestTopics: vi.fn(suggest ?? (async () => ({ status_code: 1000, candidates: [], maxSelectable: 0 }))),
     browseTopicCatalogue: vi.fn(browse ?? (async () => ({ status_code: 1000, candidates: [] }))),
     issueTopicConsent: vi.fn(issue ?? (async () => ({ status_code: 1000, ticket: 'ticket-1' }))),
+    topicConsentCapability: vi.fn(capability ?? (async () => ({ status_code: 1000, supported: true }))),
   }
 }
 
@@ -142,6 +143,78 @@ describe('topic selection flow', () => {
     const suggestion = api.suggestTopics.mock.calls[0][0]
     expect(chat.send).toHaveBeenCalledWith('帮我复习鉴权', null, { requestId: suggestion.requestId })
     expect(api.issueTopicConsent).not.toHaveBeenCalled()
+  })
+
+  it('discards a suggestion response retired by A -> B -> A', async () => {
+    let resolveSuggest
+    const chat = fakeChat()
+    const api = fakeApi({
+      suggest: () => new Promise((resolve) => { resolveSuggest = resolve }),
+    })
+    const flow = useTopicSelection(chat, api)
+    flow.enabled.value = true
+
+    // The suggestion stays in flight; the attempt is retired underneath it.
+    void flow.submit()
+    await flushPromises()
+    const staleRequest = api.suggestTopics.mock.calls[0][0]
+    expect(staleRequest.sessionId).toBe('s1')
+
+    // The learner leaves and comes back: the session id matches again, but the
+    // attempt that asked for this suggestion is retired.
+    chat.activeId.value = 's2'
+    await nextTick()
+    chat.activeId.value = 's1'
+    await nextTick()
+
+    resolveSuggest({ status_code: 1000, maxSelectable: 2, candidates: [{ topicKey: 't1' }] })
+    await flushPromises()
+    // The old panel must not come back, and the old question must not be sent.
+    expect(flow.prompt.value.visible).toBe(false)
+    expect(flow.prompt.value.candidates).toEqual([])
+    expect(chat.send).not.toHaveBeenCalled()
+
+    // A fresh question in the same session starts a new attempt.
+    chat.draft.value = '回来以后的新问题'
+    resolveSuggest = null
+    api.suggestTopics.mockImplementation(async () => ({ status_code: 1000, maxSelectable: 2, candidates: [{ topicKey: 't1' }] }))
+    await flow.submit()
+    expect(flow.prompt.value.visible).toBe(true)
+    expect(api.suggestTopics.mock.calls[1][0].requestId).not.toBe(staleRequest.requestId)
+  })
+
+  it('a retiring suggestion that resolves empty sends nothing', async () => {
+    let resolveSuggest
+    const chat = fakeChat()
+    const api = fakeApi({
+      suggest: () => new Promise((resolve) => { resolveSuggest = resolve }),
+    })
+    const flow = useTopicSelection(chat, api)
+    flow.enabled.value = true
+
+    void flow.submit()
+    await flushPromises()
+    chat.activeId.value = 's2'
+    await nextTick()
+    chat.activeId.value = 's1'
+    await nextTick()
+    resolveSuggest({ status_code: 1000, candidates: [], maxSelectable: 0 })
+    await flushPromises()
+    // An empty answer usually sends the question directly; a retired attempt
+    // must not send it at all.
+    expect(chat.send).not.toHaveBeenCalled()
+    expect(flow.prompt.value.visible).toBe(false)
+  })
+
+  it('does not offer the flow on a deployment that never asks (default read mode)', async () => {
+    const chat = fakeChat()
+    const api = fakeApi({ capability: async () => ({ status_code: 1000, supported: false }) })
+    const flow = useTopicSelection(chat, api)
+    flow.enabled.value = true
+
+    await flow.submit()
+    expect(api.suggestTopics).not.toHaveBeenCalled()
+    expect(chat.send).toHaveBeenCalledTimes(1)
   })
 
   it('offers the flow only on an agent session', async () => {

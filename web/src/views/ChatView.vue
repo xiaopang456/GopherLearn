@@ -21,6 +21,16 @@ const chat = useChat()
 // mints the turn's requestId and hands it to send() only after the ticket.
 const topic = useTopicSelection(chat)
 
+// The entry is offered only where the deployment actually asks: the probe
+// hides it on a read mode that matches topics from the question instead.
+watch(
+  () => chat.isAgentSession.value,
+  (isAgent) => {
+    if (isAgent) topic.refreshCapability()
+  },
+  { immediate: true },
+)
+
 const panelOpen = ref(false)
 const transcript = ref(null)
 
@@ -260,7 +270,7 @@ function select(id) {
         @skip="topic.skipSelection"
       />
 
-      <div v-if="chat.isAgentSession.value" class="chat__learning-records">
+      <div v-if="chat.isAgentSession.value && topic.capability.value.supported" class="chat__learning-records">
         <button
           type="button"
           class="chat__learning-toggle"

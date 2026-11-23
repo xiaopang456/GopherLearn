@@ -21,3 +21,7 @@ export function browseTopicCatalogue(body, signal) {
 export function issueTopicConsent(body, signal) {
   return nativeMemoryRequest(`${TOPIC_BASE}/topic-consent`, { method: 'POST', body, signal })
 }
+
+export function topicConsentCapability(signal) {
+  return nativeMemoryRequest(`${TOPIC_BASE}/topic-consent/capability`, { method: 'GET', signal })
+}

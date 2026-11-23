@@ -1,6 +1,6 @@
 import { computed, ref, watch } from 'vue'
 
-import { browseTopicCatalogue, issueTopicConsent, suggestTopics } from '../api/agentTopics.js'
+import { browseTopicCatalogue, issueTopicConsent, suggestTopics, topicConsentCapability } from '../api/agentTopics.js'
 import { localId } from '../lib/id.js'
 
 const PAGE_SIZE = 20
@@ -46,24 +46,53 @@ function mergeCandidates(existing, incoming) {
  * clears the prompt, and every async continuation compares the prompt's own
  * requestId before it writes anything.
  */
-export function useTopicSelection(chat, api = { suggestTopics, browseTopicCatalogue, issueTopicConsent }) {
+export function useTopicSelection(chat, api = { suggestTopics, browseTopicCatalogue, issueTopicConsent, topicConsentCapability }) {
   const enabled = ref(false)
   const prompt = ref(emptyPrompt())
   const error = ref('')
   const suggesting = ref(false)
+  // Whether this deployment runs the confirmed flow at all. Until the probe
+  // answers, the entry stays hidden: the default read mode still matches
+  // topics from the question, and the page must not promise "nothing is read
+  // before you choose" on a deployment that does not ask.
+  const capability = ref({ supported: false, checked: false })
+  let capabilityPromise = null
+  // One identity per submit attempt. A response may only land if its attempt
+  // is still the current one - a session switch retires it even when the
+  // learner comes back to the same session id (A -> B -> A).
+  let attempt = 0
 
   // A session switch retires the pending question: its requestId, its question
   // and any ticket belong to the session it was asked in.
   watch(
     () => chat.activeId.value,
     () => {
+      attempt += 1
       prompt.value = emptyPrompt()
       error.value = ''
       suggesting.value = false
     },
   )
 
+  async function refreshCapability() {
+    if (capability.value.checked) return capability.value
+    if (capabilityPromise) return capabilityPromise
+    capabilityPromise = (async () => {
+      try {
+        const data = await api.topicConsentCapability()
+        capability.value = { supported: Boolean(data && data.supported === true), checked: true }
+      } catch {
+        // An unreachable probe means "do not offer the flow"; asking still works.
+        capability.value = { supported: false, checked: true }
+      }
+      capabilityPromise = null
+      return capability.value
+    })()
+    return capabilityPromise
+  }
+
   const canOffer = computed(() => chat.isAgentSession.value === true)
+  const offered = computed(() => canOffer.value && capability.value.supported)
 
   async function requestSuggestions(body) {
     try {
@@ -84,17 +113,23 @@ export function useTopicSelection(chat, api = { suggestTopics, browseTopicCatalo
     if (!content || chat.streaming.value) return
     error.value = ''
     // The switch only applies to an agent session; anything else keeps the
-    // ordinary send path.
-    if (!enabled.value || !canOffer.value || !chat.activeId.value) return chat.send()
+    // ordinary send path and never probes.
+    if (!enabled.value || !chat.isAgentSession.value || !chat.activeId.value) return chat.send()
+    // A deployment that does not run the confirmed flow hides the entry; if
+    // the probe has not answered yet, ask once before promising anything.
+    if (!capability.value.checked) await refreshCapability()
+    if (!capability.value.supported) return chat.send()
     const sessionId = chat.activeId.value
     const requestId = localId('send')
+    const attemptToken = ++attempt
     chat.draft.value = ''
     suggesting.value = true
     const suggestion = await requestSuggestions({ sessionId, question: content, requestId })
     suggesting.value = false
-    // The learner may have switched sessions while the suggestion was in
-    // flight; that turn is retired and the question belongs to the old screen.
-    if (chat.activeId.value !== sessionId) return
+    // The response belongs to one attempt only: a switch away retires it, and
+    // so does coming back to the same session (A -> B -> A). A stale
+    // suggestion must neither restore the old panel nor send the old question.
+    if (attemptToken !== attempt || chat.activeId.value !== sessionId) return
     if (!suggestion) return chat.send(content, null, { requestId })
     prompt.value = {
       ...emptyPrompt(),
@@ -215,7 +250,10 @@ export function useTopicSelection(chat, api = { suggestTopics, browseTopicCatalo
     prompt,
     error,
     suggesting,
+    capability,
+    offered,
     canOffer,
+    refreshCapability,
     submit,
     toggleSelection,
     setCatalogueQuery,

@@ -12,6 +12,7 @@ func AgentRouter(r *gin.RouterGroup) {
 	r.POST("/agent/topic-suggestions", controlleragent.TopicSuggestions)
 	r.POST("/agent/topic-catalogue", controlleragent.TopicCatalogue)
 	r.POST("/agent/topic-consent", controlleragent.IssueTopicConsent)
+	r.GET("/agent/topic-consent/capability", controlleragent.TopicCapability)
 	r.POST("/agent/run", controlleragent.Run)
 	r.POST("/agent/run-stream", controlleragent.RunStream)
 	// The read side of a run. A conversation that is opened again shows the

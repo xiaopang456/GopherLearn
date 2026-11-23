@@ -241,6 +241,13 @@ func (s *httpSurface) agentStream(w http.ResponseWriter, r *http.Request, uid in
 			if len(result.Sources) > 0 {
 				payload["sources"] = result.Sources
 			}
+			// The streaming half of the confirmation receipt: the same keys
+			// the synchronous response returns, so a streaming client can
+			// render the line about which of the learner's subjects the
+			// answer used. Empty when the turn confirmed nothing.
+			if len(result.UsedTopicKeys) > 0 {
+				payload["usedTopicKeys"] = append([]string{}, result.UsedTopicKeys...)
+			}
 			publication := "validated_snapshot"
 			if result.Replayed {
 				publication = "replay"
