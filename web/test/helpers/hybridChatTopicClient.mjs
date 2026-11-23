@@ -54,16 +54,6 @@ const settle = async () => {
     return message && message.status === 'done'
   }, 'the answer to be final')
 }
-async function askAndWait(question, expectPanel) {
-  chat.draft.value = question
-  const submit = flow.submit()
-  if (expectPanel) {
-    await waitFor(() => flow.prompt.value.visible, 'the consent panel')
-  }
-  await submit
-  return submit
-}
-
 // Turn 1 — select: one topic confirmed, the answer must carry its receipt.
 flow.enabled.value = true
 chat.draft.value = '请讲讲鉴权里的过期时间校验'
