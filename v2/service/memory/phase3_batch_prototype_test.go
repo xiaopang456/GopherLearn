@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -75,9 +76,33 @@ type heldCandidate struct {
 // merges into. The eval-side adapter maps it to the real governance service.
 type prototypeDraftStore interface {
 	FindByMatter(ctx context.Context, userID int64, scope model.MemoryScope, topicKey, subject string) (*model.MemoryDraft, error)
+	// List returns the pending drafts of the learner - what the session-end
+	// display shows.
+	List(ctx context.Context, userID int64) ([]*model.MemoryDraft, error)
 	Create(ctx context.Context, candidate SessionMemoryCandidate) (*model.MemoryDraft, error)
 	Update(ctx context.Context, draft *model.MemoryDraft, candidate SessionMemoryCandidate) (*model.MemoryDraft, error)
 	Cancel(ctx context.Context, draft *model.MemoryDraft, reason string) error
+}
+
+// DraftDisplayStatus is what the session-end view shows for one draft.
+type DraftDisplayStatus string
+
+const (
+	// DraftReady means the draft rests on judged evidence: it can be confirmed.
+	DraftReady DraftDisplayStatus = "ready"
+	// DraftVerifying means the last batch still holds a judgement for this
+	// matter. The draft is shown with the old content, marked, and not
+	// confirmable - the learner must not confirm a version a late utterance
+	// may already have replaced.
+	DraftVerifying DraftDisplayStatus = "verifying"
+)
+
+// displayedDraft is one row of the session-end display.
+type displayedDraft struct {
+	Draft        *model.MemoryDraft
+	Status       DraftDisplayStatus
+	StatusReason string
+	Confirmable  bool
 }
 
 // batchExtractionPrototype runs the conversation's background batches and the
@@ -93,8 +118,14 @@ type batchExtractionPrototype struct {
 	// draft whose current hash differs can be recognised as learner-edited
 	// even after the held list was flushed.
 	proposed map[string]string
+	// verifying marks the matters whose last batch still holds a judgement
+	// (RetryPending). Their displayed drafts are marked and not confirmable.
+	verifying map[string]string
 	// Notices record the merges that kept a learner-edited draft.
 	Notices []string
+	// Displayed is what the session-end view shows, one row per pending
+	// draft, with the verification status.
+	Displayed []displayedDraft
 }
 
 func matterKey(scope model.MemoryScope, topicKey, subject string) string {
@@ -126,7 +157,19 @@ func (p *batchExtractionPrototype) RunBatch(ctx context.Context, service *Sessio
 	for _, withdrawal := range adapter.withdrawals {
 		p.withdraw(ctx, withdrawal)
 	}
+	// A candidate whose judgement failed is not proposed; its matter is
+	// marked so the session-end view can show the old draft as still being
+	// verified instead of inviting a confirmation of a possibly stale value.
+	for _, pending := range result.RetryPending {
+		if p.verifying == nil {
+			p.verifying = map[string]string{}
+		}
+		p.verifying[matterKey(pending.Scope, pending.TopicKey, pending.Subject)] = "relation judgement pending"
+	}
 	for _, candidate := range result.Proposals {
+		// A judged candidate resolves the matter: whatever was being verified
+		// has a fresh answer now.
+		delete(p.verifying, matterKey(candidate.Scope, candidate.TopicKey, candidate.Subject))
 		p.mergeHeld(ctx, candidate)
 	}
 	p.cursor = result.Cursor.CoveredMessageID
@@ -155,6 +198,7 @@ func (p *batchExtractionPrototype) withdraw(ctx context.Context, withdrawal batc
 	if p.drafts.Cancel(ctx, draft, "withdrawn by learner") == nil {
 		delete(p.proposed, key)
 	}
+	delete(p.verifying, key)
 }
 
 // mergeHeld folds one candidate into the held list: the same matter keeps one
@@ -211,6 +255,12 @@ func (p *batchExtractionPrototype) Finalize(ctx context.Context, service *Sessio
 		if findErr != nil {
 			return result, findErr
 		}
+		if _, pending := p.verifying[key]; pending {
+			// The latest evidence for this matter is still being judged. Do
+			// not create a fresh card, and do not overwrite the old one:
+			// the display marks it instead.
+			continue
+		}
 		if existing == nil {
 			if _, createErr := p.drafts.Create(ctx, candidate); createErr != nil {
 				return result, createErr
@@ -232,6 +282,23 @@ func (p *batchExtractionPrototype) Finalize(ctx context.Context, service *Sessio
 		p.remember(key, newHash)
 	}
 	p.held = nil
+	// The session-end view: every pending draft, with the matters still under
+	// verification marked and held back from confirmation.
+	p.Displayed = p.Displayed[:0]
+	drafts, listErr := p.drafts.List(ctx, p.userID)
+	if listErr != nil {
+		return result, listErr
+	}
+	for _, draft := range drafts {
+		key := matterKey(draft.Scope, draft.TopicKey, draft.Subject)
+		row := displayedDraft{Draft: draft, Status: DraftReady, Confirmable: true}
+		if reason, pending := p.verifying[key]; pending {
+			row.Status = DraftVerifying
+			row.StatusReason = reason
+			row.Confirmable = false
+		}
+		p.Displayed = append(p.Displayed, row)
+	}
 	return result, nil
 }
 
@@ -266,6 +333,14 @@ func newFakeDraftStore() *fakeDraftStore {
 
 func (f *fakeDraftStore) FindByMatter(_ context.Context, _ int64, scope model.MemoryScope, topicKey, subject string) (*model.MemoryDraft, error) {
 	return f.drafts[matterKey(scope, topicKey, subject)], nil
+}
+
+func (f *fakeDraftStore) List(_ context.Context, _ int64) ([]*model.MemoryDraft, error) {
+	result := make([]*model.MemoryDraft, 0, len(f.drafts))
+	for _, draft := range f.drafts {
+		result = append(result, draft)
+	}
+	return result, nil
 }
 
 func (f *fakeDraftStore) Create(_ context.Context, candidate SessionMemoryCandidate) (*model.MemoryDraft, error) {
@@ -490,5 +565,122 @@ func TestBatchPrototypeFinalizeProcessesRemainderOnly(t *testing.T) {
 	}
 	if final.calls != 1 || len(final.inputs) != 1 {
 		t.Fatalf("finalize proposer calls=%d, want exactly one batch over the remainder", final.calls)
+	}
+}
+
+// TestBatchPrototypeLastSentenceNewValueReplacesDisplayedDraft is the late
+// change: the old version was already displayed mid-conversation, and only the
+// last sentence states the new value. The session-end view shows one draft,
+// the new value, and nothing of the old one.
+func TestBatchPrototypeLastSentenceNewValueReplacesDisplayedDraft(t *testing.T) {
+	store := newFakeDraftStore()
+	prototype := &batchExtractionPrototype{userID: 7, sessionID: "S-late-new", drafts: store}
+	first := &scriptedBatchProposer{responses: []batchProposal{{Proposals: []SessionRawProposal{
+		wordCountProposal("每天背 22 个单词。", 3),
+	}}}}
+	if _, err := prototype.Finalize(context.Background(), batchPrototypeService(t), first); err != nil {
+		t.Fatalf("finalize 1: %v", err)
+	}
+	if len(prototype.Displayed) != 1 || prototype.Displayed[0].Status != DraftReady || !prototype.Displayed[0].Confirmable {
+		t.Fatalf("displayed=%+v, want one ready draft", prototype.Displayed)
+	}
+
+	late := newFinalizeService(t, fakeFinalizeBoards{}, fakeFinalizeMessages{messages: append(ext01Messages(),
+		SessionMessage{ID: 12, IsUser: true, Content: "最后改成每天背 37 个。", CreatedAt: finalizeAt(70)})},
+		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil,
+		&scriptedProposer{}, &scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "x"}}, 50)
+	second := &scriptedBatchProposer{responses: []batchProposal{{Proposals: []SessionRawProposal{
+		wordCountProposal("每天背 37 个单词。", 12),
+	}}}}
+	if _, err := prototype.Finalize(context.Background(), late, second); err != nil {
+		t.Fatalf("finalize 2: %v", err)
+	}
+	if len(store.creates) != 1 || len(store.updates) != 1 {
+		t.Fatalf("creates=%d updates=%d, want one card updated in place", len(store.creates), len(store.updates))
+	}
+	if len(prototype.Displayed) != 1 {
+		t.Fatalf("displayed=%d, want one draft after the late change", len(prototype.Displayed))
+	}
+	row := prototype.Displayed[0]
+	if row.Draft.Content != "每天背 37 个单词。" || row.Status != DraftReady || !row.Confirmable {
+		t.Fatalf("displayed=%+v, want the new value ready for confirmation", row)
+	}
+}
+
+// TestBatchPrototypeLastSentenceWithdrawalCancelsDisplayedDraft: the old
+// version was displayed, and the last sentence takes it back. The session-end
+// view has nothing left to confirm for that matter.
+func TestBatchPrototypeLastSentenceWithdrawalCancelsDisplayedDraft(t *testing.T) {
+	store := newFakeDraftStore()
+	prototype := &batchExtractionPrototype{userID: 7, sessionID: "S-late-withdraw", drafts: store}
+	first := &scriptedBatchProposer{responses: []batchProposal{{Proposals: []SessionRawProposal{
+		wordCountProposal("每天背 22 个单词。", 3),
+	}}}}
+	if _, err := prototype.Finalize(context.Background(), batchPrototypeService(t), first); err != nil {
+		t.Fatalf("finalize 1: %v", err)
+	}
+	late := newFinalizeService(t, fakeFinalizeBoards{}, fakeFinalizeMessages{messages: append(ext01Messages(),
+		SessionMessage{ID: 12, IsUser: true, Content: "算了，刚才那条别记了。", CreatedAt: finalizeAt(71)})},
+		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil,
+		&scriptedProposer{}, &scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "x"}}, 50)
+	retract := &scriptedBatchProposer{responses: []batchProposal{{Withdrawals: []batchWithdrawal{{
+		Scope: model.MemoryScopeGlobal, Subject: "背诵目标", EvidenceID: 12,
+	}}}}}
+	if _, err := prototype.Finalize(context.Background(), late, retract); err != nil {
+		t.Fatalf("finalize 2: %v", err)
+	}
+	if len(store.cancels) != 1 {
+		t.Fatalf("cancels=%d, want the displayed draft withdrawn", len(store.cancels))
+	}
+	if len(prototype.Displayed) != 0 {
+		t.Fatalf("displayed=%+v, want nothing left to confirm", prototype.Displayed)
+	}
+}
+
+// TestBatchPrototypeLastBatchVerifyingMarksDisplayedDraft: the old version was
+// displayed, the last sentence states a new value, and the judgement for it is
+// still pending. The view keeps the old content, marks the row verifying and
+// blocks confirmation, so nobody confirms a version the late sentence may have
+// replaced.
+func TestBatchPrototypeLastBatchVerifyingMarksDisplayedDraft(t *testing.T) {
+	store := newFakeDraftStore()
+	prototype := &batchExtractionPrototype{userID: 7, sessionID: "S-late-verify", drafts: store}
+	first := &scriptedBatchProposer{responses: []batchProposal{{Proposals: []SessionRawProposal{
+		wordCountProposal("每天背 22 个单词。", 3),
+	}}}}
+	if _, err := prototype.Finalize(context.Background(), batchPrototypeService(t), first); err != nil {
+		t.Fatalf("finalize 1: %v", err)
+	}
+	old := globalEntry("P-words", "每天背 22 个单词。")
+	late := newFinalizeService(t, fakeFinalizeBoards{}, fakeFinalizeMessages{messages: append(ext01Messages(),
+		SessionMessage{ID: 12, IsUser: true, Content: "最后改成每天背 37 个。", CreatedAt: finalizeAt(72)})},
+		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}},
+		fakeFinalizeGlobalMind{entries: []model.LongTermMemory{old}}, nil,
+		&scriptedProposer{}, &scriptedRelations{err: errors.New("judge unavailable")}, 50)
+	second := &scriptedBatchProposer{responses: []batchProposal{{Proposals: []SessionRawProposal{
+		wordCountProposal("每天背 37 个单词。", 12),
+	}}}}
+	result, err := prototype.Finalize(context.Background(), late, second)
+	if err != nil {
+		t.Fatalf("finalize 2: %v", err)
+	}
+	if len(result.RetryPending) != 1 || result.Cursor.CoveredMessageID != 11 {
+		t.Fatalf("result=%+v, want the judgement pending with the watermark held", result)
+	}
+	if len(store.updates) != 0 {
+		t.Fatalf("updates=%d, want the old content kept while verifying", len(store.updates))
+	}
+	if len(prototype.Displayed) != 1 {
+		t.Fatalf("displayed=%+v, want the old draft shown with a status", prototype.Displayed)
+	}
+	row := prototype.Displayed[0]
+	if row.Draft.Content != "每天背 22 个单词。" {
+		t.Fatalf("displayed content=%q, want the old version", row.Draft.Content)
+	}
+	if row.Status != DraftVerifying || row.Confirmable {
+		t.Fatalf("displayed=%+v, want verifying and not confirmable", row)
+	}
+	if !strings.Contains(row.StatusReason, "judgement pending") {
+		t.Fatalf("status reason=%q", row.StatusReason)
 	}
 }
