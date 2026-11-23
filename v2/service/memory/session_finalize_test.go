@@ -2027,3 +2027,181 @@ func TestFinalizeTopicNamingNeedsAWholeWord(t *testing.T) {
 		t.Fatalf("candidate=%+v, want the declared-unique topic prefilled", unique.Proposals)
 	}
 }
+
+type fakeExistingValues struct {
+	values []SessionExistingValue
+	calls  int
+	texts  []string
+}
+
+func (f *fakeExistingValues) RelevantExistingValues(_ context.Context, _ int64, sessionText string, limit int) ([]SessionExistingValue, error) {
+	f.calls++
+	f.texts = append(f.texts, sessionText)
+	values := f.values
+	if limit < len(values) {
+		values = values[:limit]
+	}
+	return values, nil
+}
+
+// TestFinalizeExtractionRequestCarriesRelevantExistingValues proves the old
+// value reaches the proposer: the request payload carries it as comparison
+// context, the prompt says it is not evidence, and the candidate still passes
+// only on the learner's own words.
+func TestFinalizeExtractionRequestCarriesRelevantExistingValues(t *testing.T) {
+	board := ext01BoardWithPreference(t)
+	call := `{"scope":"global","class":"background","subject":"Go 版本",` +
+		`"proposed_content":"以后都改用 Go 1.23。","durability":"stable",` +
+		`"evidence_ids":[3],"statement_evidence_id":3}`
+	chat := &memoryChat{response: toolMessage(finalizeToolProfile, call)}
+	proposer, err := NewModelSessionProposer(chat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: ext01Messages()},
+		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil,
+		proposer, &scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "x"}}, 0)
+	old := &fakeExistingValues{values: []SessionExistingValue{{
+		ID: "mem-old", Subject: "Go 版本", Content: "当前项目用 Go 1.22。",
+	}}}
+	if err := service.UseExistingValues(old); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-old-context"}})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(result.Proposals) != 1 {
+		t.Fatalf("proposals=%d skipped=%+v", len(result.Proposals), result.Skipped)
+	}
+	if old.calls != 1 || len(old.texts) != 1 || !strings.Contains(old.texts[0], "以后你给我讲新的概念") {
+		t.Fatalf("the source was not asked with the session's own words: calls=%d texts=%v", old.calls, old.texts)
+	}
+	payload := chat.messages[1].Content
+	if !strings.Contains(payload, `"existing_values"`) || !strings.Contains(payload, "当前项目用 Go 1.22。") {
+		t.Fatalf("the old value is missing from the extraction request: %s", payload)
+	}
+	if !strings.Contains(payload, `"mem-old"`) {
+		t.Fatalf("the old value's id is missing from the request")
+	}
+	for _, fragment := range []string{
+		"existing_values are the learner's confirmed current values",
+		"Use them to tell 以后改用新值",
+		"from 只在这次临时调整",
+		"They are not evidence",
+	} {
+		if !strings.Contains(finalizeProposerPrompt, fragment) {
+			t.Fatalf("the comparison rule is missing %q", fragment)
+		}
+	}
+}
+
+// TestFinalizeExistingValuesAreNotEvidence: the old value is context only - a
+// candidate citing a message outside the visible set is still refused, and the
+// old value's own id is not a message id.
+func TestFinalizeExistingValuesAreNotEvidence(t *testing.T) {
+	board := ext01BoardWithPreference(t)
+	fabricated := &memoryChat{response: toolMessage(finalizeToolProfile,
+		`{"scope":"global","class":"background","subject":"Go 版本","proposed_content":"以后都改用 Go 1.23。","durability":"stable","evidence_ids":[99],"statement_evidence_id":99}`)}
+	proposer, err := NewModelSessionProposer(fabricated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: ext01Messages()},
+		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil,
+		proposer, &scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "x"}}, 0)
+	if err := service.UseExistingValues(&fakeExistingValues{values: []SessionExistingValue{{ID: "mem-old", Subject: "Go 版本", Content: "当前项目用 Go 1.22。"}}}); err != nil {
+		t.Fatal(err)
+	}
+	refused, err := service.Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-old-fake"}})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(refused.Proposals) != 0 || len(refused.Skipped) != 1 || refused.Skipped[0].Reason != FinalizeSkipEvidenceMissing {
+		t.Fatalf("proposals=%+v skipped=%+v, want the out-of-set citation refused", refused.Proposals, refused.Skipped)
+	}
+}
+
+// TestFinalizeStandingVersusTemporaryWithOldValue is the dev contrast the old
+// value exists for: with the confirmed old value in the request, the model can
+// tell 以后改用新值 (propose, replacement) from 只在这次临时调整 (no card).
+func TestFinalizeStandingVersusTemporaryWithOldValue(t *testing.T) {
+	board := ext01BoardWithPreference(t)
+	old := &fakeExistingValues{values: []SessionExistingValue{{
+		ID: "mem-old", Subject: "Go 版本", Content: "当前项目用 Go 1.22。",
+	}}}
+	newService := func(chat *memoryChat, relations GlobalRelationResolver, entries []model.LongTermMemory) *SessionFinalizeService {
+		proposer, err := NewModelSessionProposer(chat)
+		if err != nil {
+			t.Fatal(err)
+		}
+		service := newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: ext01Messages()},
+			nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}},
+			fakeFinalizeGlobalMind{entries: entries}, nil, proposer, relations, 0)
+		if err := service.UseExistingValues(old); err != nil {
+			t.Fatal(err)
+		}
+		return service
+	}
+	entry := globalEntry("mem-old", "当前项目用 Go 1.22。")
+	entry.ProfileClass = model.ProfileClassBackground
+
+	// 以后改用新值 → 提议，关系判定给替换。
+	standingCall := `{"scope":"global","class":"background","subject":"Go 版本",` +
+		`"proposed_content":"以后都改用 Go 1.23。","durability":"stable",` +
+		`"evidence_ids":[3],"statement_evidence_id":3}`
+	standingChat := &memoryChat{response: toolMessage(finalizeToolProfile, standingCall)}
+	standing, err := newService(standingChat,
+		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationReplacement, TargetMemoryID: "mem-old", Reason: "standing new value"}},
+		[]model.LongTermMemory{entry}).
+		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-standing"}})
+	if err != nil || len(standing.Proposals) != 1 || standing.Proposals[0].Relation.Relation != GlobalRelationReplacement {
+		t.Fatalf("standing: proposals=%+v err=%v", standing.Proposals, err)
+	}
+	if !strings.Contains(standingChat.messages[1].Content, "当前项目用 Go 1.22。") {
+		t.Fatalf("the old value is missing from the standing request")
+	}
+
+	// 只在这次临时调整 → 模型拒绝 → 零卡（旧值同样在请求里）。
+	temporaryChat := &memoryChat{response: toolMessage(finalizeToolReject, `{"reject_reason":"this time only"}`)}
+	temporary, err := newService(temporaryChat,
+		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "x"}},
+		[]model.LongTermMemory{entry}).
+		Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-temporary"}})
+	if err != nil || len(temporary.Proposals) != 0 || !temporary.ProposerRejected {
+		t.Fatalf("temporary: proposals=%d rejected=%v err=%v", len(temporary.Proposals), temporary.ProposerRejected, err)
+	}
+	if !strings.Contains(temporaryChat.messages[1].Content, "当前项目用 Go 1.22。") {
+		t.Fatalf("the old value is missing from the temporary request")
+	}
+}
+
+// TestSelectRelevantExistingValuesBoundedByTags keeps the context small and
+// relevant: only confirmed active values sharing the session's tags are
+// selected, and the list is bounded.
+func TestSelectRelevantExistingValuesBoundedByTags(t *testing.T) {
+	goEntry := globalEntry("m-go", "当前项目用 Go 1.22。")
+	goEntry.Tags = model.StringList{"go"}
+	redisEntry := globalEntry("m-redis", "Redis 用 7.2。")
+	redisEntry.Tags = model.StringList{"redis"}
+	unconfirmed := globalEntry("m-unconfirmed", "以前用 Go 1.20。")
+	unconfirmed.Tags = model.StringList{"go"}
+	unconfirmed.UserConfirmed = false
+	untagged := globalEntry("m-untagged", "示例代码用 Go 1.19。")
+	untagged.Tags = nil
+
+	selected := selectRelevantExistingValues(
+		[]model.LongTermMemory{goEntry, redisEntry, unconfirmed, untagged},
+		"以后都改用 Go 1.23。", 5)
+	if len(selected) != 1 || selected[0].ID != "m-go" {
+		t.Fatalf("selected=%+v, want only the confirmed go value", selected)
+	}
+	bounded := selectRelevantExistingValues(
+		[]model.LongTermMemory{goEntry, redisEntry}, "以后都改用 Go 1.23。", 1)
+	if len(bounded) != 1 || bounded[0].ID != "m-go" {
+		t.Fatalf("bounded=%+v, want the limit enforced", bounded)
+	}
+	if none := selectRelevantExistingValues([]model.LongTermMemory{redisEntry}, "今天天气不错。", 5); len(none) != 0 {
+		t.Fatalf("none=%+v, want no unrelated context", none)
+	}
+}

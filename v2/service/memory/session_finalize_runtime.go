@@ -133,6 +133,35 @@ func (s *SessionMessageSource) LoadSessionMessagesByID(ctx context.Context, user
 	return messages, nil
 }
 
+// MemoryExistingValueSource selects the confirmed global values whose tags
+// match the session's own words. It is the production implementation of the
+// comparison context: bounded, deterministic, and never the whole profile.
+type MemoryExistingValueSource struct {
+	repository *memoryDAO.Repository
+	limit      int
+}
+
+func NewMemoryExistingValueSource(repository *memoryDAO.Repository, limit int) (*MemoryExistingValueSource, error) {
+	if repository == nil {
+		return nil, fmt.Errorf("existing value source requires the memory repository")
+	}
+	if limit < 1 || limit > 20 {
+		limit = 5
+	}
+	return &MemoryExistingValueSource{repository: repository, limit: limit}, nil
+}
+
+func (s *MemoryExistingValueSource) RelevantExistingValues(ctx context.Context, userID int64, sessionText string, limit int) ([]SessionExistingValue, error) {
+	if limit < 1 || limit > s.limit {
+		limit = s.limit
+	}
+	rows, err := s.repository.ListAllActive(ctx, userID, model.MemoryScopeGlobal, 0, GlobalMemoryHardLimit+1)
+	if err != nil {
+		return nil, err
+	}
+	return selectRelevantExistingValues(rows, sessionText, limit), nil
+}
+
 // SessionTopicCatalogue adapts the shared topic catalogue: the same derived
 // list the memory page shows, quiz progress and existing topic notes.
 type SessionTopicCatalogue struct {
@@ -437,6 +466,16 @@ func BuildSessionFinalizeService(
 			return nil, err
 		}
 	}
+	// The comparison context: a small set of confirmed old values selected
+	// from the session's own words, so the proposer can tell a new standing
+	// value from a one-off adjustment.
+	existingValues, err := NewMemoryExistingValueSource(memoryRepository, 5)
+	if err != nil {
+		return nil, err
+	}
+	if err := service.UseExistingValues(existingValues); err != nil {
+		return nil, err
+	}
 	return service, nil
 }
 
@@ -488,6 +527,7 @@ Candidate boundaries, checked by evaluation:
 - An instruction about the memory-proposal process itself - 不要再问我"要不要记"、不用再确认、别再问这类话 - is a session directive, not a durable preference about learning. Do not propose it as a candidate and do not fold it into another candidate's body.
 - Separate a one-off operation from a new standing configuration. An instruction scoped to this operation only - 这次、这单、本条先、先这样 - is not durable and is not proposed. A configuration the learner adopts from now on - 以后都、从此、默认改成 - is a durable new value and belongs in a candidate; the relationship judgement decides whether it replaces the older value. A statement that the environment, project or tooling has changed and future work should follow it (升级到…以后都…/以后示例都按…写) is a new standing configuration: propose it, and never reject it as a temporary instruction.
 - Never reject a statement because it resembles something already known. A restatement of a preference is still a candidate; the relationship judgement decides whether it is a duplicate. Rejecting it yourself would skip that judgement and silently drop the learner's words.
+- existing_values are the learner's confirmed current values, shown for comparison only. Use them to tell 以后改用新值 (the learner adopts a new standing value - propose it) from 只在这次临时调整 (a one-off adjustment - reject it). They are not evidence: never cite them, and every candidate must cite the learner's own message ids.
 
 remember_profile is a fact about the learner across topics: a study goal (class goal), background (background), a teaching preference (teaching_preference), or a standing constraint (constraint).
 remember_topic_note is the learner's own understanding of one technical topic: an analogy, a confusion, a pitfall, or their personal wording (kind understanding), or what they say they know (kind self_report). Reuse a topic key from the catalogue only when exactly one clearly applies, and set topic_unique=true for that answer. When several topics could plausibly hold the note and the learner did not name one, leave topic_key empty and topic_unique=false: the learner chooses the topic, and the note is compared with old memories in its final topic only after that choice. Leave it empty when none fits as well.
@@ -515,9 +555,10 @@ func (p *ModelSessionProposer) Propose(ctx context.Context, input *SessionExtrac
 		return nil, fmt.Errorf("bind finalize extraction tools: %w", err)
 	}
 	payload, err := json.Marshal(map[string]any{
-		"board":    renderFinalizeBoard(input.Board),
-		"messages": finalizeVisibleMessages(input.Visible),
-		"topics":   finalizeTopicCatalogue(input.Topics),
+		"board":           renderFinalizeBoard(input.Board),
+		"messages":        finalizeVisibleMessages(input.Visible),
+		"topics":          finalizeTopicCatalogue(input.Topics),
+		"existing_values": finalizeExistingValues(input.ExistingValues),
 	})
 	if err != nil {
 		return nil, err
@@ -708,6 +749,19 @@ func finalizeVisibleMessages(visible map[uint]SessionMessage) []map[string]any {
 		}
 		result = append(result, map[string]any{
 			"id": id, "role": role, "text": message.Content, "time": message.CreatedAt.Format(time.RFC3339),
+		})
+	}
+	return result
+}
+
+func finalizeExistingValues(values []SessionExistingValue) []map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make([]map[string]string, 0, len(values))
+	for _, value := range values {
+		result = append(result, map[string]string{
+			"id": value.ID, "subject": value.Subject, "content": value.Content,
 		})
 	}
 	return result

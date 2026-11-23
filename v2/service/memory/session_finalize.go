@@ -176,6 +176,21 @@ type SessionExtractionInput struct {
 	// Topics is the learner's topic catalogue, for the proposer to reuse a
 	// key from. It carries no memory content and no scores.
 	Topics []Topic
+	// ExistingValues are the learner's confirmed current values that look
+	// directly relevant to this session - a small bounded set. They are
+	// context for one question only: does the new statement replace the old
+	// value from now on, or adjust it for this one time? They are not
+	// evidence: every candidate still has to cite the learner's own messages,
+	// and only the learner's confirmation writes anything.
+	ExistingValues []SessionExistingValue
+}
+
+// SessionExistingValue is one confirmed current value shown to the proposer
+// for comparison. It carries no message ids and cannot be cited as evidence.
+type SessionExistingValue struct {
+	ID      string
+	Subject string
+	Content string
 }
 
 // SessionRawProposal is one candidate as the proposer returned it, before
@@ -251,6 +266,12 @@ type SessionFinalizeService struct {
 	// the input stays a bounded cost. The number is an implementation
 	// parameter of this round and is recorded in the batch report.
 	RecentMessageWindow int
+	// existingValues supplies the bounded confirmed values the proposer sees
+	// as comparison context. Optional: without it the extraction request
+	// carries no old values.
+	existingValues FinalizeExistingValueSource
+	// ExistingValueLimit bounds how many old values reach one request.
+	ExistingValueLimit int
 	// RelationTargets is how many in-range active entries one relation
 	// judgement may be given. Only entries related to the candidate should
 	// travel to the real model; until that filter exists the range is the
@@ -298,6 +319,14 @@ type FinalizeFingerprintSource interface {
 	KnownCandidateFingerprints(ctx context.Context, userID int64, sessionID string) (map[string]struct{}, error)
 }
 
+// FinalizeExistingValueSource selects a small bounded set of the learner's
+// confirmed current values that are directly relevant to the session's own
+// words. Relevance is the source's business; the extraction only needs a
+// short list to compare a new statement against.
+type FinalizeExistingValueSource interface {
+	RelevantExistingValues(ctx context.Context, userID int64, sessionText string, limit int) ([]SessionExistingValue, error)
+}
+
 // FinalizeTopicEntrySource lists the active topic notes of one topic. The
 // production adapter wraps the explicit repository the same way the global
 // snapshot source wraps its own queries.
@@ -327,8 +356,19 @@ func NewSessionFinalizeService(
 		proposer: proposer, relations: relations,
 		now:                 func() time.Time { return time.Now() },
 		RecentMessageWindow: 50,
+		ExistingValueLimit:  5,
 		RelationTargets:     10,
 	}, nil
+}
+
+// UseExistingValues attaches the source of the confirmed old values shown to
+// the proposer as comparison context.
+func (s *SessionFinalizeService) UseExistingValues(source FinalizeExistingValueSource) error {
+	if source == nil {
+		return fmt.Errorf("existing value source is required")
+	}
+	s.existingValues = source
+	return nil
 }
 
 // UseTopicRelations attaches the topic-scope semantic judgement. It is the
@@ -607,6 +647,14 @@ func (s *SessionFinalizeService) Extract(ctx context.Context, request FinalizeRe
 		Board:   board,
 		Visible: visibleMessages(clue, unprocessed, s.RecentMessageWindow),
 		Topics:  s.loadTopics(ctx, request.UserID),
+	}
+	// A small set of confirmed current values, selected from the session's own
+	// words, so the proposer can tell a new standing value from a one-off
+	// adjustment. Losing this context degrades the judgement, not the run.
+	if s.existingValues != nil {
+		if values, valueErr := s.existingValues.RelevantExistingValues(ctx, request.UserID, sessionText(input.Visible), s.ExistingValueLimit); valueErr == nil {
+			input.ExistingValues = values
+		}
 	}
 
 	known, err := s.known.KnownCandidateFingerprints(ctx, request.UserID, sessionID)
@@ -1112,6 +1160,71 @@ func (s *SessionFinalizeService) buildCandidate(userID int64, coverage FinalizeC
 	}
 	candidate.Fingerprint = CandidateFingerprint(candidate.UserID, coverage.SessionID, candidate.Scope, candidate.TopicKey, candidate.Subject, candidate.Content)
 	return candidate
+}
+
+// sessionText joins the learner's own visible words for relevance selection.
+func sessionText(visible map[uint]SessionMessage) string {
+	ids := make([]uint, 0, len(visible))
+	for id, message := range visible {
+		if message.IsUser {
+			ids = append(ids, id)
+		}
+	}
+	sort.Slice(ids, func(left, right int) bool { return ids[left] < ids[right] })
+	var builder strings.Builder
+	for _, id := range ids {
+		builder.WriteString(visible[id].Content)
+		builder.WriteString("\n")
+	}
+	return builder.String()
+}
+
+// selectRelevantExistingValues picks the confirmed values that share the
+// session's own tags - a bounded, deterministic relevance. Entries without a
+// tag match are left out: the context is supposed to be a short list of
+// directly related old values, not the whole profile.
+func selectRelevantExistingValues(rows []model.LongTermMemory, sessionText string, limit int) []SessionExistingValue {
+	if limit < 1 {
+		return nil
+	}
+	wanted := GenerateQueryTags(sessionText, "")
+	if len(wanted) == 0 {
+		return nil
+	}
+	type scored struct {
+		value SessionExistingValue
+		score int
+	}
+	candidates := make([]scored, 0, len(rows))
+	for _, row := range rows {
+		if !row.UserConfirmed || row.Status != model.LongTermMemoryActive {
+			continue
+		}
+		score := 0
+		for _, tag := range row.Tags {
+			for _, want := range wanted {
+				if tag == want {
+					score++
+				}
+			}
+		}
+		if score == 0 {
+			continue
+		}
+		candidates = append(candidates, scored{
+			value: SessionExistingValue{ID: row.ID, Subject: row.Subject, Content: row.Content},
+			score: score,
+		})
+	}
+	sort.SliceStable(candidates, func(left, right int) bool { return candidates[left].score > candidates[right].score })
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	values := make([]SessionExistingValue, 0, len(candidates))
+	for _, candidate := range candidates {
+		values = append(values, candidate.value)
+	}
+	return values
 }
 
 // topicNamedInEvidence reports whether the learner named the topic in the
