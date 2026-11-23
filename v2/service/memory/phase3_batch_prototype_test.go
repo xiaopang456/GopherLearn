@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"GopherAI/model"
 )
@@ -126,6 +128,11 @@ type batchExtractionPrototype struct {
 	// Displayed is what the session-end view shows, one row per pending
 	// draft, with the verification status.
 	Displayed []displayedDraft
+	// tailPending says the session still has unprocessed messages. Until the
+	// tail batch answers, every draft of this session may be affected, so the
+	// display marks them all - there is no way to know which one the tail
+	// will change.
+	tailPending bool
 }
 
 func matterKey(scope model.MemoryScope, topicKey, subject string) string {
@@ -241,11 +248,59 @@ func (p *batchExtractionPrototype) mergeHeld(ctx context.Context, candidate Sess
 // candidate through the draft flow in one pass. Merging respects learner edits:
 // a draft whose content differs from what the pipeline last proposed is kept,
 // and a notice records that new evidence arrived.
-func (p *batchExtractionPrototype) Finalize(ctx context.Context, service *SessionFinalizeService, proposer batchProposer) (FinalizeResult, error) {
+// Publish is the leave-time step: it publishes every draft that is ready,
+// without waiting for the tail batch. If the session still has unprocessed
+// messages, their effect is unknown, so every draft of this session is marked
+// verifying and held back from confirmation until the tail settles.
+func (p *batchExtractionPrototype) Publish(ctx context.Context, service *SessionFinalizeService) ([]displayedDraft, error) {
+	if err := p.flushHeld(ctx); err != nil {
+		return nil, err
+	}
+	pending, err := service.messages.LoadUnprocessedMessages(ctx, p.userID, p.sessionID, p.cursor)
+	if err != nil {
+		return nil, err
+	}
+	p.tailPending = len(pending) > 0
+	return p.refreshDisplayed(ctx)
+}
+
+// RunTailBatch is the background step: it processes only the remaining
+// messages, then applies whatever they changed - update in place, withdraw, or
+// open confirmation - and refreshes the display. While it is running the
+// published list stays readable, with the affected drafts still marked.
+func (p *batchExtractionPrototype) RunTailBatch(ctx context.Context, service *SessionFinalizeService, proposer batchProposer) (FinalizeResult, error) {
 	result, err := p.RunBatch(ctx, service, proposer)
 	if err != nil {
 		return result, err
 	}
+	if err := p.flushHeld(ctx); err != nil {
+		return result, err
+	}
+	// Recompute the tail: a judgement that stayed pending keeps the watermark
+	// held and the drafts marked; a completed tail opens confirmation.
+	pending, loadErr := service.messages.LoadUnprocessedMessages(ctx, p.userID, p.sessionID, p.cursor)
+	if loadErr != nil {
+		return result, loadErr
+	}
+	p.tailPending = len(pending) > 0
+	if _, refreshErr := p.refreshDisplayed(ctx); refreshErr != nil {
+		return result, refreshErr
+	}
+	return result, nil
+}
+
+// Finalize is the two steps in order, for callers that do not publish early.
+func (p *batchExtractionPrototype) Finalize(ctx context.Context, service *SessionFinalizeService, proposer batchProposer) (FinalizeResult, error) {
+	if _, err := p.Publish(ctx, service); err != nil {
+		return FinalizeResult{}, err
+	}
+	return p.RunTailBatch(ctx, service, proposer)
+}
+
+// flushHeld folds the held candidates into the drafts. Matters still under
+// verification keep their old content; learner-edited drafts keep the
+// learner's content and raise the notice.
+func (p *batchExtractionPrototype) flushHeld(ctx context.Context) error {
 	for i := range p.held {
 		held := &p.held[i]
 		candidate := held.Candidate
@@ -253,17 +308,16 @@ func (p *batchExtractionPrototype) Finalize(ctx context.Context, service *Sessio
 		newHash := model.MemoryContentHash(candidate.Content)
 		existing, findErr := p.drafts.FindByMatter(ctx, p.userID, candidate.Scope, candidate.TopicKey, candidate.Subject)
 		if findErr != nil {
-			return result, findErr
+			return findErr
 		}
 		if _, pending := p.verifying[key]; pending {
 			// The latest evidence for this matter is still being judged. Do
-			// not create a fresh card, and do not overwrite the old one:
-			// the display marks it instead.
+			// not create a fresh card, and do not overwrite the old one.
 			continue
 		}
 		if existing == nil {
 			if _, createErr := p.drafts.Create(ctx, candidate); createErr != nil {
-				return result, createErr
+				return createErr
 			}
 			p.remember(key, newHash)
 			continue
@@ -277,29 +331,41 @@ func (p *batchExtractionPrototype) Finalize(ctx context.Context, service *Sessio
 			continue
 		}
 		if _, updateErr := p.drafts.Update(ctx, existing, candidate); updateErr != nil {
-			return result, updateErr
+			return updateErr
 		}
 		p.remember(key, newHash)
 	}
 	p.held = nil
-	// The session-end view: every pending draft, with the matters still under
-	// verification marked and held back from confirmation.
+	return nil
+}
+
+// refreshDisplayed rebuilds the session-end view: one row per pending draft,
+// marked verifying while its matter is being judged or while the tail messages
+// are still unprocessed.
+func (p *batchExtractionPrototype) refreshDisplayed(ctx context.Context) ([]displayedDraft, error) {
 	p.Displayed = p.Displayed[:0]
 	drafts, listErr := p.drafts.List(ctx, p.userID)
 	if listErr != nil {
-		return result, listErr
+		return nil, listErr
 	}
 	for _, draft := range drafts {
 		key := matterKey(draft.Scope, draft.TopicKey, draft.Subject)
 		row := displayedDraft{Draft: draft, Status: DraftReady, Confirmable: true}
-		if reason, pending := p.verifying[key]; pending {
+		switch {
+		case p.verifying[key] != "":
 			row.Status = DraftVerifying
-			row.StatusReason = reason
+			row.StatusReason = p.verifying[key]
+			row.Confirmable = false
+		case p.tailPending:
+			// The tail may affect any draft of this session and the batch has
+			// not answered yet, so none of them is confirmable.
+			row.Status = DraftVerifying
+			row.StatusReason = "tail messages pending"
 			row.Confirmable = false
 		}
 		p.Displayed = append(p.Displayed, row)
 	}
-	return result, nil
+	return p.Displayed, nil
 }
 
 // ---- 零付费测试（脚本替身 + 内存草稿存储） ----
@@ -682,5 +748,137 @@ func TestBatchPrototypeLastBatchVerifyingMarksDisplayedDraft(t *testing.T) {
 	}
 	if !strings.Contains(row.StatusReason, "judgement pending") {
 		t.Fatalf("status reason=%q", row.StatusReason)
+	}
+}
+
+// gatedBatchProposer blocks the tail batch's model response until the test
+// releases it, so the published list can be inspected while the judgement is
+// still in flight.
+type gatedBatchProposer struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+	result  batchProposal
+}
+
+func (g *gatedBatchProposer) ProposeBatch(ctx context.Context, _ *SessionExtractionInput) (batchProposal, error) {
+	g.once.Do(func() { close(g.started) })
+	select {
+	case <-g.release:
+		return g.result, nil
+	case <-ctx.Done():
+		return batchProposal{}, ctx.Err()
+	}
+}
+
+// TestBatchPrototypePublishBeforeTailBatch is the deterministic split test:
+// leaving publishes the ready drafts first; the tail batch then runs in the
+// background against a blocked model. While it is blocked the list is already
+// readable and the old value is not confirmable; releasing it applies the
+// late change - or the late withdrawal - in place.
+func TestBatchPrototypePublishBeforeTailBatch(t *testing.T) {
+	store := newFakeDraftStore()
+	prototype := &batchExtractionPrototype{userID: 7, sessionID: "S-publish-tail", drafts: store}
+	service := batchPrototypeService(t)
+
+	// 对话中途：旧值已进 held 并在离开时发布为可确认草稿。
+	first := &scriptedBatchProposer{responses: []batchProposal{{Proposals: []SessionRawProposal{
+		wordCountProposal("每天背 22 个单词。", 3),
+	}}}}
+	if _, err := prototype.RunBatch(context.Background(), service, first); err != nil {
+		t.Fatalf("batch 1: %v", err)
+	}
+	if _, err := prototype.Publish(context.Background(), service); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if len(prototype.Displayed) != 1 || prototype.Displayed[0].Status != DraftReady || !prototype.Displayed[0].Confirmable {
+		t.Fatalf("displayed=%+v, want the old draft ready before the tail exists", prototype.Displayed)
+	}
+
+	// 尾部新值 37：离开时发布——还不知道影响哪一条，先标本会话草稿。
+	messages := append(ext01Messages(), SessionMessage{ID: 12, IsUser: true,
+		Content: "最后改成每天背 37 个。", CreatedAt: finalizeAt(80)})
+	tailService := newFinalizeService(t, fakeFinalizeBoards{}, fakeFinalizeMessages{messages: messages},
+		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil,
+		&scriptedProposer{}, &scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "x"}}, 50)
+	if _, err := prototype.Publish(context.Background(), tailService); err != nil {
+		t.Fatalf("publish with tail: %v", err)
+	}
+	if len(prototype.Displayed) != 1 {
+		t.Fatalf("displayed=%d, want the published list readable", len(prototype.Displayed))
+	}
+	row := prototype.Displayed[0]
+	if row.Status != DraftVerifying || row.Confirmable || row.Draft.Content != "每天背 22 个单词。" {
+		t.Fatalf("displayed=%+v, want the old value readable but not confirmable", row)
+	}
+	if !strings.Contains(row.StatusReason, "tail messages pending") {
+		t.Fatalf("status reason=%q", row.StatusReason)
+	}
+
+	// 后台核对：卡住模型响应，列表仍可读、旧值仍不可确认。
+	gate := &gatedBatchProposer{started: make(chan struct{}), release: make(chan struct{}),
+		result: batchProposal{Proposals: []SessionRawProposal{wordCountProposal("每天背 37 个单词。", 12)}}}
+	done := make(chan error, 1)
+	go func() {
+		_, err := prototype.RunTailBatch(context.Background(), tailService, gate)
+		done <- err
+	}()
+	select {
+	case <-gate.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the tail batch never reached the model")
+	}
+	if len(prototype.Displayed) != 1 || prototype.Displayed[0].Status != DraftVerifying ||
+		prototype.Displayed[0].Confirmable || prototype.Displayed[0].Draft.Content != "每天背 22 个单词。" {
+		t.Fatalf("displayed=%+v while blocked, want the old value still readable and not confirmable", prototype.Displayed)
+	}
+	close(gate.release)
+	if err := <-done; err != nil {
+		t.Fatalf("tail batch: %v", err)
+	}
+	// 放行后：改口生效、原位更新、开放确认。
+	if len(prototype.Displayed) != 1 || prototype.Displayed[0].Status != DraftReady || !prototype.Displayed[0].Confirmable {
+		t.Fatalf("displayed=%+v after release, want the new value ready", prototype.Displayed)
+	}
+	if prototype.Displayed[0].Draft.Content != "每天背 37 个单词。" {
+		t.Fatalf("draft=%q after release, want the late value in place", prototype.Displayed[0].Draft.Content)
+	}
+
+	// 撤回对照：再追加一句撤回，同样的门控——放行后草稿取消、列表清空。
+	retractMessages := append(messages, SessionMessage{ID: 13, IsUser: true,
+		Content: "算了，刚才那条别记了。", CreatedAt: finalizeAt(81)})
+	retractService := newFinalizeService(t, fakeFinalizeBoards{}, fakeFinalizeMessages{messages: retractMessages},
+		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil,
+		&scriptedProposer{}, &scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "x"}}, 50)
+	if _, err := prototype.Publish(context.Background(), retractService); err != nil {
+		t.Fatalf("publish before withdrawal: %v", err)
+	}
+	if len(prototype.Displayed) != 1 || prototype.Displayed[0].Confirmable {
+		t.Fatalf("displayed=%+v, want the draft readable but not confirmable before withdrawal", prototype.Displayed)
+	}
+	withdrawGate := &gatedBatchProposer{started: make(chan struct{}), release: make(chan struct{}),
+		result: batchProposal{Withdrawals: []batchWithdrawal{{Scope: model.MemoryScopeGlobal, Subject: "背诵目标", EvidenceID: 13}}}}
+	withdrawDone := make(chan error, 1)
+	go func() {
+		_, err := prototype.RunTailBatch(context.Background(), retractService, withdrawGate)
+		withdrawDone <- err
+	}()
+	select {
+	case <-withdrawGate.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the withdrawal tail batch never reached the model")
+	}
+	if len(prototype.Displayed) != 1 || prototype.Displayed[0].Confirmable {
+		t.Fatalf("displayed=%+v while the withdrawal is blocked, want it still not confirmable", prototype.Displayed)
+	}
+	close(withdrawGate.release)
+	if err := <-withdrawDone; err != nil {
+		t.Fatalf("withdrawal tail batch: %v", err)
+	}
+	if len(store.cancels) != 1 {
+		t.Fatalf("cancels=%d, want the withdrawn draft cancelled", len(store.cancels))
+	}
+	if len(prototype.Displayed) != 0 {
+		t.Fatalf("displayed=%+v after withdrawal, want nothing left to confirm", prototype.Displayed)
 	}
 }
