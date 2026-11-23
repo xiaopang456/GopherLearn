@@ -53,7 +53,7 @@ Both sides carry profile_class: the proposal is judged against the memories of i
 
 Use conflict when one supplied memory is:
 - duplicate: the proposal expresses the same durable meaning for the same applicability scope as that memory - the same situations, the same instruction. Different wording, a different example or a different order never makes it distinct; judge the meaning, not the phrasing. For example, 讲新概念时先举例再讲定义 and 讲新东西先用熟悉的例子再给定义 are duplicate.
-- replacement: a different current value/rule that should replace the older one;
+- replacement: the proposal states a different current value for the same matter - a version, a number, a setting, a date - and should replace the older one. A new value is never a duplicate; duplicate is the same value said again. For example, 当前项目用 Go 1.22 and 当前项目用 Go 1.23 are replacement, not duplicate;
 - complementary: overlapping meaning with additional compatible detail that the user should consciously keep separate or replace.
 
 Use independent only when the proposal applies to a genuinely different scope than the memory (for example 讲授新概念 vs 排查报错), or expresses a distinct durable fact or preference that can coexist without ambiguity.
