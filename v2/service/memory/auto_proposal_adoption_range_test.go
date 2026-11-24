@@ -267,7 +267,7 @@ func TestAutoProposalAdoptionSelectsTheCitedProposal(t *testing.T) {
 	document := model.SessionWhiteboardDocument{
 		SchemaVersion: model.SessionWhiteboardSchemaV3,
 		OpenItems: []model.SessionWhiteboardEntry{{
-			Key: "redis-version", Text: "保留 Redis 7.2", Value: "7.2",
+			Key: "redis-version", Text: "保留 Redis 7.2。", Value: "7.2",
 			SourceMessageIDs: []uint{3, 4}, Origin: model.SessionWhiteboardOriginAssistantAccepted, UpdatedAtMessageID: 4,
 		}},
 	}
@@ -312,7 +312,7 @@ func TestAutoProposalAdoptionDraftValueMustMatchTheAcceptedRecord(t *testing.T) 
 	document := model.SessionWhiteboardDocument{
 		SchemaVersion: model.SessionWhiteboardSchemaV3,
 		OpenItems: []model.SessionWhiteboardEntry{{
-			Key: "redis-version", Text: "保留 Redis 7.2", Value: "7.2",
+			Key: "redis-version", Text: "保留 Redis 7.2。", Value: "7.2",
 			SourceMessageIDs: []uint{3, 4}, Origin: model.SessionWhiteboardOriginAssistantAccepted, UpdatedAtMessageID: 4,
 		}},
 	}
@@ -367,8 +367,8 @@ func TestAutoProposalAdoptionAmbiguousBoardListDoesNotPair(t *testing.T) {
 		}
 		return marshalFinalizeBoard(t, document)
 	}
-	ambiguousBoard := entry([]uint{2, 3, 4}, "保留 Redis 7.2", "7.2")
-	uniqueBoard := entry([]uint{3, 4}, "保留 Redis 7.2", "7.2")
+	ambiguousBoard := entry([]uint{2, 3, 4}, "保留 Redis 7.2。", "7.2")
+	uniqueBoard := entry([]uint{3, 4}, "保留 Redis 7.2。", "7.2")
 	extract := func(board string, assistantID uint, content string) FinalizeResult {
 		service := newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: messages},
 			nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil,
@@ -403,6 +403,88 @@ func TestAutoProposalAdoptionAmbiguousBoardListDoesNotPair(t *testing.T) {
 	right := extract(uniqueBoard, 3, "保留 Redis 7.2。")
 	if len(right.Proposals) != 1 || right.Proposals[0].Content != "保留 Redis 7.2。" {
 		t.Fatalf("proposals=%+v, want the unique-pair card", right.Proposals)
+	}
+}
+
+// 反例：白板只确认「线上保留 Redis 7.2」，模型草稿加了「同时禁用持久化」。
+// 数字没变，但新增条件不是用户采纳的内容：卡片正文必须用白板条目原文。
+func TestAutoProposalAdoptionAddedConditionDoesNotEnterTheCard(t *testing.T) {
+	at := time.Date(2026, 11, 24, 20, 1, 0, 0, time.FixedZone("CST", 8*3600))
+	messages := []SessionMessage{
+		{ID: 1, IsUser: true, Content: "线上 Redis 版本怎么定？", CreatedAt: at},
+		{ID: 2, IsUser: false, Content: "建议线上保留 Redis 7.2。", CreatedAt: at.Add(time.Minute)},
+		{ID: 3, IsUser: true, Content: "就按你说的方案。", CreatedAt: at.Add(2 * time.Minute)},
+	}
+	document := model.SessionWhiteboardDocument{
+		SchemaVersion: model.SessionWhiteboardSchemaV3,
+		OpenItems: []model.SessionWhiteboardEntry{{
+			Key: "redis-version", Text: "线上保留 Redis 7.2", Value: "7.2",
+			SourceMessageIDs: []uint{2, 3}, Origin: model.SessionWhiteboardOriginAssistantAccepted, UpdatedAtMessageID: 3,
+		}},
+	}
+	board := marshalFinalizeBoard(t, document)
+	service := newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: messages},
+		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil,
+		&scriptedProposer{proposals: []SessionRawProposal{{
+			Scope: model.MemoryScopeGlobal, Class: model.ProfileClassConstraint, Subject: "Redis 版本",
+			Durability: model.MemoryDurabilityStable, Content: "线上保留 Redis 7.2，同时禁用持久化。",
+			EvidenceIDs: []uint{3}, StatementEvidenceID: 3, AssistantIDs: []uint{2},
+		}}},
+		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "no related entries"}}, 10)
+	result, err := service.Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-dev-added-condition"}})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(result.Proposals) != 1 {
+		t.Fatalf("proposals=%+v skipped=%+v, want the adopted record card", result.Proposals, result.Skipped)
+	}
+	content := result.Proposals[0].Content
+	if content != "线上保留 Redis 7.2" {
+		t.Fatalf("content=%q, want the confirmed record text", content)
+	}
+	if strings.Contains(content, "禁用持久化") {
+		t.Fatalf("content=%q, want the unadopted condition kept out", content)
+	}
+}
+
+// 反例：白板确认「先举例、再讲定义」，草稿改成「不要先举例，先讲定义」。
+// 字符仍然相似，但偏好反转；正文必须用白板条目原文。
+func TestAutoProposalAdoptionInvertedPreferenceDoesNotEnterTheCard(t *testing.T) {
+	at := time.Date(2026, 11, 24, 20, 1, 0, 0, time.FixedZone("CST", 8*3600))
+	messages := []SessionMessage{
+		{ID: 1, IsUser: true, Content: "讲新概念时怎么安排顺序？", CreatedAt: at},
+		{ID: 2, IsUser: false, Content: "建议讲新概念时先举例、再讲定义。", CreatedAt: at.Add(time.Minute)},
+		{ID: 3, IsUser: true, Content: "就按你说的来。", CreatedAt: at.Add(2 * time.Minute)},
+	}
+	document := model.SessionWhiteboardDocument{
+		SchemaVersion: model.SessionWhiteboardSchemaV3,
+		Constraints: []model.SessionWhiteboardEntry{{
+			Key: "example-first", Text: "讲新概念时先举例、再讲定义", Value: "先举例再讲定义",
+			SourceMessageIDs: []uint{2, 3}, Origin: model.SessionWhiteboardOriginAssistantAccepted, UpdatedAtMessageID: 3,
+		}},
+	}
+	board := marshalFinalizeBoard(t, document)
+	service := newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: messages},
+		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil,
+		&scriptedProposer{proposals: []SessionRawProposal{{
+			Scope: model.MemoryScopeGlobal, Class: model.ProfileClassTeachingPreference, Subject: "讲解偏好",
+			Durability: model.MemoryDurabilityStable, Content: "讲新概念时不要先举例，先讲定义。",
+			EvidenceIDs: []uint{3}, StatementEvidenceID: 3, AssistantIDs: []uint{2},
+		}}},
+		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "no related entries"}}, 10)
+	result, err := service.Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-dev-inverted"}})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(result.Proposals) != 1 {
+		t.Fatalf("proposals=%+v skipped=%+v, want the adopted record card", result.Proposals, result.Skipped)
+	}
+	content := result.Proposals[0].Content
+	if content != "讲新概念时先举例、再讲定义" {
+		t.Fatalf("content=%q, want the confirmed record text", content)
+	}
+	if strings.Contains(content, "不要") {
+		t.Fatalf("content=%q, want the inverted preference kept out", content)
 	}
 }
 

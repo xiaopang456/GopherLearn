@@ -700,15 +700,16 @@ func (s *SessionFinalizeService) Extract(ctx context.Context, request FinalizeRe
 			result.Skipped = append(result.Skipped, FinalizeSkip{Reason: skip, Subject: proposal.Subject, EvidenceIDs: proposal.EvidenceIDs, AssistantIDs: proposal.AssistantIDs})
 			continue
 		}
-		evidence, assistant, learnerFirstContent, skip := validateEvidence(proposal, input.Visible, userBoardMessages, acceptedByAssistant)
+		evidence, assistant, contentOverride, skip := validateEvidence(proposal, input.Visible, userBoardMessages, acceptedByAssistant)
 		if skip != "" {
 			result.Skipped = append(result.Skipped, FinalizeSkip{Reason: skip, Subject: proposal.Subject, EvidenceIDs: proposal.EvidenceIDs, AssistantIDs: proposal.AssistantIDs})
 			continue
 		}
-		if learnerFirstContent != "" {
-			// 学习者先说、助手只是复述：卡片记录学习者原话。模型候选里超出
-			// 这句原话的内容都是助手新增的，没有学习者采纳证据，不能进卡。
-			proposal.Content = learnerFirstContent
+		if contentOverride != "" {
+			// 来源校验给出程序生成的正文：learner-first 是用户陈述中支撑该
+			// 事项的片段，采纳型候选是白板确认条目的原文。模型的正文明细不
+			// 进入卡片。
+			proposal.Content = contentOverride
 		}
 		candidate := s.buildCandidate(request.UserID, coverage, proposal, evidence, assistant, input.Topics, input.Visible)
 		fingerprint := candidate.Fingerprint
@@ -938,6 +939,14 @@ type boardAcceptedProposal struct {
 	Value        string
 }
 
+// Body is the confirmed text the card is built from: the board entry's own
+// statement, not the model's rewrite. The value and conditions are the ones
+// the learner took on; a body generated from this cannot add a condition or
+// flip a preference that the entry does not say.
+func (p boardAcceptedProposal) Body() string {
+	return strings.TrimSpace(p.Text)
+}
+
 // boardAcceptedProposals reads the board's assistant_accepted entries into
 // the pair the whiteboard engine recorded. A plain ID list cannot be combined
 // into adoption pairs: the entry must name exactly one assistant message and
@@ -1142,7 +1151,7 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 		}
 		assistant = append(assistant, SessionEvidenceRef{MessageID: id, Role: model.SessionWhiteboardOriginAssistant, At: message.CreatedAt})
 	}
-	learnerFirstContent := ""
+	contentOverride := ""
 	restatementOnly := false
 	if len(assistant) > 0 {
 		// Acceptance must point at the proposal this candidate cites. The
@@ -1153,6 +1162,13 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 		// accepted is not an adoption, however the later message reads. The
 		// message also has to read like an acceptance; the board's record and
 		// the learner's words have to agree.
+		//
+		// The draft body comes from the board's confirmed entry, not from the
+		// model's prose. Numbers and wording similarity only help match the
+		// candidate to that entry; they cannot prove two sentences mean the
+		// same thing, so a rewrite that adds a condition or flips a preference
+		// is not allowed to become the card. The model proposes and locates
+		// the evidence; the program writes what the learner adopted.
 		earliest := uint(0)
 		for _, ref := range assistant {
 			if earliest == 0 || ref.MessageID < earliest {
@@ -1160,6 +1176,7 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 			}
 		}
 		accepted := true
+		acceptedBody := ""
 		for _, ref := range assistant {
 			pair, recorded := acceptedByAssistant[ref.MessageID]
 			if !recorded {
@@ -1182,12 +1199,24 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 				accepted = false
 				break
 			}
-			// 草稿必须与白板确认的那条记录一致：同一事项、同一个值、不
-			// 冲突的适用范围。引用了正确的消息 ID 但正文写成别的值，等于
-			// 把用户没选的提议写进草稿。
+			// 候选必须与白板确认的那条记录对得上：同一事项、同一个值、不
+			// 冲突的适用范围。数字和相似度只做匹配，正文不取模型的改写。
 			if !learnerDraftMatchesAdoption(pair.Text, pair.Value, proposal.Content, proposal.Subject) {
 				accepted = false
 				break
+			}
+			body := pair.Body()
+			if body == "" || (acceptedBody != "" && acceptedBody != body) {
+				accepted = false
+				break
+			}
+			acceptedBody = body
+		}
+		if accepted {
+			if utf8.RuneCountInString(acceptedBody) > model.MemoryContentMaxRunes {
+				accepted = false
+			} else {
+				contentOverride = acceptedBody
 			}
 		}
 		// Learner-first: the learner stated the decision and the assistant
@@ -1218,7 +1247,7 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 						if supported != "" && utf8.RuneCountInString(supported) <= model.MemoryContentMaxRunes {
 							learnerFirst = true
 							restatementOnly = true
-							learnerFirstContent = supported
+							contentOverride = supported
 						}
 					}
 				}
@@ -1258,7 +1287,7 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 		// 点名证据。
 		assistant = nil
 	}
-	return evidence, assistant, learnerFirstContent, ""
+	return evidence, assistant, contentOverride, ""
 }
 
 // minLearnerStatementCoverage is the share of the candidate content's
@@ -1523,7 +1552,10 @@ func learnerDraftMatchesAdoption(entryText, entryValue, content, subject string)
 	if learnerScopeConflict(confirmed, draft) {
 		return false
 	}
-	confirmedPairs := learnerStatementPairs(confirmed)
+	confirmedPairs := learnerStatementPairs(entryText)
+	for pair := range learnerStatementPairs(entryValue) {
+		confirmedPairs[pair] = struct{}{}
+	}
 	if len(confirmedPairs) == 0 {
 		return false
 	}
