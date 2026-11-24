@@ -202,13 +202,25 @@ func TestAutoProposalAdoptionLateReplyNeedsAgreement(t *testing.T) {
 		Durability: model.MemoryDurabilityStable, Content: "Redis 升级到 7.4。",
 		EvidenceIDs: []uint{3}, StatementEvidenceID: 3, AssistantIDs: []uint{2},
 	}
-	extract := func(reply string) FinalizeResult {
+	extract := func(reply string, withAcceptedBoard bool) FinalizeResult {
 		messages := []SessionMessage{
 			{ID: 1, IsUser: true, Content: "Redis 缓存怎么配比较好？", CreatedAt: at},
 			{ID: 2, IsUser: false, Content: "建议把 Redis 升到 7.4，能少踩几个持久化配置的坑。", CreatedAt: at.Add(time.Minute)},
 			{ID: 3, IsUser: true, Content: reply, CreatedAt: at.Add(2 * time.Minute)},
 		}
-		service := newFinalizeService(t, fakeFinalizeBoards{}, fakeFinalizeMessages{messages: messages},
+		var boards FinalizeBoardSource = fakeFinalizeBoards{}
+		if withAcceptedBoard {
+			document := model.SessionWhiteboardDocument{
+				SchemaVersion: model.SessionWhiteboardSchemaV3,
+				OpenItems: []model.SessionWhiteboardEntry{{
+					Key: "redis-version", Text: "升到 Redis 7.4", Value: "7.4",
+					SourceMessageIDs: []uint{2, 3}, Origin: model.SessionWhiteboardOriginAssistantAccepted, UpdatedAtMessageID: 3,
+				}},
+			}
+			content := marshalFinalizeBoard(t, document)
+			boards = fakeFinalizeBoards{content: &content}
+		}
+		service := newFinalizeService(t, boards, fakeFinalizeMessages{messages: messages},
 			nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil,
 			&scriptedProposer{proposals: []SessionRawProposal{proposal}},
 			&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "no related entries"}}, 10)
@@ -219,7 +231,7 @@ func TestAutoProposalAdoptionLateReplyNeedsAgreement(t *testing.T) {
 		return result
 	}
 	for _, reply := range []string{"今天到这。", "那再讲讲别的吧。", "嗯，我再想想。"} {
-		result := extract(reply)
+		result := extract(reply, false)
 		if len(result.Proposals) != 0 {
 			t.Fatalf("reply %q produced a card: %+v", reply, result.Proposals)
 		}
@@ -227,13 +239,98 @@ func TestAutoProposalAdoptionLateReplyNeedsAgreement(t *testing.T) {
 			t.Fatalf("reply %q skipped=%+v, want adoption_unproven", reply, result.Skipped)
 		}
 	}
-	// 正例：明确指回提议的采纳。
-	result := extract("就按你刚说的方案。")
+	// 即使白板误记了采纳，收尾话本身也必须读起来像采纳：记录和原话要一致。
+	if result := extract("今天到这。", true); len(result.Proposals) != 0 {
+		t.Fatalf("a mislabeled board let the closing through: %+v", result.Proposals)
+	}
+	// 正例：明确指回提议的采纳，且白板记录了这对证据。
+	result := extract("就按你刚说的方案。", true)
 	if len(result.Proposals) != 1 || len(result.Skipped) != 0 {
 		t.Fatalf("adoption reply: proposals=%d skipped=%+v, want the card", len(result.Proposals), result.Skipped)
 	}
 	if len(result.Proposals[0].AssistantUtterances) != 1 || result.Proposals[0].AssistantUtterances[0].MessageID != 2 {
 		t.Fatalf("assistant provenance=%+v, want the adopted proposal kept", result.Proposals[0].AssistantUtterances)
+	}
+}
+
+// 反例：助手给出两个方案，学习者明确选第二种。只有被选中的那条提议能出
+// 卡；引用第一条时白板没有那条采纳记录，不能凭「就按」放行。
+func TestAutoProposalAdoptionSelectsTheCitedProposal(t *testing.T) {
+	at := time.Date(2026, 11, 24, 20, 1, 0, 0, time.FixedZone("CST", 8*3600))
+	messages := []SessionMessage{
+		{ID: 1, IsUser: true, Content: "Redis 缓存版本怎么定？", CreatedAt: at},
+		{ID: 2, IsUser: false, Content: "建议升到 Redis 7.4。", CreatedAt: at.Add(time.Minute)},
+		{ID: 3, IsUser: false, Content: "也可以保留 Redis 7.2。", CreatedAt: at.Add(2 * time.Minute)},
+		{ID: 4, IsUser: true, Content: "就按第二种方案。", CreatedAt: at.Add(3 * time.Minute)},
+	}
+	// 白板记录的是第二种方案被采纳：助手 m03 提议、学习者 m04 接受。
+	document := model.SessionWhiteboardDocument{
+		SchemaVersion: model.SessionWhiteboardSchemaV3,
+		OpenItems: []model.SessionWhiteboardEntry{{
+			Key: "redis-version", Text: "保留 Redis 7.2", Value: "7.2",
+			SourceMessageIDs: []uint{3, 4}, Origin: model.SessionWhiteboardOriginAssistantAccepted, UpdatedAtMessageID: 4,
+		}},
+	}
+	board := marshalFinalizeBoard(t, document)
+	first := SessionRawProposal{
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassConstraint, Subject: "Redis 版本",
+		Durability: model.MemoryDurabilityStable, Content: "Redis 升级到 7.4。",
+		EvidenceIDs: []uint{4}, StatementEvidenceID: 4, AssistantIDs: []uint{2},
+	}
+	second := SessionRawProposal{
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassConstraint, Subject: "Redis 版本",
+		Durability: model.MemoryDurabilityStable, Content: "保留 Redis 7.2。",
+		EvidenceIDs: []uint{4}, StatementEvidenceID: 4, AssistantIDs: []uint{3},
+	}
+	service := newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: messages},
+		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil,
+		&scriptedProposer{proposals: []SessionRawProposal{first, second}},
+		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "no related entries"}}, 10)
+	result, err := service.Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-dev-selected"}})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(result.Proposals) != 1 || result.Proposals[0].Content != "保留 Redis 7.2。" {
+		t.Fatalf("proposals=%+v, want only the cited, chosen proposal", result.Proposals)
+	}
+	if len(result.Skipped) != 1 || result.Skipped[0].Reason != FinalizeSkipAdoptionUnproven {
+		t.Fatalf("skipped=%+v, want the first proposal refused", result.Skipped)
+	}
+}
+
+// 正例：从今天起长期使用 → 今天是开始时间，适用期限是长期；不能因为命中
+// 「今天」就把长期决定拒掉。
+func TestAutoProposalAdoptionStartTimeIsStandingScope(t *testing.T) {
+	at := time.Date(2026, 11, 24, 20, 1, 0, 0, time.FixedZone("CST", 8*3600))
+	messages := []SessionMessage{
+		{ID: 1, IsUser: true, Content: "从今天起长期使用 Go 1.23。", CreatedAt: at},
+		{ID: 2, IsUser: false, Content: "好，从今天起长期按 Go 1.23 来。", CreatedAt: at.Add(time.Minute)},
+	}
+	result := extractLearnerFirstMessages(t, messages, learnerFirstProposal("长期使用 Go 1.23。"))
+	if len(result.Proposals) != 1 || len(result.Skipped) != 0 {
+		t.Fatalf("proposals=%d skipped=%+v, want the standing decision", len(result.Proposals), result.Skipped)
+	}
+	if result.Proposals[0].Content != "从今天起长期使用 Go 1.23。" {
+		t.Fatalf("content=%q, want the learner's start-time decision", result.Proposals[0].Content)
+	}
+	if result.Proposals[0].Durability != model.MemoryDurabilityStable {
+		t.Fatalf("durability=%s, want the standing decision", result.Proposals[0].Durability)
+	}
+}
+
+// 反例：今天只用一次 → 临时操作，不能支撑长期决定。
+func TestAutoProposalAdoptionOneOffScopeIsRefused(t *testing.T) {
+	at := time.Date(2026, 11, 24, 20, 1, 0, 0, time.FixedZone("CST", 8*3600))
+	messages := []SessionMessage{
+		{ID: 1, IsUser: true, Content: "今天只用一次 Go 1.23。", CreatedAt: at},
+		{ID: 2, IsUser: false, Content: "好，今天就按 Go 1.23 来。", CreatedAt: at.Add(time.Minute)},
+	}
+	result := extractLearnerFirstMessages(t, messages, learnerFirstProposal("长期使用 Go 1.23。"))
+	if len(result.Proposals) != 0 {
+		t.Fatalf("proposals=%+v, want the one-off scope refused", result.Proposals)
+	}
+	if len(result.Skipped) != 1 || result.Skipped[0].Reason != FinalizeSkipAdoptionUnproven {
+		t.Fatalf("skipped=%+v, want adoption_unproven", result.Skipped)
 	}
 }
 

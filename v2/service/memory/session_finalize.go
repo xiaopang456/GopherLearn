@@ -655,6 +655,11 @@ func (s *SessionFinalizeService) Extract(ctx context.Context, request FinalizeRe
 	// separate "the learner decided, the assistant restated" from "the
 	// assistant proposed, nobody agreed".
 	userBoardMessages := userStatementMessageIDs(board)
+	// The board's assistant_accepted entries are the engine's own record of
+	// which assistant proposal the learner took on, and with which learner
+	// message. Extraction re-reads that pair instead of trusting the order of
+	// the messages alone.
+	acceptedByAssistant := boardAcceptedProposals(board, input.Visible)
 	// A small set of confirmed current values, selected from the session's own
 	// words, so the proposer can tell a new standing value from a one-off
 	// adjustment. Losing this context degrades the judgement, not the run.
@@ -695,7 +700,7 @@ func (s *SessionFinalizeService) Extract(ctx context.Context, request FinalizeRe
 			result.Skipped = append(result.Skipped, FinalizeSkip{Reason: skip, Subject: proposal.Subject, EvidenceIDs: proposal.EvidenceIDs, AssistantIDs: proposal.AssistantIDs})
 			continue
 		}
-		evidence, assistant, learnerFirstContent, skip := validateEvidence(proposal, input.Visible, userBoardMessages)
+		evidence, assistant, learnerFirstContent, skip := validateEvidence(proposal, input.Visible, userBoardMessages, acceptedByAssistant)
 		if skip != "" {
 			result.Skipped = append(result.Skipped, FinalizeSkip{Reason: skip, Subject: proposal.Subject, EvidenceIDs: proposal.EvidenceIDs, AssistantIDs: proposal.AssistantIDs})
 			continue
@@ -924,6 +929,54 @@ func userStatementMessageIDs(board model.SessionWhiteboardDocument) map[uint]str
 	return ids
 }
 
+// boardAcceptedProposals reads the board's assistant_accepted entries into
+// the pair the whiteboard engine recorded: the assistant message that made
+// the proposal and the learner message after it that took it on. The engine
+// checks that pair before storing the entry; extraction re-reads it so a
+// candidate cannot credit a proposal the board never recorded as accepted -
+// when two proposals are on the table, the second one being chosen must not
+// let the first one through.
+func boardAcceptedProposals(board model.SessionWhiteboardDocument, visible map[uint]SessionMessage) map[uint]map[uint]struct{} {
+	accepted := make(map[uint]map[uint]struct{})
+	add := func(entries []model.SessionWhiteboardEntry) {
+		for _, entry := range entries {
+			if entry.Origin != model.SessionWhiteboardOriginAssistantAccepted {
+				continue
+			}
+			assistantIDs := make([]uint, 0, len(entry.SourceMessageIDs))
+			learnerIDs := make([]uint, 0, len(entry.SourceMessageIDs))
+			for _, id := range entry.SourceMessageIDs {
+				message, found := visible[id]
+				if !found {
+					continue
+				}
+				if message.IsUser {
+					learnerIDs = append(learnerIDs, id)
+				} else {
+					assistantIDs = append(assistantIDs, id)
+				}
+			}
+			for _, assistantID := range assistantIDs {
+				for _, learnerID := range learnerIDs {
+					if learnerID <= assistantID {
+						continue
+					}
+					pairs := accepted[assistantID]
+					if pairs == nil {
+						pairs = make(map[uint]struct{}, len(learnerIDs))
+						accepted[assistantID] = pairs
+					}
+					pairs[learnerID] = struct{}{}
+				}
+			}
+		}
+	}
+	add(board.Constraints)
+	add(board.Plan)
+	add(board.OpenItems)
+	return accepted
+}
+
 // visibleMessages assembles the set the proposer may cite: every message the
 // board cites, loaded by reference, plus a bounded window of the most recent
 // unprocessed messages on both sides. The window is what keeps a fact the
@@ -1022,7 +1075,7 @@ func (s *SessionFinalizeService) validateShape(proposal SessionRawProposal) stri
 // include an acceptance that came after the proposal. It returns the evidence
 // refs, the assistant refs, the content the card must carry (set only for the
 // learner-first shape), and a skip reason.
-func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessage, userBoardMessages map[uint]struct{}) ([]SessionEvidenceRef, []SessionEvidenceRef, string, string) {
+func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessage, userBoardMessages map[uint]struct{}, acceptedByAssistant map[uint]map[uint]struct{}) ([]SessionEvidenceRef, []SessionEvidenceRef, string, string) {
 	if len(proposal.EvidenceIDs) == 0 {
 		return nil, nil, "", FinalizeSkipEvidenceMissing
 	}
@@ -1065,30 +1118,43 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 	learnerFirstContent := ""
 	restatementOnly := false
 	if len(assistant) > 0 {
-		// Acceptance: the learner's message comes after the assistant's
-		// proposal AND says it takes the proposal on. Order alone is not
-		// agreement: a closing ("that's it for today"), a topic switch, and a
-		// non-committal reply all come after the proposal too. The message has
-		// to point back at the proposal or commit to it; a bare later message
-		// proves only that the conversation continued.
-		latest := uint(0)
+		// Acceptance must point at the proposal this candidate cites. The
+		// board records the pair - the assistant's proposal and the learner's
+		// message that took it on - and extraction re-reads the same pair:
+		// with two proposals in play, "go with the second one" must not let
+		// the first one through. A proposal the board did not record as
+		// accepted is not an adoption, however the later message reads. The
+		// message also has to read like an acceptance; the board's record and
+		// the learner's words have to agree.
 		earliest := uint(0)
 		for _, ref := range assistant {
-			if ref.MessageID > latest {
-				latest = ref.MessageID
-			}
 			if earliest == 0 || ref.MessageID < earliest {
 				earliest = ref.MessageID
 			}
 		}
-		accepted := false
-		for _, ref := range evidence {
-			if ref.MessageID <= latest {
-				continue
+		accepted := true
+		for _, ref := range assistant {
+			learners, recorded := acceptedByAssistant[ref.MessageID]
+			if !recorded {
+				accepted = false
+				break
 			}
-			message, found := visible[ref.MessageID]
-			if found && learnerAcceptedProposal(message.Content) {
-				accepted = true
+			matched := false
+			for _, ev := range evidence {
+				if ev.MessageID <= ref.MessageID {
+					continue
+				}
+				if _, paired := learners[ev.MessageID]; !paired {
+					continue
+				}
+				message, found := visible[ev.MessageID]
+				if found && learnerAcceptedProposal(message.Content) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				accepted = false
 				break
 			}
 		}
@@ -1346,16 +1412,27 @@ const (
 )
 
 // The markers are deliberately small: "先" and "都" are ordinary words in
-// explanations, so only unambiguous temporal scope words count. A conflict
-// needs a classified clause and a classified candidate; an unmarked side
-// neither proves nor disproves the scope.
+// explanations, so only unambiguous temporal scope words count. Start-time
+// phrases are stripped first: "从今天起长期用" starts a standing decision
+// today - the date says when it begins, not how long it lasts - while a bare
+// "今天用一次" is the one-off. A conflict needs a classified clause and a
+// classified candidate; an unmarked side neither proves nor disproves the
+// scope.
 var (
+	learnerStartMarkers     = []string{"从今天起", "从今天开始", "从今日起", "自今天起", "从今以后", "从现在起", "即日起", "今天起", "今天开始", "从明天起", "从明天开始"}
 	learnerStandingMarkers  = []string{"以后", "从此", "长期", "一直", "每次", "永远"}
-	learnerTemporaryMarkers = []string{"今天", "这次", "本次", "暂时", "临时"}
+	learnerTemporaryMarkers = []string{"今天", "这次", "本次", "暂时", "临时", "只用一次", "只这一次", "仅此一次"}
 )
 
 func learnerScopeOf(text string) learnerScopeClass {
 	folded := strings.ToLower(text)
+	started := false
+	for _, marker := range learnerStartMarkers {
+		if strings.Contains(folded, marker) {
+			started = true
+			folded = strings.ReplaceAll(folded, marker, " ")
+		}
+	}
 	for _, marker := range learnerTemporaryMarkers {
 		if strings.Contains(folded, marker) {
 			return learnerScopeTemporary
@@ -1365,6 +1442,12 @@ func learnerScopeOf(text string) learnerScopeClass {
 		if strings.Contains(folded, marker) {
 			return learnerScopeStanding
 		}
+	}
+	if started {
+		// "从今天起使用 Go 1.23" names when a standing decision starts; the
+		// date is the start time, not the duration. Without a temporary
+		// marker the decision is standing.
+		return learnerScopeStanding
 	}
 	return learnerScopeUnspecified
 }

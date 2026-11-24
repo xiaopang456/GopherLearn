@@ -478,7 +478,17 @@ func TestFinalizeAdoptedProposalRecordsBothUtterances(t *testing.T) {
 		EvidenceIDs: []uint{3}, AssistantIDs: []uint{2},
 	}}}
 	known := &fakeFinalizeFingerprints{known: map[string]struct{}{}}
-	service := newFinalizeService(t, fakeFinalizeBoards{}, fakeFinalizeMessages{messages: messages},
+	// 白板已记录这次采纳：助手 m02 提议、学习者 m03 接受。来源校验复读这
+	// 对记录，而不是只看 m03 在 m02 之后。
+	board := model.SessionWhiteboardDocument{
+		SchemaVersion: model.SessionWhiteboardSchemaV3,
+		Constraints: []model.SessionWhiteboardEntry{{
+			Key: "review-preference", Text: "每次复习先来两道旧题", Value: "先热身",
+			SourceMessageIDs: []uint{2, 3}, Origin: model.SessionWhiteboardOriginAssistantAccepted, UpdatedAtMessageID: 3,
+		}},
+	}
+	boardContent := marshalFinalizeBoard(t, board)
+	service := newFinalizeService(t, fakeFinalizeBoards{content: &boardContent}, fakeFinalizeMessages{messages: messages},
 		nil, known, fakeFinalizeGlobalMind{}, nil, proposer,
 		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "no related entries"}}, 50)
 
@@ -1848,8 +1858,18 @@ func TestFinalizePrefillRequiresNamedTopic(t *testing.T) {
 			EvidenceIDs: []uint{evidence}, StatementEvidenceID: evidence, AssistantIDs: assistant,
 		}
 	}
+	// 白板记录的那次采纳：助手 m02 建议、学习者 m03 接受。只有走到这条
+	// 记录上的候选才会被采纳分支放行。
+	board := model.SessionWhiteboardDocument{
+		SchemaVersion: model.SessionWhiteboardSchemaV3,
+		OpenItems: []model.SessionWhiteboardEntry{{
+			Key: "accepted-topic", Text: "记到 Go 基础", Value: "go-basics",
+			SourceMessageIDs: []uint{2, 3}, Origin: model.SessionWhiteboardOriginAssistantAccepted, UpdatedAtMessageID: 3,
+		}},
+	}
+	boardContent := marshalFinalizeBoard(t, board)
 	newService := func(messages []SessionMessage, proposal SessionRawProposal) *SessionFinalizeService {
-		return newFinalizeService(t, fakeFinalizeBoards{}, fakeFinalizeMessages{messages: messages},
+		return newFinalizeService(t, fakeFinalizeBoards{content: &boardContent}, fakeFinalizeMessages{messages: messages},
 			topics, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{},
 			fakeFinalizeTopicMind{byTopic: map[string][]model.LongTermMemory{}},
 			&scriptedProposer{proposals: []SessionRawProposal{proposal}},
