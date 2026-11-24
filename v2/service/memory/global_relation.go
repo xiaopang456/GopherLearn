@@ -58,7 +58,7 @@ Use conflict when one supplied memory is:
 
 Use independent only when the proposal applies to a genuinely different scope than the memory (for example 讲授新概念 vs 排查报错), or expresses a distinct durable fact or preference that can coexist without ambiguity.
 
-Shared topic words alone do not make a conflict, and a shared scope alone does not make a duplicate either: duplicate needs the same scope AND the same instruction. Use only an exact supplied memory ID. You classify; you never authorize a database action.`
+Shared topic words alone do not make a conflict, and a shared scope alone does not make a duplicate either: duplicate needs the same scope AND the same instruction. Profile classes are context, not boundaries: the same matter may be filed under different classes (an older value as background, its update as constraint), and a different class alone never makes two statements about the same matter independent. Use only an exact supplied memory ID. You classify; you never authorize a database action.`
 
 const (
 	globalIndependentTool = "classify_global_independent"
