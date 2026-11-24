@@ -929,15 +929,26 @@ func userStatementMessageIDs(board model.SessionWhiteboardDocument) map[uint]str
 	return ids
 }
 
+// boardAcceptedProposal is one adoption the board recorded: the assistant
+// message that made the proposal, the learner message after it that took the
+// proposal on, and the confirmed content the board kept.
+type boardAcceptedProposal struct {
+	AcceptanceID uint
+	Text         string
+	Value        string
+}
+
 // boardAcceptedProposals reads the board's assistant_accepted entries into
-// the pair the whiteboard engine recorded: the assistant message that made
-// the proposal and the learner message after it that took it on. The engine
-// checks that pair before storing the entry; extraction re-reads it so a
-// candidate cannot credit a proposal the board never recorded as accepted -
-// when two proposals are on the table, the second one being chosen must not
-// let the first one through.
-func boardAcceptedProposals(board model.SessionWhiteboardDocument, visible map[uint]SessionMessage) map[uint]map[uint]struct{} {
-	accepted := make(map[uint]map[uint]struct{})
+// the pair the whiteboard engine recorded. A plain ID list cannot be combined
+// into adoption pairs: the entry must name exactly one assistant message and
+// exactly one learner message after it. With two proposals in one entry, the
+// list alone cannot say which one the learner chose, so the entry yields no
+// pair and the candidate is refused as insufficient evidence. Two entries
+// that pair the same proposal with different acceptances or content are
+// ambiguous for the same reason.
+func boardAcceptedProposals(board model.SessionWhiteboardDocument, visible map[uint]SessionMessage) map[uint]boardAcceptedProposal {
+	accepted := make(map[uint]boardAcceptedProposal)
+	ambiguous := make(map[uint]struct{})
 	add := func(entries []model.SessionWhiteboardEntry) {
 		for _, entry := range entries {
 			if entry.Origin != model.SessionWhiteboardOriginAssistantAccepted {
@@ -945,10 +956,14 @@ func boardAcceptedProposals(board model.SessionWhiteboardDocument, visible map[u
 			}
 			assistantIDs := make([]uint, 0, len(entry.SourceMessageIDs))
 			learnerIDs := make([]uint, 0, len(entry.SourceMessageIDs))
+			complete := true
 			for _, id := range entry.SourceMessageIDs {
 				message, found := visible[id]
 				if !found {
-					continue
+					// A cited message we cannot see leaves the pair
+					// unverifiable; it must not be guessed from the rest.
+					complete = false
+					break
 				}
 				if message.IsUser {
 					learnerIDs = append(learnerIDs, id)
@@ -956,19 +971,31 @@ func boardAcceptedProposals(board model.SessionWhiteboardDocument, visible map[u
 					assistantIDs = append(assistantIDs, id)
 				}
 			}
-			for _, assistantID := range assistantIDs {
-				for _, learnerID := range learnerIDs {
-					if learnerID <= assistantID {
-						continue
-					}
-					pairs := accepted[assistantID]
-					if pairs == nil {
-						pairs = make(map[uint]struct{}, len(learnerIDs))
-						accepted[assistantID] = pairs
-					}
-					pairs[learnerID] = struct{}{}
+			if !complete || len(assistantIDs) != 1 {
+				continue
+			}
+			proposalID := assistantIDs[0]
+			acceptances := make([]uint, 0, len(learnerIDs))
+			for _, learnerID := range learnerIDs {
+				if learnerID > proposalID {
+					acceptances = append(acceptances, learnerID)
 				}
 			}
+			if len(acceptances) != 1 {
+				continue
+			}
+			if _, seen := ambiguous[proposalID]; seen {
+				continue
+			}
+			pair := boardAcceptedProposal{AcceptanceID: acceptances[0], Text: entry.Text, Value: entry.Value}
+			if existing, recorded := accepted[proposalID]; recorded {
+				if existing != pair {
+					delete(accepted, proposalID)
+					ambiguous[proposalID] = struct{}{}
+				}
+				continue
+			}
+			accepted[proposalID] = pair
 		}
 	}
 	add(board.Constraints)
@@ -1075,7 +1102,7 @@ func (s *SessionFinalizeService) validateShape(proposal SessionRawProposal) stri
 // include an acceptance that came after the proposal. It returns the evidence
 // refs, the assistant refs, the content the card must carry (set only for the
 // learner-first shape), and a skip reason.
-func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessage, userBoardMessages map[uint]struct{}, acceptedByAssistant map[uint]map[uint]struct{}) ([]SessionEvidenceRef, []SessionEvidenceRef, string, string) {
+func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessage, userBoardMessages map[uint]struct{}, acceptedByAssistant map[uint]boardAcceptedProposal) ([]SessionEvidenceRef, []SessionEvidenceRef, string, string) {
 	if len(proposal.EvidenceIDs) == 0 {
 		return nil, nil, "", FinalizeSkipEvidenceMissing
 	}
@@ -1134,26 +1161,31 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 		}
 		accepted := true
 		for _, ref := range assistant {
-			learners, recorded := acceptedByAssistant[ref.MessageID]
+			pair, recorded := acceptedByAssistant[ref.MessageID]
 			if !recorded {
 				accepted = false
 				break
 			}
 			matched := false
 			for _, ev := range evidence {
-				if ev.MessageID <= ref.MessageID {
+				if ev.MessageID != pair.AcceptanceID {
 					continue
 				}
-				if _, paired := learners[ev.MessageID]; !paired {
-					continue
+				if ev.MessageID > ref.MessageID {
+					if message, found := visible[ev.MessageID]; found && learnerAcceptedProposal(message.Content) {
+						matched = true
+					}
 				}
-				message, found := visible[ev.MessageID]
-				if found && learnerAcceptedProposal(message.Content) {
-					matched = true
-					break
-				}
+				break
 			}
 			if !matched {
+				accepted = false
+				break
+			}
+			// 草稿必须与白板确认的那条记录一致：同一事项、同一个值、不
+			// 冲突的适用范围。引用了正确的消息 ID 但正文写成别的值，等于
+			// 把用户没选的提议写进草稿。
+			if !learnerDraftMatchesAdoption(pair.Text, pair.Value, proposal.Content, proposal.Subject) {
 				accepted = false
 				break
 			}
@@ -1455,6 +1487,54 @@ func learnerScopeOf(text string) learnerScopeClass {
 func learnerScopeConflict(clause, content string) bool {
 	clauseScope, contentScope := learnerScopeOf(clause), learnerScopeOf(content)
 	return clauseScope != learnerScopeUnspecified && contentScope != learnerScopeUnspecified && clauseScope != contentScope
+}
+
+// minAdoptionMatterCoverage is the share of the adopted record's character
+// pairs the draft's subject and content must carry. The board entry is a
+// summary, so the floor is lower than the learner-first content rule; the
+// value and scope checks carry the exact part of the match.
+const minAdoptionMatterCoverage = 0.35
+
+// learnerDraftMatchesAdoption reports whether the draft records the adoption
+// the board confirmed: the same matter, the same values, and a compatible
+// scope. The message IDs prove which proposal was accepted; they do not prove
+// what the draft says, so the content is checked against the record itself.
+func learnerDraftMatchesAdoption(entryText, entryValue, content, subject string) bool {
+	confirmed := strings.TrimSpace(entryText + "\n" + entryValue)
+	draft := strings.TrimSpace(subject + "\n" + content)
+	if confirmed == "" || draft == "" {
+		return false
+	}
+	confirmedValues := learnerValueTokens(confirmed)
+	draftValues := learnerValueTokens(draft)
+	// A value in the record must be in the draft, and the draft cannot add a
+	// value the adoption never covered: an adopted 7.2 must not be written as
+	// 7.4, and a 7.4 must not be smuggled in beside it.
+	for value := range confirmedValues {
+		if _, ok := draftValues[value]; !ok {
+			return false
+		}
+	}
+	for value := range draftValues {
+		if _, ok := confirmedValues[value]; !ok {
+			return false
+		}
+	}
+	if learnerScopeConflict(confirmed, draft) {
+		return false
+	}
+	confirmedPairs := learnerStatementPairs(confirmed)
+	if len(confirmedPairs) == 0 {
+		return false
+	}
+	draftPairs := learnerStatementPairs(draft)
+	covered := 0
+	for pair := range confirmedPairs {
+		if _, ok := draftPairs[pair]; ok {
+			covered++
+		}
+	}
+	return float64(covered)/float64(len(confirmedPairs)) >= minAdoptionMatterCoverage
 }
 
 // The acceptance cues are the learner's words that point back at the

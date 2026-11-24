@@ -1863,7 +1863,7 @@ func TestFinalizePrefillRequiresNamedTopic(t *testing.T) {
 	board := model.SessionWhiteboardDocument{
 		SchemaVersion: model.SessionWhiteboardSchemaV3,
 		OpenItems: []model.SessionWhiteboardEntry{{
-			Key: "accepted-topic", Text: "记到 Go 基础", Value: "go-basics",
+			Key: "accepted-topic", Text: "我容易混淆有缓冲与无缓冲 channel 的阻塞时机", Value: "容易混淆阻塞时机",
 			SourceMessageIDs: []uint{2, 3}, Origin: model.SessionWhiteboardOriginAssistantAccepted, UpdatedAtMessageID: 3,
 		}},
 	}

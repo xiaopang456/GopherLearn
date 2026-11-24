@@ -298,6 +298,114 @@ func TestAutoProposalAdoptionSelectsTheCitedProposal(t *testing.T) {
 	}
 }
 
+// 反例：引用正确、正文值错。白板确认的是「保留 Redis 7.2」，候选引用了
+// 正确的提议和接受消息，但正文写成 7.4；消息 ID 对上了，草稿的值却与已
+// 采纳记录不一致，仍要拒绝。
+func TestAutoProposalAdoptionDraftValueMustMatchTheAcceptedRecord(t *testing.T) {
+	at := time.Date(2026, 11, 24, 20, 1, 0, 0, time.FixedZone("CST", 8*3600))
+	messages := []SessionMessage{
+		{ID: 1, IsUser: true, Content: "Redis 缓存版本怎么定？", CreatedAt: at},
+		{ID: 2, IsUser: false, Content: "建议升到 Redis 7.4。", CreatedAt: at.Add(time.Minute)},
+		{ID: 3, IsUser: false, Content: "也可以保留 Redis 7.2。", CreatedAt: at.Add(2 * time.Minute)},
+		{ID: 4, IsUser: true, Content: "就按第二种方案。", CreatedAt: at.Add(3 * time.Minute)},
+	}
+	document := model.SessionWhiteboardDocument{
+		SchemaVersion: model.SessionWhiteboardSchemaV3,
+		OpenItems: []model.SessionWhiteboardEntry{{
+			Key: "redis-version", Text: "保留 Redis 7.2", Value: "7.2",
+			SourceMessageIDs: []uint{3, 4}, Origin: model.SessionWhiteboardOriginAssistantAccepted, UpdatedAtMessageID: 4,
+		}},
+	}
+	board := marshalFinalizeBoard(t, document)
+	extract := func(content string) FinalizeResult {
+		service := newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: messages},
+			nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil,
+			&scriptedProposer{proposals: []SessionRawProposal{{
+				Scope: model.MemoryScopeGlobal, Class: model.ProfileClassConstraint, Subject: "Redis 版本",
+				Durability: model.MemoryDurabilityStable, Content: content,
+				EvidenceIDs: []uint{4}, StatementEvidenceID: 4, AssistantIDs: []uint{3},
+			}}},
+			&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "no related entries"}}, 10)
+		result, err := service.Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-dev-value"}})
+		if err != nil {
+			t.Fatalf("extract: %v", err)
+		}
+		return result
+	}
+	wrong := extract("Redis 升级到 7.4。")
+	if len(wrong.Proposals) != 0 {
+		t.Fatalf("proposals=%+v, want the wrong draft value refused", wrong.Proposals)
+	}
+	if len(wrong.Skipped) != 1 || wrong.Skipped[0].Reason != FinalizeSkipAdoptionUnproven {
+		t.Fatalf("skipped=%+v, want adoption_unproven", wrong.Skipped)
+	}
+	// 正例：确实选了 7.2、正文也写 7.2 → 正常出卡。
+	right := extract("保留 Redis 7.2。")
+	if len(right.Proposals) != 1 || right.Proposals[0].Content != "保留 Redis 7.2。" {
+		t.Fatalf("proposals=%+v, want the confirmed 7.2 card", right.Proposals)
+	}
+}
+
+// 反例：同一条白板记录里出现两条助手消息时，普通 ID 列表不能自动组合成
+// 采纳对。列表里有两条提议、一条接受消息，无法唯一指认用户选了哪条，
+// 两条候选都按来源不足拒绝；只有一条提议的同类记录才正常出卡。
+func TestAutoProposalAdoptionAmbiguousBoardListDoesNotPair(t *testing.T) {
+	at := time.Date(2026, 11, 24, 20, 1, 0, 0, time.FixedZone("CST", 8*3600))
+	messages := []SessionMessage{
+		{ID: 1, IsUser: true, Content: "Redis 缓存版本怎么定？", CreatedAt: at},
+		{ID: 2, IsUser: false, Content: "建议升到 Redis 7.4。", CreatedAt: at.Add(time.Minute)},
+		{ID: 3, IsUser: false, Content: "也可以保留 Redis 7.2。", CreatedAt: at.Add(2 * time.Minute)},
+		{ID: 4, IsUser: true, Content: "就按第二种方案。", CreatedAt: at.Add(3 * time.Minute)},
+	}
+	entry := func(sourceIDs []uint, text, value string) string {
+		document := model.SessionWhiteboardDocument{
+			SchemaVersion: model.SessionWhiteboardSchemaV3,
+			OpenItems: []model.SessionWhiteboardEntry{{
+				Key: "redis-version", Text: text, Value: value,
+				SourceMessageIDs: sourceIDs, Origin: model.SessionWhiteboardOriginAssistantAccepted, UpdatedAtMessageID: 4,
+			}},
+		}
+		return marshalFinalizeBoard(t, document)
+	}
+	ambiguousBoard := entry([]uint{2, 3, 4}, "保留 Redis 7.2", "7.2")
+	uniqueBoard := entry([]uint{3, 4}, "保留 Redis 7.2", "7.2")
+	extract := func(board string, assistantID uint, content string) FinalizeResult {
+		service := newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: messages},
+			nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil,
+			&scriptedProposer{proposals: []SessionRawProposal{{
+				Scope: model.MemoryScopeGlobal, Class: model.ProfileClassConstraint, Subject: "Redis 版本",
+				Durability: model.MemoryDurabilityStable, Content: content,
+				EvidenceIDs: []uint{4}, StatementEvidenceID: 4, AssistantIDs: []uint{assistantID},
+			}}},
+			&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "no related entries"}}, 10)
+		result, err := service.Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-dev-ambiguous"}})
+		if err != nil {
+			t.Fatalf("extract: %v", err)
+		}
+		return result
+	}
+	for _, candidate := range []struct {
+		assistantID uint
+		content     string
+	}{
+		{2, "Redis 升级到 7.4。"},
+		{3, "保留 Redis 7.2。"},
+	} {
+		result := extract(ambiguousBoard, candidate.assistantID, candidate.content)
+		if len(result.Proposals) != 0 {
+			t.Fatalf("assistant %d: proposals=%+v, want the ambiguous list refused", candidate.assistantID, result.Proposals)
+		}
+		if len(result.Skipped) != 1 || result.Skipped[0].Reason != FinalizeSkipAdoptionUnproven {
+			t.Fatalf("assistant %d: skipped=%+v, want adoption_unproven", candidate.assistantID, result.Skipped)
+		}
+	}
+	// 正例：同一条记录只列一条提议和一条接受消息 → 唯一指认，正常出卡。
+	right := extract(uniqueBoard, 3, "保留 Redis 7.2。")
+	if len(right.Proposals) != 1 || right.Proposals[0].Content != "保留 Redis 7.2。" {
+		t.Fatalf("proposals=%+v, want the unique-pair card", right.Proposals)
+	}
+}
+
 // 正例：从今天起长期使用 → 今天是开始时间，适用期限是长期；不能因为命中
 // 「今天」就把长期决定拒掉。
 func TestAutoProposalAdoptionStartTimeIsStandingScope(t *testing.T) {
