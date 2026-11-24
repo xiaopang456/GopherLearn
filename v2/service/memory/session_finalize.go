@@ -700,16 +700,20 @@ func (s *SessionFinalizeService) Extract(ctx context.Context, request FinalizeRe
 			result.Skipped = append(result.Skipped, FinalizeSkip{Reason: skip, Subject: proposal.Subject, EvidenceIDs: proposal.EvidenceIDs, AssistantIDs: proposal.AssistantIDs})
 			continue
 		}
-		evidence, assistant, contentOverride, skip := validateEvidence(proposal, input.Visible, userBoardMessages, acceptedByAssistant)
+		evidence, assistant, cardOverride, skip := validateEvidence(proposal, input.Visible, userBoardMessages, acceptedByAssistant)
 		if skip != "" {
 			result.Skipped = append(result.Skipped, FinalizeSkip{Reason: skip, Subject: proposal.Subject, EvidenceIDs: proposal.EvidenceIDs, AssistantIDs: proposal.AssistantIDs})
 			continue
 		}
-		if contentOverride != "" {
-			// 来源校验给出程序生成的正文：learner-first 是用户陈述中支撑该
-			// 事项的片段，采纳型候选是白板确认条目的原文。模型的正文明细不
-			// 进入卡片。
-			proposal.Content = contentOverride
+		if cardOverride.Title != "" {
+			// 采纳型候选的标题由白板确认条目生成：模型标题里的未采纳条件
+			// 不能进入卡片。
+			proposal.Subject = cardOverride.Title
+		}
+		if cardOverride.Content != "" {
+			// 正文同理：learner-first 是用户陈述中支撑该事项的片段，采纳型
+			// 候选是白板确认条目的 Text（独立 Value 不在 Text 里时补上）。
+			proposal.Content = cardOverride.Content
 		}
 		candidate := s.buildCandidate(request.UserID, coverage, proposal, evidence, assistant, input.Topics, input.Visible)
 		fingerprint := candidate.Fingerprint
@@ -942,9 +946,67 @@ type boardAcceptedProposal struct {
 // Body is the confirmed text the card is built from: the board entry's own
 // statement, not the model's rewrite. The value and conditions are the ones
 // the learner took on; a body generated from this cannot add a condition or
-// flip a preference that the entry does not say.
+// flip a preference that the entry does not say. A Value stored separately
+// from the Text is part of the confirmed fact, so it is appended when the
+// text does not already carry it - and only once.
 func (p boardAcceptedProposal) Body() string {
-	return strings.TrimSpace(p.Text)
+	text := strings.TrimSpace(p.Text)
+	value := strings.TrimSpace(p.Value)
+	if value == "" {
+		return text
+	}
+	if text == "" {
+		return value
+	}
+	if boardValueInText(text, value) {
+		return text
+	}
+	base := strings.TrimRight(text, "。.!！?？")
+	if base == "" {
+		return value
+	}
+	return base + "：" + value + "。"
+}
+
+// Title is the card title generated from the confirmed entry. The entry has
+// no title field, so the first confirmed clause is the closest thing to one;
+// a clause that does not fit the title bound, or an entry with no clause,
+// falls back to a neutral title. The model's subject never becomes the card
+// title: an unadopted condition hiding in it must not reach the card.
+func (p boardAcceptedProposal) Title() string {
+	text := strings.TrimSpace(p.Text)
+	if text == "" {
+		text = strings.TrimSpace(p.Value)
+	}
+	clauses := learnerStatementClauses(text)
+	if len(clauses) == 0 {
+		return adoptionFallbackTitle
+	}
+	title := strings.TrimSpace(clauses[0].text)
+	if title == "" || utf8.RuneCountInString(title) > model.MemorySubjectMaxRunes {
+		return adoptionFallbackTitle
+	}
+	return title
+}
+
+const adoptionFallbackTitle = "已采纳的记录"
+
+// boardValueInText reports whether the text already states the value. Numeric
+// values are compared as whole tokens, so 7.2 is not "found" inside 17.2; a
+// non-numeric value is compared after folding spacing and punctuation.
+func boardValueInText(text, value string) bool {
+	valueTokens := learnerValueTokens(value)
+	if len(valueTokens) > 0 {
+		textTokens := learnerValueTokens(text)
+		for token := range valueTokens {
+			if _, ok := textTokens[token]; !ok {
+				return false
+			}
+		}
+		return true
+	}
+	foldedValue := learnerFoldedText(value)
+	return foldedValue != "" && strings.Contains(learnerFoldedText(text), foldedValue)
 }
 
 // boardAcceptedProposals reads the board's assistant_accepted entries into
@@ -1111,31 +1173,39 @@ func (s *SessionFinalizeService) validateShape(proposal SessionRawProposal) stri
 // include an acceptance that came after the proposal. It returns the evidence
 // refs, the assistant refs, the content the card must carry (set only for the
 // learner-first shape), and a skip reason.
-func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessage, userBoardMessages map[uint]struct{}, acceptedByAssistant map[uint]boardAcceptedProposal) ([]SessionEvidenceRef, []SessionEvidenceRef, string, string) {
+// finalizeCardOverride is the card text the program generates from the
+// confirmed source: the learner-first statement spans, or an adopted board
+// entry's title and body. The model's own prose only helps locate the source.
+type finalizeCardOverride struct {
+	Title   string
+	Content string
+}
+
+func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessage, userBoardMessages map[uint]struct{}, acceptedByAssistant map[uint]boardAcceptedProposal) ([]SessionEvidenceRef, []SessionEvidenceRef, finalizeCardOverride, string) {
 	if len(proposal.EvidenceIDs) == 0 {
-		return nil, nil, "", FinalizeSkipEvidenceMissing
+		return nil, nil, finalizeCardOverride{}, FinalizeSkipEvidenceMissing
 	}
 	// A candidate citing more messages than an entry may cite is describing
 	// a stretch of history rather than one matter, which is a shape failure
 	// - the same limit the whiteboard applies to an entry's evidence.
 	if len(proposal.EvidenceIDs) > model.SessionWhiteboardEvidenceLimit {
-		return nil, nil, "", FinalizeSkipInvalidShape
+		return nil, nil, finalizeCardOverride{}, FinalizeSkipInvalidShape
 	}
 	evidenceIDs, ok := dedupeIDs(proposal.EvidenceIDs, model.SessionWhiteboardEvidenceLimit)
 	if !ok || len(evidenceIDs) == 0 {
-		return nil, nil, "", FinalizeSkipEvidenceMissing
+		return nil, nil, finalizeCardOverride{}, FinalizeSkipEvidenceMissing
 	}
 	evidence := make([]SessionEvidenceRef, 0, len(evidenceIDs))
 	for _, id := range evidenceIDs {
 		message, found := visible[id]
 		if !found {
-			return nil, nil, "", FinalizeSkipEvidenceMissing
+			return nil, nil, finalizeCardOverride{}, FinalizeSkipEvidenceMissing
 		}
 		if !message.IsUser {
-			return nil, nil, "", FinalizeSkipEvidenceRole
+			return nil, nil, finalizeCardOverride{}, FinalizeSkipEvidenceRole
 		}
 		if strings.TrimSpace(message.Content) == "" {
-			return nil, nil, "", FinalizeSkipEvidenceMissing
+			return nil, nil, finalizeCardOverride{}, FinalizeSkipEvidenceMissing
 		}
 		evidence = append(evidence, SessionEvidenceRef{MessageID: id, Role: model.SessionWhiteboardOriginUser, At: message.CreatedAt})
 	}
@@ -1144,14 +1214,14 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 	for _, id := range assistantIDs {
 		message, found := visible[id]
 		if !found {
-			return nil, nil, "", FinalizeSkipEvidenceMissing
+			return nil, nil, finalizeCardOverride{}, FinalizeSkipEvidenceMissing
 		}
 		if message.IsUser {
-			return nil, nil, "", FinalizeSkipEvidenceRole
+			return nil, nil, finalizeCardOverride{}, FinalizeSkipEvidenceRole
 		}
 		assistant = append(assistant, SessionEvidenceRef{MessageID: id, Role: model.SessionWhiteboardOriginAssistant, At: message.CreatedAt})
 	}
-	contentOverride := ""
+	override := finalizeCardOverride{}
 	restatementOnly := false
 	if len(assistant) > 0 {
 		// Acceptance must point at the proposal this candidate cites. The
@@ -1176,6 +1246,7 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 			}
 		}
 		accepted := true
+		acceptedTitle := ""
 		acceptedBody := ""
 		for _, ref := range assistant {
 			pair, recorded := acceptedByAssistant[ref.MessageID]
@@ -1206,17 +1277,22 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 				break
 			}
 			body := pair.Body()
-			if body == "" || (acceptedBody != "" && acceptedBody != body) {
+			title := pair.Title()
+			if body == "" || title == "" ||
+				(acceptedBody != "" && acceptedBody != body) ||
+				(acceptedTitle != "" && acceptedTitle != title) {
 				accepted = false
 				break
 			}
 			acceptedBody = body
+			acceptedTitle = title
 		}
 		if accepted {
 			if utf8.RuneCountInString(acceptedBody) > model.MemoryContentMaxRunes {
 				accepted = false
 			} else {
-				contentOverride = acceptedBody
+				override.Title = acceptedTitle
+				override.Content = acceptedBody
 			}
 		}
 		// Learner-first: the learner stated the decision and the assistant
@@ -1247,13 +1323,13 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 						if supported != "" && utf8.RuneCountInString(supported) <= model.MemoryContentMaxRunes {
 							learnerFirst = true
 							restatementOnly = true
-							contentOverride = supported
+							override.Content = supported
 						}
 					}
 				}
 			}
 			if !learnerFirst {
-				return nil, nil, "", FinalizeSkipAdoptionUnproven
+				return nil, nil, finalizeCardOverride{}, FinalizeSkipAdoptionUnproven
 			}
 		}
 	}
@@ -1274,10 +1350,10 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 			}
 		}
 		if !found {
-			return nil, nil, "", FinalizeSkipInvalidShape
+			return nil, nil, finalizeCardOverride{}, FinalizeSkipInvalidShape
 		}
 	} else if len(evidence) > 1 {
-		return nil, nil, "", FinalizeSkipStatementEvidenceRequired
+		return nil, nil, finalizeCardOverride{}, FinalizeSkipStatementEvidenceRequired
 	} else {
 		evidence[0].Statement = true
 	}
@@ -1287,7 +1363,7 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 		// 点名证据。
 		assistant = nil
 	}
-	return evidence, assistant, contentOverride, ""
+	return evidence, assistant, override, ""
 }
 
 // minLearnerStatementCoverage is the share of the candidate content's
@@ -1615,13 +1691,7 @@ func learnerAcceptedProposal(message string) bool {
 // tool's content check uses the same shape, so the two entry points agree on
 // what "the learner's own words" means.
 func learnerStatementPairs(text string) map[string]struct{} {
-	folded := strings.Map(func(r rune) rune {
-		if unicode.IsSpace(r) || unicode.IsPunct(r) || unicode.IsSymbol(r) {
-			return -1
-		}
-		return unicode.ToLower(r)
-	}, strings.TrimSpace(text))
-	runes := []rune(folded)
+	runes := []rune(learnerFoldedText(text))
 	if len(runes) == 0 {
 		return nil
 	}
@@ -1634,6 +1704,18 @@ func learnerStatementPairs(text string) map[string]struct{} {
 		pairs[string(runes[index:index+2])] = struct{}{}
 	}
 	return pairs
+}
+
+// learnerFoldedText is the form the content checks compare: spacing,
+// punctuation, symbols and case are folded away, so "Go 1.23" and "go123"
+// read as the same text for coverage and containment.
+func learnerFoldedText(text string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) || unicode.IsPunct(r) || unicode.IsSymbol(r) {
+			return -1
+		}
+		return unicode.ToLower(r)
+	}, strings.TrimSpace(text))
 }
 
 func dedupeIDs(ids []uint, limit int) ([]uint, bool) {

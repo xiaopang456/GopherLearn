@@ -488,6 +488,91 @@ func TestAutoProposalAdoptionInvertedPreferenceDoesNotEnterTheCard(t *testing.T)
 	}
 }
 
+// 白板可以把事项放在 Text、把值单独放在 Value。正文必须保留这个独立的
+// 值（值已在正文里时只显示一次），标题取白板条目的第一句。
+func TestAutoProposalAdoptionBodyKeepsSeparateValue(t *testing.T) {
+	at := time.Date(2026, 11, 24, 20, 1, 0, 0, time.FixedZone("CST", 8*3600))
+	messages := []SessionMessage{
+		{ID: 1, IsUser: true, Content: "线上 Redis 版本怎么定？", CreatedAt: at},
+		{ID: 2, IsUser: false, Content: "建议线上 Redis 版本用 7.2。", CreatedAt: at.Add(time.Minute)},
+		{ID: 3, IsUser: true, Content: "就按你说的方案。", CreatedAt: at.Add(2 * time.Minute)},
+	}
+	document := model.SessionWhiteboardDocument{
+		SchemaVersion: model.SessionWhiteboardSchemaV3,
+		Constraints: []model.SessionWhiteboardEntry{{
+			Key: "redis-version", Text: "线上 Redis 版本", Value: "7.2",
+			SourceMessageIDs: []uint{2, 3}, Origin: model.SessionWhiteboardOriginAssistantAccepted, UpdatedAtMessageID: 3,
+		}},
+	}
+	board := marshalFinalizeBoard(t, document)
+	service := newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: messages},
+		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil,
+		&scriptedProposer{proposals: []SessionRawProposal{{
+			Scope: model.MemoryScopeGlobal, Class: model.ProfileClassConstraint, Subject: "Redis 版本",
+			Durability: model.MemoryDurabilityStable, Content: "线上 Redis 版本 7.2。",
+			EvidenceIDs: []uint{3}, StatementEvidenceID: 3, AssistantIDs: []uint{2},
+		}}},
+		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "no related entries"}}, 10)
+	result, err := service.Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-dev-separate-value"}})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(result.Proposals) != 1 {
+		t.Fatalf("proposals=%+v skipped=%+v, want the adopted record card", result.Proposals, result.Skipped)
+	}
+	candidate := result.Proposals[0]
+	if candidate.Content != "线上 Redis 版本：7.2。" {
+		t.Fatalf("content=%q, want the Text plus the separate Value", candidate.Content)
+	}
+	if candidate.Subject != "线上 Redis 版本" {
+		t.Fatalf("subject=%q, want the title from the confirmed entry", candidate.Subject)
+	}
+}
+
+// 白板确认「线上保留 Redis 7.2」，模型的标题带了未采纳的条件；卡片标题
+// 必须由白板条目生成，不能显示模型标题。
+func TestAutoProposalAdoptionTitleCannotCarryUnadoptedCondition(t *testing.T) {
+	at := time.Date(2026, 11, 24, 20, 1, 0, 0, time.FixedZone("CST", 8*3600))
+	messages := []SessionMessage{
+		{ID: 1, IsUser: true, Content: "线上 Redis 版本怎么定？", CreatedAt: at},
+		{ID: 2, IsUser: false, Content: "建议线上保留 Redis 7.2。", CreatedAt: at.Add(time.Minute)},
+		{ID: 3, IsUser: true, Content: "就按你说的方案。", CreatedAt: at.Add(2 * time.Minute)},
+	}
+	document := model.SessionWhiteboardDocument{
+		SchemaVersion: model.SessionWhiteboardSchemaV3,
+		Constraints: []model.SessionWhiteboardEntry{{
+			Key: "redis-version", Text: "线上保留 Redis 7.2", Value: "7.2",
+			SourceMessageIDs: []uint{2, 3}, Origin: model.SessionWhiteboardOriginAssistantAccepted, UpdatedAtMessageID: 3,
+		}},
+	}
+	board := marshalFinalizeBoard(t, document)
+	service := newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: messages},
+		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil,
+		&scriptedProposer{proposals: []SessionRawProposal{{
+			Scope: model.MemoryScopeGlobal, Class: model.ProfileClassConstraint, Subject: "Redis 版本，同时禁用持久化",
+			Durability: model.MemoryDurabilityStable, Content: "线上保留 Redis 7.2，同时禁用持久化。",
+			EvidenceIDs: []uint{3}, StatementEvidenceID: 3, AssistantIDs: []uint{2},
+		}}},
+		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "no related entries"}}, 10)
+	result, err := service.Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-dev-title-condition"}})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(result.Proposals) != 1 {
+		t.Fatalf("proposals=%+v skipped=%+v, want the adopted record card", result.Proposals, result.Skipped)
+	}
+	candidate := result.Proposals[0]
+	if candidate.Content != "线上保留 Redis 7.2" {
+		t.Fatalf("content=%q, want the confirmed record text", candidate.Content)
+	}
+	if candidate.Subject != "线上保留 Redis 7.2" {
+		t.Fatalf("subject=%q, want the title from the confirmed entry", candidate.Subject)
+	}
+	if strings.Contains(candidate.Subject, "禁用持久化") {
+		t.Fatalf("subject=%q, want the unadopted condition kept out of the title", candidate.Subject)
+	}
+}
+
 // 正例：从今天起长期使用 → 今天是开始时间，适用期限是长期；不能因为命中
 // 「今天」就把长期决定拒掉。
 func TestAutoProposalAdoptionStartTimeIsStandingScope(t *testing.T) {
