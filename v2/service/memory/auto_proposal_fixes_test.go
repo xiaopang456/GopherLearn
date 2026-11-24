@@ -209,8 +209,9 @@ func TestAutoProposalFix2LearnerFirstDecisionIsEvidence(t *testing.T) {
 	if len(drafts) != 1 {
 		t.Fatalf("drafts=%d, want one pending card", len(drafts))
 	}
-	// 来源契约保留两侧原话：用户决定 + 助手复述。
-	if len(drafts[0].AssistantMessages) != 1 || len(drafts[0].EvidenceMessages) != 1 {
+	// 来源契约：用户原话是证据；助手只是复述、未被学习者明确采纳，不能进入
+	// assistant_messages。
+	if len(drafts[0].EvidenceMessages) != 1 || len(drafts[0].AssistantMessages) != 0 {
 		t.Fatalf("draft provenance evidence=%v assistant=%v", drafts[0].EvidenceMessages, drafts[0].AssistantMessages)
 	}
 	// 不变量：未经确认零正式写入。

@@ -23,19 +23,10 @@ import (
 // 钉住正确旧值；同值重述仍判重，跨类不同事项仍并存。确认前零正式写入、
 // 旧条目状态/修订记录/掌握度都不变。
 
-const boundaryUserStatement = "以后都用 Go 1.23。"
-
-func learnerFirstBoard(t *testing.T) string {
-	t.Helper()
-	document := model.SessionWhiteboardDocument{
-		SchemaVersion: model.SessionWhiteboardSchemaV3,
-		Constraints: []model.SessionWhiteboardEntry{{
-			Key: "go-version", Text: "以后都用 Go 1.23", Value: "1.23",
-			SourceMessageIDs: []uint{1}, Origin: model.SessionWhiteboardOriginUser, UpdatedAtMessageID: 1,
-		}},
-	}
-	return marshalFinalizeBoard(t, document)
-}
+const (
+	boundaryUserStatement = "以后都用 Go 1.23。"
+	boundaryCardContent   = "以后都用 Go 1.23。"
+)
 
 func learnerFirstMessages(assistantReply string) []SessionMessage {
 	at := time.Date(2026, 11, 24, 20, 1, 0, 0, time.FixedZone("CST", 8*3600))
@@ -53,18 +44,30 @@ func learnerFirstProposal(content string) SessionRawProposal {
 	}
 }
 
-func extractLearnerFirst(t *testing.T, assistantReply, proposalContent string) FinalizeResult {
+func extractLearnerFirstMessages(t *testing.T, messages []SessionMessage, proposal SessionRawProposal) FinalizeResult {
 	t.Helper()
-	board := learnerFirstBoard(t)
-	service := newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: learnerFirstMessages(assistantReply)},
+	document := model.SessionWhiteboardDocument{
+		SchemaVersion: model.SessionWhiteboardSchemaV3,
+		Constraints: []model.SessionWhiteboardEntry{{
+			Key: "go-version", Text: "以后都用 Go 1.23", Value: "1.23",
+			SourceMessageIDs: []uint{messages[0].ID}, Origin: model.SessionWhiteboardOriginUser, UpdatedAtMessageID: messages[0].ID,
+		}},
+	}
+	board := marshalFinalizeBoard(t, document)
+	service := newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: messages},
 		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil,
-		&scriptedProposer{proposals: []SessionRawProposal{learnerFirstProposal(proposalContent)}},
+		&scriptedProposer{proposals: []SessionRawProposal{proposal}},
 		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "boundary probe"}}, 10)
 	result, err := service.Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-dev-boundary"}})
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
 	return result
+}
+
+func extractLearnerFirst(t *testing.T, assistantReply, proposalContent string) FinalizeResult {
+	t.Helper()
+	return extractLearnerFirstMessages(t, learnerFirstMessages(assistantReply), learnerFirstProposal(proposalContent))
 }
 
 // 样例一：用户决定、助手复述 → 正常出卡。草稿内容由用户原话支撑，助手的
@@ -75,12 +78,13 @@ func TestAutoProposalAdoptionRestatementStillCards(t *testing.T) {
 		t.Fatalf("proposals=%d skipped=%+v, want one card", len(result.Proposals), result.Skipped)
 	}
 	candidate := result.Proposals[0]
-	if candidate.Content != boundaryUserStatement {
-		t.Fatalf("content=%q, want the learner's own statement %q", candidate.Content, boundaryUserStatement)
+	if candidate.Content != boundaryCardContent {
+		t.Fatalf("content=%q, want the learner's own statement %q", candidate.Content, boundaryCardContent)
 	}
-	// 来源契约保留助手复述这一侧：它记录的是"助手只是复述"，不是助手新增。
-	if len(candidate.AssistantUtterances) != 1 {
-		t.Fatalf("assistant provenance=%v, want the restatement kept", candidate.AssistantUtterances)
+	// 助手只是复述、学习者没有明确采纳：复述不进入 assistant_messages，也
+	// 不能作为主题点名证据。
+	if len(candidate.AssistantUtterances) != 0 {
+		t.Fatalf("assistant provenance=%v, want the unadopted restatement dropped", candidate.AssistantUtterances)
 	}
 	if len(candidate.Evidence) != 1 || candidate.Evidence[0].Role != model.SessionWhiteboardOriginUser {
 		t.Fatalf("evidence=%v, want the learner's message", candidate.Evidence)
@@ -113,9 +117,114 @@ func TestAutoProposalAdoptionAssistantAddedConditionIsDropped(t *testing.T) {
 	if strings.Contains(content, "泛型") || strings.Contains(content, "禁用") {
 		t.Fatalf("content=%q, want no assistant-added condition", content)
 	}
-	if content != boundaryUserStatement {
-		t.Fatalf("content=%q, want the learner's own statement %q", content, boundaryUserStatement)
+	if content != boundaryCardContent {
+		t.Fatalf("content=%q, want the learner's own statement %q", content, boundaryCardContent)
 	}
+}
+
+// 样例四：同一条用户消息里既有长期决定、又有一次性临时操作。长期决定出卡，
+// 但草稿只保留支撑这个事项的片段：临时设置不能借同一条消息进入卡片。
+func TestAutoProposalAdoptionTemporaryOperationStaysOutOfTheCard(t *testing.T) {
+	at := time.Date(2026, 11, 24, 20, 1, 0, 0, time.FixedZone("CST", 8*3600))
+	messages := []SessionMessage{
+		{ID: 1, IsUser: true, Content: "以后都用 Go 1.23。今天先用 1.22 跑通旧项目。", CreatedAt: at},
+		{ID: 2, IsUser: false, Content: "好，以后都用 Go 1.23。", CreatedAt: at.Add(time.Minute)},
+	}
+	result := extractLearnerFirstMessages(t, messages, learnerFirstProposal("以后都用 Go 1.23。"))
+	if len(result.Proposals) != 1 || len(result.Skipped) != 0 {
+		t.Fatalf("proposals=%d skipped=%+v, want only the long-term decision", len(result.Proposals), result.Skipped)
+	}
+	candidate := result.Proposals[0]
+	if candidate.Content != boundaryCardContent {
+		t.Fatalf("content=%q, want only the part supporting the long-term decision %q", candidate.Content, boundaryCardContent)
+	}
+	for _, leak := range []string{"1.22", "今天", "旧项目", "跑通"} {
+		if strings.Contains(candidate.Content, leak) {
+			t.Fatalf("content=%q, want the temporary operation kept out", candidate.Content)
+		}
+	}
+	if candidate.Durability != model.MemoryDurabilityStable {
+		t.Fatalf("durability=%s, want the standing decision", candidate.Durability)
+	}
+}
+
+// 反例：助手单方面建议把这条理解归到 RPC，学习者没有点名、也没有采纳这条
+// 建议。主题必须留空待用户选择；助手的建议不能作为点名证据。
+func TestAutoProposalAdoptionAssistantTopicSuggestionStaysPending(t *testing.T) {
+	at := time.Date(2026, 11, 24, 20, 1, 0, 0, time.FixedZone("CST", 8*3600))
+	messages := []SessionMessage{
+		{ID: 1, IsUser: true, Content: "我理解队列就是任务排队，先到先处理。", CreatedAt: at},
+		{ID: 2, IsUser: false, Content: "这条理解可以归到 RPC 主题。", CreatedAt: at.Add(time.Minute)},
+	}
+	board := topicUnderstandingBoard(t, 1)
+	topics := fakeFinalizeCatalogue{topics: []Topic{{Key: "rpc", Name: "RPC"}}}
+	service := newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: messages},
+		topics, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{},
+		fakeFinalizeTopicMind{byTopic: map[string][]model.LongTermMemory{}},
+		&scriptedProposer{proposals: []SessionRawProposal{{
+			Scope: model.MemoryScopeTopic, Kind: FinalizeKindUnderstanding, TopicKey: "rpc", TopicUnique: false,
+			Subject: "队列理解", Durability: model.MemoryDurabilityStable,
+			Content:     "队列就是任务排队，先到先处理。",
+			EvidenceIDs: []uint{1}, StatementEvidenceID: 1, AssistantIDs: []uint{2},
+		}}},
+		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "no related entries"}}, 10)
+	result, err := service.Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-dev-topic-suggestion"}})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(result.Proposals) != 1 {
+		t.Fatalf("proposals=%d skipped=%+v, want the understanding with an empty attribution", len(result.Proposals), result.Skipped)
+	}
+	candidate := result.Proposals[0]
+	if !candidate.TopicPending || candidate.TopicKey != "" {
+		t.Fatalf("candidate=%+v, want the assistant's suggestion not to name the topic", candidate)
+	}
+	if len(candidate.AssistantUtterances) != 0 {
+		t.Fatalf("assistant provenance=%v, want the unadopted suggestion dropped", candidate.AssistantUtterances)
+	}
+}
+
+// 正例：学习者自己点名 RPC → 仍按点名预填主题。
+func TestAutoProposalAdoptionLearnerNamedTopicStillPrefills(t *testing.T) {
+	at := time.Date(2026, 11, 24, 20, 1, 0, 0, time.FixedZone("CST", 8*3600))
+	messages := []SessionMessage{
+		{ID: 1, IsUser: true, Content: "我在学 RPC 框架，我理解它就是像调本地函数一样调远程服务。", CreatedAt: at},
+	}
+	board := topicUnderstandingBoard(t, 1)
+	topics := fakeFinalizeCatalogue{topics: []Topic{{Key: "rpc", Name: "RPC"}}}
+	service := newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: messages},
+		topics, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{},
+		fakeFinalizeTopicMind{byTopic: map[string][]model.LongTermMemory{}},
+		&scriptedProposer{proposals: []SessionRawProposal{{
+			Scope: model.MemoryScopeTopic, Kind: FinalizeKindUnderstanding, TopicKey: "rpc", TopicUnique: false,
+			Subject: "RPC 理解", Durability: model.MemoryDurabilityStable,
+			Content:     "RPC 框架就是像调本地函数一样调远程服务。",
+			EvidenceIDs: []uint{1}, StatementEvidenceID: 1,
+		}}},
+		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "no related entries"}}, 10)
+	result, err := service.Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-dev-topic-named"}})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(result.Proposals) != 1 {
+		t.Fatalf("proposals=%d skipped=%+v, want the understanding card", len(result.Proposals), result.Skipped)
+	}
+	candidate := result.Proposals[0]
+	if candidate.TopicPending || candidate.TopicKey != "rpc" {
+		t.Fatalf("candidate=%+v, want the learner-named topic prefilled", candidate)
+	}
+}
+
+func topicUnderstandingBoard(t *testing.T, messageID uint) string {
+	t.Helper()
+	document := model.SessionWhiteboardDocument{
+		SchemaVersion: model.SessionWhiteboardSchemaV3,
+		Constraints: []model.SessionWhiteboardEntry{{
+			Key: "understanding", Text: "我的理解", Value: "理解",
+			SourceMessageIDs: []uint{messageID}, Origin: model.SessionWhiteboardOriginUser, UpdatedAtMessageID: messageID,
+		}},
+	}
+	return marshalFinalizeBoard(t, document)
 }
 
 // 反例二主用例：10 条无关画像 + 第 11 条同一事项旧值（跨类别），走完整

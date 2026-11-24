@@ -1063,6 +1063,7 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 		assistant = append(assistant, SessionEvidenceRef{MessageID: id, Role: model.SessionWhiteboardOriginAssistant, At: message.CreatedAt})
 	}
 	learnerFirstContent := ""
+	restatementOnly := false
 	if len(assistant) > 0 {
 		// Two shapes prove the learner's own words are behind the candidate.
 		//
@@ -1076,9 +1077,13 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 		// and that attribution prove the learner spoke first; they do not
 		// prove the candidate's content is what the learner said. The
 		// statement has to support the content, and the card is built from
-		// the statement itself: the assistant only restated it, so anything
-		// else the assistant added - a new matter, value or condition - has
-		// no learner adoption and must not reach the card.
+		// the part of the statement that supports this one matter: the
+		// assistant only restated it, so anything else the assistant (or the
+		// message's other clauses) added - a new matter, value or condition,
+		// or a one-off operation - has no learner adoption and must not reach
+		// the card. The restatement is not an adoption either, so it is
+		// dropped from the assistant refs below: it may not enter
+		// assistant_messages and may not name a topic.
 		latest := uint(0)
 		earliest := uint(0)
 		for _, ref := range assistant {
@@ -1106,11 +1111,11 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 				if _, ok := userBoardMessages[statementID]; ok {
 					statement, found := visible[statementID]
 					if found {
-						statementContent := strings.TrimSpace(statement.Content)
-						if learnerStatementSupportsContent(statementContent, proposal.Content) &&
-							utf8.RuneCountInString(statementContent) <= model.MemoryContentMaxRunes {
+						supported := learnerStatementSupportedContent(strings.TrimSpace(statement.Content), proposal.Content)
+						if supported != "" && utf8.RuneCountInString(supported) <= model.MemoryContentMaxRunes {
 							learnerFirst = true
-							learnerFirstContent = statementContent
+							restatementOnly = true
+							learnerFirstContent = supported
 						}
 					}
 				}
@@ -1144,44 +1149,143 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 	} else {
 		evidence[0].Statement = true
 	}
+	if restatementOnly {
+		// 助手只是复述学习者先说的话，学习者没有明确采纳这条助手内容。它不
+		// 是被采纳的助手原话：不进入 assistant_messages，也不能作为主题
+		// 点名证据。
+		assistant = nil
+	}
 	return evidence, assistant, learnerFirstContent, ""
 }
 
 // minLearnerStatementCoverage is the share of the candidate content's
-// character pairs that must appear in the learner's own statement before the
-// learner-first shape counts as adoption. It is the same coverage rule the
-// live draft tool applies to a draft built from the learner's current message
+// character pairs that the kept parts of the learner's statement must
+// support. It is the same coverage rule the live draft tool applies to a
+// draft built from the learner's current message
 // (agenttool.draftContentFromCurrentMessage): a restatement loses only its
 // leading subject, while an assistant invention loses the sentence it was
 // built from.
 const minLearnerStatementCoverage = 0.6
 
-// learnerStatementSupportsContent reports whether the candidate's content is
-// grounded in the learner's statement. Pair coverage is a threshold, not a
-// proof; the learner-first shape only needs it to separate the same matter
-// from an assistant-added one. The card's content is then taken from the
-// statement, so anything the content got from the assistant is dropped.
-func learnerStatementSupportsContent(statement, content string) bool {
-	content = strings.TrimSpace(content)
-	statement = strings.TrimSpace(statement)
-	if content == "" || statement == "" {
-		return false
+// minLearnerClauseSupport is the share of a clause's character pairs that
+// must appear in the candidate content before the clause counts as being
+// about this matter. It keeps a one-off operation that shares a stray pair
+// (say the same number, or a common word) out of a standing decision's card.
+const minLearnerClauseSupport = 0.3
+
+// learnerStatementSupportedContent returns the parts of the learner's
+// statement that support this one candidate matter, or "" when the statement
+// does not support it at all. The learner-first shape uses it to build the
+// card: the statement's clauses are kept only when they talk about the
+// candidate, so a long-term decision does not drag a one-off operation from
+// the same message into the card, and an assistant-added matter has no
+// clause to stand on. The kept clauses must still cover most of the
+// candidate's content, which is what separates "the learner said this" from
+// "the model wrote something loosely related".
+func learnerStatementSupportedContent(statement, content string) string {
+	contentPairs := learnerStatementPairs(content)
+	if len(contentPairs) == 0 {
+		return ""
 	}
-	wanted := learnerStatementPairs(content)
-	if len(wanted) == 0 {
-		return false
-	}
-	source := learnerStatementPairs(statement)
-	if len(source) == 0 {
-		return false
-	}
-	covered := 0
-	for pair := range wanted {
-		if _, ok := source[pair]; ok {
-			covered++
+	clauses := learnerStatementClauses(statement)
+	kept := make([]learnerClause, 0, len(clauses))
+	covered := make(map[string]struct{}, len(contentPairs))
+	for _, clause := range clauses {
+		pairs := learnerStatementPairs(clause.text)
+		if len(pairs) == 0 {
+			continue
+		}
+		supported := 0
+		for pair := range pairs {
+			if _, ok := contentPairs[pair]; ok {
+				supported++
+			}
+		}
+		if float64(supported)/float64(len(pairs)) < minLearnerClauseSupport {
+			continue
+		}
+		kept = append(kept, clause)
+		for pair := range pairs {
+			if _, ok := contentPairs[pair]; ok {
+				covered[pair] = struct{}{}
+			}
 		}
 	}
-	return float64(covered)/float64(len(wanted)) >= minLearnerStatementCoverage
+	if len(kept) == 0 || float64(len(covered))/float64(len(contentPairs)) < minLearnerStatementCoverage {
+		return ""
+	}
+	var builder strings.Builder
+	for index, clause := range kept {
+		builder.WriteString(clause.text)
+		if index+1 < len(kept) {
+			builder.WriteString("，")
+		} else if learnerSentenceEnd(clause.suffix) {
+			builder.WriteString(clause.suffix)
+		}
+	}
+	return builder.String()
+}
+
+// learnerClause is one clause of the statement: its trimmed text and the
+// separator that followed it ("" for the last clause). The separator is kept
+// so the selected spans read like the learner's original message.
+type learnerClause struct {
+	text   string
+	suffix string
+}
+
+// learnerStatementClauses splits the statement on sentence and clause
+// punctuation. A separator between two digits is part of a number ("1.23",
+// "1,000"), not a break; the whiteboard's version numbers must survive the
+// split or the clause that supports the candidate would be torn in two.
+func learnerStatementClauses(text string) []learnerClause {
+	runes := []rune(text)
+	clauses := make([]learnerClause, 0, 4)
+	appendClause := func(from, to int) {
+		body := strings.TrimSpace(string(runes[from:to]))
+		if body == "" {
+			return
+		}
+		suffix := ""
+		if to < len(runes) {
+			suffix = string(runes[to])
+		}
+		clauses = append(clauses, learnerClause{text: body, suffix: suffix})
+	}
+	start := 0
+	for index := 0; index < len(runes); index++ {
+		separator := runes[index]
+		if !learnerClauseSeparator(separator) {
+			continue
+		}
+		if (separator == '.' || separator == ',') && index > 0 && index+1 < len(runes) &&
+			unicode.IsDigit(runes[index-1]) && unicode.IsDigit(runes[index+1]) {
+			continue
+		}
+		appendClause(start, index)
+		start = index + 1
+	}
+	appendClause(start, len(runes))
+	return clauses
+}
+
+func learnerClauseSeparator(r rune) bool {
+	switch r {
+	case '，', ',', '。', '.', '；', ';', '！', '!', '？', '?', '\n', '\r':
+		return true
+	}
+	return false
+}
+
+// learnerSentenceEnd reports whether the separator ends a sentence rather
+// than a clause. A selected span keeps that terminator; a trailing comma
+// would just look like a cut-off sentence.
+func learnerSentenceEnd(separator string) bool {
+	switch separator {
+	case "。", "！", "？", ".", "!", "?":
+		return true
+	}
+	return false
 }
 
 // learnerStatementPairs is the set of adjacent character pairs a text is made
