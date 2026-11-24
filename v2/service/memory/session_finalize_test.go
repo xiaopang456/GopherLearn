@@ -97,6 +97,13 @@ func ext01BoardWithAdoption(t *testing.T) string {
 				Key: "example-first-accepted", Text: "讲新概念先举例再讲定义（采纳）", Value: "先举例再讲定义",
 				SourceMessageIDs: []uint{8, 9}, Origin: model.SessionWhiteboardOriginAssistantAccepted, UpdatedAtMessageID: 9,
 			},
+			{
+				// An assistant-origin clue that keeps the learner's one-off
+				// m05 visible, so the refusal test has a visible message the
+				// board does not attribute to the learner.
+				Key: "oneoff-scope", Text: "这节只用排队例子", Value: "只用排队例子",
+				SourceMessageIDs: []uint{5}, Origin: model.SessionWhiteboardOriginAssistant, UpdatedAtMessageID: 5,
+			},
 		},
 	}
 	return marshalFinalizeBoard(t, document)
@@ -416,17 +423,23 @@ func TestFinalizeTemporaryRequestsAndAssistantSuggestionsStayOut(t *testing.T) {
 		Durability: model.MemoryDurabilityStable,
 		Content:    "讲新概念先举例再讲定义。", EvidenceIDs: []uint{8},
 	}
-	unaccepted := SessionRawProposal{
+	// The learner's m03 states the preference and the assistant's m08 only
+	// restates it: the board attributes m03 to the learner, so this is a
+	// valid learner-first candidate (covered by its own regression) - not a
+	// case this refusal test keeps. The unproven shape is a learner message
+	// the board never attributed (m01, the session opener) cited next to the
+	// assistant's proposal the learner never accepted.
+	unattributed := SessionRawProposal{
 		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassTeachingPreference, Subject: "讲解偏好",
 		Durability: model.MemoryDurabilityStable,
-		Content:    "讲新概念先举例再讲定义。", EvidenceIDs: []uint{3}, AssistantIDs: []uint{8},
+		Content:    "讲新概念先举例再讲定义。", EvidenceIDs: []uint{5}, StatementEvidenceID: 5, AssistantIDs: []uint{8},
 	}
 	hallucinated := SessionRawProposal{
 		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassTeachingPreference, Subject: "讲解偏好",
 		Durability: model.MemoryDurabilityStable,
 		Content:    "讲新概念先举例再讲定义。", EvidenceIDs: []uint{99},
 	}
-	rogue := &scriptedProposer{proposals: []SessionRawProposal{assistantOnly, unaccepted, hallucinated}}
+	rogue := &scriptedProposer{proposals: []SessionRawProposal{assistantOnly, unattributed, hallucinated}}
 	rogueService := newFinalizeService(t, fakeFinalizeBoards{content: &adoptionBoard}, fakeFinalizeMessages{messages: ext01Messages()},
 		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil, rogue,
 		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "x"}}, 0)

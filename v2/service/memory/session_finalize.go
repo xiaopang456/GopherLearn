@@ -648,6 +648,11 @@ func (s *SessionFinalizeService) Extract(ctx context.Context, request FinalizeRe
 		Visible: visibleMessages(clue, unprocessed, s.RecentMessageWindow),
 		Topics:  s.loadTopics(ctx, request.UserID),
 	}
+	// The board's user-origin message ids: a learner-first decision the
+	// board already attributed to the learner. The adoption check uses it to
+	// separate "the learner decided, the assistant restated" from "the
+	// assistant proposed, nobody agreed".
+	userBoardMessages := userStatementMessageIDs(board)
 	// A small set of confirmed current values, selected from the session's own
 	// words, so the proposer can tell a new standing value from a one-off
 	// adjustment. Losing this context degrades the judgement, not the run.
@@ -688,7 +693,7 @@ func (s *SessionFinalizeService) Extract(ctx context.Context, request FinalizeRe
 			result.Skipped = append(result.Skipped, FinalizeSkip{Reason: skip, Subject: proposal.Subject, EvidenceIDs: proposal.EvidenceIDs, AssistantIDs: proposal.AssistantIDs})
 			continue
 		}
-		evidence, assistant, skip := validateEvidence(proposal, input.Visible)
+		evidence, assistant, skip := validateEvidence(proposal, input.Visible, userBoardMessages)
 		if skip != "" {
 			result.Skipped = append(result.Skipped, FinalizeSkip{Reason: skip, Subject: proposal.Subject, EvidenceIDs: proposal.EvidenceIDs, AssistantIDs: proposal.AssistantIDs})
 			continue
@@ -805,7 +810,9 @@ func (s *SessionFinalizeService) inRangeEntries(ctx context.Context, userID int6
 		if ranges.globalErr {
 			return nil, ""
 		}
-		entries = boundedEntries(classScopedEntries(ranges.global, candidate.Class), s.RelationTargets)
+		// 全局范围的比较集是全部生效条目：类别不构成比较边界，同一事项的
+		// 新旧值跨类别也要能被判成替换；不同事项由判定返回 independent。
+		entries = boundedEntries(ranges.global, s.RelationTargets)
 	} else {
 		if candidate.TopicKey == "" {
 			// A pending-topic candidate has no range yet. The duplicate check
@@ -877,22 +884,34 @@ func boundedEntries(entries []model.LongTermMemory, limit int) []model.LongTermM
 	return entries[:limit]
 }
 
-// classScopedEntries narrows the global snapshot to the candidate's own
-// profile slot (同类画像对比). Entries without a class stay in: a manually
-// written row that predates the class column cannot name its slot, and
-// leaving it out would hide a real conflict from the judgement - the filter
-// narrows who is compared, and the resolver still decides what duplicates.
-func classScopedEntries(entries []model.LongTermMemory, class model.MemoryProfileClass) []model.LongTermMemory {
-	if class == "" {
-		return entries
-	}
-	result := make([]model.LongTermMemory, 0, len(entries))
-	for _, entry := range entries {
-		if entry.ProfileClass == class || entry.ProfileClass == "" {
-			result = append(result, entry)
+// userStatementMessageIDs collects the messages the board attributes to the
+// learner (origin=user) across goal, constraints, plan and open items. These
+// are the statements the learner already made in their own words; the
+// adoption check treats one of them as the origin of a candidate the
+// assistant merely restated.
+func userStatementMessageIDs(board model.SessionWhiteboardDocument) map[uint]struct{} {
+	ids := make(map[uint]struct{})
+	add := func(entries []model.SessionWhiteboardEntry) {
+		for _, entry := range entries {
+			if entry.Origin != model.SessionWhiteboardOriginUser {
+				continue
+			}
+			for _, id := range entry.SourceMessageIDs {
+				ids[id] = struct{}{}
+			}
 		}
 	}
-	return result
+	add(board.Constraints)
+	add(board.Plan)
+	add(board.OpenItems)
+	// The goal carries no origin field: it is the learner's own goal by
+	// construction, so its source messages are their words.
+	if board.Goal != nil {
+		for _, id := range board.Goal.SourceMessageIDs {
+			ids[id] = struct{}{}
+		}
+	}
+	return ids
 }
 
 // visibleMessages assembles the set the proposer may cite: every message the
@@ -991,7 +1010,7 @@ func (s *SessionFinalizeService) validateShape(proposal SessionRawProposal) stri
 // what the candidate is about, and the program says whether the words it
 // rests on exist, belong to the learner, and - for an adopted proposal -
 // include an acceptance that came after the proposal.
-func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessage) ([]SessionEvidenceRef, []SessionEvidenceRef, string) {
+func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessage, userBoardMessages map[uint]struct{}) ([]SessionEvidenceRef, []SessionEvidenceRef, string) {
 	if len(proposal.EvidenceIDs) == 0 {
 		return nil, nil, FinalizeSkipEvidenceMissing
 	}
@@ -1032,13 +1051,25 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 		assistant = append(assistant, SessionEvidenceRef{MessageID: id, Role: model.SessionWhiteboardOriginAssistant, At: message.CreatedAt})
 	}
 	if len(assistant) > 0 {
-		// The acceptance rule is the whiteboard engine's, restated for
-		// candidates: the learner's message must come after the assistant's
-		// proposal. The ids' order is the order the messages were written in.
+		// Two shapes prove the learner's own words are behind the candidate.
+		//
+		// Acceptance: the learner's message comes after the assistant's
+		// proposal - the whiteboard engine's rule, restated for candidates.
+		//
+		// Learner-first: the learner stated the decision and the assistant
+		// only restated it afterwards. The statement evidence then predates
+		// every cited assistant message, and the message must be one the
+		// board already attributes to the learner (origin=user). Without that
+		// attribution the earlier message is just whatever the learner said
+		// before the assistant proposed, which is not an adoption.
 		latest := uint(0)
+		earliest := uint(0)
 		for _, ref := range assistant {
 			if ref.MessageID > latest {
 				latest = ref.MessageID
+			}
+			if earliest == 0 || ref.MessageID < earliest {
+				earliest = ref.MessageID
 			}
 		}
 		accepted := false
@@ -1046,6 +1077,17 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 			if ref.MessageID > latest {
 				accepted = true
 				break
+			}
+		}
+		if !accepted {
+			statementID := proposal.StatementEvidenceID
+			if statementID == 0 && len(evidence) == 1 {
+				statementID = evidence[0].MessageID
+			}
+			if statementID != 0 && statementID < earliest {
+				if _, ok := userBoardMessages[statementID]; ok {
+					accepted = true
+				}
 			}
 		}
 		if !accepted {

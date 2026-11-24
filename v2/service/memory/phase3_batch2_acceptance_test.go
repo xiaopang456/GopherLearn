@@ -568,9 +568,8 @@ func TestFinalizeAcceptanceFullChain(t *testing.T) {
 		t.Fatalf("watermark moved backwards, want it monotonic")
 	}
 
-	// ---- 全局同类收窄：判定只见同一画像槽位（或未标类别的存量行）。
-	// 一条不同类别的画像条目（目标类）不进入教学偏好候选的判定视野。
-	// 造一条新消息把水位推前，这次触发才真的跑提取。
+	// ---- 全局范围是全部生效条目：判定不按画像类别收窄，跨类别的同一
+	// 事项才能被关联到旧值。造一条新消息把水位推前，这次触发才真的跑提取。
 	narrowMessage := acc.seedMessages(t, ctx, missedSession, []SessionMessage{
 		{IsUser: true, Content: "还有，讲新东西最好配一道练习题。", CreatedAt: preferenceAt.Add(50 * time.Minute)},
 	})
@@ -603,19 +602,22 @@ func TestFinalizeAcceptanceFullChain(t *testing.T) {
 		t.Fatalf("global classifier was never called")
 	}
 	lastSaw := acc.global.saw[len(acc.global.saw)-1]
-	for _, row := range lastSaw {
-		if row.ProfileClass == model.ProfileClassGoal {
-			t.Fatalf("classifier saw a goal-class row %+v, want same-class or unclassified rows only", row)
-		}
-	}
-	foundOwnClass := false
+	foundOwnClass, foundCrossClass := false, false
 	for _, row := range lastSaw {
 		if row.ProfileClass == model.ProfileClassTeachingPreference {
 			foundOwnClass = true
 		}
+		if row.ProfileClass == model.ProfileClassGoal {
+			foundCrossClass = true
+		}
 	}
+	// 跨类别的旧条目必须进入判定视野（同一事项可能换了类别），判成什么
+	// 由分类器决定；本次判定返回 independent，候选照常出卡。
 	if !foundOwnClass {
 		t.Fatalf("classifier did not see the confirmed teaching preference row: %+v", lastSaw)
+	}
+	if !foundCrossClass {
+		t.Fatalf("classifier did not see the goal-class row, want the class-blind range: %+v", lastSaw)
 	}
 }
 
@@ -731,11 +733,11 @@ func TestFinalizeAcceptanceLongSessionBatches(t *testing.T) {
 }
 
 // TestFinalizeAcceptanceCrossClassExactDuplicateStillConflicts is the 9004
-// protection regression: the extraction's class-scoped comparison cannot see
-// another profile slot's rows, but the draft entry's byte-identical check
-// runs before any narrowing and is class-blind on purpose - an exact
-// duplicate of a goal-class memory is still a duplicate, and the entry
-// refuses the card exactly as it does inside one class.
+// protection regression after the cross-class fix: the extraction range is
+// class-blind, so a byte-identical value stored under another profile slot
+// is caught by the extraction's own hash check (duplicate_existing) instead
+// of reaching the draft entry. The learner-visible outcome is unchanged - no
+// card, the watermark moves - and the duplicate is refused earlier.
 func TestFinalizeAcceptanceCrossClassExactDuplicateStillConflicts(t *testing.T) {
 	acc := newFinalizeAcceptance(t)
 	ctx := context.Background()
@@ -765,12 +767,12 @@ func TestFinalizeAcceptanceCrossClassExactDuplicateStillConflicts(t *testing.T) 
 	if err != nil {
 		t.Fatalf("run session: %v", err)
 	}
-	// 提取端的同类收窄看不见目标类条目，入口的字节保护把它挡下。
+	// 范围跨类别后，同值保护在提取端就生效：同内容不同类别的条目仍判重。
 	if len(outcome.Persisted) != 0 {
 		t.Fatalf("persisted=%d, want the cross-class exact duplicate refused", len(outcome.Persisted))
 	}
-	if len(outcome.Skipped) != 1 || outcome.Skipped[0].Reason != FinalizeSkipDraftDuplicateExisting {
-		t.Fatalf("skipped=%+v, want the entry's byte protection to pass through", outcome.Skipped)
+	if len(outcome.Skipped) != 1 || outcome.Skipped[0].Reason != FinalizeSkipDuplicateExisting {
+		t.Fatalf("skipped=%+v, want the extraction-side byte duplicate refusal", outcome.Skipped)
 	}
 	if !outcome.Advanced {
 		t.Fatalf("advanced=false, want the watermark to move past the refusal")
