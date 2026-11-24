@@ -1166,13 +1166,6 @@ func (s *SessionFinalizeService) validateShape(proposal SessionRawProposal) stri
 	return ""
 }
 
-// validateEvidence checks the source of one proposal against the messages
-// this extraction could see. It is the provenance boundary: the model says
-// what the candidate is about, and the program says whether the words it
-// rests on exist, belong to the learner, and - for an adopted proposal -
-// include an acceptance that came after the proposal. It returns the evidence
-// refs, the assistant refs, the content the card must carry (set only for the
-// learner-first shape), and a skip reason.
 // finalizeCardOverride is the card text the program generates from the
 // confirmed source: the learner-first statement spans, or an adopted board
 // entry's title and body. The model's own prose only helps locate the source.
@@ -1181,6 +1174,13 @@ type finalizeCardOverride struct {
 	Content string
 }
 
+// validateEvidence checks the source of one proposal against the messages
+// this extraction could see. It is the provenance boundary: the model says
+// what the candidate is about, and the program says whether the words it
+// rests on exist, belong to the learner, and - for an adopted proposal -
+// include an acceptance that came after the proposal. It returns the evidence
+// refs, the assistant refs, the title and body the card must carry (empty
+// when the source does not override them), and a skip reason.
 func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessage, userBoardMessages map[uint]struct{}, acceptedByAssistant map[uint]boardAcceptedProposal) ([]SessionEvidenceRef, []SessionEvidenceRef, finalizeCardOverride, string) {
 	if len(proposal.EvidenceIDs) == 0 {
 		return nil, nil, finalizeCardOverride{}, FinalizeSkipEvidenceMissing
