@@ -3,20 +3,21 @@ package agent
 // A summary that does not fit is written again.
 //
 // The segment is read under a budget, and a summary that costs more than
-// that budget is not read at all. Cutting the words is not an option: a cut
-// point says something else, and what it says is often the opposite of what
-// was said.
+// that budget is not read in full: the renderer leaves out the points that
+// do not fit and names the messages they came from. Cutting the words is not
+// an option: a cut point says something else, and what it says is often the
+// opposite of what was said.
 //
 // So the question goes back to the model that wrote it. The same turns are
 // sent again with a request to write it shorter, and a summary that still
-// does not fit is not stored at all: a batch that wrote nothing is a hole in
-// the session's memory, and a hole that is counted is a hole somebody can
-// see.
+// does not fit is stored as it came back: a stored summary the window trims
+// is a stretch of the session the reader can still reach, while a failed
+// batch is a hole in the session's memory.
 //
 // The tests here are about that: the second answer is the one that is kept,
-// the model is asked at most twice more, a summary that never fits is a
-// failure and not a stored summary, and the mode that does not record the
-// assistant's products keeps the path it always had.
+// the model is asked at most twice more, a summary that never fits is stored
+// whole rather than lost, and the mode that does not record the assistant's
+// products keeps the path it always had.
 
 import (
 	"context"
@@ -90,23 +91,25 @@ func TestTheCompressionIsAskedForWithTheSameTurns(t *testing.T) {
 }
 
 // The model is asked at most twice more, and a summary that still does not
-// fit is a failure: the batch wrote nothing, and the reason is counted.
-func TestASummaryThatNeverFitsIsNotStored(t *testing.T) {
+// fit is stored whole: the renderer trims it when it renders, and the batch
+// is not a hole in the session's memory.
+func TestASummaryThatNeverFitsIsStoredWhole(t *testing.T) {
 	long := longSegmentPayload(10)
 	generator, stub := assistantSegmentGenerator(t, long)
 	stub.byCall = []string{long, long, long}
 	result, err := generator.GenerateSegment(context.Background(), assistantTestInput())
-	if err == nil {
-		t.Fatalf("a summary that does not fit was stored: %+v", result.Segment.Points)
+	if err != nil {
+		t.Fatalf("a summary that does not fit was lost: %v", err)
 	}
 	if stub.calls != segmentCompressLimit+1 {
 		t.Fatalf("the model was asked %d times, want %d", stub.calls, segmentCompressLimit+1)
 	}
-	if reason := segmentFailureReason(err); reason != segmentReasonOverBudget {
-		t.Fatalf("the failure reason = %q, want %q", reason, segmentReasonOverBudget)
+	if result.SegmentContent == "" || len(result.Segment.Points) == 0 {
+		t.Fatalf("the summary was not stored: %+v", result.Segment.Points)
 	}
-	if len(result.Segment.Points) != 0 || result.SegmentContent != "" {
-		t.Fatalf("a summary was stored although the batch failed: %+v", result.Segment.Points)
+	if cost := SegmentContentTokens(result.Segment, 30, 33); cost <= DefaultAssistantSegmentTokens {
+		t.Fatalf("the stored segment costs %d tokens, want over the %d budget",
+			cost, DefaultAssistantSegmentTokens)
 	}
 }
 

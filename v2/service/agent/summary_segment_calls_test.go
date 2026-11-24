@@ -210,45 +210,58 @@ func TestTheCountOfTheCallsIsTheCountOfTheCalls(t *testing.T) {
 	}
 }
 
-// A batch that never fits is asked three times and not one more.
+// A batch that never fits is asked three times and not one more, and what
+// the last answer said is stored.
 //
 // The limit is the point of the test: three calls, and the fourth is never
-// made however long the batch went on failing.
+// made however long the batch went on failing. The answer is not thrown
+// away: the renderer trims it, and a stored summary is a stretch of the
+// session the reader can still reach.
 func TestTheBatchIsNeverAskedAFourthTime(t *testing.T) {
 	long := longSegmentPayload(10)
 	stub := &recordingSegmentModel{answers: []string{long, long, long, shortSegmentPayload}}
 	generator := rewritingGenerator(t, stub)
-	if _, err := generator.GenerateSegment(context.Background(), assistantTestInput()); err == nil {
-		t.Fatal("a summary that does not fit was stored")
+	result, err := generator.GenerateSegment(context.Background(), assistantTestInput())
+	if err != nil {
+		t.Fatalf("a summary that never got shorter was lost: %v", err)
 	}
 	if stub.calls != segmentCompressLimit+1 {
 		t.Fatalf("the model was asked %d times, want %d", stub.calls, segmentCompressLimit+1)
+	}
+	if result.SegmentContent == "" || len(result.Segment.Points) == 0 {
+		t.Fatal("the last answer was not stored")
 	}
 }
 
 // The cost of a failure does not go away.
 //
-// A batch that wrote nothing still made the calls, and the failure carries
-// them. A failure that carries no calls says the attempt was free, and it
-// was not.
+// A batch that wrote nothing still made the call, and the failure carries
+// it. A failure that carries no calls says the attempt was free, and it was
+// not. The failure here is the first call's: there is no earlier answer to
+// fall back to, so the batch fails and the call is counted. A failure after
+// a usable answer is not this case - that answer is stored.
 func TestTheCostOfAFailureDoesNotGoAway(t *testing.T) {
-	long := longSegmentPayload(10)
-	stub := &recordingSegmentModel{answers: []string{long, long, long}}
+	stub := &recordingSegmentModel{failOn: 1}
 	generator := rewritingGenerator(t, stub)
 	_, err := generator.GenerateSegment(context.Background(), assistantTestInput())
 	if err == nil {
-		t.Fatal("a summary that does not fit was stored")
+		t.Fatal("a failed first call did not fail the batch")
 	}
 	calls := segmentFailureCalls(err)
-	if calls != segmentCompressLimit+1 {
-		t.Fatalf("the failure carries %d calls, want %d", calls, segmentCompressLimit+1)
+	if calls != 1 {
+		t.Fatalf("the failure carries %d calls, want 1", calls)
+	}
+	if reason := segmentFailureReason(err); reason != segmentReasonModelError {
+		t.Fatalf("the failure reason = %q, want %q", reason, segmentReasonModelError)
 	}
 }
 
-// A call that fails in the middle is counted and the failure says so.
+// A call that fails in the middle is counted, and the answer that was
+// already usable is stored.
 //
-// The provider failed on the second call, after the first one came back and
-// was refused. The batch made two calls, and the failure carries both.
+// The first answer did not fit; the rewrite failed. The batch is still a
+// batch: the first answer is stored, and the cost of the failed rewrite
+// travels with it in the call records.
 func TestACallThatFailsInTheMiddleIsCounted(t *testing.T) {
 	long := longSegmentPayload(10)
 	stub := &recordingSegmentModel{
@@ -256,19 +269,25 @@ func TestACallThatFailsInTheMiddleIsCounted(t *testing.T) {
 		failOn:  2,
 	}
 	generator := rewritingGenerator(t, stub)
-	_, err := generator.GenerateSegment(context.Background(), assistantTestInput())
-	if err == nil {
-		t.Fatal("a failed call did not fail the batch")
+	result, err := generator.GenerateSegment(context.Background(), assistantTestInput())
+	if err != nil {
+		t.Fatalf("the usable first answer was lost when the rewrite failed: %v", err)
 	}
 	if stub.calls != 2 {
 		t.Fatalf("the model was asked %d times, want 2", stub.calls)
 	}
-	calls := segmentFailureCalls(err)
-	if calls != 2 {
-		t.Fatalf("the failure carries %d calls, want 2", calls)
+	if result.Calls != 2 {
+		t.Fatalf("the batch took %d calls, want 2", result.Calls)
 	}
-	if reason := segmentFailureReason(err); reason != segmentReasonModelError {
-		t.Fatalf("the failure reason = %q, want %q", reason, segmentReasonModelError)
+	if result.SegmentContent == "" || len(result.Segment.Points) == 0 {
+		t.Fatal("the usable first answer was not stored")
+	}
+	if len(result.CallRecords) != 2 {
+		t.Fatalf("the call records = %d, want 2: %+v", len(result.CallRecords), result.CallRecords)
+	}
+	if result.CallRecords[1].Outcome != segmentCallFailed ||
+		result.CallRecords[1].Reason != segmentReasonModelError {
+		t.Fatalf("the failed rewrite = %+v, want failed for model_error", result.CallRecords[1])
 	}
 }
 
