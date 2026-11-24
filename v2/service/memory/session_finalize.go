@@ -654,7 +654,6 @@ func (s *SessionFinalizeService) Extract(ctx context.Context, request FinalizeRe
 	// board already attributed to the learner. The adoption check uses it to
 	// separate "the learner decided, the assistant restated" from "the
 	// assistant proposed, nobody agreed".
-	userBoardMessages := userStatementMessageIDs(board)
 	// The board's assistant_accepted entries are the engine's own record of
 	// which assistant proposal the learner took on, and with which learner
 	// message. Extraction re-reads that pair instead of trusting the order of
@@ -700,7 +699,7 @@ func (s *SessionFinalizeService) Extract(ctx context.Context, request FinalizeRe
 			result.Skipped = append(result.Skipped, FinalizeSkip{Reason: skip, Subject: proposal.Subject, EvidenceIDs: proposal.EvidenceIDs, AssistantIDs: proposal.AssistantIDs})
 			continue
 		}
-		evidence, assistant, cardOverride, skip := validateEvidence(proposal, input.Visible, userBoardMessages, acceptedByAssistant)
+		evidence, assistant, cardOverride, skip := validateEvidence(proposal, input.Visible, acceptedByAssistant)
 		if skip != "" {
 			result.Skipped = append(result.Skipped, FinalizeSkip{Reason: skip, Subject: proposal.Subject, EvidenceIDs: proposal.EvidenceIDs, AssistantIDs: proposal.AssistantIDs})
 			continue
@@ -902,36 +901,6 @@ func boundedEntries(entries []model.LongTermMemory, limit int) []model.LongTermM
 		return entries
 	}
 	return entries[:limit]
-}
-
-// userStatementMessageIDs collects the messages the board attributes to the
-// learner (origin=user) across goal, constraints, plan and open items. These
-// are the statements the learner already made in their own words; the
-// adoption check treats one of them as the origin of a candidate the
-// assistant merely restated.
-func userStatementMessageIDs(board model.SessionWhiteboardDocument) map[uint]struct{} {
-	ids := make(map[uint]struct{})
-	add := func(entries []model.SessionWhiteboardEntry) {
-		for _, entry := range entries {
-			if entry.Origin != model.SessionWhiteboardOriginUser {
-				continue
-			}
-			for _, id := range entry.SourceMessageIDs {
-				ids[id] = struct{}{}
-			}
-		}
-	}
-	add(board.Constraints)
-	add(board.Plan)
-	add(board.OpenItems)
-	// The goal carries no origin field: it is the learner's own goal by
-	// construction, so its source messages are their words.
-	if board.Goal != nil {
-		for _, id := range board.Goal.SourceMessageIDs {
-			ids[id] = struct{}{}
-		}
-	}
-	return ids
 }
 
 // boardAcceptedProposal is one adoption the board recorded: the assistant
@@ -1181,7 +1150,7 @@ type finalizeCardOverride struct {
 // include an acceptance that came after the proposal. It returns the evidence
 // refs, the assistant refs, the title and body the card must carry (empty
 // when the source does not override them), and a skip reason.
-func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessage, userBoardMessages map[uint]struct{}, acceptedByAssistant map[uint]boardAcceptedProposal) ([]SessionEvidenceRef, []SessionEvidenceRef, finalizeCardOverride, string) {
+func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessage, acceptedByAssistant map[uint]boardAcceptedProposal) ([]SessionEvidenceRef, []SessionEvidenceRef, finalizeCardOverride, string) {
 	if len(proposal.EvidenceIDs) == 0 {
 		return nil, nil, finalizeCardOverride{}, FinalizeSkipEvidenceMissing
 	}
@@ -1222,115 +1191,79 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 		assistant = append(assistant, SessionEvidenceRef{MessageID: id, Role: model.SessionWhiteboardOriginAssistant, At: message.CreatedAt})
 	}
 	override := finalizeCardOverride{}
-	restatementOnly := false
+	userSourceOnly := false
 	if len(assistant) > 0 {
-		// Acceptance must point at the proposal this candidate cites. The
-		// board records the pair - the assistant's proposal and the learner's
-		// message that took it on - and extraction re-reads the same pair:
-		// with two proposals in play, "go with the second one" must not let
-		// the first one through. A proposal the board did not record as
-		// accepted is not an adoption, however the later message reads. The
-		// message also has to read like an acceptance; the board's record and
-		// the learner's words have to agree.
-		//
-		// The draft body comes from the board's confirmed entry, not from the
-		// model's prose. Numbers and wording similarity only help match the
-		// candidate to that entry; they cannot prove two sentences mean the
-		// same thing, so a rewrite that adds a condition or flips a preference
-		// is not allowed to become the card. The model proposes and locates
-		// the evidence; the program writes what the learner adopted.
-		earliest := uint(0)
-		for _, ref := range assistant {
-			if earliest == 0 || ref.MessageID < earliest {
-				earliest = ref.MessageID
+		// The learner's own words may already support the candidate. The
+		// assistant refs are then redundant: the card is built from the
+		// learner's evidence, the assistant messages are not recorded, and
+		// they cannot name a topic. This covers both "learner first, assistant
+		// restates" and "assistant explains, learner restates in their own
+		// words"; neither needs the board to prove an adoption.
+		userTexts := make([]string, 0, len(evidence))
+		for _, ref := range evidence {
+			if message, found := visible[ref.MessageID]; found {
+				userTexts = append(userTexts, message.Content)
 			}
 		}
-		accepted := true
-		acceptedTitle := ""
-		acceptedBody := ""
-		for _, ref := range assistant {
-			pair, recorded := acceptedByAssistant[ref.MessageID]
-			if !recorded {
-				accepted = false
-				break
-			}
-			matched := false
-			for _, ev := range evidence {
-				if ev.MessageID != pair.AcceptanceID {
-					continue
+		if supported := learnerEvidenceSupportedContent(userTexts, proposal.Content); supported != "" &&
+			utf8.RuneCountInString(supported) <= model.MemoryContentMaxRunes {
+			userSourceOnly = true
+			override.Title = userSourceTitle(supported)
+			override.Content = supported
+		}
+		if !userSourceOnly {
+			// The draft depends on assistant-added information: the board pair
+			// and the learner's explicit acceptance are still required. The
+			// body comes from the board's confirmed entry, not from the model's
+			// prose, so a rewrite that adds a condition or flips a preference
+			// cannot become the card.
+			accepted := true
+			acceptedTitle := ""
+			acceptedBody := ""
+			for _, ref := range assistant {
+				pair, recorded := acceptedByAssistant[ref.MessageID]
+				if !recorded {
+					accepted = false
+					break
 				}
-				if ev.MessageID > ref.MessageID {
-					if message, found := visible[ev.MessageID]; found && learnerAcceptedProposal(message.Content) {
-						matched = true
+				matched := false
+				for _, ev := range evidence {
+					if ev.MessageID != pair.AcceptanceID {
+						continue
 					}
-				}
-				break
-			}
-			if !matched {
-				accepted = false
-				break
-			}
-			// 候选必须与白板确认的那条记录对得上：同一事项、同一个值、不
-			// 冲突的适用范围。数字和相似度只做匹配，正文不取模型的改写。
-			if !learnerDraftMatchesAdoption(pair.Text, pair.Value, proposal.Content, proposal.Subject) {
-				accepted = false
-				break
-			}
-			body := pair.Body()
-			title := pair.Title()
-			if body == "" || title == "" ||
-				(acceptedBody != "" && acceptedBody != body) ||
-				(acceptedTitle != "" && acceptedTitle != title) {
-				accepted = false
-				break
-			}
-			acceptedBody = body
-			acceptedTitle = title
-		}
-		if accepted {
-			if utf8.RuneCountInString(acceptedBody) > model.MemoryContentMaxRunes {
-				accepted = false
-			} else {
-				override.Title = acceptedTitle
-				override.Content = acceptedBody
-			}
-		}
-		// Learner-first: the learner stated the decision and the assistant
-		// only restated it afterwards. The statement evidence then predates
-		// every cited assistant message, and the message must be one the
-		// board already attributes to the learner (origin=user). Time order
-		// and that attribution prove the learner spoke first; they do not
-		// prove the candidate's content is what the learner said. The
-		// statement has to support the content, and the card is built from
-		// the part of the statement that supports this one matter: the
-		// assistant only restated it, so anything else the assistant (or the
-		// message's other clauses) added - a new matter, value or condition,
-		// or a one-off operation - has no learner adoption and must not reach
-		// the card. The restatement is not an adoption either, so it is
-		// dropped from the assistant refs below: it may not enter
-		// assistant_messages and may not name a topic.
-		if !accepted {
-			statementID := proposal.StatementEvidenceID
-			if statementID == 0 && len(evidence) == 1 {
-				statementID = evidence[0].MessageID
-			}
-			learnerFirst := false
-			if statementID != 0 && statementID < earliest {
-				if _, ok := userBoardMessages[statementID]; ok {
-					statement, found := visible[statementID]
-					if found {
-						supported := learnerStatementSupportedContent(strings.TrimSpace(statement.Content), proposal.Content)
-						if supported != "" && utf8.RuneCountInString(supported) <= model.MemoryContentMaxRunes {
-							learnerFirst = true
-							restatementOnly = true
-							override.Content = supported
+					if ev.MessageID > ref.MessageID {
+						if message, found := visible[ev.MessageID]; found && learnerAcceptedProposal(message.Content) {
+							matched = true
 						}
 					}
+					break
 				}
+				if !matched {
+					accepted = false
+					break
+				}
+				// 候选必须与白板确认的那条记录对得上：同一事项、同一个值、不
+				// 冲突的适用范围。数字和相似度只做匹配，正文不取模型的改写。
+				if !learnerDraftMatchesAdoption(pair.Text, pair.Value, proposal.Content, proposal.Subject) {
+					accepted = false
+					break
+				}
+				body := pair.Body()
+				title := pair.Title()
+				if body == "" || title == "" ||
+					(acceptedBody != "" && acceptedBody != body) ||
+					(acceptedTitle != "" && acceptedTitle != title) {
+					accepted = false
+					break
+				}
+				acceptedBody = body
+				acceptedTitle = title
 			}
-			if !learnerFirst {
+			if !accepted || utf8.RuneCountInString(acceptedBody) > model.MemoryContentMaxRunes {
 				return nil, nil, finalizeCardOverride{}, FinalizeSkipAdoptionUnproven
 			}
+			override.Title = acceptedTitle
+			override.Content = acceptedBody
 		}
 	}
 	// The statement reference is the one the 原话时间 follows. A proposal
@@ -1357,75 +1290,84 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 	} else {
 		evidence[0].Statement = true
 	}
-	if restatementOnly {
-		// 助手只是复述学习者先说的话，学习者没有明确采纳这条助手内容。它不
-		// 是被采纳的助手原话：不进入 assistant_messages，也不能作为主题
-		// 点名证据。
+	if userSourceOnly {
+		// 用户证据已经完整支撑草稿：助手引用是多余的，不进入
+		// assistant_messages，也不能作为主题点名证据。
 		assistant = nil
 	}
 	return evidence, assistant, override, ""
 }
 
-// minLearnerStatementCoverage is the share of the candidate content's
-// character pairs that the kept parts of the learner's statement must
-// support. It is the same coverage rule the live draft tool applies to a
-// draft built from the learner's current message
-// (agenttool.draftContentFromCurrentMessage): a restatement loses only its
-// leading subject, while an assistant invention loses the sentence it was
-// built from.
-const minLearnerStatementCoverage = 0.6
+// minUserEvidenceCoverage is the share of the candidate content's character
+// pairs that the kept parts of the user evidence must carry. The card body is
+// built from the kept user clauses, so this is a floor for "the learner's
+// evidence talks about this candidate", not a proof that two sentences mean
+// the same thing; the value and scope checks below gate each clause.
+const minUserEvidenceCoverage = 0.35
 
-// minLearnerClauseSupport is the share of a clause's character pairs that
-// must appear in the candidate content before the clause counts as being
-// about this matter. It keeps a one-off operation that shares a stray pair
-// (say the same number, or a common word) out of a standing decision's card.
-const minLearnerClauseSupport = 0.3
+// minUserClauseSupport is the share of a clause's character pairs that must
+// appear in the candidate content before the clause counts as being about
+// this matter. It is deliberately low enough for a paraphrase the assistant
+// wrote in different words ("直接跑" vs "可直接运行"), while a temporary
+// clause that shares only a stray number still falls below it or fails the
+// value/scope check.
+const minUserClauseSupport = 0.2
 
-// learnerStatementSupportedContent returns the parts of the learner's
-// statement that support this one candidate matter, or "" when the statement
-// does not support it at all. The learner-first shape uses it to build the
-// card: the statement's clauses are kept only when they talk about the
-// candidate, so a long-term decision does not drag a one-off operation from
-// the same message into the card, and an assistant-added matter has no
-// clause to stand on. The kept clauses must still cover most of the
-// candidate's content, which is what separates "the learner said this" from
-// "the model wrote something loosely related".
-func learnerStatementSupportedContent(statement, content string) string {
+// learnerEvidenceSupportedContent returns the parts of the learner's evidence
+// that support this one candidate matter, or "" when the evidence does not
+// support it at all. The evidence may span several messages - a decision,
+// then a restatement - so its clauses are collected in message order. A
+// clause is kept only when it talks about the candidate, so a long-term
+// decision does not drag a one-off operation into the card, and an
+// assistant-added matter has no clause to stand on. The kept clauses must
+// still cover most of the candidate's content, which separates "the learner
+// said this" from "the model wrote something loosely related".
+func learnerEvidenceSupportedContent(userTexts []string, content string) string {
 	contentPairs := learnerStatementPairs(content)
 	if len(contentPairs) == 0 {
 		return ""
 	}
-	clauses := learnerStatementClauses(statement)
-	kept := make([]learnerClause, 0, len(clauses))
+	kept := make([]learnerClause, 0, 4)
 	covered := make(map[string]struct{}, len(contentPairs))
-	for _, clause := range clauses {
-		pairs := learnerStatementPairs(clause.text)
-		if len(pairs) == 0 {
-			continue
-		}
-		supported := 0
-		for pair := range pairs {
-			if _, ok := contentPairs[pair]; ok {
-				supported++
+	seen := make(map[string]struct{})
+	for _, text := range userTexts {
+		for _, clause := range learnerStatementClauses(text) {
+			key := learnerFoldedText(clause.text)
+			if key == "" {
+				continue
 			}
-		}
-		if float64(supported)/float64(len(pairs)) < minLearnerClauseSupport {
-			continue
-		}
-		// 字符相似度只负责找出可能的候选片段；最终还要核对值本身和适用
-		// 范围。同一事项的临时值（今天先用 1.22）与长期值（以后都用 1.23）
-		// 用词很接近，但值和范围都不同，不能进同一张卡。
-		if !learnerClauseAgreesOnValue(clause.text, content) || learnerScopeConflict(clause.text, content) {
-			continue
-		}
-		kept = append(kept, clause)
-		for pair := range pairs {
-			if _, ok := contentPairs[pair]; ok {
-				covered[pair] = struct{}{}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			pairs := learnerStatementPairs(clause.text)
+			if len(pairs) == 0 {
+				continue
+			}
+			supported := 0
+			for pair := range pairs {
+				if _, ok := contentPairs[pair]; ok {
+					supported++
+				}
+			}
+			if float64(supported)/float64(len(pairs)) < minUserClauseSupport {
+				continue
+			}
+			// 字符相似度只负责找出可能的候选片段；最终还要核对值本身和适用
+			// 范围。同一事项的临时值（今天先用 1.22）与长期值（以后都用 1.23）
+			// 用词很接近，但值和范围都不同，不能进同一张卡。
+			if !learnerClauseAgreesOnValue(clause.text, content) || learnerScopeConflict(clause.text, content) {
+				continue
+			}
+			seen[key] = struct{}{}
+			kept = append(kept, clause)
+			for pair := range pairs {
+				if _, ok := contentPairs[pair]; ok {
+					covered[pair] = struct{}{}
+				}
 			}
 		}
 	}
-	if len(kept) == 0 || float64(len(covered))/float64(len(contentPairs)) < minLearnerStatementCoverage {
+	if len(kept) == 0 || float64(len(covered))/float64(len(contentPairs)) < minUserEvidenceCoverage {
 		return ""
 	}
 	var builder strings.Builder
@@ -1439,6 +1381,23 @@ func learnerStatementSupportedContent(statement, content string) string {
 	}
 	return builder.String()
 }
+
+// userSourceTitle is the card title generated from the learner's supported
+// content. The model's subject never becomes the title on this path: an
+// assistant-added condition hiding in it must not reach the card.
+func userSourceTitle(content string) string {
+	clauses := learnerStatementClauses(content)
+	if len(clauses) == 0 {
+		return userStatementFallbackTitle
+	}
+	title := strings.TrimSpace(clauses[0].text)
+	if title == "" || utf8.RuneCountInString(title) > model.MemorySubjectMaxRunes {
+		return userStatementFallbackTitle
+	}
+	return title
+}
+
+const userStatementFallbackTitle = "用户陈述"
 
 // learnerClause is one clause of the statement: its trimmed text and the
 // separator that followed it ("" for the last clause). The separator is kept
