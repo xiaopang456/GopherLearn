@@ -1,0 +1,307 @@
+package memory
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"GopherAI/model"
+)
+
+// 本文件是复核反例一、反例二补修的零付费回归。
+//
+// 反例一：白板把用户先说的话记成 origin=user，只能证明消息先后，不能证明
+// 用户采纳了助手后来加的内容。三个开发样例：
+//  1. 用户决定、助手复述：正常出卡，且草稿内容由用户原话支撑；
+//  2. 助手另提新事项（Redis 升级）：零卡，记 adoption_unproven；
+//  3. 助手在同一事项里加用户没说过的条件：出卡，但草稿不带该条件。
+//
+// 反例二：提取侧先截前 10 条全局画像，草稿入口却比较最多 30 条，同一事项的
+// 旧值排在第 11 条时两层判定范围不一致。修复后两层看同一批生效条目，草稿
+// 钉住正确旧值；同值重述仍判重，跨类不同事项仍并存。确认前零正式写入、
+// 旧条目状态/修订记录/掌握度都不变。
+
+const boundaryUserStatement = "以后都用 Go 1.23。"
+
+func learnerFirstBoard(t *testing.T) string {
+	t.Helper()
+	document := model.SessionWhiteboardDocument{
+		SchemaVersion: model.SessionWhiteboardSchemaV3,
+		Constraints: []model.SessionWhiteboardEntry{{
+			Key: "go-version", Text: "以后都用 Go 1.23", Value: "1.23",
+			SourceMessageIDs: []uint{1}, Origin: model.SessionWhiteboardOriginUser, UpdatedAtMessageID: 1,
+		}},
+	}
+	return marshalFinalizeBoard(t, document)
+}
+
+func learnerFirstMessages(assistantReply string) []SessionMessage {
+	at := time.Date(2026, 11, 24, 20, 1, 0, 0, time.FixedZone("CST", 8*3600))
+	return []SessionMessage{
+		{ID: 1, IsUser: true, Content: boundaryUserStatement, CreatedAt: at},
+		{ID: 2, IsUser: false, Content: assistantReply, CreatedAt: at.Add(time.Minute)},
+	}
+}
+
+func learnerFirstProposal(content string) SessionRawProposal {
+	return SessionRawProposal{
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassConstraint, Subject: "Go 版本",
+		Durability: model.MemoryDurabilityStable, Content: content,
+		EvidenceIDs: []uint{1}, StatementEvidenceID: 1, AssistantIDs: []uint{2},
+	}
+}
+
+func extractLearnerFirst(t *testing.T, assistantReply, proposalContent string) FinalizeResult {
+	t.Helper()
+	board := learnerFirstBoard(t)
+	service := newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: learnerFirstMessages(assistantReply)},
+		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil,
+		&scriptedProposer{proposals: []SessionRawProposal{learnerFirstProposal(proposalContent)}},
+		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "boundary probe"}}, 10)
+	result, err := service.Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-dev-boundary"}})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	return result
+}
+
+// 样例一：用户决定、助手复述 → 正常出卡。草稿内容由用户原话支撑，助手的
+// 复述只作为来源记录，不把助手的改写当成用户原话。
+func TestAutoProposalAdoptionRestatementStillCards(t *testing.T) {
+	result := extractLearnerFirst(t, "好，以后都用 Go 1.23。", "用户以后都用 Go 1.23。")
+	if len(result.Proposals) != 1 || len(result.Skipped) != 0 {
+		t.Fatalf("proposals=%d skipped=%+v, want one card", len(result.Proposals), result.Skipped)
+	}
+	candidate := result.Proposals[0]
+	if candidate.Content != boundaryUserStatement {
+		t.Fatalf("content=%q, want the learner's own statement %q", candidate.Content, boundaryUserStatement)
+	}
+	// 来源契约保留助手复述这一侧：它记录的是"助手只是复述"，不是助手新增。
+	if len(candidate.AssistantUtterances) != 1 {
+		t.Fatalf("assistant provenance=%v, want the restatement kept", candidate.AssistantUtterances)
+	}
+	if len(candidate.Evidence) != 1 || candidate.Evidence[0].Role != model.SessionWhiteboardOriginUser {
+		t.Fatalf("evidence=%v, want the learner's message", candidate.Evidence)
+	}
+}
+
+// 样例二：助手另提新事项。用户没说过 Redis，白板 origin=user 只覆盖 Go 那句，
+// 时间先后不能证明用户采纳了 Redis 提议 → 零 Redis 卡，记 adoption_unproven。
+func TestAutoProposalAdoptionAssistantNewMatterIsRefused(t *testing.T) {
+	result := extractLearnerFirst(t, "建议顺便把 Redis 升到 7.4。", "Redis 升级到 7.4。")
+	if len(result.Proposals) != 0 {
+		t.Fatalf("proposals=%+v, want no Redis card", result.Proposals)
+	}
+	if len(result.Skipped) != 1 || result.Skipped[0].Reason != FinalizeSkipAdoptionUnproven {
+		t.Fatalf("skipped=%+v, want adoption_unproven", result.Skipped)
+	}
+	if result.Skipped[0].Subject != "Go 版本" && result.Skipped[0].Subject != "Redis 版本" {
+		t.Fatalf("skip subject=%q, want the refused candidate recorded", result.Skipped[0].Subject)
+	}
+}
+
+// 样例三：助手在同一事项里加了用户没说过的限制。卡可以出（用户自己的决定
+// 仍然有效），但草稿只写用户原话，不携带助手新增的限制。
+func TestAutoProposalAdoptionAssistantAddedConditionIsDropped(t *testing.T) {
+	result := extractLearnerFirst(t, "好，以后都用 Go 1.23，但不要用泛型。", "以后都用 Go 1.23，禁用泛型。")
+	if len(result.Proposals) != 1 || len(result.Skipped) != 0 {
+		t.Fatalf("proposals=%d skipped=%+v, want the learner's card", len(result.Proposals), result.Skipped)
+	}
+	content := result.Proposals[0].Content
+	if strings.Contains(content, "泛型") || strings.Contains(content, "禁用") {
+		t.Fatalf("content=%q, want no assistant-added condition", content)
+	}
+	if content != boundaryUserStatement {
+		t.Fatalf("content=%q, want the learner's own statement %q", content, boundaryUserStatement)
+	}
+}
+
+// 反例二主用例：10 条无关画像 + 第 11 条同一事项旧值（跨类别），走完整
+// Handoff → ProposeDraft。两层都必须看见旧值，最终草稿钉住它；确认前正式
+// 记忆、旧条目状态、修订记录和掌握度都不变。
+func TestAutoProposalRangeAlignmentLinksOldValueBeyondTen(t *testing.T) {
+	acc := newFinalizeAcceptance(t)
+	ctx := context.Background()
+	sessionID := "fin-acc-long"
+	stored := acc.seedSession(t, ctx, sessionID, nil, baseFinalizeMessages())
+	// 旧值按「背景」存；随后 10 条无关「目标」画像的 updated_at 都更新，按
+	// 生效清单的排序旧值正好排到第 11 条。
+	old := seedProfileEntry(t, acc, "Go 版本", "当前项目用 Go 1.22。", model.ProfileClassBackground)
+	for i := 0; i < 10; i++ {
+		seedProfileEntry(t, acc, fmt.Sprintf("无关画像%d", i), fmt.Sprintf("无关的画像内容%d。", i), model.ProfileClassGoal)
+	}
+	if err := acc.db.Create(&model.TopicProgress{
+		UserID: acc.userID, TopicKey: "go-basics", Topic: "Go 基础", MasteryScore: 80,
+		Confidence: 0.8, ValidAttempts: 6, Level: model.TopicProgressDeveloping,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	memoriesBefore := countRows(t, acc, &model.LongTermMemory{})
+	revisionsBefore := countRows(t, acc, &model.MemoryRevision{})
+	acc.global.inner = &deterministicGlobalClassifier{rules: []stubGlobalRule{
+		{contains: "1.23", relation: "replacement", targetHint: "1.22"},
+	}}
+	acc.proposer.proposals = []SessionRawProposal{{
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassConstraint, Subject: "Go 版本",
+		Durability: model.MemoryDurabilityStable, Content: "当前项目用 Go 1.23。",
+		EvidenceIDs: []uint{stored[2].ID}, StatementEvidenceID: stored[2].ID,
+	}}
+	outcome, err := acc.runner.RunSession(ctx, acc.userID, sessionID)
+	if err != nil {
+		t.Fatalf("run session: %v", err)
+	}
+	if len(outcome.Persisted) != 1 || len(outcome.Proposals) != 1 {
+		t.Fatalf("persisted=%v proposals=%d skipped=%+v, want one card", outcome.Persisted, len(outcome.Proposals), outcome.Skipped)
+	}
+	candidate := outcome.Proposals[0]
+	if candidate.Relation.Relation != GlobalRelationReplacement || candidate.Relation.TargetMemoryID != old.ID {
+		t.Fatalf("relation=%+v, want replacement of the 11th entry %s", candidate.Relation, old.ID)
+	}
+	relatedHasOld := false
+	for _, row := range candidate.RelatedOld {
+		if row.ID == old.ID {
+			relatedHasOld = true
+		}
+	}
+	if !relatedHasOld {
+		t.Fatalf("related=%+v, want the 11th old value in the extraction range", candidate.RelatedOld)
+	}
+	// 两层看见的是同一批生效条目：提取侧判定与草稿入口判定都包含第 11 条。
+	if len(acc.global.saw) < 2 {
+		t.Fatalf("classifier calls=%d, want extraction and draft-entry judgements", len(acc.global.saw))
+	}
+	for call, rows := range acc.global.saw {
+		if !memoryRowsContain(rows, old.ID) {
+			t.Fatalf("judgement %d did not see the 11th entry: %v", call, memoryIDs(rows))
+		}
+	}
+	drafts := acc.pendingDrafts(ctx)
+	if len(drafts) != 1 {
+		t.Fatalf("drafts=%d, want one pending card", len(drafts))
+	}
+	if !stringListContains(drafts[0].ConflictIDs, old.ID) {
+		t.Fatalf("draft conflicts=%v, want the 11th old value pinned", drafts[0].ConflictIDs)
+	}
+	// 不变量：确认前零正式写入、旧条目仍生效、无修订记录新增、掌握度不变。
+	if got := countRows(t, acc, &model.LongTermMemory{}); got != memoriesBefore {
+		t.Fatalf("memories=%d, want %d (no formal write before confirmation)", got, memoriesBefore)
+	}
+	if got := seedProfileStatus(t, acc, old.ID); got != model.LongTermMemoryActive {
+		t.Fatalf("old status=%s, want active before confirmation", got)
+	}
+	if got := countRows(t, acc, &model.MemoryRevision{}); got != revisionsBefore {
+		t.Fatalf("revisions=%d, want %d (untouched)", got, revisionsBefore)
+	}
+	var progress model.TopicProgress
+	if err := acc.db.Where("user_id = ? AND topic_key = ?", acc.userID, "go-basics").First(&progress).Error; err != nil {
+		t.Fatal(err)
+	}
+	if progress.MasteryScore != 80 {
+		t.Fatalf("mastery=%d, want 80 (untouched)", progress.MasteryScore)
+	}
+}
+
+// 同值重述仍判重跳过：旧值排在 11 条画像里时，提取侧先用哈希查重挡下，
+// 不再落到草稿入口才判重。
+func TestAutoProposalRangeAlignmentSameValueStillDeduplicated(t *testing.T) {
+	acc := newFinalizeAcceptance(t)
+	ctx := context.Background()
+	sessionID := "fin-acc-long"
+	stored := acc.seedSession(t, ctx, sessionID, nil, baseFinalizeMessages())
+	old := seedProfileEntry(t, acc, "Go 版本", "当前项目用 Go 1.22。", model.ProfileClassBackground)
+	for i := 0; i < 10; i++ {
+		seedProfileEntry(t, acc, fmt.Sprintf("无关同值画像%d", i), fmt.Sprintf("无关的同值画像内容%d。", i), model.ProfileClassGoal)
+	}
+	memoriesBefore := countRows(t, acc, &model.LongTermMemory{})
+	revisionsBefore := countRows(t, acc, &model.MemoryRevision{})
+	acc.proposer.proposals = []SessionRawProposal{{
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassConstraint, Subject: "Go 版本",
+		Durability: model.MemoryDurabilityStable, Content: "当前项目用 Go 1.22。",
+		EvidenceIDs: []uint{stored[2].ID}, StatementEvidenceID: stored[2].ID,
+	}}
+	outcome, err := acc.runner.RunSession(ctx, acc.userID, sessionID)
+	if err != nil {
+		t.Fatalf("run session: %v", err)
+	}
+	if len(outcome.Proposals) != 0 || len(outcome.Persisted) != 0 {
+		t.Fatalf("proposals=%d persisted=%v, want the duplicate skipped", len(outcome.Proposals), outcome.Persisted)
+	}
+	if len(outcome.Skipped) != 1 || outcome.Skipped[0].Reason != FinalizeSkipDuplicateExisting {
+		t.Fatalf("skipped=%+v, want duplicate_existing at the extraction range", outcome.Skipped)
+	}
+	if drafts := acc.pendingDrafts(ctx); len(drafts) != 0 {
+		t.Fatalf("drafts=%+v, want no card for the duplicate", drafts)
+	}
+	if got := countRows(t, acc, &model.LongTermMemory{}); got != memoriesBefore {
+		t.Fatalf("memories=%d, want %d", got, memoriesBefore)
+	}
+	if got := seedProfileStatus(t, acc, old.ID); got != model.LongTermMemoryActive {
+		t.Fatalf("old status=%s, want active", got)
+	}
+	if got := countRows(t, acc, &model.MemoryRevision{}); got != revisionsBefore {
+		t.Fatalf("revisions=%d, want %d", got, revisionsBefore)
+	}
+}
+
+// 跨类的不同事项仍可并存：第 11 条旧值现在进入提取侧判定范围，但判定为
+// independent，草稿不钉旧值，两条都保持生效。
+func TestAutoProposalRangeAlignmentCrossClassDifferentMattersCoexist(t *testing.T) {
+	acc := newFinalizeAcceptance(t)
+	ctx := context.Background()
+	sessionID := "fin-acc-long"
+	stored := acc.seedSession(t, ctx, sessionID, nil, baseFinalizeMessages())
+	goal := seedProfileEntry(t, acc, "目标", "2027 年春招目标岗位：Go 后端开发", model.ProfileClassGoal)
+	for i := 0; i < 10; i++ {
+		seedProfileEntry(t, acc, fmt.Sprintf("无关并存画像%d", i), fmt.Sprintf("无关的并存画像内容%d。", i), model.ProfileClassGoal)
+	}
+	memoriesBefore := countRows(t, acc, &model.LongTermMemory{})
+	acc.proposer.proposals = []SessionRawProposal{{
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassTeachingPreference, Subject: "讲解偏好",
+		Durability: model.MemoryDurabilityStable, Content: "讲新概念先举例再讲定义。",
+		EvidenceIDs: []uint{stored[2].ID}, StatementEvidenceID: stored[2].ID,
+	}}
+	outcome, err := acc.runner.RunSession(ctx, acc.userID, sessionID)
+	if err != nil {
+		t.Fatalf("run session: %v", err)
+	}
+	if len(outcome.Persisted) != 1 || len(outcome.Proposals) != 1 {
+		t.Fatalf("persisted=%v proposals=%d skipped=%+v, want the preference card", outcome.Persisted, len(outcome.Proposals), outcome.Skipped)
+	}
+	candidate := outcome.Proposals[0]
+	if candidate.Relation.Relation != GlobalRelationIndependent {
+		t.Fatalf("relation=%+v, want independent coexistence", candidate.Relation)
+	}
+	if len(acc.global.saw) == 0 || !memoryRowsContain(acc.global.saw[0], goal.ID) {
+		t.Fatalf("extraction range=%v, want the cross-class goal in view", acc.global.saw)
+	}
+	drafts := acc.pendingDrafts(ctx)
+	if len(drafts) != 1 || len(drafts[0].ConflictIDs) != 0 {
+		t.Fatalf("drafts=%+v, want no replacement target", drafts)
+	}
+	if got := seedProfileStatus(t, acc, goal.ID); got != model.LongTermMemoryActive {
+		t.Fatalf("goal status=%s, want active (coexist)", got)
+	}
+	if got := countRows(t, acc, &model.LongTermMemory{}); got != memoriesBefore {
+		t.Fatalf("memories=%d, want %d", got, memoriesBefore)
+	}
+}
+
+func memoryRowsContain(rows []model.LongTermMemory, id string) bool {
+	for _, row := range rows {
+		if row.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func memoryIDs(rows []model.LongTermMemory) []string {
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.ID)
+	}
+	return ids
+}

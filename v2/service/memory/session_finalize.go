@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"GopherAI/model"
@@ -272,10 +273,11 @@ type SessionFinalizeService struct {
 	existingValues FinalizeExistingValueSource
 	// ExistingValueLimit bounds how many old values reach one request.
 	ExistingValueLimit int
-	// RelationTargets is how many in-range active entries one relation
-	// judgement may be given. Only entries related to the candidate should
-	// travel to the real model; until that filter exists the range is the
-	// bound, and the number is recorded in the batch report.
+	// RelationTargets bounds how many active entries a topic note's relation
+	// judgement may be given. The global profile does not use it: extraction
+	// compares the same snapshot the draft entry does (up to the global hard
+	// limit), so the two layers cannot disagree about which old value is in
+	// range.
 	RelationTargets int
 }
 
@@ -693,10 +695,15 @@ func (s *SessionFinalizeService) Extract(ctx context.Context, request FinalizeRe
 			result.Skipped = append(result.Skipped, FinalizeSkip{Reason: skip, Subject: proposal.Subject, EvidenceIDs: proposal.EvidenceIDs, AssistantIDs: proposal.AssistantIDs})
 			continue
 		}
-		evidence, assistant, skip := validateEvidence(proposal, input.Visible, userBoardMessages)
+		evidence, assistant, learnerFirstContent, skip := validateEvidence(proposal, input.Visible, userBoardMessages)
 		if skip != "" {
 			result.Skipped = append(result.Skipped, FinalizeSkip{Reason: skip, Subject: proposal.Subject, EvidenceIDs: proposal.EvidenceIDs, AssistantIDs: proposal.AssistantIDs})
 			continue
+		}
+		if learnerFirstContent != "" {
+			// 学习者先说、助手只是复述：卡片记录学习者原话。模型候选里超出
+			// 这句原话的内容都是助手新增的，没有学习者采纳证据，不能进卡。
+			proposal.Content = learnerFirstContent
 		}
 		candidate := s.buildCandidate(request.UserID, coverage, proposal, evidence, assistant, input.Topics, input.Visible)
 		fingerprint := candidate.Fingerprint
@@ -810,9 +817,12 @@ func (s *SessionFinalizeService) inRangeEntries(ctx context.Context, userID int6
 		if ranges.globalErr {
 			return nil, ""
 		}
-		// 全局范围的比较集是全部生效条目：类别不构成比较边界，同一事项的
-		// 新旧值跨类别也要能被判成替换；不同事项由判定返回 independent。
-		entries = boundedEntries(ranges.global, s.RelationTargets)
+		// 全局范围的比较集与草稿入口一致：入口侧读取 GlobalMemoryHardLimit+1
+		// 条、在容量内把全部生效条目交给判定器。提取侧若用更小的窗口截前
+		// 若干条，同一事项的旧值排到窗口外时这里会漏关联，两层对同一张卡
+		// 给出不同结论。类别仍然不构成比较边界；不同事项由判定返回
+		// independent。
+		entries = boundedEntries(ranges.global, GlobalMemoryHardLimit)
 	} else {
 		if candidate.TopicKey == "" {
 			// A pending-topic candidate has no range yet. The duplicate check
@@ -1009,32 +1019,34 @@ func (s *SessionFinalizeService) validateShape(proposal SessionRawProposal) stri
 // this extraction could see. It is the provenance boundary: the model says
 // what the candidate is about, and the program says whether the words it
 // rests on exist, belong to the learner, and - for an adopted proposal -
-// include an acceptance that came after the proposal.
-func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessage, userBoardMessages map[uint]struct{}) ([]SessionEvidenceRef, []SessionEvidenceRef, string) {
+// include an acceptance that came after the proposal. It returns the evidence
+// refs, the assistant refs, the content the card must carry (set only for the
+// learner-first shape), and a skip reason.
+func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessage, userBoardMessages map[uint]struct{}) ([]SessionEvidenceRef, []SessionEvidenceRef, string, string) {
 	if len(proposal.EvidenceIDs) == 0 {
-		return nil, nil, FinalizeSkipEvidenceMissing
+		return nil, nil, "", FinalizeSkipEvidenceMissing
 	}
 	// A candidate citing more messages than an entry may cite is describing
 	// a stretch of history rather than one matter, which is a shape failure
 	// - the same limit the whiteboard applies to an entry's evidence.
 	if len(proposal.EvidenceIDs) > model.SessionWhiteboardEvidenceLimit {
-		return nil, nil, FinalizeSkipInvalidShape
+		return nil, nil, "", FinalizeSkipInvalidShape
 	}
 	evidenceIDs, ok := dedupeIDs(proposal.EvidenceIDs, model.SessionWhiteboardEvidenceLimit)
 	if !ok || len(evidenceIDs) == 0 {
-		return nil, nil, FinalizeSkipEvidenceMissing
+		return nil, nil, "", FinalizeSkipEvidenceMissing
 	}
 	evidence := make([]SessionEvidenceRef, 0, len(evidenceIDs))
 	for _, id := range evidenceIDs {
 		message, found := visible[id]
 		if !found {
-			return nil, nil, FinalizeSkipEvidenceMissing
+			return nil, nil, "", FinalizeSkipEvidenceMissing
 		}
 		if !message.IsUser {
-			return nil, nil, FinalizeSkipEvidenceRole
+			return nil, nil, "", FinalizeSkipEvidenceRole
 		}
 		if strings.TrimSpace(message.Content) == "" {
-			return nil, nil, FinalizeSkipEvidenceMissing
+			return nil, nil, "", FinalizeSkipEvidenceMissing
 		}
 		evidence = append(evidence, SessionEvidenceRef{MessageID: id, Role: model.SessionWhiteboardOriginUser, At: message.CreatedAt})
 	}
@@ -1043,13 +1055,14 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 	for _, id := range assistantIDs {
 		message, found := visible[id]
 		if !found {
-			return nil, nil, FinalizeSkipEvidenceMissing
+			return nil, nil, "", FinalizeSkipEvidenceMissing
 		}
 		if message.IsUser {
-			return nil, nil, FinalizeSkipEvidenceRole
+			return nil, nil, "", FinalizeSkipEvidenceRole
 		}
 		assistant = append(assistant, SessionEvidenceRef{MessageID: id, Role: model.SessionWhiteboardOriginAssistant, At: message.CreatedAt})
 	}
+	learnerFirstContent := ""
 	if len(assistant) > 0 {
 		// Two shapes prove the learner's own words are behind the candidate.
 		//
@@ -1059,9 +1072,13 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 		// Learner-first: the learner stated the decision and the assistant
 		// only restated it afterwards. The statement evidence then predates
 		// every cited assistant message, and the message must be one the
-		// board already attributes to the learner (origin=user). Without that
-		// attribution the earlier message is just whatever the learner said
-		// before the assistant proposed, which is not an adoption.
+		// board already attributes to the learner (origin=user). Time order
+		// and that attribution prove the learner spoke first; they do not
+		// prove the candidate's content is what the learner said. The
+		// statement has to support the content, and the card is built from
+		// the statement itself: the assistant only restated it, so anything
+		// else the assistant added - a new matter, value or condition - has
+		// no learner adoption and must not reach the card.
 		latest := uint(0)
 		earliest := uint(0)
 		for _, ref := range assistant {
@@ -1084,14 +1101,23 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 			if statementID == 0 && len(evidence) == 1 {
 				statementID = evidence[0].MessageID
 			}
+			learnerFirst := false
 			if statementID != 0 && statementID < earliest {
 				if _, ok := userBoardMessages[statementID]; ok {
-					accepted = true
+					statement, found := visible[statementID]
+					if found {
+						statementContent := strings.TrimSpace(statement.Content)
+						if learnerStatementSupportsContent(statementContent, proposal.Content) &&
+							utf8.RuneCountInString(statementContent) <= model.MemoryContentMaxRunes {
+							learnerFirst = true
+							learnerFirstContent = statementContent
+						}
+					}
 				}
 			}
-		}
-		if !accepted {
-			return nil, nil, FinalizeSkipAdoptionUnproven
+			if !learnerFirst {
+				return nil, nil, "", FinalizeSkipAdoptionUnproven
+			}
 		}
 	}
 	// The statement reference is the one the 原话时间 follows. A proposal
@@ -1111,14 +1137,77 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 			}
 		}
 		if !found {
-			return nil, nil, FinalizeSkipInvalidShape
+			return nil, nil, "", FinalizeSkipInvalidShape
 		}
 	} else if len(evidence) > 1 {
-		return nil, nil, FinalizeSkipStatementEvidenceRequired
+		return nil, nil, "", FinalizeSkipStatementEvidenceRequired
 	} else {
 		evidence[0].Statement = true
 	}
-	return evidence, assistant, ""
+	return evidence, assistant, learnerFirstContent, ""
+}
+
+// minLearnerStatementCoverage is the share of the candidate content's
+// character pairs that must appear in the learner's own statement before the
+// learner-first shape counts as adoption. It is the same coverage rule the
+// live draft tool applies to a draft built from the learner's current message
+// (agenttool.draftContentFromCurrentMessage): a restatement loses only its
+// leading subject, while an assistant invention loses the sentence it was
+// built from.
+const minLearnerStatementCoverage = 0.6
+
+// learnerStatementSupportsContent reports whether the candidate's content is
+// grounded in the learner's statement. Pair coverage is a threshold, not a
+// proof; the learner-first shape only needs it to separate the same matter
+// from an assistant-added one. The card's content is then taken from the
+// statement, so anything the content got from the assistant is dropped.
+func learnerStatementSupportsContent(statement, content string) bool {
+	content = strings.TrimSpace(content)
+	statement = strings.TrimSpace(statement)
+	if content == "" || statement == "" {
+		return false
+	}
+	wanted := learnerStatementPairs(content)
+	if len(wanted) == 0 {
+		return false
+	}
+	source := learnerStatementPairs(statement)
+	if len(source) == 0 {
+		return false
+	}
+	covered := 0
+	for pair := range wanted {
+		if _, ok := source[pair]; ok {
+			covered++
+		}
+	}
+	return float64(covered)/float64(len(wanted)) >= minLearnerStatementCoverage
+}
+
+// learnerStatementPairs is the set of adjacent character pairs a text is made
+// of, with spacing, punctuation, symbols and case folded away. The live draft
+// tool's content check uses the same shape, so the two entry points agree on
+// what "the learner's own words" means.
+func learnerStatementPairs(text string) map[string]struct{} {
+	folded := strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) || unicode.IsPunct(r) || unicode.IsSymbol(r) {
+			return -1
+		}
+		return unicode.ToLower(r)
+	}, strings.TrimSpace(text))
+	runes := []rune(folded)
+	if len(runes) == 0 {
+		return nil
+	}
+	pairs := make(map[string]struct{}, len(runes))
+	if len(runes) == 1 {
+		pairs[string(runes)] = struct{}{}
+		return pairs
+	}
+	for index := 0; index+1 < len(runes); index++ {
+		pairs[string(runes[index:index+2])] = struct{}{}
+	}
+	return pairs
 }
 
 func dedupeIDs(ids []uint, limit int) ([]uint, bool) {
