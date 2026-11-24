@@ -1065,11 +1065,33 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 	learnerFirstContent := ""
 	restatementOnly := false
 	if len(assistant) > 0 {
-		// Two shapes prove the learner's own words are behind the candidate.
-		//
 		// Acceptance: the learner's message comes after the assistant's
-		// proposal - the whiteboard engine's rule, restated for candidates.
-		//
+		// proposal AND says it takes the proposal on. Order alone is not
+		// agreement: a closing ("that's it for today"), a topic switch, and a
+		// non-committal reply all come after the proposal too. The message has
+		// to point back at the proposal or commit to it; a bare later message
+		// proves only that the conversation continued.
+		latest := uint(0)
+		earliest := uint(0)
+		for _, ref := range assistant {
+			if ref.MessageID > latest {
+				latest = ref.MessageID
+			}
+			if earliest == 0 || ref.MessageID < earliest {
+				earliest = ref.MessageID
+			}
+		}
+		accepted := false
+		for _, ref := range evidence {
+			if ref.MessageID <= latest {
+				continue
+			}
+			message, found := visible[ref.MessageID]
+			if found && learnerAcceptedProposal(message.Content) {
+				accepted = true
+				break
+			}
+		}
 		// Learner-first: the learner stated the decision and the assistant
 		// only restated it afterwards. The statement evidence then predates
 		// every cited assistant message, and the message must be one the
@@ -1084,23 +1106,6 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 		// the card. The restatement is not an adoption either, so it is
 		// dropped from the assistant refs below: it may not enter
 		// assistant_messages and may not name a topic.
-		latest := uint(0)
-		earliest := uint(0)
-		for _, ref := range assistant {
-			if ref.MessageID > latest {
-				latest = ref.MessageID
-			}
-			if earliest == 0 || ref.MessageID < earliest {
-				earliest = ref.MessageID
-			}
-		}
-		accepted := false
-		for _, ref := range evidence {
-			if ref.MessageID > latest {
-				accepted = true
-				break
-			}
-		}
 		if !accepted {
 			statementID := proposal.StatementEvidenceID
 			if statementID == 0 && len(evidence) == 1 {
@@ -1204,6 +1209,12 @@ func learnerStatementSupportedContent(statement, content string) string {
 		if float64(supported)/float64(len(pairs)) < minLearnerClauseSupport {
 			continue
 		}
+		// 字符相似度只负责找出可能的候选片段；最终还要核对值本身和适用
+		// 范围。同一事项的临时值（今天先用 1.22）与长期值（以后都用 1.23）
+		// 用词很接近，但值和范围都不同，不能进同一张卡。
+		if !learnerClauseAgreesOnValue(clause.text, content) || learnerScopeConflict(clause.text, content) {
+			continue
+		}
 		kept = append(kept, clause)
 		for pair := range pairs {
 			if _, ok := contentPairs[pair]; ok {
@@ -1284,6 +1295,122 @@ func learnerSentenceEnd(separator string) bool {
 	switch separator {
 	case "。", "！", "？", ".", "!", "?":
 		return true
+	}
+	return false
+}
+
+// learnerValueTokens is the set of numbers and versions a text states.
+// "1.23", "224" and "7.4" are values; a clause that states a different
+// version from the candidate is about a different value, no matter how
+// similar the wording is.
+func learnerValueTokens(text string) map[string]struct{} {
+	runes := []rune(text)
+	values := make(map[string]struct{})
+	for index := 0; index < len(runes); {
+		if !unicode.IsDigit(runes[index]) {
+			index++
+			continue
+		}
+		start := index
+		for index < len(runes) && (unicode.IsDigit(runes[index]) || runes[index] == '.') {
+			index++
+		}
+		token := strings.Trim(string(runes[start:index]), ".")
+		if token != "" {
+			values[token] = struct{}{}
+		}
+	}
+	return values
+}
+
+// learnerClauseAgreesOnValue reports whether every value in the clause is the
+// candidate's value. A clause that states a number the candidate does not is
+// not talking about the candidate's value, even when the words around it
+// match.
+func learnerClauseAgreesOnValue(clause, content string) bool {
+	contentValues := learnerValueTokens(content)
+	for value := range learnerValueTokens(clause) {
+		if _, ok := contentValues[value]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+type learnerScopeClass int
+
+const (
+	learnerScopeUnspecified learnerScopeClass = iota
+	learnerScopeStanding
+	learnerScopeTemporary
+)
+
+// The markers are deliberately small: "先" and "都" are ordinary words in
+// explanations, so only unambiguous temporal scope words count. A conflict
+// needs a classified clause and a classified candidate; an unmarked side
+// neither proves nor disproves the scope.
+var (
+	learnerStandingMarkers  = []string{"以后", "从此", "长期", "一直", "每次", "永远"}
+	learnerTemporaryMarkers = []string{"今天", "这次", "本次", "暂时", "临时"}
+)
+
+func learnerScopeOf(text string) learnerScopeClass {
+	folded := strings.ToLower(text)
+	for _, marker := range learnerTemporaryMarkers {
+		if strings.Contains(folded, marker) {
+			return learnerScopeTemporary
+		}
+	}
+	for _, marker := range learnerStandingMarkers {
+		if strings.Contains(folded, marker) {
+			return learnerScopeStanding
+		}
+	}
+	return learnerScopeUnspecified
+}
+
+func learnerScopeConflict(clause, content string) bool {
+	clauseScope, contentScope := learnerScopeOf(clause), learnerScopeOf(content)
+	return clauseScope != learnerScopeUnspecified && contentScope != learnerScopeUnspecified && clauseScope != contentScope
+}
+
+// The acceptance cues are the learner's words that point back at the
+// proposal or commit to it. Order alone is not adoption: "that's it for
+// today", "let's talk about something else", and "I'll think about it" all
+// come after the proposal too. Rejection cues win over an acceptance cue in
+// the same message ("可以，但先不用").
+var (
+	learnerAcceptanceCues = []string{
+		"就按", "按你说的", "按你刚说", "照你说的", "照你刚说", "听你的",
+		"就这样", "就这么", "就这个", "那就这样", "照做",
+		"采用", "同意", "赞成", "没问题",
+		"记吧", "记下", "记住", "记下来", "定下来",
+	}
+	learnerRejectionCues = []string{
+		"不用", "不要", "不需要", "不同意", "不赞成", "不采用",
+		"别记", "算了", "再说吧", "先不", "不行", "取消", "暂时不",
+	}
+)
+
+// learnerAcceptedProposal reports whether a later learner message takes the
+// assistant proposal on. It is a cue check, not a semantic proof: it only
+// admits messages that point back at the proposal or commit to it, so an
+// ordinary closing, a topic switch, or a non-committal reply cannot ride on
+// message order alone.
+func learnerAcceptedProposal(message string) bool {
+	text := strings.ToLower(strings.TrimSpace(message))
+	if text == "" {
+		return false
+	}
+	for _, cue := range learnerRejectionCues {
+		if strings.Contains(text, cue) {
+			return false
+		}
+	}
+	for _, cue := range learnerAcceptanceCues {
+		if strings.Contains(text, cue) {
+			return true
+		}
 	}
 	return false
 }

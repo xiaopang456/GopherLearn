@@ -148,6 +148,95 @@ func TestAutoProposalAdoptionTemporaryOperationStaysOutOfTheCard(t *testing.T) {
 	}
 }
 
+// 反例：同一事项同时有长期值和临时值。两句用词接近，都过字符相似度门槛，
+// 但临时那句的值（1.22）和适用范围（今天）都不属于长期决定，不能进卡。
+func TestAutoProposalAdoptionLongTermValueExcludesTemporaryValue(t *testing.T) {
+	at := time.Date(2026, 11, 24, 20, 1, 0, 0, time.FixedZone("CST", 8*3600))
+	messages := []SessionMessage{
+		{ID: 1, IsUser: true, Content: "以后项目都用 Go 1.23。今天这个项目先用 Go 1.22。", CreatedAt: at},
+		{ID: 2, IsUser: false, Content: "好，以后都按 Go 1.23 来。", CreatedAt: at.Add(time.Minute)},
+	}
+	result := extractLearnerFirstMessages(t, messages, learnerFirstProposal("以后项目都用 Go 1.23。"))
+	if len(result.Proposals) != 1 || len(result.Skipped) != 0 {
+		t.Fatalf("proposals=%d skipped=%+v, want the long-term card", len(result.Proposals), result.Skipped)
+	}
+	candidate := result.Proposals[0]
+	if candidate.Content != "以后项目都用 Go 1.23。" {
+		t.Fatalf("content=%q, want only the long-term value", candidate.Content)
+	}
+	for _, leak := range []string{"1.22", "今天"} {
+		if strings.Contains(candidate.Content, leak) {
+			t.Fatalf("content=%q, want the temporary value and scope kept out", candidate.Content)
+		}
+	}
+}
+
+// 适用范围也必须核对：临时那句的版本和长期决定相同（都是 1.23），但「今天」
+// 表明它是一次性操作，仍然不能进长期决定的卡。
+func TestAutoProposalAdoptionTemporaryScopeExcludesSameValue(t *testing.T) {
+	at := time.Date(2026, 11, 24, 20, 1, 0, 0, time.FixedZone("CST", 8*3600))
+	messages := []SessionMessage{
+		{ID: 1, IsUser: true, Content: "以后都用 Go 1.23。今天先用 Go 1.23 跑一下。", CreatedAt: at},
+		{ID: 2, IsUser: false, Content: "好，以后都用 Go 1.23。", CreatedAt: at.Add(time.Minute)},
+	}
+	result := extractLearnerFirstMessages(t, messages, learnerFirstProposal("以后都用 Go 1.23。"))
+	if len(result.Proposals) != 1 || len(result.Skipped) != 0 {
+		t.Fatalf("proposals=%d skipped=%+v, want the long-term card", len(result.Proposals), result.Skipped)
+	}
+	if result.Proposals[0].Content != boundaryCardContent {
+		t.Fatalf("content=%q, want only the long-term scope %q", result.Proposals[0].Content, boundaryCardContent)
+	}
+	for _, leak := range []string{"今天", "跑一下"} {
+		if strings.Contains(result.Proposals[0].Content, leak) {
+			t.Fatalf("content=%q, want the temporary scope kept out", result.Proposals[0].Content)
+		}
+	}
+}
+
+// 反例：用户在助手之后发言，不等于采纳。普通收尾、转题、未表态都必须拒绝；
+// 能明确指回提议的「就按你刚说的方案」才是采纳。
+func TestAutoProposalAdoptionLateReplyNeedsAgreement(t *testing.T) {
+	at := time.Date(2026, 11, 24, 20, 1, 0, 0, time.FixedZone("CST", 8*3600))
+	proposal := SessionRawProposal{
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassConstraint, Subject: "Redis 版本",
+		Durability: model.MemoryDurabilityStable, Content: "Redis 升级到 7.4。",
+		EvidenceIDs: []uint{3}, StatementEvidenceID: 3, AssistantIDs: []uint{2},
+	}
+	extract := func(reply string) FinalizeResult {
+		messages := []SessionMessage{
+			{ID: 1, IsUser: true, Content: "Redis 缓存怎么配比较好？", CreatedAt: at},
+			{ID: 2, IsUser: false, Content: "建议把 Redis 升到 7.4，能少踩几个持久化配置的坑。", CreatedAt: at.Add(time.Minute)},
+			{ID: 3, IsUser: true, Content: reply, CreatedAt: at.Add(2 * time.Minute)},
+		}
+		service := newFinalizeService(t, fakeFinalizeBoards{}, fakeFinalizeMessages{messages: messages},
+			nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil,
+			&scriptedProposer{proposals: []SessionRawProposal{proposal}},
+			&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "no related entries"}}, 10)
+		result, err := service.Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-dev-late-reply"}})
+		if err != nil {
+			t.Fatalf("extract: %v", err)
+		}
+		return result
+	}
+	for _, reply := range []string{"今天到这。", "那再讲讲别的吧。", "嗯，我再想想。"} {
+		result := extract(reply)
+		if len(result.Proposals) != 0 {
+			t.Fatalf("reply %q produced a card: %+v", reply, result.Proposals)
+		}
+		if len(result.Skipped) != 1 || result.Skipped[0].Reason != FinalizeSkipAdoptionUnproven {
+			t.Fatalf("reply %q skipped=%+v, want adoption_unproven", reply, result.Skipped)
+		}
+	}
+	// 正例：明确指回提议的采纳。
+	result := extract("就按你刚说的方案。")
+	if len(result.Proposals) != 1 || len(result.Skipped) != 0 {
+		t.Fatalf("adoption reply: proposals=%d skipped=%+v, want the card", len(result.Proposals), result.Skipped)
+	}
+	if len(result.Proposals[0].AssistantUtterances) != 1 || result.Proposals[0].AssistantUtterances[0].MessageID != 2 {
+		t.Fatalf("assistant provenance=%+v, want the adopted proposal kept", result.Proposals[0].AssistantUtterances)
+	}
+}
+
 // 反例：助手单方面建议把这条理解归到 RPC，学习者没有点名、也没有采纳这条
 // 建议。主题必须留空待用户选择；助手的建议不能作为点名证据。
 func TestAutoProposalAdoptionAssistantTopicSuggestionStaysPending(t *testing.T) {
