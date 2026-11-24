@@ -253,6 +253,44 @@ func TestAutoProposalAdoptionLateReplyNeedsAgreement(t *testing.T) {
 	}
 }
 
+// 明确选择「按第二个方案来」同样是唯一指认：白板配对正确时应正常出卡，
+// 不能因为措辞不在固定短语表里就误拒。
+func TestAutoProposalAdoptionOrdinalSelectionIsAccepted(t *testing.T) {
+	at := time.Date(2026, 11, 24, 20, 1, 0, 0, time.FixedZone("CST", 8*3600))
+	messages := []SessionMessage{
+		{ID: 1, IsUser: true, Content: "Redis 缓存版本怎么定？", CreatedAt: at},
+		{ID: 2, IsUser: false, Content: "建议升到 Redis 7.4。", CreatedAt: at.Add(time.Minute)},
+		{ID: 3, IsUser: false, Content: "也可以保留 Redis 7.2。", CreatedAt: at.Add(2 * time.Minute)},
+		{ID: 4, IsUser: true, Content: "按第二个方案来。", CreatedAt: at.Add(3 * time.Minute)},
+	}
+	document := model.SessionWhiteboardDocument{
+		SchemaVersion: model.SessionWhiteboardSchemaV3,
+		OpenItems: []model.SessionWhiteboardEntry{{
+			Key: "redis-version", Text: "保留 Redis 7.2。", Value: "7.2",
+			SourceMessageIDs: []uint{3, 4}, Origin: model.SessionWhiteboardOriginAssistantAccepted, UpdatedAtMessageID: 4,
+		}},
+	}
+	board := marshalFinalizeBoard(t, document)
+	service := newFinalizeService(t, fakeFinalizeBoards{content: &board}, fakeFinalizeMessages{messages: messages},
+		nil, &fakeFinalizeFingerprints{known: map[string]struct{}{}}, fakeFinalizeGlobalMind{}, nil,
+		&scriptedProposer{proposals: []SessionRawProposal{{
+			Scope: model.MemoryScopeGlobal, Class: model.ProfileClassConstraint, Subject: "Redis 版本",
+			Durability: model.MemoryDurabilityStable, Content: "保留 Redis 7.2。",
+			EvidenceIDs: []uint{4}, StatementEvidenceID: 4, AssistantIDs: []uint{3},
+		}}},
+		&scriptedRelations{result: GlobalRelationResult{Relation: GlobalRelationIndependent, Reason: "no related entries"}}, 10)
+	result, err := service.Extract(context.Background(), FinalizeRequest{UserID: 7, Cursor: FinalizeCursor{SessionID: "S-dev-ordinal"}})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(result.Proposals) != 1 || result.Proposals[0].Content != "保留 Redis 7.2。" {
+		t.Fatalf("proposals=%+v skipped=%+v, want the ordinal selection accepted", result.Proposals, result.Skipped)
+	}
+	if result.Proposals[0].Subject != "保留 Redis 7.2" {
+		t.Fatalf("subject=%q, want the confirmed title", result.Proposals[0].Subject)
+	}
+}
+
 // 反例：助手给出两个方案，学习者明确选第二种。只有被选中的那条提议能出
 // 卡；引用第一条时白板没有那条采纳记录，不能凭「就按」放行。
 func TestAutoProposalAdoptionSelectsTheCitedProposal(t *testing.T) {

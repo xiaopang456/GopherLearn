@@ -1683,6 +1683,34 @@ func learnerAcceptedProposal(message string) bool {
 			return true
 		}
 	}
+	return learnerSelectsAnOption(text)
+}
+
+// learnerSelectsAnOption recognizes an explicit ordinal choice: "第二个方案",
+// "选第二种", "按第 2 个". The board pair already proves this message is the
+// learner's acceptance; the pattern only keeps a bare ordinal reference or a
+// closing from riding on that record.
+func learnerSelectsAnOption(text string) bool {
+	runes := []rune(text)
+	for index := 0; index < len(runes); index++ {
+		if runes[index] != '第' {
+			continue
+		}
+		next := index + 1
+		for next < len(runes) && unicode.IsSpace(runes[next]) {
+			next++
+		}
+		numeralStart := next
+		for next < len(runes) && (unicode.IsDigit(runes[next]) || strings.ContainsRune("一二三四五六七八九十两", runes[next])) {
+			next++
+		}
+		for next < len(runes) && unicode.IsSpace(runes[next]) {
+			next++
+		}
+		if next > numeralStart && next < len(runes) && (runes[next] == '个' || runes[next] == '种') {
+			return true
+		}
+	}
 	return false
 }
 
