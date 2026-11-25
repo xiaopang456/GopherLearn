@@ -162,7 +162,10 @@ func uniqueFinalizeUserID() int64 {
 // finalizeFixtureSessionIDs lists the session ids this acceptance reuses
 // across runs; the cleanup keys on them because messages carry no user id.
 func finalizeFixtureSessionIDs() []string {
-	return []string{"fin-acc-0001", "fin-acc-missed", "fin-acc-long", "fin-acc-crossclass", "fin-acc-topic", "fin-acc-answer"}
+	return []string{"fin-acc-0001", "fin-acc-missed", "fin-acc-long", "fin-acc-crossclass", "fin-acc-topic", "fin-acc-answer",
+		"fin-acc-tcov-go-context-复述", "fin-acc-tcov-go-context-同义展开", "fin-acc-tcov-go-context-补充",
+		"fin-acc-tcov-mysql-index-复述", "fin-acc-tcov-mysql-index-同义展开", "fin-acc-tcov-mysql-index-补充",
+		"fin-acc-tcov-redis-config-复述", "fin-acc-tcov-redis-config-更正"}
 }
 
 // seedSession inserts one session of the learner with its messages and its
