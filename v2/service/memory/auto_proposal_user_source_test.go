@@ -319,6 +319,70 @@ func TestAutoProposalUserSourcePreferenceQuestionStillCards(t *testing.T) {
 	}
 }
 
+// 长期词只能帮助判断适用期限，不能把「怎么配合」这类技术求解变成用户决定：
+// 即使问句里有「以后」，这个分句也不能支撑草稿。
+func TestAutoProposalUserSourceTechnicalQuestionWithStandingWordIsRefused(t *testing.T) {
+	at := userSourceTime(t)
+	messages := []SessionMessage{
+		{ID: 1, IsUser: true, Content: "以后生产环境里 context 和 WaitGroup 怎么配合？", CreatedAt: at},
+		{ID: 2, IsUser: false, Content: "生产环境里用 context 通知退出，再等 WaitGroup 归零。", CreatedAt: at.Add(time.Minute)},
+	}
+	proposal := SessionRawProposal{
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassConstraint, Subject: "优雅关闭",
+		Durability: model.MemoryDurabilityStable, Content: "生产环境里用 context 通知退出，再等 WaitGroup 归零。",
+		EvidenceIDs: []uint{1}, StatementEvidenceID: 1, AssistantIDs: []uint{2},
+	}
+	result := userSourceExtract(t, fakeFinalizeBoards{}, messages, proposal)
+	if len(result.Proposals) != 0 {
+		t.Fatalf("proposals=%+v, want the technical question refused", result.Proposals)
+	}
+	if len(result.Skipped) != 1 || result.Skipped[0].Reason != FinalizeSkipAdoptionUnproven {
+		t.Fatalf("skipped=%+v, want adoption_unproven", result.Skipped)
+	}
+}
+
+// 同一条消息里同时有偏好和提问：分句级判断只保留有独立依据的偏好分句；
+// 以提问分句为来源的技术候选零卡。
+func TestAutoProposalUserSourceMixedPreferenceAndQuestion(t *testing.T) {
+	at := userSourceTime(t)
+	messages := []SessionMessage{
+		{ID: 1, IsUser: true, Content: "以后先给最小示例，另外生产环境里 context 和 WaitGroup 怎么配合？", CreatedAt: at},
+		{ID: 2, IsUser: false, Content: "好，以后先给最小示例。生产环境里用 context 通知退出，再等 WaitGroup 归零。", CreatedAt: at.Add(time.Minute)},
+	}
+	preference := SessionRawProposal{
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassTeachingPreference, Subject: "示例顺序",
+		Durability: model.MemoryDurabilityStable, Content: "以后先给最小示例。",
+		EvidenceIDs: []uint{1}, StatementEvidenceID: 1, AssistantIDs: []uint{2},
+	}
+	result := userSourceExtract(t, fakeFinalizeBoards{}, messages, preference)
+	if len(result.Proposals) != 1 || len(result.Skipped) != 0 {
+		t.Fatalf("proposals=%d skipped=%+v, want the preference clause only", len(result.Proposals), result.Skipped)
+	}
+	candidate := result.Proposals[0]
+	if candidate.Content != "以后先给最小示例" || candidate.Subject != "以后先给最小示例" {
+		t.Fatalf("subject=%q content=%q, want only the preference clause", candidate.Subject, candidate.Content)
+	}
+	if strings.Contains(candidate.Content, "context") || strings.Contains(candidate.Content, "怎么") {
+		t.Fatalf("content=%q, want the question clause kept out", candidate.Content)
+	}
+	if len(candidate.AssistantUtterances) != 0 {
+		t.Fatalf("assistant refs=%+v, want the redundant refs dropped", candidate.AssistantUtterances)
+	}
+
+	technical := SessionRawProposal{
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassConstraint, Subject: "优雅关闭",
+		Durability: model.MemoryDurabilityStable, Content: "生产环境里用 context 通知退出，再等 WaitGroup 归零。",
+		EvidenceIDs: []uint{1}, StatementEvidenceID: 1, AssistantIDs: []uint{2},
+	}
+	technicalResult := userSourceExtract(t, fakeFinalizeBoards{}, messages, technical)
+	if len(technicalResult.Proposals) != 0 {
+		t.Fatalf("proposals=%+v, want the technical question refused", technicalResult.Proposals)
+	}
+	if len(technicalResult.Skipped) != 1 || technicalResult.Skipped[0].Reason != FinalizeSkipAdoptionUnproven {
+		t.Fatalf("skipped=%+v, want adoption_unproven", technicalResult.Skipped)
+	}
+}
+
 // 走到草稿入口的字段与不变量：标题/正文来自用户原话，来源里没有助手消息，
 // 主题留空；确认前正式记忆、修订记录零变化，掌握度逐字段一致。
 func TestAutoProposalUserSourceDraftFieldsAndInvariants(t *testing.T) {

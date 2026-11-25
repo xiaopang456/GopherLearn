@@ -1201,7 +1201,7 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 		// words"; neither needs the board to prove an adoption.
 		userTexts := make([]string, 0, len(evidence))
 		for _, ref := range evidence {
-			if message, found := visible[ref.MessageID]; found && !learnerMessageIsQuestion(message.Content) {
+			if message, found := visible[ref.MessageID]; found {
 				userTexts = append(userTexts, message.Content)
 			}
 		}
@@ -1337,6 +1337,9 @@ func learnerEvidenceSupportedContent(userTexts []string, content string) string 
 	seen := make(map[string]struct{})
 	for _, text := range userTexts {
 		for _, clause := range learnerStatementClauses(text) {
+			if !learnerClauseCanSource(clause.text) {
+				continue
+			}
 			key := learnerFoldedText(clause.text)
 			if key == "" {
 				continue
@@ -1558,28 +1561,40 @@ func learnerScopeConflict(clause, content string) bool {
 	return clauseScope != learnerScopeUnspecified && contentScope != learnerScopeUnspecified && clauseScope != contentScope
 }
 
-// learnerMessageIsQuestion reports whether a user message asks for an answer
-// rather than stating a fact. A question with a standing marker is a
-// preference request ("以后先给最小示例？") and still counts; a bare
-// problem-solving question ("这个怎么实现？") does not source a memory.
-func learnerMessageIsQuestion(text string) bool {
-	trimmed := strings.TrimSpace(text)
+// learnerClauseIsQuestion reports whether a clause asks for an answer rather
+// than stating something.
+func learnerClauseIsQuestion(clause string) bool {
+	trimmed := strings.TrimSpace(clause)
 	if trimmed == "" {
 		return false
 	}
-	question := strings.ContainsAny(trimmed, "？?")
-	if !question {
-		for _, marker := range []string{"怎么", "如何", "为什么", "为啥", "是什么", "是不是", "能不能", "可不可以", "可以吗", "对吗", "行吗", "好吗", "请问", "咋"} {
-			if strings.Contains(trimmed, marker) {
-				question = true
-				break
-			}
+	if strings.ContainsAny(trimmed, "？?") {
+		return true
+	}
+	for _, marker := range []string{"怎么", "如何", "为什么", "为啥", "是什么", "是不是", "能不能", "可不可以", "可以吗", "对吗", "行吗", "好吗", "请问", "咋"} {
+		if strings.Contains(trimmed, marker) {
+			return true
 		}
 	}
-	if !question {
-		return false
+	return false
+}
+
+// learnerClauseCanSource reports whether a clause may source the draft. A
+// how/why question asks for an answer; a standing word only limits the
+// timeframe and cannot turn it into a decision. A permission/possibility
+// question is a preference request only when the clause itself carries a
+// standing marker ("以后先给最小示例？"). This runs per clause, so a message
+// that mixes a preference and a question keeps only the preference.
+func learnerClauseCanSource(clause string) bool {
+	if !learnerClauseIsQuestion(clause) {
+		return true
 	}
-	return learnerScopeOf(trimmed) != learnerScopeStanding
+	for _, marker := range []string{"怎么", "如何", "为什么", "为啥", "咋"} {
+		if strings.Contains(clause, marker) {
+			return false
+		}
+	}
+	return learnerScopeOf(clause) == learnerScopeStanding
 }
 
 // learnerContentIsOnlyTemporary reports whether every kept clause is a
