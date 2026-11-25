@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -57,6 +58,7 @@ func TestTopicRelationClassifierCarriesTopicAndFinalScope(t *testing.T) {
 		"every supplied note is from that same topic",
 		"duplicate: the proposal adds nothing",
 		"Report the comparison in uncovered_points",
+		"never answer duplicate with a non-empty list",
 		"A note about another subject on this topic is independent",
 	} {
 		if !strings.Contains(chat.messages[0].Content, fragment) {
@@ -78,14 +80,48 @@ func TestTopicRelationClassifierRejectsInventedTarget(t *testing.T) {
 	}
 }
 
-// TestTopicRelationClassifierKeepsACandidateThatAddsANewPoint is the
-// over-dedup rule at the judgement itself: a duplicate is a proposal that
-// adds nothing the supplied note does not already cover, so a proposal that
-// names a point the note does not cover is not a duplicate - it keeps its
-// card, and the note it named stays the row the learner compares it against.
-func TestTopicRelationClassifierKeepsACandidateThatAddsANewPoint(t *testing.T) {
+// TestTopicRelationClassifierRefusesADuplicateThatAlsoReportsPoints is the
+// correction the review asked for. A judge that answers duplicate while also
+// naming points it claims the note does not cover has contradicted itself,
+// and the server must not pick a side: the named points can be blank, can
+// repeat what the note already says, or can be facts the proposal never
+// made. None of them is evidence that the proposal adds something, so the
+// judgement is refused - the candidate stays retryable, the watermark is
+// held, and no card is made this round.
+func TestTopicRelationClassifierRefusesADuplicateThatAlsoReportsPoints(t *testing.T) {
+	cases := []struct {
+		name   string
+		points string
+	}{
+		{"空白", `["   "]`},
+		{"旧笔记已有的事实", `["中间件按注册顺序执行"]`},
+		{"候选根本没说过的事实", `["Abort 会中断当前请求"]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			chat := &memoryChat{response: toolMessage(topicConflictTool,
+				`{"relation":"duplicate","target_memory_id":"note-1","uncovered_points":`+tc.points+`,"reason":"同一件事"}`)}
+			classifier, _ := NewTopicRelationClassifier(chat)
+			result, err := classifier.Classify(context.Background(),
+				ExplicitMemoryInput{Scope: model.MemoryScopeTopic, TopicKey: "gin-mw", Subject: "中间件链", Content: "中间件是按注册顺序依次执行的。"},
+				[]model.LongTermMemory{{ID: "note-1", Scope: model.MemoryScopeTopic, TopicKey: "gin-mw", Subject: "中间件链", Content: "中间件按注册顺序执行。", Status: model.LongTermMemoryActive}})
+			if !errors.Is(err, ErrInvalidTopicRelation) {
+				t.Fatalf("err=%v result=%+v, want the inconsistent judgement refused", err, result)
+			}
+			if result.Relation != "" || result.TargetMemoryID != "" {
+				t.Fatalf("result=%+v, want no relation out of a refused judgement", result)
+			}
+		})
+	}
+}
+
+// TestTopicRelationClassifierKeepsAConsistentSupplement keeps the half of the
+// rule the refusal must not touch: a judge that answers complementary and
+// names the point it adds is consistent, so the candidate keeps its card and
+// the note it compared against.
+func TestTopicRelationClassifierKeepsAConsistentSupplement(t *testing.T) {
 	chat := &memoryChat{response: toolMessage(topicConflictTool,
-		`{"relation":"duplicate","target_memory_id":"note-1","uncovered_points":["Abort 跳过后续 handler，但不会中断当前请求"],"reason":"同一主题的旧笔记没有覆盖 Abort 的这一条"}`)}
+		`{"relation":"complementary","target_memory_id":"note-1","uncovered_points":["Abort 跳过后续 handler，但不会中断当前请求"],"reason":"旧笔记没有覆盖 Abort 的这一条"}`)}
 	classifier, _ := NewTopicRelationClassifier(chat)
 	result, err := classifier.Classify(context.Background(),
 		ExplicitMemoryInput{Scope: model.MemoryScopeTopic, TopicKey: "gin-mw", Subject: "中间件链", Content: "中间件链按顺序执行，Abort 只跳过后续 handler。"},
@@ -93,11 +129,8 @@ func TestTopicRelationClassifierKeepsACandidateThatAddsANewPoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("classify: %v", err)
 	}
-	if result.Relation == TopicRelationDuplicate {
-		t.Fatalf("relation=%+v, a proposal that adds a point is not a duplicate", result)
-	}
 	if result.Relation != TopicRelationComplementary {
-		t.Fatalf("relation=%+v, want complementary", result)
+		t.Fatalf("relation=%+v, want a consistent supplement kept", result)
 	}
 	if result.TargetMemoryID != "note-1" {
 		t.Fatalf("target=%q, want the compared note", result.TargetMemoryID)
@@ -141,13 +174,13 @@ func TestTopicRelationClassifierAcceptsAJudgeThatReportsNoCoverageField(t *testi
 	}
 }
 
-// TestTopicRelationReasonStaysInsideItsBound keeps the record readable when
-// the judge writes a long reason: the program's own note is appended, and the
-// whole reason still passes the bound the reason field carries.
+// TestTopicRelationReasonStaysInsideItsBound keeps the record faithful: a
+// consistent answer is passed on as the judge wrote it, and it still fits the
+// bound the reason field carries.
 func TestTopicRelationReasonStaysInsideItsBound(t *testing.T) {
 	long := strings.Repeat("同一件事，只是换了措辞。", 40)
 	chat := &memoryChat{response: toolMessage(topicConflictTool,
-		`{"relation":"duplicate","target_memory_id":"note-1","uncovered_points":["旧笔记没有覆盖的一点"],"reason":"`+long+`"}`)}
+		`{"relation":"complementary","target_memory_id":"note-1","uncovered_points":["旧笔记没有覆盖的一点"],"reason":"`+long+`"}`)}
 	classifier, _ := NewTopicRelationClassifier(chat)
 	result, err := classifier.Classify(context.Background(),
 		ExplicitMemoryInput{Scope: model.MemoryScopeTopic, TopicKey: "gorm", Subject: "软删除", Content: "默认查询会过滤软删除记录。"},
@@ -158,7 +191,7 @@ func TestTopicRelationReasonStaysInsideItsBound(t *testing.T) {
 	if !validGlobalReason(result.Reason) {
 		t.Fatalf("reason is not valid for the server: %q", result.Reason)
 	}
-	if !strings.Contains(result.Reason, "未覆盖的新增知识点") {
-		t.Fatalf("reason=%q, want the program's own note kept", result.Reason)
+	if result.Reason != long {
+		t.Fatalf("reason=%q, want the judge's reason as written", result.Reason)
 	}
 }

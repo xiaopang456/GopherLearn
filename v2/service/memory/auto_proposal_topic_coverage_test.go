@@ -382,6 +382,183 @@ func TestTopicCoverageJudgeSeesTheWholeCandidateAndNote(t *testing.T) {
 	}
 }
 
+// topicCoverageRunnerWithJudge builds a finalize runner whose topic judgement
+// is the given resolver. It lets a test drive the real TopicRelationClassifier
+// with a scripted answer, instead of the deterministic stand-in: the stand-in
+// replaces the judge's answer, while this keeps the real classifier and only
+// replaces the model's words.
+func topicCoverageRunnerWithJudge(t *testing.T, acc *finalizeAcceptance, judge TopicRelationResolver) *FinalizeRunner {
+	t.Helper()
+	catalogue, err := NewTopicCatalogue(nil, MemoryTopicAdapter{Repository: acc.repo}, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := BuildSessionFinalizeService(acc.session, acc.messages, acc.repo, catalogue, acc.proposer, acc.global, judge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := NewFinalizeRunner(service, acc.governance, acc.repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runner
+}
+
+// TestAutoProposalTopicCoverageJudgementContrasts drives the real
+// TopicRelationClassifier with scripted answers, so the three contrasts are
+// checked end to end rather than through a stand-in:
+//
+//   - a pure restatement judged consistently -> semantic_duplicate, no card;
+//   - a real addition judged consistently -> one pending card that keeps the
+//     added point;
+//   - a duplicate whose coverage report contradicts itself -> the judgement is
+//     refused, the candidate stays retryable, the watermark is held, no card
+//     and no formal state change.
+//
+// The third contrast covers the three bad reports the review found on a plain
+// restatement: a blank entry, a fact the old note already carries, and a fact
+// the candidate never made.
+func TestAutoProposalTopicCoverageJudgementContrasts(t *testing.T) {
+	const oldNote = "父 context 被取消时，派生出来的子 context 会一起被取消。"
+	const candidate = "父 context 被取消时子 context 会一起被取消；另外 cancel() 只是发出取消信号，本身并不阻塞调用方。"
+	const addedPoint = "cancel() 只是发出取消信号，本身并不阻塞调用方"
+
+	cases := []struct {
+		name     string
+		session  string
+		relation string
+		points   string
+		want     string // duplicate | card | retry
+	}{
+		{"纯复述 + 一致的重复判定", "fin-acc-tcov-c-dup", "duplicate", `[]`, "duplicate"},
+		{"确有新增点 + 一致的补充判定", "fin-acc-tcov-c-add", "complementary", `["cancel() 只是发出取消信号，本身并不阻塞调用方"]`, "card"},
+		{"重复判定 + 矛盾的覆盖报告（空白）", "fin-acc-tcov-c-blank", "duplicate", `["   "]`, "retry"},
+		{"重复判定 + 矛盾的覆盖报告（旧笔记已有的事实）", "fin-acc-tcov-c-old", "duplicate", `["父 context 被取消时，派生出来的子 context 会一起被取消。"]`, "retry"},
+		{"重复判定 + 矛盾的覆盖报告（候选根本没说过的事实）", "fin-acc-tcov-c-new", "duplicate", `["cancel() 会阻塞调用方"]`, "retry"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			acc := newFinalizeAcceptance(t)
+			ctx := context.Background()
+			sessionID := tc.session
+
+			old := seedTopicNote(t, acc, "go-context", "context 取消", oldNote)
+			if err := acc.db.Create(&model.TopicProgress{
+				UserID: acc.userID, TopicKey: "go-context", Topic: "context 取消",
+				MasteryScore: 64, Confidence: 0.5, ValidAttempts: 3, Level: model.TopicProgressDeveloping,
+				CreatedAt: time.Now(), UpdatedAt: time.Now(),
+			}).Error; err != nil {
+				t.Fatal(err)
+			}
+			masteryBefore := topicCoverageMastery(t, acc, "go-context")
+			memoriesBefore := countRows(t, acc, &model.LongTermMemory{})
+			revisionsBefore := countRows(t, acc, &model.MemoryRevision{})
+
+			stored := acc.seedSession(t, ctx, sessionID, nil, []SessionMessage{
+				{IsUser: true, Content: "我把这个再确认一下：" + candidate, CreatedAt: time.Now().Add(-time.Minute)},
+			})
+			newest := stored[len(stored)-1].ID
+
+			// 真实判定器 + 脚本回答：脚本只代替模型的话，判定器是真的。
+			chat := &memoryChat{response: toolMessage(topicConflictTool,
+				`{"relation":"`+tc.relation+`","target_memory_id":"`+old.ID+`","uncovered_points":`+tc.points+`,"reason":"脚本回答"}`)}
+			classifier, err := NewTopicRelationClassifier(chat)
+			if err != nil {
+				t.Fatal(err)
+			}
+			acc.proposer.proposals = []SessionRawProposal{{
+				Scope: model.MemoryScopeTopic, Kind: FinalizeKindUnderstanding,
+				TopicKey: "go-context", TopicUnique: true,
+				Subject: "我的理解", Content: candidate,
+				Durability: model.MemoryDurabilityStable,
+				EvidenceIDs: []uint{stored[0].ID}, StatementEvidenceID: stored[0].ID,
+			}}
+
+			outcome, err := topicCoverageRunnerWithJudge(t, acc, classifier).RunSession(ctx, acc.userID, sessionID)
+			if err != nil {
+				t.Fatalf("run session: %v", err)
+			}
+
+			switch tc.want {
+			case "duplicate":
+				if len(outcome.Proposals) != 0 || len(outcome.Persisted) != 0 {
+					t.Fatalf("proposals=%d persisted=%v, want the restatement skipped", len(outcome.Proposals), outcome.Persisted)
+				}
+				if len(outcome.Skipped) != 1 || outcome.Skipped[0].Reason != FinalizeSkipSemanticDuplicate {
+					t.Fatalf("skipped=%+v, want semantic_duplicate", outcome.Skipped)
+				}
+				if len(outcome.RetryPending) != 0 {
+					t.Fatalf("retry pending=%d, want none", len(outcome.RetryPending))
+				}
+				if drafts := acc.pendingDrafts(ctx); len(drafts) != 0 {
+					t.Fatalf("drafts=%d, want no card for a pure restatement", len(drafts))
+				}
+				if got := acc.progress(ctx, sessionID); got != uint(newest) {
+					t.Fatalf("progress=%d, want %d (the watermark advances on a decided run)", got, newest)
+				}
+			case "card":
+				if len(outcome.Proposals) != 1 || len(outcome.Persisted) != 1 {
+					t.Fatalf("proposals=%d persisted=%v skipped=%+v, want one card", len(outcome.Proposals), outcome.Persisted, outcome.Skipped)
+				}
+				drafts := acc.pendingDrafts(ctx)
+				if len(drafts) != 1 {
+					t.Fatalf("drafts=%d, want one pending card", len(drafts))
+				}
+				if !strings.Contains(drafts[0].Content, addedPoint) {
+					t.Fatalf("draft body=%q, want the added point %q kept", drafts[0].Content, addedPoint)
+				}
+				if !stringListContains(drafts[0].ConflictIDs, old.ID) {
+					t.Fatalf("conflict ids=%v, want the old note %s pinned", drafts[0].ConflictIDs, old.ID)
+				}
+				if len(outcome.RetryPending) != 0 {
+					t.Fatalf("retry pending=%d, want none", len(outcome.RetryPending))
+				}
+				if got := acc.progress(ctx, sessionID); got != uint(newest) {
+					t.Fatalf("progress=%d, want %d", got, newest)
+				}
+			case "retry":
+				// 判定被拒：候选留待重试，当轮不出卡，水位保留。
+				if len(outcome.Proposals) != 0 || len(outcome.Persisted) != 0 {
+					t.Fatalf("proposals=%d persisted=%v, want no card this round", len(outcome.Proposals), outcome.Persisted)
+				}
+				if len(outcome.Skipped) != 0 {
+					t.Fatalf("skipped=%+v, want no skip reason for an undecided judgement", outcome.Skipped)
+				}
+				if len(outcome.RetryPending) != 1 {
+					t.Fatalf("retry pending=%d, want the candidate kept for the next trigger", len(outcome.RetryPending))
+				}
+				if drafts := acc.pendingDrafts(ctx); len(drafts) != 0 {
+					t.Fatalf("drafts=%d, want no card while the judgement is undecided", len(drafts))
+				}
+				if outcome.Advanced {
+					t.Fatal("advanced=true, want the watermark held while a judgement is undecided")
+				}
+				if got := acc.progress(ctx, sessionID); got != 0 {
+					t.Fatalf("progress=%d, want the watermark held at 0 (the newest message is %d)", got, newest)
+				}
+			default:
+				t.Fatalf("unknown expectation %q", tc.want)
+			}
+
+			// 三种结果共有的不变量：正式状态不变。
+			if got := countRows(t, acc, &model.LongTermMemory{}); got != memoriesBefore {
+				t.Fatalf("memories=%d, want %d (no formal write before confirmation)", got, memoriesBefore)
+			}
+			if got := countRows(t, acc, &model.MemoryRevision{}); got != revisionsBefore {
+				t.Fatalf("revisions=%d, want %d (no revision before confirmation)", got, revisionsBefore)
+			}
+			if got := seedProfileStatus(t, acc, old.ID); got != model.LongTermMemoryActive {
+				t.Fatalf("old note status=%s, want active", got)
+			}
+			if after := topicCoverageMastery(t, acc, "go-context"); after != masteryBefore {
+				t.Fatalf("mastery=%+v, want %+v (untouched)", after, masteryBefore)
+			}
+		})
+	}
+}
+
 // topicCoverageMasterySnapshot 是掌握度行的可比快照：逐字段读出来，比对时
 // 不依赖结构体整体可比较。
 type topicCoverageMasterySnapshot struct {

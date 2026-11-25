@@ -152,7 +152,7 @@ Judge the meaning, not the phrasing, and decide it by coverage: compare the prop
 - replacement: the proposal states a different current value of the same matter - the same fact with a new value, version, setting or wording - and should replace the older one. A new value is never a duplicate.
 - independent: a genuinely different matter on this topic, which can coexist with every supplied note.
 
-Report the comparison in uncovered_points: the points the proposal states that the supplied note does not cover, one entry per point. The list is empty when the proposal adds nothing. A reworded, rephrased, reordered, exemplified or elaborated version of a point the note already states is not an uncovered point. A non-empty list means the proposal is not a duplicate.
+Report the comparison in uncovered_points: the points the proposal states that the supplied note does not cover, one entry per point. The list is empty when the proposal adds nothing. A reworded, rephrased, reordered, exemplified or elaborated version of a point the note already states is not an uncovered point. A non-empty list means the proposal is not a duplicate: never answer duplicate with a non-empty list, and never name a point the proposal does not state.
 
 A note about another subject on this topic is independent, not duplicate. Judge the meaning only, never the wording, the length, the shared topic words or the order of the sentences. Use only an exact supplied note ID. You classify; you never authorize a database action.`
 
@@ -170,7 +170,9 @@ type topicConflictArgs struct {
 	TargetMemoryID string        `json:"target_memory_id"`
 	// UncoveredPoints are the points the proposal states that the target note
 	// does not cover. It is the judge's own coverage report: an empty list
-	// means the proposal adds nothing, which is what a duplicate is.
+	// means the proposal adds nothing, which is what a duplicate is. A
+	// non-empty list together with a duplicate relation is a contradiction the
+	// server refuses rather than resolves - see Classify.
 	UncoveredPoints []string `json:"uncovered_points"`
 	Reason          string   `json:"reason"`
 }
@@ -234,19 +236,20 @@ func (c *TopicRelationClassifier) Classify(ctx context.Context, incoming Explici
 		if _, ok := allowed[args.TargetMemoryID]; !ok {
 			return TopicRelationResult{}, ErrInvalidTopicRelation
 		}
-		relation, reason := args.Relation, strings.TrimSpace(args.Reason)
-		if relation == TopicRelationDuplicate && len(args.UncoveredPoints) > 0 {
-			// The judge's own coverage report contradicts its relation: it named
-			// points the supplied note does not cover and still called the
-			// proposal a duplicate. A duplicate is a proposal that adds nothing,
-			// so a proposal that adds something is not covered by that note.
-			// Dropping it is the over-dedup this rule exists to stop: the
-			// candidate keeps its card, and the note it named stays the row the
-			// learner compares it against.
-			relation = TopicRelationComplementary
-			reason = appendReasonNote(reason, "; 判定器同时报告了旧笔记未覆盖的新增知识点，按补充处理")
+		if args.Relation == TopicRelationDuplicate && len(args.UncoveredPoints) > 0 {
+			// The judge says the proposal adds nothing and, in the same answer,
+			// names points it says the note does not cover. The two halves
+			// contradict each other, and the programme cannot tell which one to
+			// believe: the named points may be blank, may repeat what the note
+			// already says, or may be facts the proposal never made. Reading
+			// them as additions would put a plain restatement back on the card;
+			// ignoring them would drop a real addition. So the answer is not
+			// trusted at all: the judgement fails closed, the candidate stays
+			// retryable with the watermark where it was, and no card is made
+			// this round.
+			return TopicRelationResult{}, ErrInvalidTopicRelation
 		}
-		return TopicRelationResult{Relation: relation, TargetMemoryID: args.TargetMemoryID, Reason: reason}, nil
+		return TopicRelationResult{Relation: args.Relation, TargetMemoryID: args.TargetMemoryID, Reason: strings.TrimSpace(args.Reason)}, nil
 	default:
 		return TopicRelationResult{}, ErrInvalidTopicRelation
 	}
@@ -254,25 +257,6 @@ func (c *TopicRelationClassifier) Classify(ctx context.Context, incoming Explici
 
 func validTopicConflictRelation(relation TopicRelation) bool {
 	return relation == TopicRelationDuplicate || relation == TopicRelationReplacement || relation == TopicRelationComplementary
-}
-
-// appendReasonNote adds the program's own note to the judge's reason while
-// keeping the whole thing inside the 500-rune bound the reason field carries.
-// The note is never the part that gets cut: the judge's reason yields first, so
-// the record always says why the relation was read the way it was.
-func appendReasonNote(reason, note string) string {
-	reason = strings.TrimSpace(reason)
-	note = strings.TrimSpace(note)
-	limit := 500
-	room := limit - utf8.RuneCountInString(note)
-	if room < 0 {
-		return strings.TrimSpace(string([]rune(note)[:limit]))
-	}
-	runes := []rune(reason)
-	if len(runes) > room {
-		runes = runes[:room]
-	}
-	return strings.TrimSpace(string(runes)) + note
 }
 
 func topicRelationTools() []*schema.ToolInfo {
