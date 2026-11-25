@@ -1201,12 +1201,17 @@ func validateEvidence(proposal SessionRawProposal, visible map[uint]SessionMessa
 		// words"; neither needs the board to prove an adoption.
 		userTexts := make([]string, 0, len(evidence))
 		for _, ref := range evidence {
-			if message, found := visible[ref.MessageID]; found {
+			if message, found := visible[ref.MessageID]; found && !learnerMessageIsQuestion(message.Content) {
 				userTexts = append(userTexts, message.Content)
 			}
 		}
 		if supported := learnerEvidenceSupportedContent(userTexts, proposal.Content); supported != "" &&
 			utf8.RuneCountInString(supported) <= model.MemoryContentMaxRunes {
+			if learnerContentIsOnlyTemporary(supported) {
+				// 用户只给了一次性操作：即使候选省掉期限或标成 stable，也
+				// 不能落成记忆。
+				return nil, nil, finalizeCardOverride{}, FinalizeSkipAdoptionUnproven
+			}
 			userSourceOnly = true
 			override.Title = userSourceTitle(supported)
 			override.Content = supported
@@ -1516,7 +1521,7 @@ const (
 // scope.
 var (
 	learnerStartMarkers     = []string{"从今天起", "从今天开始", "从今日起", "自今天起", "从今以后", "从现在起", "即日起", "今天起", "今天开始", "从明天起", "从明天开始"}
-	learnerStandingMarkers  = []string{"以后", "从此", "长期", "一直", "每次", "永远"}
+	learnerStandingMarkers  = []string{"以后", "从此", "长期", "一直", "每次", "永远", "固定"}
 	learnerTemporaryMarkers = []string{"今天", "这次", "本次", "暂时", "临时", "只用一次", "只这一次", "仅此一次"}
 )
 
@@ -1551,6 +1556,46 @@ func learnerScopeOf(text string) learnerScopeClass {
 func learnerScopeConflict(clause, content string) bool {
 	clauseScope, contentScope := learnerScopeOf(clause), learnerScopeOf(content)
 	return clauseScope != learnerScopeUnspecified && contentScope != learnerScopeUnspecified && clauseScope != contentScope
+}
+
+// learnerMessageIsQuestion reports whether a user message asks for an answer
+// rather than stating a fact. A question with a standing marker is a
+// preference request ("以后先给最小示例？") and still counts; a bare
+// problem-solving question ("这个怎么实现？") does not source a memory.
+func learnerMessageIsQuestion(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	question := strings.ContainsAny(trimmed, "？?")
+	if !question {
+		for _, marker := range []string{"怎么", "如何", "为什么", "为啥", "是什么", "是不是", "能不能", "可不可以", "可以吗", "对吗", "行吗", "好吗", "请问", "咋"} {
+			if strings.Contains(trimmed, marker) {
+				question = true
+				break
+			}
+		}
+	}
+	if !question {
+		return false
+	}
+	return learnerScopeOf(trimmed) != learnerScopeStanding
+}
+
+// learnerContentIsOnlyTemporary reports whether every kept clause is a
+// temporary operation. Such evidence cannot become a memory, even when the
+// candidate drops the duration or marks itself stable.
+func learnerContentIsOnlyTemporary(content string) bool {
+	clauses := learnerStatementClauses(content)
+	if len(clauses) == 0 {
+		return false
+	}
+	for _, clause := range clauses {
+		if learnerScopeOf(clause.text) != learnerScopeTemporary {
+			return false
+		}
+	}
+	return true
 }
 
 // minAdoptionMatterCoverage is the share of the adopted record's character

@@ -227,6 +227,98 @@ func TestAutoProposalUserSourceTopicCannotBeNamedByAssistant(t *testing.T) {
 	}
 }
 
+// 普通求解提问、用户没有采纳助手答案：提问本身不是用户陈述，零卡。
+func TestAutoProposalUserSourceQuestionNotAdoptedIsRefused(t *testing.T) {
+	at := userSourceTime(t)
+	messages := []SessionMessage{
+		{ID: 1, IsUser: true, Content: "优雅关闭时 context 和 WaitGroup 怎么配合？", CreatedAt: at},
+		{ID: 2, IsUser: false, Content: "优雅关闭时用 context 通知退出，再等 WaitGroup 归零。", CreatedAt: at.Add(time.Minute)},
+	}
+	proposal := SessionRawProposal{
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassConstraint, Subject: "优雅关闭",
+		Durability: model.MemoryDurabilityStable, Content: "优雅关闭时用 context 通知退出，再等 WaitGroup 归零。",
+		EvidenceIDs: []uint{1}, StatementEvidenceID: 1, AssistantIDs: []uint{2},
+	}
+	result := userSourceExtract(t, fakeFinalizeBoards{}, messages, proposal)
+	if len(result.Proposals) != 0 {
+		t.Fatalf("proposals=%+v, want no card for an unadopted answer", result.Proposals)
+	}
+	if len(result.Skipped) != 1 || result.Skipped[0].Reason != FinalizeSkipAdoptionUnproven {
+		t.Fatalf("skipped=%+v, want adoption_unproven", result.Skipped)
+	}
+}
+
+// 只有一次性操作证据：即使候选省掉「今天先」、标成 stable，也必须零卡。
+func TestAutoProposalUserSourceTemporaryOnlyIsRefused(t *testing.T) {
+	at := userSourceTime(t)
+	messages := []SessionMessage{
+		{ID: 1, IsUser: true, Content: "今天先用 Go 1.22 跑一下旧项目。", CreatedAt: at},
+		{ID: 2, IsUser: false, Content: "好，今天先用 1.22 跑。", CreatedAt: at.Add(time.Minute)},
+	}
+	proposal := SessionRawProposal{
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassConstraint, Subject: "Go 版本",
+		Durability: model.MemoryDurabilityStable, Content: "用 Go 1.22 跑旧项目。",
+		EvidenceIDs: []uint{1}, StatementEvidenceID: 1, AssistantIDs: []uint{2},
+	}
+	result := userSourceExtract(t, fakeFinalizeBoards{}, messages, proposal)
+	if len(result.Proposals) != 0 {
+		t.Fatalf("proposals=%+v, want the one-off operation kept out", result.Proposals)
+	}
+	if len(result.Skipped) != 1 || result.Skipped[0].Reason != FinalizeSkipAdoptionUnproven {
+		t.Fatalf("skipped=%+v, want adoption_unproven", result.Skipped)
+	}
+}
+
+// 正例：从今天起固定用 16 是长期决定，不能被一次性操作规则误拦。
+func TestAutoProposalUserSourceStartTimeFixedStillCards(t *testing.T) {
+	at := userSourceTime(t)
+	messages := []SessionMessage{
+		{ID: 1, IsUser: true, Content: "从今天起固定用 16 线程。", CreatedAt: at},
+		{ID: 2, IsUser: false, Content: "好，从今天起固定用 16 线程。", CreatedAt: at.Add(time.Minute)},
+	}
+	proposal := SessionRawProposal{
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassConstraint, Subject: "线程数",
+		Durability: model.MemoryDurabilityStable, Content: "固定用 16 线程。",
+		EvidenceIDs: []uint{1}, StatementEvidenceID: 1, AssistantIDs: []uint{2},
+	}
+	result := userSourceExtract(t, fakeFinalizeBoards{}, messages, proposal)
+	if len(result.Proposals) != 1 || len(result.Skipped) != 0 {
+		t.Fatalf("proposals=%d skipped=%+v, want the standing decision", len(result.Proposals), result.Skipped)
+	}
+	candidate := result.Proposals[0]
+	if candidate.Content != "从今天起固定用 16 线程。" || candidate.Subject != "从今天起固定用 16 线程" {
+		t.Fatalf("subject=%q content=%q, want the user's standing decision", candidate.Subject, candidate.Content)
+	}
+	if len(candidate.AssistantUtterances) != 0 {
+		t.Fatalf("assistant refs=%+v, want the redundant refs dropped", candidate.AssistantUtterances)
+	}
+}
+
+// 正例：带「以后」的偏好请求不是普通求解提问，不能被提问过滤误拦。
+func TestAutoProposalUserSourcePreferenceQuestionStillCards(t *testing.T) {
+	at := userSourceTime(t)
+	messages := []SessionMessage{
+		{ID: 1, IsUser: true, Content: "可不可以以后先给最小示例？", CreatedAt: at},
+		{ID: 2, IsUser: false, Content: "可以，以后先给最小示例。", CreatedAt: at.Add(time.Minute)},
+	}
+	proposal := SessionRawProposal{
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassTeachingPreference, Subject: "示例顺序",
+		Durability: model.MemoryDurabilityStable, Content: "以后先给最小示例。",
+		EvidenceIDs: []uint{1}, StatementEvidenceID: 1, AssistantIDs: []uint{2},
+	}
+	result := userSourceExtract(t, fakeFinalizeBoards{}, messages, proposal)
+	if len(result.Proposals) != 1 || len(result.Skipped) != 0 {
+		t.Fatalf("proposals=%d skipped=%+v, want the preference card", len(result.Proposals), result.Skipped)
+	}
+	candidate := result.Proposals[0]
+	if candidate.Content != "可不可以以后先给最小示例？" || candidate.Subject != "可不可以以后先给最小示例" {
+		t.Fatalf("subject=%q content=%q, want the user's preference request", candidate.Subject, candidate.Content)
+	}
+	if len(candidate.AssistantUtterances) != 0 {
+		t.Fatalf("assistant refs=%+v, want the redundant refs dropped", candidate.AssistantUtterances)
+	}
+}
+
 // 走到草稿入口的字段与不变量：标题/正文来自用户原话，来源里没有助手消息，
 // 主题留空；确认前正式记忆、修订记录零变化，掌握度逐字段一致。
 func TestAutoProposalUserSourceDraftFieldsAndInvariants(t *testing.T) {
