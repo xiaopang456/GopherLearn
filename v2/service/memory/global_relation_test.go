@@ -115,13 +115,13 @@ func TestExplicitGlobalConflictBoundaryIsBoundedAndFailClosed(t *testing.T) {
 	input := ExplicitMemoryInput{Scope: model.MemoryScopeGlobal, Subject: "顺序", Content: "请先说最终结论"}
 	resolver := &globalResolverStub{result: GlobalRelationResult{Relation: GlobalRelationDuplicate, TargetMemoryID: active.ID, Reason: "paraphrase"}}
 	service := &GovernanceService{explicit: &globalExplicitStub{}, globalSource: globalSourceStub{rows: []model.LongTermMemory{active}}, globalRelations: resolver}
-	conflicts, snapshot, _, _, err := service.explicitConflicts(context.Background(), 7, input)
-	if err != nil || len(conflicts) != 1 || conflicts[0].ID != active.ID || snapshot == "" || resolver.calls != 1 {
-		t.Fatalf("conflicts=%+v snapshot=%q calls=%d err=%v", conflicts, snapshot, resolver.calls, err)
+	judgement, err := service.explicitConflicts(context.Background(), 7, input)
+	if err != nil || len(judgement.Rows) != 1 || judgement.Rows[0].ID != active.ID || judgement.SnapshotHash == "" || resolver.calls != 1 {
+		t.Fatalf("judgement=%+v calls=%d err=%v", judgement, resolver.calls, err)
 	}
 
 	resolver.err = errors.New("provider unavailable")
-	if _, _, _, _, err = service.explicitConflicts(context.Background(), 7, input); err == nil {
+	if _, err = service.explicitConflicts(context.Background(), 7, input); err == nil {
 		t.Fatal("provider failure must close the write boundary")
 	}
 
@@ -132,7 +132,7 @@ func TestExplicitGlobalConflictBoundaryIsBoundedAndFailClosed(t *testing.T) {
 	}
 	resolver.err, resolver.calls = nil, 0
 	service.globalSource = globalSourceStub{rows: rows}
-	if _, _, _, _, err = service.explicitConflicts(context.Background(), 7, input); !errors.Is(err, ErrGlobalMemoryCapacity) || resolver.calls != 0 {
+	if _, err = service.explicitConflicts(context.Background(), 7, input); !errors.Is(err, ErrGlobalMemoryCapacity) || resolver.calls != 0 {
 		t.Fatalf("capacity err=%v classifier_calls=%d", err, resolver.calls)
 	}
 }
@@ -141,9 +141,9 @@ func TestExplicitGlobalExactDuplicateSkipsClassifierButBindsSnapshot(t *testing.
 	active := model.LongTermMemory{ID: "m1", Scope: model.MemoryScopeGlobal, Subject: "回答", Content: "先给结论", ContentHash: model.MemoryContentHash("先给结论"), Status: model.LongTermMemoryActive}
 	resolver := &globalResolverStub{}
 	service := &GovernanceService{explicit: &globalExplicitStub{exact: []model.LongTermMemory{active}}, globalSource: globalSourceStub{rows: []model.LongTermMemory{active}}, globalRelations: resolver}
-	conflicts, snapshot, _, _, err := service.explicitConflicts(context.Background(), 7, ExplicitMemoryInput{Scope: model.MemoryScopeGlobal, Subject: "回答", Content: active.Content})
-	if err != nil || len(conflicts) != 1 || snapshot == "" || resolver.calls != 0 {
-		t.Fatalf("conflicts=%+v snapshot=%q calls=%d err=%v", conflicts, snapshot, resolver.calls, err)
+	judgement, err := service.explicitConflicts(context.Background(), 7, ExplicitMemoryInput{Scope: model.MemoryScopeGlobal, Subject: "回答", Content: active.Content})
+	if err != nil || len(judgement.Rows) != 1 || judgement.SnapshotHash == "" || resolver.calls != 0 {
+		t.Fatalf("judgement=%+v calls=%d err=%v", judgement, resolver.calls, err)
 	}
 }
 

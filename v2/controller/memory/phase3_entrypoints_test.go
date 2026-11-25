@@ -474,8 +474,16 @@ func TestFinalizeAcceptanceIdleSweeperEntry(t *testing.T) {
 		t.Fatalf("idle draft=%v, want provenance from the swept session", drafts[0])
 	}
 	newest := stored[len(stored)-1].ID
-	if got := probe.watermark(ctx, sessionID); got != newest {
-		t.Fatalf("watermark=%d after sweep, want %d", got, newest)
+	// 草稿与水位是两次提交：草稿先落库、水位后落库。看到草稿的那一刻，
+	// 水位可能还没写完——这里按草稿同样的方式等水位，追到它为止，断言的
+	// 仍是同一件事：扫描之后水位停在最新消息。
+	watermark := probe.watermark(ctx, sessionID)
+	for watermark != newest && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+		watermark = probe.watermark(ctx, sessionID)
+	}
+	if watermark != newest {
+		t.Fatalf("watermark=%d after sweep, want %d", watermark, newest)
 	}
 
 	// 扫描继续跑几个周期：水位已覆盖最新消息，不重复出卡。

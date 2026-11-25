@@ -82,10 +82,13 @@ func (s *GovernanceService) Create(ctx context.Context, request CreateRequest) (
 	if decision != "" && decision != "add" && decision != "replace" {
 		return CreateResult{}, ErrInvalidExplicitWrite
 	}
-	conflicts, snapshotHash, snapshotSize, _, conflictErr := s.explicitConflicts(ctx, request.UserID, input)
+	judgement, conflictErr := s.explicitConflicts(ctx, request.UserID, input)
 	if conflictErr != nil {
 		return CreateResult{}, conflictErr
 	}
+	conflicts := judgement.Rows
+	snapshotHash := judgement.SnapshotHash
+	snapshotSize := judgement.Size
 	if len(conflicts) > 0 && decision == "" {
 		return CreateResult{Conflicts: conflicts}, nil
 	}
@@ -124,6 +127,13 @@ type DraftRequest struct {
 	SessionID string
 	RunID     string
 	Input     ExplicitMemoryInput
+	// AutoProposal marks the candidate as coming from the session-finalize
+	// extraction. It is the only path whose profile class is the model's guess
+	// rather than the learner's own choice, so it is the only path the draft
+	// entry may re-file from the entry the candidate replaces. The manual
+	// entry writes active memory directly and the explicit write keeps the
+	// class its caller gave; both stay as they are.
+	AutoProposal bool
 }
 
 // ProposeDraft captures one explicit-write candidate as a pending draft. It
@@ -159,11 +169,12 @@ func (s *GovernanceService) ProposeDraft(ctx context.Context, request DraftReque
 	} else if ignored != nil {
 		return nil, false, SkipIgnoredSource, nil
 	}
-	conflicts, _, _, semanticDuplicate, err := s.explicitConflicts(ctx, request.UserID, input)
+	judgement, err := s.explicitConflicts(ctx, request.UserID, input)
 	if err != nil {
 		return nil, false, "", err
 	}
-	duplicateExisting := semanticDuplicate
+	conflicts := judgement.Rows
+	duplicateExisting := judgement.SemanticDuplicate
 	if !duplicateExisting {
 		for _, conflict := range conflicts {
 			if conflict.ContentHash == contentHash {
@@ -174,6 +185,22 @@ func (s *GovernanceService) ProposeDraft(ctx context.Context, request DraftReque
 	}
 	if duplicateExisting {
 		return nil, false, SkipDuplicateExisting, nil
+	}
+	// 自动提议的画像类别是模型猜的；被替换的那条旧条目才是学习者自己给
+	// 这件事定的归类。复判明确说是 replacement、且目标仍是该用户的生效
+	// 全局条目时，新值继承旧值的类别——替换才不会顺手把这件事改了个归类。
+	// 旧条目的类别为空时沿用候选自己的类别。
+	//
+	// 只有自动提议走这一步：手工添加与显式写入的类别是学习者或调用方
+	// 自己给的，入口不改。范围限定在全局画像：主题笔记没有画像类别。
+	// 继承需要明确的 replacement：complementary 也会带旧条目 id、也有
+	// ConflictIDs，只有冲突目标不足以说明这是替换。
+	if request.AutoProposal && input.Scope == model.MemoryScopeGlobal &&
+		judgement.Relation.Relation == GlobalRelationReplacement {
+		if target, ok := replacementTarget(judgement.Rows, judgement.Relation.TargetMemoryID); ok &&
+			target.ProfileClass != "" && target.ProfileClass.Valid() {
+			input.ProfileClass = target.ProfileClass
+		}
 	}
 	conflictIDs := make(model.StringList, 0, len(conflicts))
 	conflictHashes := make(model.StringList, 0, len(conflicts))
@@ -195,29 +222,54 @@ func (s *GovernanceService) ProposeDraft(ctx context.Context, request DraftReque
 	return createdDraft, created, "", err
 }
 
-func (s *GovernanceService) explicitConflicts(ctx context.Context, userID int64, input ExplicitMemoryInput) ([]model.LongTermMemory, string, int, bool, error) {
+// conflictJudgement is what one conflict query produced: the rows the
+// learner may be asked to replace, the semantic judgement behind them, and
+// the snapshot facts the write path needs.
+type conflictJudgement struct {
+	// Rows are the active entries the candidate overlaps. For a global
+	// candidate judged by the model this is the single row it named; for a
+	// topic candidate it is the topic's own active rows.
+	Rows []model.LongTermMemory
+	// Relation is the semantic judgement the query reached. It is empty when
+	// no semantic judgement ran: a topic candidate is compared by the topic
+	// conflict query, and byte-identical content is authoritative on its own.
+	Relation GlobalRelationResult
+	// SnapshotHash is the fingerprint of the global snapshot the judgement
+	// saw; the write path re-checks it inside its own transaction.
+	SnapshotHash string
+	// Size is how many active global entries that snapshot held.
+	Size int
+	// SemanticDuplicate says the judgement found the same meaning already
+	// covered by an active entry.
+	SemanticDuplicate bool
+}
+
+// explicitConflicts compares one candidate with the entries it may collide
+// with and reports what it found. For a global candidate the model decides;
+// for a topic candidate the topic's own active rows are the comparison set.
+func (s *GovernanceService) explicitConflicts(ctx context.Context, userID int64, input ExplicitMemoryInput) (conflictJudgement, error) {
 	if input.Scope != model.MemoryScopeGlobal {
 		conflicts, err := s.explicit.FindExplicitConflicts(ctx, userID, input.Scope, input.TopicKey, model.MemoryContentHash(input.Content), input.Tags, 10)
-		return conflicts, "", 0, false, err
+		return conflictJudgement{Rows: conflicts}, err
 	}
 	if s.globalSource == nil || s.globalRelations == nil {
-		return nil, "", 0, false, ErrGlobalRelationUnavailable
+		return conflictJudgement{}, ErrGlobalRelationUnavailable
 	}
 	// Byte-identical content is authoritative and does not need a provider call.
 	exact, err := s.explicit.FindExplicitConflicts(ctx, userID, input.Scope, "", model.MemoryContentHash(input.Content), nil, 10)
 	if err != nil {
-		return nil, "", 0, false, err
+		return conflictJudgement{}, err
 	}
 	existing, err := s.globalSource.ListAllActive(ctx, userID, model.MemoryScopeGlobal, 0, GlobalMemoryHardLimit+1)
 	if err != nil {
-		return nil, "", 0, false, fmt.Errorf("load global memory conflict snapshot: %w", err)
+		return conflictJudgement{}, fmt.Errorf("load global memory conflict snapshot: %w", err)
 	}
 	if len(existing) > GlobalMemoryHardLimit {
-		return nil, "", len(existing), false, ErrGlobalMemoryCapacity
+		return conflictJudgement{Size: len(existing)}, ErrGlobalMemoryCapacity
 	}
 	snapshotHash := memorydao.GlobalSnapshotFingerprint(existing)
 	if len(exact) > 0 {
-		return exact, snapshotHash, len(existing), false, nil
+		return conflictJudgement{Rows: exact, SnapshotHash: snapshotHash, Size: len(existing)}, nil
 	}
 	// 语义判定的范围是全部生效条目，不按画像类别过滤：同一事项的新旧值
 	// 可能被归到不同类别（旧版记作「背景」、新版归为「约束」，说的仍是
@@ -226,20 +278,24 @@ func (s *GovernanceService) explicitConflicts(ctx context.Context, userID int64,
 	// 是否同一事项；跨类别的不同事项由模型判 independent 并存。
 	relation, err := s.globalRelations.Classify(ctx, input, existing)
 	if err != nil {
-		return nil, "", len(existing), false, fmt.Errorf("classify global memory conflict: %w", err)
+		return conflictJudgement{}, fmt.Errorf("classify global memory conflict: %w", err)
 	}
 	if relation.Relation == GlobalRelationIndependent {
 		if len(existing) == GlobalMemoryHardLimit {
-			return nil, "", len(existing), false, ErrGlobalMemoryCapacity
+			return conflictJudgement{SnapshotHash: snapshotHash, Size: len(existing)}, ErrGlobalMemoryCapacity
 		}
-		return nil, snapshotHash, len(existing), false, nil
+		return conflictJudgement{Relation: relation, SnapshotHash: snapshotHash, Size: len(existing)}, nil
 	}
 	for _, memory := range existing {
 		if memory.ID == relation.TargetMemoryID {
-			return []model.LongTermMemory{memory}, snapshotHash, len(existing), relation.Relation == GlobalRelationDuplicate, nil
+			return conflictJudgement{
+				Rows: []model.LongTermMemory{memory}, Relation: relation,
+				SnapshotHash: snapshotHash, Size: len(existing),
+				SemanticDuplicate: relation.Relation == GlobalRelationDuplicate,
+			}, nil
 		}
 	}
-	return nil, "", len(existing), false, ErrInvalidGlobalRelation
+	return conflictJudgement{}, ErrInvalidGlobalRelation
 }
 
 func (s *GovernanceService) PendingDrafts(ctx context.Context, userID int64) ([]model.MemoryDraft, error) {
@@ -351,12 +407,13 @@ func (s *GovernanceService) EditDraft(ctx context.Context, request EditDraftRequ
 	if err != nil {
 		return EditDraftResult{}, err
 	}
-	conflicts, _, _, semanticDuplicate, err := s.explicitConflicts(ctx, request.UserID, input)
+	judgement, err := s.explicitConflicts(ctx, request.UserID, input)
 	if err != nil {
 		return EditDraftResult{}, err
 	}
+	conflicts := judgement.Rows
 	targets := append([]model.LongTermMemory(nil), conflicts...)
-	closeAsDuplicate := semanticDuplicate
+	closeAsDuplicate := judgement.SemanticDuplicate
 	for _, conflict := range conflicts {
 		if conflict.ContentHash == model.MemoryContentHash(input.Content) {
 			closeAsDuplicate = true
@@ -416,6 +473,23 @@ func targetRows(rows []model.LongTermMemory, targetID string) []model.LongTermMe
 		}
 	}
 	return nil
+}
+
+// replacementTarget returns the row a replacement judgement named, when that
+// row is still one of the active global entries the judgement was made
+// against. A target that is not in the set - superseded, deleted, or simply
+// not the user's - carries no class to inherit.
+func replacementTarget(rows []model.LongTermMemory, targetID string) (model.LongTermMemory, bool) {
+	targetID = strings.TrimSpace(targetID)
+	if targetID == "" {
+		return model.LongTermMemory{}, false
+	}
+	for _, row := range rows {
+		if row.ID == targetID && row.Scope == model.MemoryScopeGlobal && row.Status == model.LongTermMemoryActive {
+			return row, true
+		}
+	}
+	return model.LongTermMemory{}, false
 }
 
 type ConfirmDraftRequest struct {
@@ -489,10 +563,13 @@ func (s *GovernanceService) ConfirmDraft(ctx context.Context, request ConfirmDra
 			if normalizeErr != nil {
 				return ConfirmDraftResult{}, normalizeErr
 			}
-			currentConflicts, currentSnapshot, currentSize, _, conflictErr := s.explicitConflicts(ctx, request.UserID, input)
+			currentJudgement, conflictErr := s.explicitConflicts(ctx, request.UserID, input)
 			if conflictErr != nil {
 				return ConfirmDraftResult{}, conflictErr
 			}
+			currentConflicts := currentJudgement.Rows
+			currentSnapshot := currentJudgement.SnapshotHash
+			currentSize := currentJudgement.Size
 			if action == "replace" && !containsMemoryID(currentConflicts, strings.TrimSpace(request.TargetMemoryID)) {
 				return ConfirmDraftResult{}, memorydao.ErrMemoryConflict
 			}

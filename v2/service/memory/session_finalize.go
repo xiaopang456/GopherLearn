@@ -513,10 +513,15 @@ func assistantRefIDs(refs []SessionEvidenceRef) []uint {
 // DraftRequest is the full call the finalize handoff makes into the draft
 // entry. The run id is derived from the cursor, not invented per trigger, so
 // a repeated trigger of the same progress stays one proposal end to end.
+//
+// AutoProposal marks the candidate as the extraction's own: its profile class
+// is the model's guess, so the draft entry may re-file it from the entry it
+// replaces. The manual entry and the explicit write keep their own class.
 func (c SessionMemoryCandidate) DraftRequest() DraftRequest {
 	return DraftRequest{
 		UserID: c.UserID, SessionID: c.Cursor.SessionID,
 		RunID: FinalizeRunID(c.Cursor), Input: c.DraftInput(),
+		AutoProposal: true,
 	}
 }
 

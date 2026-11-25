@@ -166,7 +166,9 @@ func finalizeFixtureSessionIDs() []string {
 		"fin-acc-tcov-go-context-复述", "fin-acc-tcov-go-context-同义展开", "fin-acc-tcov-go-context-补充",
 		"fin-acc-tcov-mysql-index-复述", "fin-acc-tcov-mysql-index-同义展开", "fin-acc-tcov-mysql-index-补充",
 		"fin-acc-tcov-redis-config-复述", "fin-acc-tcov-redis-config-更正",
-		"fin-acc-tcov-c-dup", "fin-acc-tcov-c-add", "fin-acc-tcov-c-blank", "fin-acc-tcov-c-old", "fin-acc-tcov-c-new"}
+		"fin-acc-tcov-c-dup", "fin-acc-tcov-c-add", "fin-acc-tcov-c-blank", "fin-acc-tcov-c-old", "fin-acc-tcov-c-new",
+		"fin-acc-class-bg", "fin-acc-class-ct", "fin-acc-class-go", "fin-acc-class-tp", "fin-acc-class-none",
+		"fin-acc-class-comp", "fin-acc-class-indep", "fin-acc-class-rejudge", "fin-acc-class-manual"}
 }
 
 // seedSession inserts one session of the learner with its messages and its

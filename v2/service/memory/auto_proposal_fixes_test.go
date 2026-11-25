@@ -114,6 +114,14 @@ func TestAutoProposalFix1CrossClassValueLinksOldEntry(t *testing.T) {
 	if len(drafts) != 1 || !stringListContains(drafts[0].ConflictIDs, old.ID) {
 		t.Fatalf("drafts=%+v, want one pending card pinned to the old value", drafts)
 	}
+	// 替换的是同一件事：它的归类跟着旧条目走，旧条目是学习者自己给这件事
+	// 定的类别。模型给新值猜的类别（约束）不能顺着替换改掉归类。
+	if drafts[0].ProfileClass != model.ProfileClassBackground {
+		t.Fatalf("draft class=%q, want the replaced entry's own %q", drafts[0].ProfileClass, model.ProfileClassBackground)
+	}
+	if pinned := memorydao.PinnedConflictHash(drafts[0], old.ID); pinned != old.ContentHash {
+		t.Fatalf("pinned hash=%q, want the old value's %q", pinned, old.ContentHash)
+	}
 	// 不变量：零正式写入（旧值仍生效、无新增记忆）与掌握度不变。
 	if got := countRows(t, acc, &model.LongTermMemory{}); got != memoriesBefore {
 		t.Fatalf("memories=%d, want %d (no formal write before confirmation)", got, memoriesBefore)
@@ -124,6 +132,20 @@ func TestAutoProposalFix1CrossClassValueLinksOldEntry(t *testing.T) {
 	}
 	if progress.MasteryScore != 80 {
 		t.Fatalf("mastery=%d, want 80 (untouched)", progress.MasteryScore)
+	}
+	// 用户确认替换之后：新记录保留继承的类别，旧值才失效。
+	confirmed, err := acc.governance.ConfirmDraft(ctx, ConfirmDraftRequest{
+		UserID: acc.userID, DraftID: drafts[0].ID, Action: "replace",
+		TargetMemoryID: old.ID, Reason: "验收确认替换",
+	})
+	if err != nil {
+		t.Fatalf("confirm replace: %v", err)
+	}
+	if confirmed.Memory == nil || confirmed.Memory.ProfileClass != model.ProfileClassBackground {
+		t.Fatalf("confirmed memory=%+v, want the inherited class", confirmed.Memory)
+	}
+	if got := seedProfileStatus(t, acc, old.ID); got != model.LongTermMemorySuperseded {
+		t.Fatalf("old value status=%s, want superseded after the replacement", got)
 	}
 }
 
