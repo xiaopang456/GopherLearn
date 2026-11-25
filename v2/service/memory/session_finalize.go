@@ -1594,11 +1594,12 @@ func learnerClauseIsQuestion(clause learnerClause) bool {
 
 // learnerClauseCanSource reports whether a clause may source the draft. A
 // how/why question asks for an answer; a standing word only limits the
-// timeframe and cannot turn it into a decision. A permission/possibility
-// question is a preference request only when the clause itself carries a
-// standing marker and a permission cue ("可不可以以后先给最小示例？"). This
-// runs per clause, so a message that mixes a preference and a question keeps
-// only the preference.
+// timeframe and cannot turn it into a decision. A question sources a
+// preference only when it explicitly asks permission for a future behavior
+// ("可不可以以后先给最小示例？"); politeness ("请问") and a standing word alone
+// only give tone and time, so a consultation about a needed value is refused.
+// This runs per clause, so a message that mixes a preference and a question
+// keeps only the preference.
 func learnerClauseCanSource(clause learnerClause) bool {
 	if !learnerClauseIsQuestion(clause) {
 		return true
@@ -1611,7 +1612,24 @@ func learnerClauseCanSource(clause learnerClause) bool {
 	if learnerScopeOf(clause.text) != learnerScopeStanding {
 		return false
 	}
-	for _, cue := range []string{"可不可以", "能不能", "可以吗", "行吗", "好吗", "对吗", "请问"} {
+	// A value/need/fact check is a consultation, not a request for future
+	// behavior; the ending tone particle does not change that.
+	for _, veto := range []string{"需要", "要不要", "是不是", "有没有", "多少", "应该", "吗"} {
+		if strings.Contains(clause.text, veto) {
+			return false
+		}
+	}
+	request := false
+	for _, cue := range []string{"可不可以", "能不能"} {
+		if strings.Contains(clause.text, cue) {
+			request = true
+			break
+		}
+	}
+	if !request {
+		return false
+	}
+	for _, cue := range []string{"给", "讲", "举例", "例子", "说明", "解释", "示范"} {
 		if strings.Contains(clause.text, cue) {
 			return true
 		}

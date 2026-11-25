@@ -319,6 +319,28 @@ func TestAutoProposalUserSourcePreferenceQuestionStillCards(t *testing.T) {
 	}
 }
 
+// 配置咨询：礼貌措辞「请问」和长期词「以后」只提供语气与时间；用户在问
+// 是否需要固定为 16，没有确认选择，零卡。
+func TestAutoProposalUserSourceConfigurationConsultationIsRefused(t *testing.T) {
+	at := userSourceTime(t)
+	messages := []SessionMessage{
+		{ID: 1, IsUser: true, Content: "请问以后线上 Redis 连接池需要固定为 16 吗？", CreatedAt: at},
+		{ID: 2, IsUser: false, Content: "建议线上 Redis 连接池固定为 16。", CreatedAt: at.Add(time.Minute)},
+	}
+	proposal := SessionRawProposal{
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassConstraint, Subject: "连接池",
+		Durability: model.MemoryDurabilityStable, Content: "线上 Redis 连接池固定为 16。",
+		EvidenceIDs: []uint{1}, StatementEvidenceID: 1, AssistantIDs: []uint{2},
+	}
+	result := userSourceExtract(t, fakeFinalizeBoards{}, messages, proposal)
+	if len(result.Proposals) != 0 {
+		t.Fatalf("proposals=%+v, want the configuration consultation refused", result.Proposals)
+	}
+	if len(result.Skipped) != 1 || result.Skipped[0].Reason != FinalizeSkipAdoptionUnproven {
+		t.Fatalf("skipped=%+v, want adoption_unproven", result.Skipped)
+	}
+}
+
 // 长期词只能帮助判断适用期限，不能把「怎么配合」这类技术求解变成用户决定：
 // 即使问句里有「以后」，这个分句也不能支撑草稿。
 func TestAutoProposalUserSourceTechnicalQuestionWithStandingWordIsRefused(t *testing.T) {
