@@ -383,6 +383,55 @@ func TestAutoProposalUserSourceMixedPreferenceAndQuestion(t *testing.T) {
 	}
 }
 
+// 确认式提问：问号被分句切掉后仍要读到句末问号，不能当成用户决定。
+func TestAutoProposalUserSourceConfirmationQuestionIsRefused(t *testing.T) {
+	at := userSourceTime(t)
+	messages := []SessionMessage{
+		{ID: 1, IsUser: true, Content: "线上 Redis 连接池设为 16？", CreatedAt: at},
+		{ID: 2, IsUser: false, Content: "对，线上连接池设为 16。", CreatedAt: at.Add(time.Minute)},
+	}
+	proposal := SessionRawProposal{
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassConstraint, Subject: "连接池",
+		Durability: model.MemoryDurabilityStable, Content: "线上 Redis 连接池设为 16。",
+		EvidenceIDs: []uint{1}, StatementEvidenceID: 1, AssistantIDs: []uint{2},
+	}
+	result := userSourceExtract(t, fakeFinalizeBoards{}, messages, proposal)
+	if len(result.Proposals) != 0 {
+		t.Fatalf("proposals=%+v, want the confirmation question refused", result.Proposals)
+	}
+	if len(result.Skipped) != 1 || result.Skipped[0].Reason != FinalizeSkipAdoptionUnproven {
+		t.Fatalf("skipped=%+v, want adoption_unproven", result.Skipped)
+	}
+}
+
+// 完整的理解复述里出现「如何」不等于提问：陈述句要能正常出卡。
+func TestAutoProposalUserSourceUnderstandingStatementWithHowIsNotQuestion(t *testing.T) {
+	at := userSourceTime(t)
+	messages := []SessionMessage{
+		{ID: 1, IsUser: true, Content: "我已经理解队列如何处理任务：先入先出。", CreatedAt: at},
+		{ID: 2, IsUser: false, Content: "对，队列按先入先出处理任务。", CreatedAt: at.Add(time.Minute)},
+	}
+	proposal := SessionRawProposal{
+		Scope: model.MemoryScopeGlobal, Class: model.ProfileClassConstraint, Subject: "队列处理",
+		Durability: model.MemoryDurabilityStable, Content: "队列处理任务采用先入先出。",
+		EvidenceIDs: []uint{1}, StatementEvidenceID: 1, AssistantIDs: []uint{2},
+	}
+	result := userSourceExtract(t, fakeFinalizeBoards{}, messages, proposal)
+	if len(result.Proposals) != 1 || len(result.Skipped) != 0 {
+		t.Fatalf("proposals=%d skipped=%+v, want the understanding statement card", len(result.Proposals), result.Skipped)
+	}
+	candidate := result.Proposals[0]
+	if candidate.Content != "我已经理解队列如何处理任务：先入先出。" {
+		t.Fatalf("content=%q, want the learner's understanding", candidate.Content)
+	}
+	if candidate.Subject != "我已经理解队列如何处理任务：先入先出" {
+		t.Fatalf("subject=%q, want the learner's first clause", candidate.Subject)
+	}
+	if len(candidate.AssistantUtterances) != 0 {
+		t.Fatalf("assistant refs=%+v, want the redundant refs dropped", candidate.AssistantUtterances)
+	}
+}
+
 // 走到草稿入口的字段与不变量：标题/正文来自用户原话，来源里没有助手消息，
 // 主题留空；确认前正式记忆、修订记录零变化，掌握度逐字段一致。
 func TestAutoProposalUserSourceDraftFieldsAndInvariants(t *testing.T) {

@@ -1337,7 +1337,7 @@ func learnerEvidenceSupportedContent(userTexts []string, content string) string 
 	seen := make(map[string]struct{})
 	for _, text := range userTexts {
 		for _, clause := range learnerStatementClauses(text) {
-			if !learnerClauseCanSource(clause.text) {
+			if !learnerClauseCanSource(clause) {
 				continue
 			}
 			key := learnerFoldedText(clause.text)
@@ -1562,39 +1562,61 @@ func learnerScopeConflict(clause, content string) bool {
 }
 
 // learnerClauseIsQuestion reports whether a clause asks for an answer rather
-// than stating something.
-func learnerClauseIsQuestion(clause string) bool {
-	trimmed := strings.TrimSpace(clause)
+// than stating something. The trailing separator is part of the clause: a
+// clause ending in "？" is a confirmation question even when its body has no
+// interrogative word. A text-only marker such as "如何" does not make a
+// declarative sentence a question ("我已经理解队列如何处理任务").
+func learnerClauseIsQuestion(clause learnerClause) bool {
+	trimmed := strings.TrimSpace(clause.text)
 	if trimmed == "" {
 		return false
 	}
-	if strings.ContainsAny(trimmed, "？?") {
+	if clause.suffix == "？" || clause.suffix == "?" {
 		return true
 	}
+	interrogative := false
 	for _, marker := range []string{"怎么", "如何", "为什么", "为啥", "是什么", "是不是", "能不能", "可不可以", "可以吗", "对吗", "行吗", "好吗", "请问", "咋"} {
 		if strings.Contains(trimmed, marker) {
-			return true
+			interrogative = true
+			break
 		}
 	}
-	return false
+	if !interrogative {
+		return false
+	}
+	for _, marker := range []string{"我已经理解", "我理解", "我明白了", "我的理解", "我知道", "我懂了", "也就是说", "意思是", "结论是", "总结", "记下", "记住"} {
+		if strings.Contains(trimmed, marker) {
+			return false
+		}
+	}
+	return true
 }
 
 // learnerClauseCanSource reports whether a clause may source the draft. A
 // how/why question asks for an answer; a standing word only limits the
 // timeframe and cannot turn it into a decision. A permission/possibility
 // question is a preference request only when the clause itself carries a
-// standing marker ("以后先给最小示例？"). This runs per clause, so a message
-// that mixes a preference and a question keeps only the preference.
-func learnerClauseCanSource(clause string) bool {
+// standing marker and a permission cue ("可不可以以后先给最小示例？"). This
+// runs per clause, so a message that mixes a preference and a question keeps
+// only the preference.
+func learnerClauseCanSource(clause learnerClause) bool {
 	if !learnerClauseIsQuestion(clause) {
 		return true
 	}
 	for _, marker := range []string{"怎么", "如何", "为什么", "为啥", "咋"} {
-		if strings.Contains(clause, marker) {
+		if strings.Contains(clause.text, marker) {
 			return false
 		}
 	}
-	return learnerScopeOf(clause) == learnerScopeStanding
+	if learnerScopeOf(clause.text) != learnerScopeStanding {
+		return false
+	}
+	for _, cue := range []string{"可不可以", "能不能", "可以吗", "行吗", "好吗", "对吗", "请问"} {
+		if strings.Contains(clause.text, cue) {
+			return true
+		}
+	}
+	return false
 }
 
 // learnerContentIsOnlyTemporary reports whether every kept clause is a
