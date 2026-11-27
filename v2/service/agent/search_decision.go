@@ -149,6 +149,13 @@ func mentionsOwnMaterial(question string) bool {
 	}
 	// The possessive forms the phrase list cannot cover: "我的那份笔记",
 	// "我上传的这份文档", "我存下的资料".
+	//
+	// A file name is deliberately not on this list. "note.md 中的超时重试策略
+	// 是什么？" names a document, but naming a document is not the same as
+	// saying the answer has to come from the library: the pre-retrieval hands
+	// the model the passages and the model judges whether they answer the
+	// question. A file name stops the question from being a history question -
+	// it does not buy the question a forced search.
 	return mentionsPossessiveMaterial(normalized)
 }
 

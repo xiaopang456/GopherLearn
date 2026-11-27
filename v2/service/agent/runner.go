@@ -4673,31 +4673,13 @@ func documentKnowledgeReachable(question string, policy rag.KnowledgePolicy) boo
 	return !isExplicitNoSearchQuestion(question)
 }
 
-func isHistoryRecallQuestion(question string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(question))
-	markers := []string{
-		"你还记得", "还记得我", "我当时", "我之前", "我上次", "之前我", "上次我",
-		"我的原话", "我说了什么", "我怎么说", "当时怎么说", "一字不差", "逐字", "原文",
-		"之前我们", "前面我们", "本次对话", "当前对话", "本会话", "当前会话",
-	}
-	for _, marker := range markers {
-		if strings.Contains(normalized, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-func requiresExactHistoryEvidence(question string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(question))
-	markers := []string{"原话", "一字不差", "逐字", "原文", "我说了什么", "我怎么说", "当时怎么说"}
-	for _, marker := range markers {
-		if strings.Contains(normalized, marker) {
-			return true
-		}
-	}
-	return false
-}
+// The two predicates that decide what a turn may answer from are defined in
+// history_intent.go, next to the rules they are built from:
+// isHistoryRecallQuestion - is this question about the learner's own past?
+// requiresExactHistoryEvidence - may this turn answer without reading that
+// past back? Both read one request at a time, and the two places that use them
+// - the first tool choice below and the final answer check - share them, so
+// they cannot decide differently.
 
 func (s *runState) forcedToolName() string {
 	s.mu.Lock()
