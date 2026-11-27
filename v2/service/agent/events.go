@@ -60,6 +60,9 @@ type Event struct {
 	// that streams and a client that does not can render the same line about
 	// which of the learner's subjects this answer used.
 	UsedTopicKeys []string `json:"usedTopicKeys,omitempty"`
+	// AnswerBasisTopics names the topics whose confirmed notes this answer
+	// rests on, so a streamed answer shows the same basis a reloaded one does.
+	AnswerBasisTopics []string `json:"answerBasisTopics,omitempty"`
 }
 
 type MemoryDraftCard struct {

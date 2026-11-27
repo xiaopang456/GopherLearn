@@ -671,6 +671,11 @@ type RunnerResult struct {
 	// and it is keys only - the note text is already in the answer if it was
 	// used at all.
 	UsedTopicKeys []string
+	// AnswerBasisTopics names the topics whose confirmed notes this answer
+	// rests on. It is empty for every answer that rests on something else,
+	// and it is a different list from UsedTopicKeys on purpose: the receipt
+	// says what reached the context, this says what the answer stands on.
+	AnswerBasisTopics []string
 	// TopicMemoryReads is the same for topic_memory_read. It is a second slice
 	// rather than an entry in the first because every cost report in this
 	// series counts general searches, and a narrow key read that spends no
@@ -1114,10 +1119,12 @@ func (r *Runner) Run(parent context.Context, input RunContext, sink EventSink) (
 		knowledgePolicy:      policy, answerBasis: rag.AnswerBasisConversation,
 		knowledgeStatus: rag.KnowledgeStatusNotRequired, knowledgeReason: rag.KnowledgeReasonNone,
 		contextBudget: window.Budget, usedTopicKeys: append([]string(nil), window.UsedTopicKeys...),
-		episodeIDs:     append([]string(nil), window.EpisodeIDs...),
-		episodeSources: append(model.EpisodeSourceRefs(nil), window.EpisodeSources...),
-		grantSet:       toolInput.GrantSet,
-		memoryTrace:    memoryEvidence, perToolCalls: map[string]int{}, progress: newToolProgressLedger(),
+		usedTopicNames:      copyStringMap(window.UsedTopicNames),
+		confirmedTopicNotes: append([]ConfirmedTopicNote(nil), window.ConfirmedTopicNotes...),
+		episodeIDs:          append([]string(nil), window.EpisodeIDs...),
+		episodeSources:      append(model.EpisodeSourceRefs(nil), window.EpisodeSources...),
+		grantSet:            toolInput.GrantSet,
+		memoryTrace:         memoryEvidence, perToolCalls: map[string]int{}, progress: newToolProgressLedger(),
 		memorySearchAvailable: memorySearchAvailable,
 		availableTools:        availableTools,
 	}
@@ -1698,6 +1705,18 @@ type runState struct {
 	modelBudgetClosed bool
 	contextBudget     BudgetBreakdown
 	usedTopicKeys     []string
+	// usedTopicNames maps a used topic key to the name the learner knows it by.
+	// The answer basis shows the name, because the name is what the learner
+	// saw in the selection card.
+	usedTopicNames map[string]string
+	// confirmedTopicNotes are the notes the learner confirmed for this
+	// question, with the wording they wrote. The server checks the answer
+	// against them: a note that reached the window says nothing about what the
+	// answer rests on.
+	confirmedTopicNotes []ConfirmedTopicNote
+	// answerBasisTopics names the topics whose confirmed notes this answer
+	// rests on. It is empty for every answer that does not.
+	answerBasisTopics []string
 	episodeIDs        []string
 	episodeSources    model.EpisodeSourceRefs
 	memoryDraft       *MemoryDraftCard
@@ -1775,14 +1794,15 @@ func (s *runState) result() RunnerResult {
 	defer s.mu.Unlock()
 	return RunnerResult{
 		ToolCalls: s.toolCalls, ModelCalls: s.modelCalls,
-		Sources:        append([]rag.Source{}, s.sources...),
-		ContextBudget:  s.contextBudget,
-		UsedTopicKeys:  append([]string(nil), s.usedTopicKeys...),
-		EpisodeIDs:     append([]string(nil), s.episodeIDs...),
-		EpisodeSources: append(model.EpisodeSourceRefs(nil), s.episodeSources...),
-		MemoryDraft:    cloneMemoryDraftCard(s.memoryDraft),
-		Clarification:  s.clarification,
-		AnswerBasis:    s.answerBasis, KnowledgeStatus: s.knowledgeStatus, KnowledgeReason: s.knowledgeReason,
+		Sources:           append([]rag.Source{}, s.sources...),
+		ContextBudget:     s.contextBudget,
+		UsedTopicKeys:     append([]string(nil), s.usedTopicKeys...),
+		AnswerBasisTopics: append([]string(nil), s.answerBasisTopics...),
+		EpisodeIDs:        append([]string(nil), s.episodeIDs...),
+		EpisodeSources:    append(model.EpisodeSourceRefs(nil), s.episodeSources...),
+		MemoryDraft:       cloneMemoryDraftCard(s.memoryDraft),
+		Clarification:     s.clarification,
+		AnswerBasis:       s.answerBasis, KnowledgeStatus: s.knowledgeStatus, KnowledgeReason: s.knowledgeReason,
 		MemoryEvidence:   s.memoryTrace.Calls(),
 		TopicMemoryReads: s.memoryTrace.TopicReads(),
 		MemoryRefs:       s.memoryTrace.Entries(),
@@ -4153,6 +4173,61 @@ func (s *runState) finalizeGroundedAnswer(answer string, allowRepair, allowFallb
 			s.knowledgeReason = rag.KnowledgeReasonNone
 			return answer, groundingFinalized
 		}
+	}
+	// A confirmed topic note is grounding of its own kind, and the answer that
+	// rests on one is not a document answer that happens to be short of a
+	// citation.
+	//
+	// The document path below decides one thing: whether the answer rests on
+	// the learner's uploaded documents. Its answer to "this answer cites no
+	// document" is to rewrite the answer from general knowledge and to label
+	// it as general knowledge - and that is the wrong answer twice over for a
+	// note-grounded turn. The rewrite drops the note's reference, and the
+	// label tells the learner their own note was not the source of the
+	// sentence they just read.
+	//
+	// So the attribution is decided here, before the document path can reach
+	// the answer, and it is decided about the answer rather than about the
+	// window: the answer has to cite the note, or repeat the note's own
+	// words. The receipt - the topic the learner confirmed - is not enough,
+	// because it says the notes reached the context and not what the answer
+	// stands on.
+	//
+	// Two rules keep this from taking an answer away from a question that
+	// asked for a document. A question that names the learner's own material
+	// keeps the document rules and keeps their refusals, and an answer that
+	// cites a document this turn never showed the model is left to the
+	// citation check below rather than being quietly kept.
+	//
+	// A question that asks for the learner's own words back is owned by the
+	// history rule, and a confirmed note is not a way around it: the note is
+	// what the learner wrote down, not what they said in this conversation.
+	//
+	// The branch is for an answer that cites no document at all. An answer
+	// that does cite one is grounded in that passage, and the document rules
+	// already label it correctly - there is nothing for the topic branch to
+	// fix there.
+	if attribution := s.topicAttributionFor(answer); !attribution.Empty() && len(wanted) == 0 &&
+		!s.documentsAreDemanded() && !requiresExactHistoryEvidence(s.input.Question) {
+		// The answer rests on the learner's own note. What the document
+		// retrieval did is a separate fact and keeps its own fields: the
+		// learner is told both, rather than one of them replacing the other.
+		if len(s.documentSources()) > 0 {
+			// The retrieval found passages and the answer did not use them.
+			// That is not "the material had nothing to say": it is "this
+			// answer did not come from the material".
+			s.sources = nil
+			s.knowledgeStatus = rag.KnowledgeStatusNotUsed
+			s.knowledgeReason = rag.KnowledgeReasonNotCited
+		} else {
+			// No document was part of this answer at all.
+			s.sources = nil
+			s.knowledgeStatus = rag.KnowledgeStatusNotRequired
+			s.knowledgeReason = rag.KnowledgeReasonNone
+		}
+		s.answerBasis = rag.AnswerBasisTopicMemory
+		s.answerBasisTopics = attribution.Names
+		return answer, groundingFinalized
 	}
 	if !s.groundingUsed {
 		// The server-side pre-retrieval may have handed the model evidence

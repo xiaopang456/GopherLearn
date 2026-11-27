@@ -76,7 +76,7 @@ watch(
 )
 
 watch(
-  () => [chat.messages.value.length, chat.run.value?.text?.length ?? 0],
+  () => [chat.messages.value.length, chat.run.value?.text?.length ?? 0, topic.prompt.value.visible],
   async () => {
     await nextTick()
     const node = transcript.value
@@ -92,6 +92,28 @@ async function startNew(mode) {
 function select(id) {
   router.push({ name: 'session', params: { sessionId: id } })
 }
+
+/**
+ * The question that is waiting to be sent.
+ *
+ * While the learner is choosing a topic, the request has not gone out yet -
+ * the ticket is signed for this exact question, and the question only goes
+ * once a choice is made. Showing it in the transcript is what makes the card
+ * legible: the card asks about *this* question, and the learner has to be
+ * able to see which one it is about.
+ *
+ * It is drawn as the learner's own turn, so it reads as the question they
+ * asked rather than as a quotation of it.
+ */
+const pendingQuestion = computed(() => ({
+  id: 'topic-pending-question',
+  role: 'user',
+  content: topic.prompt.value.question,
+  createdAt: '',
+  status: 'done',
+  error: null,
+  sources: [],
+}))
 </script>
 
 <template>
@@ -160,7 +182,7 @@ function select(id) {
           正在载入历史消息…
         </div>
 
-        <div v-else-if="chat.messages.value.length === 0" class="chat__pad">
+        <div v-else-if="chat.messages.value.length === 0 && !topic.prompt.value.visible" class="chat__pad">
           <div class="chat__empty" data-test="empty-state">
             <div class="chat__empty-mark">
               <AppIcon name="logo" :size="26" />
@@ -247,6 +269,32 @@ function select(id) {
             :steps="chat.stepsForMessage(item)"
             @clarify="chat.send($event)"
           />
+
+          <!-- The question the learner is about to ask, and the card that asks
+               which of their own subjects may answer it. Both live where the
+               answer will land: the card is not a strip above the composer but
+               the step between the question and the reply. The question is
+               shown here because the request has not been sent yet - and it is
+               shown once, because the moment the learner picks, this bubble is
+               replaced by the question the server actually received. -->
+          <template v-if="topic.prompt.value.visible">
+            <MessageBubble
+              :key="pendingQuestion.id"
+              :message="pendingQuestion"
+              :steps="[]"
+            />
+            <TopicConsentPanel
+              :prompt="topic.prompt.value"
+              @toggle="topic.toggleSelection"
+              @open-catalogue="topic.openCatalogue"
+              @update:query="topic.setCatalogueQuery"
+              @search="topic.searchCatalogue"
+              @show-all="topic.showAllTopics"
+              @load-more="topic.loadMoreTopics"
+              @confirm="topic.confirmSelection"
+              @skip="topic.skipSelection"
+            />
+          </template>
         </div>
       </div>
 
@@ -257,35 +305,6 @@ function select(id) {
         {{ topic.error.value }}
       </p>
 
-      <TopicConsentPanel
-        v-if="topic.prompt.value.visible"
-        :prompt="topic.prompt.value"
-        @toggle="topic.toggleSelection"
-        @open-catalogue="topic.openCatalogue"
-        @update:query="topic.setCatalogueQuery"
-        @search="topic.searchCatalogue"
-        @show-all="topic.showAllTopics"
-        @load-more="topic.loadMoreTopics"
-        @confirm="topic.confirmSelection"
-        @skip="topic.skipSelection"
-      />
-
-      <div v-if="chat.isAgentSession.value && topic.capability.value.supported" class="chat__learning-records">
-        <button
-          type="button"
-          class="chat__learning-toggle"
-          :class="{ 'is-active': topic.enabled.value }"
-          :aria-pressed="topic.enabled.value"
-          :disabled="chat.streaming.value || topic.suggesting.value"
-          data-test="learning-records-toggle"
-          title="仅本次问题使用；选择主题前不会读取掌握情况或主题长期记忆"
-          @click="topic.enabled.value = !topic.enabled.value"
-        >
-          使用我的学习记录
-        </button>
-        <span class="chat__learning-hint">仅本次问题使用；选题前不会读取掌握度或主题记忆</span>
-      </div>
-
       <ComposerBox
         v-model="chat.draft.value"
         v-model:thinking="chat.enableThinking.value"
@@ -294,6 +313,9 @@ function select(id) {
         :mode="chat.activeMode.value"
         v-model:knowledge-enabled="chat.knowledgeEnabled.value"
         :can-use-knowledge="chat.canUseKnowledge.value"
+        v-model:topic-memory-enabled="topic.enabled.value"
+        :can-use-topic-memory="chat.isAgentSession.value && topic.capability.value.supported"
+        :topic-memory-disabled="chat.streaming.value || topic.suggesting.value"
         @submit="topic.submit()"
         @abort="chat.cancel"
       />
@@ -516,37 +538,5 @@ function select(id) {
   .chat__drawer {
     display: none;
   }
-}
-.chat__learning-records {
-  display: flex;
-  align-items: center;
-  gap: var(--gl-space-2);
-  margin: 0 0 var(--gl-space-2);
-}
-
-.chat__learning-toggle {
-  padding: 0.2em 0.7em;
-  border: 1px solid var(--gl-surface-line);
-  border-radius: var(--gl-radius-pill);
-  background: var(--gl-surface);
-  color: var(--gl-ink-soft);
-  cursor: pointer;
-  font-size: var(--gl-text-sm);
-}
-
-.chat__learning-toggle.is-active {
-  border-color: var(--gl-accent-ink);
-  color: var(--gl-accent-ink);
-  background: var(--gl-accent-soft);
-}
-
-.chat__learning-toggle:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.chat__learning-hint {
-  color: var(--gl-ink-faint);
-  font-size: var(--gl-text-xs);
 }
 </style>

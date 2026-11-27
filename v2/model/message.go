@@ -44,6 +44,47 @@ func (s *MessageSources) Scan(value interface{}) error {
 	return nil
 }
 
+// MessageTopics is the list of topics a message's answer basis rests on.
+//
+// It is a list of names rather than a count, because the learner is told which
+// subject the answer came from - "主题记忆 · 分层摘要" - and a count cannot say
+// that.
+type MessageTopics []string
+
+func (t MessageTopics) Value() (driver.Value, error) {
+	if t == nil {
+		t = MessageTopics{}
+	}
+	return json.Marshal(t)
+}
+
+func (t *MessageTopics) Scan(value interface{}) error {
+	if value == nil {
+		*t = MessageTopics{}
+		return nil
+	}
+	var data []byte
+	switch typed := value.(type) {
+	case []byte:
+		data = typed
+	case string:
+		data = []byte(typed)
+	default:
+		return fmt.Errorf("scan message topics: unsupported type %T", value)
+	}
+	if len(data) == 0 || string(data) == "null" {
+		*t = MessageTopics{}
+		return nil
+	}
+	if err := json.Unmarshal(data, t); err != nil {
+		return fmt.Errorf("scan message topics: %w", err)
+	}
+	if *t == nil {
+		*t = MessageTopics{}
+	}
+	return nil
+}
+
 type Message struct {
 	ID              uint                `gorm:"primaryKey;autoIncrement" json:"id"`
 	PersistenceKey  *string             `gorm:"type:char(36);uniqueIndex:idx_messages_persistence_key" json:"-"`
@@ -58,6 +99,13 @@ type Message struct {
 	AnswerBasis     rag.AnswerBasis     `gorm:"type:varchar(32);not null;default:legacy_unspecified" json:"answer_basis"`
 	KnowledgeStatus rag.KnowledgeStatus `gorm:"type:varchar(32);not null;default:legacy_unspecified" json:"knowledge_status"`
 	KnowledgeReason rag.KnowledgeReason `gorm:"type:varchar(48);not null;default:none" json:"knowledge_reason"`
+	// AnswerBasisTopics names the topics whose confirmed notes this answer
+	// rests on.
+	//
+	// It is stored rather than recomputed, because the basis has to survive a
+	// reload: a learner who opens the conversation again has to read the same
+	// basis the turn recorded, and the notes themselves may have changed since.
+	AnswerBasisTopics MessageTopics `gorm:"type:json" json:"answer_basis_topics,omitempty"`
 	// Clarification is the question the model asked because it could not
 	// tell which conversation the learner meant.
 	//

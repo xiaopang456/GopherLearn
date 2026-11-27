@@ -139,14 +139,18 @@ func (b *DatabaseContextBuilder) readConfirmedTopicContext(ctx context.Context, 
 // the learning state is an instruction to the teacher, and giving it an [S#]
 // would let an answer cite the server's assessment as though the learner had
 // said it.
+//
+// The notes are returned as well as rendered, because the server has to be able
+// to check that an answer rests on the note and not merely that the note
+// reached the window.
 func renderConfirmedTopicContext(registry *MemoryEvidenceRegistry, states []ConfirmedTopicLearningState,
-	records []TopicMemoryRecord, budget int) (string, []PreinjectedMemoryRef) {
+	records []TopicMemoryRecord, budget int) (string, []PreinjectedMemoryRef, []ConfirmedTopicNote) {
 	if len(states) == 0 && len(records) == 0 {
-		return "", nil
+		return "", nil, nil
 	}
 	used := messageTokenCost(confirmedTopicHeader)
 	if budget <= used {
-		return "", nil
+		return "", nil, nil
 	}
 	sections := []string{}
 
@@ -172,6 +176,7 @@ func renderConfirmedTopicContext(registry *MemoryEvidenceRegistry, states []Conf
 
 	noteLines := []string{}
 	refs := []PreinjectedMemoryRef{}
+	notes := []ConfirmedTopicNote{}
 	if registry != nil && len(records) > 0 {
 		if cost := messageTokenCost(confirmedNotesHeader); used+cost <= budget {
 			used += cost
@@ -206,6 +211,10 @@ func renderConfirmedTopicContext(registry *MemoryEvidenceRegistry, states []Conf
 				refs = append(refs, PreinjectedMemoryRef{
 					Kind: PreinjectedMemoryKindSemantic, ID: record.ID, Version: record.Version, Ref: ref,
 				})
+				notes = append(notes, ConfirmedTopicNote{
+					Ref: ref, TopicKey: strings.TrimSpace(record.TopicKey),
+					Subject: strings.TrimSpace(record.Subject), Text: value,
+				})
 			}
 			if len(noteLines) > 0 {
 				sections = append(sections, confirmedNotesHeader+"\n"+strings.Join(noteLines, "\n"))
@@ -213,9 +222,9 @@ func renderConfirmedTopicContext(registry *MemoryEvidenceRegistry, states []Conf
 		}
 	}
 	if len(sections) == 0 {
-		return "", nil
+		return "", nil, nil
 	}
-	return confirmedTopicHeader + "\n" + strings.Join(sections, "\n"), refs
+	return confirmedTopicHeader + "\n" + strings.Join(sections, "\n"), refs, notes
 }
 
 // renderLearningStateLines turns one topic's assessment into teaching guidance.

@@ -6,6 +6,13 @@
  * the answer read. Nothing personal has left the server to build this list -
  * it carries topic names only - and nothing is loaded until a ticket is
  * issued for the checked keys.
+ *
+ * The card lives in the transcript, under the question it is about and where
+ * the answer will land. That is why its title says what it is deciding: the
+ * learner is answering a question about *this* question, and everything in the
+ * card - the candidates, the count, the search entry and the two buttons -
+ * lines up on one left edge so the card reads as one decision rather than
+ * four scattered controls.
  */
 const props = defineProps({
   prompt: { type: Object, required: true },
@@ -27,28 +34,30 @@ const isSelected = (key) => props.prompt.selected.includes(key)
 
 <template>
   <section class="topic-consent gl-card" data-test="topic-consent">
-    <div class="topic-consent__title">
-      可能相关的学习记录：最多选 {{ prompt.maxSelectable }} 个，仅本次回答使用
-      <span class="topic-consent__count" data-test="topic-consent-count">
-        已选择 {{ prompt.selected.length }}/{{ prompt.maxSelectable }}
-      </span>
+    <div class="topic-consent__title" data-test="topic-consent-title">
+      选择本轮使用的主题
     </div>
-    <div class="topic-consent__options">
-      <label
+    <div class="topic-consent__count" data-test="topic-consent-count">
+      已选择 {{ prompt.selected.length }}/{{ prompt.maxSelectable }}，仅本次回答使用
+    </div>
+    <ul class="topic-consent__options" data-test="topic-consent-options">
+      <li
         v-for="candidate in prompt.candidates"
         :key="candidate.topicKey"
         :class="['topic-consent__option', { 'is-disabled': !isSelected(candidate.topicKey) && prompt.selected.length >= prompt.maxSelectable }]"
       >
-        <input
-          type="checkbox"
-          :checked="isSelected(candidate.topicKey)"
-          :disabled="!isSelected(candidate.topicKey) && prompt.selected.length >= prompt.maxSelectable"
-          :data-test="`topic-option-${candidate.topicKey}`"
-          @change="emit('toggle', candidate.topicKey)"
-        >
-        {{ candidate.displayName || candidate.topicKey }}
-      </label>
-    </div>
+        <label>
+          <input
+            type="checkbox"
+            :checked="isSelected(candidate.topicKey)"
+            :disabled="!isSelected(candidate.topicKey) && prompt.selected.length >= prompt.maxSelectable"
+            :data-test="`topic-option-${candidate.topicKey}`"
+            @change="emit('toggle', candidate.topicKey)"
+          >
+          <span>{{ candidate.displayName || candidate.topicKey }}</span>
+        </label>
+      </li>
+    </ul>
     <div class="topic-consent__catalogue">
       <button
         v-if="!prompt.catalogueOpened"
@@ -101,38 +110,39 @@ const isSelected = (key) => props.prompt.selected.includes(key)
 </template>
 
 <style scoped>
+/* The card is a step in the conversation, not a strip above it: it takes the
+   width of the transcript column and shares its left edge with the answer
+   that will arrive under it. */
 .topic-consent {
-  margin: 0 0 var(--gl-space-3);
+  margin: 0;
   padding: var(--gl-space-3) var(--gl-space-4);
   border-color: var(--gl-surface-line);
   background: var(--gl-surface-soft);
+  text-align: left;
 }
 .topic-consent__title {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--gl-space-2);
   font-weight: 600;
+  color: var(--gl-ink);
 }
 .topic-consent__count {
+  margin-top: 2px;
   color: var(--gl-ink-soft);
-  font-weight: 500;
   font-size: var(--gl-text-sm);
 }
+/* One candidate per line, all starting at the same left edge: the learner is
+   comparing subjects, and a column is the shape a comparison reads in. */
 .topic-consent__options {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--gl-space-2);
-  margin-top: var(--gl-space-2);
+  margin: var(--gl-space-2) 0 0;
+  padding: 0;
+  list-style: none;
 }
 .topic-consent__option {
-  display: inline-flex;
+  padding: 3px 0;
+}
+.topic-consent__option label {
+  display: flex;
   align-items: center;
-  gap: 0.4em;
-  padding: 0.25em 0.6em;
-  border: 1px solid var(--gl-surface-line);
-  border-radius: var(--gl-radius-pill);
-  background: var(--gl-surface);
+  gap: 0.5em;
   cursor: pointer;
 }
 .topic-consent__option.is-disabled {

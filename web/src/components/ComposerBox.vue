@@ -18,12 +18,22 @@ const props = defineProps({
   knowledgeEnabled: { type: Boolean, default: false },
   /** The server's ceiling for this session; the switch is not offered without it. */
   canUseKnowledge: { type: Boolean, default: false },
+  /** Whether the learner wants this turn to read their own topic memory. */
+  topicMemoryEnabled: { type: Boolean, default: false },
+  /**
+   * Whether this deployment asks for a topic confirmation at all. The probe
+   * answers it, so a deployment that never asks is offered no switch.
+   */
+  canUseTopicMemory: { type: Boolean, default: false },
+  /** The switch is inert while a turn is in flight or a suggestion is on its way. */
+  topicMemoryDisabled: { type: Boolean, default: false },
 })
 
 const emit = defineEmits([
   'update:modelValue',
   'update:thinking',
   'update:knowledgeEnabled',
+  'update:topicMemoryEnabled',
   'submit',
   'abort',
 ])
@@ -70,6 +80,15 @@ function toggleKnowledge() {
   if (!props.canUseKnowledge) return
   emit('update:knowledgeEnabled', !props.knowledgeEnabled)
 }
+
+// The topic switch is a second, independent door into a different kind of
+// personal state: the library answers from the learner's documents, this one
+// from their own topic memory. Two doors, two switches, never one control
+// that claims to be both.
+function toggleTopicMemory() {
+  if (!props.canUseTopicMemory || props.topicMemoryDisabled) return
+  emit('update:topicMemoryEnabled', !props.topicMemoryEnabled)
+}
 </script>
 
 <template>
@@ -115,7 +134,25 @@ function toggleKnowledge() {
         </div>
 
         <div class="composer__right">
-          <span class="composer__hint">Enter 发送 · Shift + Enter 换行</span>
+          <!-- The topic switch sits where the shortcut hint was: to the right of
+               the library switch and to the left of the send button. It is one
+               of the two controls that decide what this turn may read, so it
+               belongs to the composer rather than to a strip above it. -->
+          <button
+            v-if="props.canUseTopicMemory"
+            type="button"
+            class="tool"
+            :class="{ 'tool--on': props.topicMemoryEnabled }"
+            data-test="topic-memory-toggle"
+            :aria-pressed="String(props.topicMemoryEnabled)"
+            :disabled="props.topicMemoryDisabled"
+            title="仅本次问题使用；选择主题前不会读取掌握情况或主题长期记忆"
+            @click="toggleTopicMemory"
+          >
+            <AppIcon name="learning" :size="14" />
+            <span>使用主题记忆</span>
+          </button>
+          <span v-else class="composer__hint">Enter 发送 · Shift + Enter 换行</span>
           <button
             v-if="props.streaming"
             type="button"

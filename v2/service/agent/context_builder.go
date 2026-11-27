@@ -797,6 +797,18 @@ type ContextWindow struct {
 	// read grant. It lists keys the block really rendered rather than keys that
 	// were merely requested.
 	UsedTopicKeys []string
+	// UsedTopicNames maps those keys to the names the learner knows them by.
+	//
+	// It is what the answer basis shows, so it has to be the name the learner
+	// saw in the selection card rather than the key the server stores.
+	UsedTopicNames map[string]string
+	// ConfirmedTopicNotes are the confirmed topic notes this window rendered,
+	// with the reference each was given and the learner's own wording.
+	//
+	// They are here so the server can tell that an answer rests on a note and
+	// not merely that the note reached the model. A receipt says the notes
+	// were in the window; only the answer says what the answer stands on.
+	ConfirmedTopicNotes []ConfirmedTopicNote
 	// AuthoritativeTopicKeys are the TopicKeys server state named for this turn
 	// - in this version, the active learning session's. They are diagnostics
 	// and never reach the model; the records they selected do.
@@ -1864,13 +1876,14 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	// bootstrap runs only under v2, and under v2 memories.Topic is always empty
 	// because no reader that fills it was called.
 	var preinjected []PreinjectedMemoryRef
+	var confirmedNotes []ConfirmedTopicNote
 	topicBudget := minInt(remaining-4, b.config.MaxTopicUserMemoryTokens)
 	topicText := ""
 	if len(confirmedStates) > 0 || len(confirmedRecords) > 0 {
 		// One block, two provenances. The learner's confirmation bought both
 		// halves of one subject, and splitting them into two prompt blocks is
 		// what the merged block removed.
-		topicText, preinjected = renderConfirmedTopicContext(input.MemoryEvidence, confirmedStates,
+		topicText, preinjected, confirmedNotes = renderConfirmedTopicContext(input.MemoryEvidence, confirmedStates,
 			confirmedRecords, topicBudget)
 	} else if len(bootstrapTopics) > 0 {
 		topicText, preinjected = renderBootstrapTopicMemories(input.MemoryEvidence, bootstrapTopics, topicBudget)
@@ -1881,8 +1894,10 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 	// whose records all fell outside the budget did not reach the model, and
 	// telling the learner it did would be a false receipt.
 	var renderedTopicKeys []string
+	var renderedTopicNames map[string]string
 	if topicText != "" && (len(confirmedStates) > 0 || len(confirmedRecords) > 0) {
 		renderedTopicKeys = usedTopicKeys(confirmedStates, confirmedRecords)
+		renderedTopicNames = topicDisplayNames(confirmedStates, confirmedRecords)
 	}
 	if b.config.MemoryReadMode.UsesTopicMemoryReadTool() && (topicText != "" || len(preinjected) > 0) {
 		// The one thing v3 claims about its window is that it carries no topic
@@ -2174,6 +2189,7 @@ func (b *DatabaseContextBuilder) Build(ctx context.Context, input RunContext) (C
 		WhiteboardEntryKeys: whiteboardEntryKeys, WhiteboardDisplayedEntries: whiteboardDisplayedEntries, WhiteboardDisplayedAnchors: whiteboardDisplayedAnchors,
 		RecallEmbeddingCalls: cycle.EmbeddingCalls(), ResolvedTopicKeys: input.ProposedTopicKeys,
 		AuthoritativeTopicKeys: input.AuthoritativeTopicKeys, UsedTopicKeys: renderedTopicKeys,
+		UsedTopicNames: renderedTopicNames, ConfirmedTopicNotes: confirmedNotes,
 		PreinjectedMemory: preinjected,
 	}, nil
 }

@@ -76,6 +76,16 @@ type AnswerBasis string
 const (
 	AnswerBasisConversation      AnswerBasis = "conversation"
 	AnswerBasisPersonalKnowledge AnswerBasis = "personal_knowledge"
+	// AnswerBasisTopicMemory is an answer that rests on the learner's own
+	// topic notes - the notes they picked for this question.
+	//
+	// It is a basis of its own rather than a flavour of "conversation" because
+	// the evidence behind it is a record the learner wrote on a subject, and
+	// the learner needs to know that the subject they confirmed is the subject
+	// the answer came from. It does not replace the document side: what the
+	// document retrieval did is still recorded on its own fields, so a turn that
+	// read both a note and the library says so twice rather than once.
+	AnswerBasisTopicMemory       AnswerBasis = "topic_memory"
 	AnswerBasisGeneralKnowledge  AnswerBasis = "general_knowledge"
 	AnswerBasisRefused           AnswerBasis = "refused"
 	AnswerBasisLegacyUnspecified AnswerBasis = "legacy_unspecified"
@@ -83,8 +93,8 @@ const (
 
 func (b AnswerBasis) Valid() bool {
 	switch b {
-	case AnswerBasisConversation, AnswerBasisPersonalKnowledge, AnswerBasisGeneralKnowledge,
-		AnswerBasisRefused, AnswerBasisLegacyUnspecified:
+	case AnswerBasisConversation, AnswerBasisPersonalKnowledge, AnswerBasisTopicMemory,
+		AnswerBasisGeneralKnowledge, AnswerBasisRefused, AnswerBasisLegacyUnspecified:
 		return true
 	default:
 		return false
@@ -94,8 +104,18 @@ func (b AnswerBasis) Valid() bool {
 type KnowledgeStatus string
 
 const (
-	KnowledgeStatusNotRequired       KnowledgeStatus = "not_required"
-	KnowledgeStatusGrounded          KnowledgeStatus = "grounded"
+	KnowledgeStatusNotRequired KnowledgeStatus = "not_required"
+	KnowledgeStatusGrounded    KnowledgeStatus = "grounded"
+	// KnowledgeStatusNotUsed says the uploaded documents are not what this
+	// answer rests on.
+	//
+	// It is not "no_evidence": that one says the material was searched and had
+	// nothing to say about this answer. This one says the answer stands on
+	// something else - the learner's own confirmed topic note - so the
+	// documents are beside the point rather than empty. A learner who reads
+	// "the material had nothing" will go and upload something; a learner who
+	// reads "the answer did not come from your uploads" will not.
+	KnowledgeStatusNotUsed           KnowledgeStatus = "not_used"
 	KnowledgeStatusNoEvidence        KnowledgeStatus = "no_evidence"
 	KnowledgeStatusUnavailable       KnowledgeStatus = "unavailable"
 	KnowledgeStatusInvalidGrounding  KnowledgeStatus = "invalid_grounding"
@@ -104,8 +124,9 @@ const (
 
 func (s KnowledgeStatus) Valid() bool {
 	switch s {
-	case KnowledgeStatusNotRequired, KnowledgeStatusGrounded, KnowledgeStatusNoEvidence,
-		KnowledgeStatusUnavailable, KnowledgeStatusInvalidGrounding, KnowledgeStatusLegacyUnspecified:
+	case KnowledgeStatusNotRequired, KnowledgeStatusGrounded, KnowledgeStatusNotUsed,
+		KnowledgeStatusNoEvidence, KnowledgeStatusUnavailable, KnowledgeStatusInvalidGrounding,
+		KnowledgeStatusLegacyUnspecified:
 		return true
 	default:
 		return false
@@ -127,6 +148,14 @@ const (
 	KnowledgeReasonDocumentMetadata KnowledgeReason = "document_metadata_unavailable"
 	KnowledgeReasonInvalidCitation  KnowledgeReason = "invalid_citation"
 	KnowledgeReasonMissingCitation  KnowledgeReason = "missing_citation"
+	// KnowledgeReasonNotCited says the retrieval found passages and the
+	// answer did not use them.
+	//
+	// It is its own reason because the answer may well have been grounded in
+	// something else - the learner's own confirmed note - and saying
+	// "missing_citation" about that turn would describe a fault that did not
+	// happen.
+	KnowledgeReasonNotCited         KnowledgeReason = "not_cited"
 	KnowledgeReasonFallbackCitation KnowledgeReason = "fallback_citation"
 	// KnowledgeReasonSearchNotPerformed says the turn answered without
 	// retrieving from the learner's material at all.
@@ -147,7 +176,7 @@ func (r KnowledgeReason) Valid() bool {
 		KnowledgeReasonNoCandidate, KnowledgeReasonModelAbstained, KnowledgeReasonEmbedding,
 		KnowledgeReasonVector, KnowledgeReasonLexical, KnowledgeReasonIndex,
 		KnowledgeReasonDocumentMetadata, KnowledgeReasonInvalidCitation,
-		KnowledgeReasonMissingCitation, KnowledgeReasonFallbackCitation,
+		KnowledgeReasonMissingCitation, KnowledgeReasonNotCited, KnowledgeReasonFallbackCitation,
 		KnowledgeReasonSearchNotPerformed:
 		return true
 	default:

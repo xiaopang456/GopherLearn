@@ -221,6 +221,13 @@ type RunResult struct {
 	// model, so the user can see what their confirmation did. It carries keys
 	// and never note text: the answer already shows whatever it used.
 	UsedTopicKeys []string `json:"usedTopicKeys,omitempty"`
+	// AnswerBasisTopics names the topics whose confirmed notes this answer
+	// rests on.
+	//
+	// It is a different list from UsedTopicKeys on purpose. The receipt says
+	// what reached the context; this says what the answer stands on, and it is
+	// empty for an answer that rests on something else.
+	AnswerBasisTopics []string `json:"answerBasisTopics,omitempty"`
 	// TerminationReason is how the run ended: "answered" for a run whose
 	// model was free to answer, and one of the budget reasons for a run that
 	// was closed out under a budget it had already spent.
@@ -466,10 +473,11 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 		ToolCalls: runnerResult.ToolCalls, ModelCalls: runnerResult.ModelCalls,
 		Sources:     append([]rag.Source{}, runnerResult.Sources...),
 		AnswerBasis: runnerResult.AnswerBasis, KnowledgeStatus: runnerResult.KnowledgeStatus, KnowledgeReason: runnerResult.KnowledgeReason,
-		ContextBudget: runnerResult.ContextBudget,
-		MemoryDraft:   cloneMemoryDraftCard(runnerResult.MemoryDraft),
-		Clarification: ClarificationCardOf(runnerResult.Clarification),
-		UsedTopicKeys: append([]string{}, runnerResult.UsedTopicKeys...),
+		ContextBudget:     runnerResult.ContextBudget,
+		MemoryDraft:       cloneMemoryDraftCard(runnerResult.MemoryDraft),
+		Clarification:     ClarificationCardOf(runnerResult.Clarification),
+		UsedTopicKeys:     append([]string{}, runnerResult.UsedTopicKeys...),
+		AnswerBasisTopics: append([]string{}, runnerResult.AnswerBasisTopics...),
 		// A run that answered under a spent budget is not a run that
 		// answered freely, and the record has to say which one it was.
 		TerminationReason: runnerResult.Closeout,
@@ -500,6 +508,10 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 		Sources:        model.MessageSources(append([]rag.Source{}, runnerResult.Sources...)),
 		EpisodeSources: append(model.EpisodeSourceRefs(nil), runnerResult.EpisodeSources...),
 		AnswerBasis:    runnerResult.AnswerBasis, KnowledgeStatus: runnerResult.KnowledgeStatus, KnowledgeReason: runnerResult.KnowledgeReason,
+		// The topics whose confirmed notes this answer rests on. They travel
+		// with the message so that a conversation opened again shows the same
+		// basis the turn did.
+		AnswerBasisTopics: model.MessageTopics(append([]string{}, runnerResult.AnswerBasisTopics...)),
 		// The clarification travels with the message, because the learner
 		// answers it in their next message and the answer has to be
 		// resolvable against the candidates that were offered.
@@ -575,9 +587,10 @@ func (s *Service) Run(ctx context.Context, request RunRequest, sink EventSink) (
 	cancelThin()
 	if err := sendEvent(ctx, sink, Event{
 		Type: EventRunCompleted, RunID: run.ID, TerminationReason: result.TerminationReason, UsedTopicKeys: append([]string{}, runnerResult.UsedTopicKeys...),
-		Content:     runnerResult.Answer,
-		Sources:     append([]rag.Source{}, runnerResult.Sources...),
-		AnswerBasis: runnerResult.AnswerBasis, KnowledgeStatus: runnerResult.KnowledgeStatus, KnowledgeReason: runnerResult.KnowledgeReason,
+		AnswerBasisTopics: append([]string{}, runnerResult.AnswerBasisTopics...),
+		Content:           runnerResult.Answer,
+		Sources:           append([]rag.Source{}, runnerResult.Sources...),
+		AnswerBasis:       runnerResult.AnswerBasis, KnowledgeStatus: runnerResult.KnowledgeStatus, KnowledgeReason: runnerResult.KnowledgeReason,
 		ContextBudget: &runnerResult.ContextBudget,
 		MemoryDraft:   cloneMemoryDraftCard(runnerResult.MemoryDraft),
 		Clarification: ClarificationCardOf(runnerResult.Clarification),
@@ -736,8 +749,9 @@ func replayRun(ctx context.Context, sink EventSink, run *model.AgentRun) (RunRes
 	}
 	if err := sendEvent(ctx, sink, Event{
 		Type: EventRunCompleted, RunID: run.ID, TerminationReason: result.TerminationReason, Content: result.Answer,
-		UsedTopicKeys: append([]string{}, result.UsedTopicKeys...),
-		Sources:       append([]rag.Source{}, result.Sources...), ContextBudget: &result.ContextBudget,
+		UsedTopicKeys:     append([]string{}, result.UsedTopicKeys...),
+		AnswerBasisTopics: append([]string{}, result.AnswerBasisTopics...),
+		Sources:           append([]rag.Source{}, result.Sources...), ContextBudget: &result.ContextBudget,
 		AnswerBasis: result.AnswerBasis, KnowledgeStatus: result.KnowledgeStatus, KnowledgeReason: result.KnowledgeReason,
 		MemoryDraft: cloneMemoryDraftCard(result.MemoryDraft),
 	}); err != nil {

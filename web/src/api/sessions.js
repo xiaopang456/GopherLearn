@@ -82,6 +82,32 @@ export function normalizeSession(raw) {
 
 export const MESSAGE_ROLES = new Set(['user', 'assistant', 'system'])
 
+/**
+ * The basis of a stored answer, as the history read returns it.
+ *
+ * The server keeps the basis on the message row, so a conversation that is
+ * opened again shows the same "依据" the turn recorded. Without this the card
+ * is a live-turn-only thing and the answer looks like it never had a basis.
+ *
+ * It is assembled into the same `originalV2` shape the live turn carries, so
+ * the card reads one set of fields either way.
+ */
+function storedBasis(raw) {
+  const answerBasis = String(raw.answer_basis ?? raw.answerBasis ?? '').trim()
+  const knowledgeStatus = String(raw.knowledge_status ?? raw.knowledgeStatus ?? '').trim()
+  const knowledgeReason = String(raw.knowledge_reason ?? raw.knowledgeReason ?? '').trim()
+  const topics = Array.isArray(raw.answer_basis_topics ?? raw.answerBasisTopics)
+    ? (raw.answer_basis_topics ?? raw.answerBasisTopics).map((name) => String(name ?? '').trim()).filter(Boolean)
+    : []
+  if (!answerBasis && !knowledgeStatus && !knowledgeReason) return null
+  return {
+    answerBasis,
+    knowledgeStatus,
+    knowledgeReason,
+    ...(topics.length ? { answerBasisTopics: topics } : {}),
+  }
+}
+
 export function normalizeMessage(raw, fallbackId) {
   const source = raw || {}
   const role = String(source.role ?? '').toLowerCase()
@@ -111,6 +137,10 @@ export function normalizeMessage(raw, fallbackId) {
       source.clarification && typeof source.clarification === 'object'
         ? source.clarification
         : null,
+    // The basis the turn recorded, read back from the stored row. It is the
+    // same object the live turn carries, so the card below the answer reads
+    // the same either way.
+    originalV2: storedBasis(source),
     runId: String(source.run_id ?? ''),
   }
 }

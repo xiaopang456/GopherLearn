@@ -581,6 +581,26 @@ func messageRowView(row model.Message) map[string]any {
 		"id": strconv.FormatUint(uint64(row.ID), 10), "session_id": row.SessionID, "role": role,
 		"content": row.Content, "created_at": row.CreatedAt.UTC().Format(time.RFC3339Nano),
 	}
+	// The basis of an answer is a fact about the answer, and it has to survive
+	// a reload: the learner who opens the conversation again has to read the
+	// same "依据" the turn recorded. Without these three fields the whole card
+	// disappears on a reload, and the answer looks like it had no basis at all.
+	//
+	// They are omitted rather than sent empty when the row has nothing to
+	// report, so that a row stored before the server kept these fields is not
+	// given a basis it never had.
+	if basis := strings.TrimSpace(string(row.AnswerBasis)); basis != "" && basis != string(rag.AnswerBasisLegacyUnspecified) {
+		view["answer_basis"] = basis
+	}
+	if status := strings.TrimSpace(string(row.KnowledgeStatus)); status != "" && status != string(rag.KnowledgeStatusLegacyUnspecified) {
+		view["knowledge_status"] = status
+	}
+	if reason := strings.TrimSpace(string(row.KnowledgeReason)); reason != "" && reason != string(rag.KnowledgeReasonNone) {
+		view["knowledge_reason"] = reason
+	}
+	if len(row.AnswerBasisTopics) > 0 {
+		view["answer_basis_topics"] = append([]string{}, row.AnswerBasisTopics...)
+	}
 	if row.AgentRunID != nil && strings.TrimSpace(*row.AgentRunID) != "" {
 		view["run_id"] = *row.AgentRunID
 	}

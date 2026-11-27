@@ -45,6 +45,10 @@
 const ANSWER_BASIS_ZH = Object.freeze({
   conversation: '来自之前的对话',
   personal_knowledge: '来自你上传的资料',
+  // The topic note the learner picked for this question. The card appends the
+  // subject's name to it, so the learner reads "主题记忆 · 分层摘要" and knows
+  // which of their own notes the answer came from.
+  topic_memory: '主题记忆',
   general_knowledge: '来自通用知识',
   refused: '没有作答',
 })
@@ -52,6 +56,11 @@ const ANSWER_BASIS_ZH = Object.freeze({
 /** The state of the knowledge behind the answer. */
 const KNOWLEDGE_STATUS_ZH = Object.freeze({
   grounded: '答案能在你的资料里找到出处',
+  // The retrieval ran and the answer did not rest on what it found. It is not
+  // "the material had nothing to say": the answer simply came from somewhere
+  // else, and a learner who reads "the material had nothing" will go and
+  // upload something that would not change this answer.
+  not_used: '这次回答没有用到你上传的资料',
   no_evidence: '资料里没有找到支撑这句话的内容',
   unavailable: '这次没能查到资料',
   invalid_grounding: '引用和原文对不上',
@@ -70,6 +79,9 @@ const KNOWLEDGE_REASON_ZH = Object.freeze({
   document_metadata_unavailable: '文档信息读取失败',
   invalid_citation: '引用的位置对不上原文',
   missing_citation: '引用缺少位置信息',
+  // The retrieval found passages and the answer did not use them, because the
+  // answer rests on the learner's own confirmed note instead.
+  not_cited: '答案依据的是你选的主题笔记，不是上传的资料',
   fallback_citation: '引用使用了降级位置',
   // The turn never looked at the learner's material; the answer is the
   // model's own general knowledge. It is told apart from `no_candidate`
@@ -150,6 +162,20 @@ export function knowledgeReasonText(value) {
 }
 
 /**
+ * The topics an answer's basis rests on.
+ *
+ * The server records the subjects whose confirmed notes the answer actually
+ * used, and it records them separately from the receipt of what reached the
+ * context. The card shows them next to the basis, because "来自主题记忆" on its
+ * own says the answer came from a note without saying which note.
+ */
+export function answerBasisTopics(result) {
+  const raw = result?.answerBasisTopics
+  if (!Array.isArray(raw)) return []
+  return raw.map((name) => String(name ?? '').trim()).filter((name) => name !== '')
+}
+
+/**
  * The lines of the learner-facing card, in the order they are read.
  *
  * The card is a card about one thing: where this answer came from, and what the
@@ -160,7 +186,17 @@ export function knowledgeReasonText(value) {
 export function agentResultRows(result) {
   const rows = []
   const basis = answerBasisText(result?.answerBasis)
-  if (basis) rows.push({ key: 'answerBasis', label: '依据', text: basis })
+  if (basis) {
+    // The subject's name belongs to the basis line: the learner is told which
+    // of their own notes the answer came from, not merely that it came from
+    // one.
+    const topics = answerBasisTopics(result)
+    rows.push({
+      key: 'answerBasis',
+      label: '依据',
+      text: topics.length ? `${basis} · ${topics.join(' / ')}` : basis,
+    })
+  }
   const status = knowledgeStatusText(result?.knowledgeStatus)
   if (status) rows.push({ key: 'knowledgeStatus', label: '资料', text: status })
   const reason = knowledgeReasonText(result?.knowledgeReason)
